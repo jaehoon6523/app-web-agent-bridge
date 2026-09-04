@@ -170,6 +170,32 @@ export class LiveDiscussionComposition {
       provider: SessionProvider.CHATGPT_WEB,
     });
 
+    const web = this.#createWebSession({ run, sessionId: webSessionId });
+    const beginWebSession = webBinding?.tabId === null ? web?.resume : web?.start;
+    if (typeof beginWebSession !== "function") {
+      throw new LiveDiscussionCompositionError("Web runtime cannot start or resume a session.", "WEB_RUNTIME_INVALID");
+    }
+    try {
+      // First-run URL binding deliberately resumes only an exact existing
+      // conversation. The extension rejects zero or multiple matching tabs.
+      const binding = await beginWebSession.call(web, { binding: webBinding });
+      runtimeActor(web, AgentActor.CHATGPT_WEB_AGENT);
+      this.#markReady({
+        sessionId: webSessionId,
+        externalSessionId: web.externalSessionId,
+        externalLocator: binding?.conversationUrl ?? null,
+      });
+    } catch (cause) {
+      throw new LiveDiscussionCompositionError(
+        "ChatGPT Web session provisioning did not complete; no discussion delivery was queued.",
+        "WEB_SESSION_PROVISIONING_FAILED",
+        { runId: run.runId, sessionId: webSessionId, cause },
+      );
+    }
+
+    // Do not start a Codex thread until exact Web conversation binding is
+    // proven. A missing login, invalid URL, or ambiguous tabs must be a
+    // no-provider-side-effect failure.
     const codex = this.#createCodexSession({
       run,
       sessionId: codexSessionId,
@@ -195,29 +221,6 @@ export class LiveDiscussionComposition {
         "Codex session provisioning did not complete; no discussion delivery was queued.",
         "CODEX_SESSION_PROVISIONING_FAILED",
         { runId: run.runId, sessionId: codexSessionId, cause },
-      );
-    }
-
-    const web = this.#createWebSession({ run, sessionId: webSessionId });
-    const beginWebSession = webBinding?.tabId === null ? web?.resume : web?.start;
-    if (typeof beginWebSession !== "function") {
-      throw new LiveDiscussionCompositionError("Web runtime cannot start or resume a session.", "WEB_RUNTIME_INVALID");
-    }
-    try {
-      // First-run URL binding deliberately resumes only an exact existing
-      // conversation. The extension rejects zero or multiple matching tabs.
-      const binding = await beginWebSession.call(web, { binding: webBinding });
-      runtimeActor(web, AgentActor.CHATGPT_WEB_AGENT);
-      this.#markReady({
-        sessionId: webSessionId,
-        externalSessionId: web.externalSessionId,
-        externalLocator: binding?.conversationUrl ?? null,
-      });
-    } catch (cause) {
-      throw new LiveDiscussionCompositionError(
-        "ChatGPT Web session provisioning did not complete; no discussion delivery was queued.",
-        "WEB_SESSION_PROVISIONING_FAILED",
-        { runId: run.runId, sessionId: webSessionId, cause },
       );
     }
 

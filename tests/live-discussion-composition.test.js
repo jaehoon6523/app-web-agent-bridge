@@ -69,3 +69,39 @@ test("composition provisions durable runtime identities before queueing the firs
   composition.close();
   store.close();
 });
+
+test("an unbound Web conversation prevents Codex thread creation", async (t) => {
+  const directory = mkdtempSync(join(tmpdir(), "live-discussion-web-first-"));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const store = new SqliteStore(join(directory, "controller.sqlite"));
+  const artifacts = new ArtifactStore(join(directory, "artifacts"));
+  let codexFactoryCalls = 0;
+  const composition = new LiveDiscussionComposition({
+    store,
+    artifactStore: artifacts,
+    createCodexSession: () => {
+      codexFactoryCalls += 1;
+      throw new Error("Codex must not be constructed before Web binding.");
+    },
+    createWebSession: () => ({
+      actor: AgentActor.CHATGPT_WEB_AGENT,
+      externalSessionId: null,
+      async resume() {
+        throw new Error("Exact ChatGPT conversation is not bound.");
+      },
+    }),
+  });
+
+  await assert.rejects(
+    composition.provisionRun({
+      runId: "run-web-first",
+      objective: "Bind Web before Codex.",
+      policy: createDiscussionRunPolicy(),
+      webConversationUrl: "https://chatgpt.com/c/conversation-web",
+    }),
+    { code: "WEB_SESSION_PROVISIONING_FAILED" },
+  );
+  assert.equal(codexFactoryCalls, 0);
+  composition.close();
+  store.close();
+});
