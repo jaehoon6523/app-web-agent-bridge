@@ -17,7 +17,7 @@ const dirname = path.dirname(filename);
 const publicDir = path.resolve(dirname, "../public");
 const MAX_LOCAL_MESSAGE_BYTES = 1024 * 1024;
 const LIVE_ORCHESTRATION_UNAVAILABLE =
-  "Live Controller orchestration is unavailable until Codex and ChatGPT Web runtimes are composed.";
+  "Live run commands are unavailable until the authenticated start/recovery API is enabled.";
 
 /** @typedef {ReturnType<typeof loadConfig>} RuntimeConfig */
 
@@ -85,7 +85,21 @@ export function createBridgeServer({ runtimeConfig } = {}) {
     );
     next();
   });
+  function livePreflight() {
+    const checks = {
+      demoModeDisabled: runtimeConfig.demoMode === false,
+      codexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
+      extensionAuthenticated: Boolean(extensionTransport?.authenticated),
+      webAdapterAvailable: webSession !== null,
+    };
+    const missing = Object.entries(checks)
+      .filter(([, ready]) => !ready)
+      .map(([name]) => name);
+    return Object.freeze({ checks, missing, readyForProvisioning: missing.length === 0 });
+  }
+
   app.get("/api/health", (_req, res) => {
+    const preflight = livePreflight();
     res.json({
       ok: true,
       at: nowIso(),
@@ -96,9 +110,12 @@ export function createBridgeServer({ runtimeConfig } = {}) {
       webRuntimeReady: false,
       liveSessionBindingReady: false,
       liveOrchestrationReady: false,
-      liveCompositionConfigured: runtimeConfig.codex?.executablePath != null,
-      webConnected: Boolean(extensionTransport?.authenticated),
+      webConnected: preflight.checks.extensionAuthenticated,
+      liveCompositionConfigured: preflight.checks.codexExecutableConfigured,
     });
+  });
+  app.get("/api/preflight", (_req, res) => {
+    res.json(livePreflight());
   });
   app.get("/api/state", (_req, res) => {
     res.status(503).json({ error: LIVE_ORCHESTRATION_UNAVAILABLE });
