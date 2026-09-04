@@ -101,24 +101,24 @@ function restrictedPacketMap(actions) {
   ));
 }
 
-function resolvedPolicy(actions, expectedPacketType = null) {
+function resolvedPolicy(actions, allowedPacketTypesOverride = null) {
   const allowedActions = Object.freeze([...actions]);
-  const allowedPacketTypes = expectedPacketType === null
+  const allowedPacketTypes = allowedPacketTypesOverride === null
     ? uniquePacketTypes(allowedActions)
-    : Object.freeze([expectedPacketType]);
+    : Object.freeze([...allowedPacketTypesOverride]);
   return Object.freeze({
     actionMatrixVersion: DISCUSSION_ACTION_MATRIX_VERSION,
     allowedActions,
     allowedPacketTypes,
     packetTypeByAction: restrictedPacketMap(allowedActions),
-    expectedPacketType,
+    expectedPacketType: allowedPacketTypes.length === 1 ? allowedPacketTypes[0] : null,
   });
 }
 
 export function resolveDiscussionActionPolicy({
   inputKind,
   peerMessageKind = null,
-  expectedPacketType = null,
+  allowedPacketTypes = null,
 }) {
   if (!SUPPORTED_INPUT_KINDS.has(inputKind)) {
     throw new DiscussionActionPolicyError(
@@ -128,7 +128,7 @@ export function resolveDiscussionActionPolicy({
 
   if (inputKind === AgentTurnInputKind.INITIAL_OBJECTIVE) {
     requireNull(peerMessageKind, "peerMessageKind");
-    requireNull(expectedPacketType, "expectedPacketType");
+    requireNull(allowedPacketTypes, "allowedPacketTypes");
     return resolvedPolicy(DISCUSSION_ACTION_MATRIX.INITIAL_OBJECTIVE);
   }
 
@@ -138,18 +138,23 @@ export function resolveDiscussionActionPolicy({
         "peerMessageKind has no authorized PEER_RELAY action policy.",
       );
     }
-    requireNull(expectedPacketType, "expectedPacketType");
+    requireNull(allowedPacketTypes, "allowedPacketTypes");
     return resolvedPolicy(DISCUSSION_ACTION_MATRIX[`PEER_${peerMessageKind}`]);
   }
 
   requireNull(peerMessageKind, "peerMessageKind");
-  if (!SUPPORTED_PACKET_TYPES.has(expectedPacketType)) {
+  if (
+    !Array.isArray(allowedPacketTypes)
+    || allowedPacketTypes.length === 0
+    || new Set(allowedPacketTypes).size !== allowedPacketTypes.length
+    || allowedPacketTypes.some((packetType) => !SUPPORTED_PACKET_TYPES.has(packetType))
+  ) {
     throw new DiscussionActionPolicyError(
-      "expectedPacketType must be an authorized discussion packet type for PROTOCOL_REPAIR.",
+      "allowedPacketTypes must be a non-empty unique list of authorized discussion packet types for PROTOCOL_REPAIR.",
       "INVALID_PROTOCOL_REPAIR_EXPECTATION",
     );
   }
-  return resolvedPolicy([], expectedPacketType);
+  return resolvedPolicy([], allowedPacketTypes);
 }
 
 export function assertDiscussionPacketTypeAllowed(context, packetType) {

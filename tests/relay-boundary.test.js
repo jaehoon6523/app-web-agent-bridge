@@ -63,7 +63,7 @@ test("controller prompt keeps peer content inside a hash-bound data envelope", (
   );
 });
 
-test("initial and protocol-repair prompts carry their exact packet constraints", () => {
+test("initial and protocol-repair prompts carry their frozen packet constraints", () => {
   const common = {
     actor: AgentActor.CODEX_AGENT,
     mode: RunMode.DISCUSSION,
@@ -92,36 +92,34 @@ test("initial and protocol-repair prompts carry their exact packet constraints",
     ...common,
     instructionId: "repair-critique",
     inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
-    expectedPacketType: "CRITIQUE",
     protocolRepair: {
       rejectedDeliveryId: "delivery-rejected-1",
       parserStage: "JSON_PARSE",
       errorCode: "INVALID_PACKET_JSON",
       errorSummary: "The final packet was not valid JSON.",
-      expectedPacketType: "CRITIQUE",
+      allowedPacketTypes: ["CRITIQUE", "BLOCKED"],
+      repairPolicyHash: sha256Text("repair-policy"),
     },
     turnNumber: 2,
   });
   const repair = JSON.parse(repairPrompt.slice(repairPrompt.lastIndexOf("\n\n") + 2));
   assert.deepEqual(repair.controller_directive.allowed_actions, []);
-  assert.deepEqual(repair.controller_directive.allowed_packet_types, ["CRITIQUE"]);
-  assert.equal(repair.controller_directive.expected_packet_type, "CRITIQUE");
+  assert.deepEqual(repair.controller_directive.allowed_packet_types, ["CRITIQUE", "BLOCKED"]);
+  assert.equal(repair.controller_directive.expected_packet_type, null);
   assert.equal(repair.protocol_repair.rejectedDeliveryId, "delivery-rejected-1");
   assert.throws(() => buildControllerPrompt({
     ...common,
     instructionId: "repair-without-context",
     inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
-    expectedPacketType: "CRITIQUE",
     turnNumber: 2,
   }), /protocol repair payload/u);
   assert.throws(() => buildControllerPrompt({
     ...common,
-    instructionId: "repair-mismatched-expectation",
+    instructionId: "repair-invalid-policy",
     inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
-    expectedPacketType: "ACCEPT",
-    protocolRepair: repair.protocol_repair,
+    protocolRepair: { ...repair.protocol_repair, allowedPacketTypes: [] },
     turnNumber: 2,
-  }), /must match expectedPacketType/u);
+  }), /allowedPacketTypes/u);
 });
 
 test("relay content reports truncation and preserves the original hash", () => {

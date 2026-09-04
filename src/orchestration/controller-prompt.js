@@ -57,7 +57,6 @@ export function buildControllerPrompt({
   maxTurns,
   peerMessage = null,
   peerProposalRefHash = null,
-  expectedPacketType = null,
   protocolRepair = null,
   relayLimits,
 }) {
@@ -141,18 +140,13 @@ export function buildControllerPrompt({
   }
   if (inputKind === AgentTurnInputKind.PROTOCOL_REPAIR) {
     validateProtocolRepairPayload(protocolRepair);
-    if (protocolRepair.expectedPacketType !== expectedPacketType) {
-      throw new TypeError(
-        "protocolRepair.expectedPacketType must match expectedPacketType.",
-      );
-    }
   } else if (protocolRepair !== null) {
     throw new TypeError(`${String(inputKind)} must not include protocolRepair.`);
   }
   const actionPolicy = resolveDiscussionActionPolicy({
     inputKind,
     peerMessageKind: peerMessage?.kind ?? null,
-    expectedPacketType,
+    allowedPacketTypes: protocolRepair?.allowedPacketTypes ?? null,
   });
 
   const envelope = {

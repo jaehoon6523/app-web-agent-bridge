@@ -12,8 +12,8 @@ Controller           = 상태·전달·복구·종료 판정의 유일한 writer
 
 ## 현재 구현 상태
 
-현재 코드는 Controller+SQLite 기준의 durable discussion core와, 아직 연결되지 않은 runtime
-surface를 명시적으로 분리합니다.
+현재 코드는 Controller+SQLite 기준의 durable discussion core, dispatcher-backed fake runtime
+수직 경로와 아직 연결되지 않은 production runtime surface를 명시적으로 분리합니다.
 
 - strict domain records, run state machine, four caller-frozen limits
 - SQLite event/projection store, hash chain, transactional relay/outbox
@@ -27,22 +27,31 @@ surface를 명시적으로 분리합니다.
 - startup preflight, projection rebuild, recovery candidate scan
 - `AgentTurnInput`/`AgentMessage` 분리와 Controller-owned Proposal identity
 - hash-chained submission receipt/session/turn과 response/rejection provenance 검증
+- 제출 직전 session identity/version snapshot 고정과 submit·response-start·response-final race 검증
 - 한 transaction 안의 response/message/packet/proposal/event/outcome/next-outbox 처리
 - 상태별 action matrix, same-actor protocol repair, 동일-hash 양측 consensus
 - Controller+SQLite 5-turn integration과 마지막 ACCEPT 뒤 추가 delivery 억제
 - Agent-owned BLOCKED 사유와 Controller/runtime-owned operational blocker 사유 분리
+- PENDING outbox에서 fake Codex/Web session, runtime event consumer, packet parser를 거치는 5-turn 수직 경로
+- delivery/input/session/turn의 exact correlation과 stale·foreign·duplicate terminal event 거부
+- PENDING 재개와 SUBMITTED 불확실 상태의 자동 재전송 금지
+- runtime approval event를 canonical approval로 승격하지 않는 dispatcher fail-closed 경계
 
 동일한 normalized proposal이 다시 제출되면 새 canonical proposal을 만들지 않고 기존
 `proposalRefHash`를 재사용합니다. 각 source message의 occurrence는 hash-chained
 `AGENT_RESPONSE_STORED` event가 별도로 보존하고 startup verifier가 그 message와 proposal을
-다시 결박합니다. Protocol repair는 prior context에서 단 하나의 expected packet type을 증명할
-수 있을 때만 자동 생성하며, 허용 타입이 여러 개이거나 근거가 불명확하면 현재는 fail-closed로
-중단합니다.
+다시 결박합니다. Protocol repair 권한은 거부된 원래 turn과 source message의 frozen action policy에서
+전체 `allowedPacketTypes`로 재도출하고 `repairPolicyHash`로 결박합니다. Runtime-response evidence의
+`observedCandidatePacketType`은 진단값일 뿐 repair 허용 범위나 다음 action을 선택하지 않습니다.
+생성, 응답 소비와 startup 재검증이 모두 같은 policy를 다시 계산하며 불일치는 fail-closed입니다.
 
-Discussion core의 direct integration은 준비됐지만 dispatcher-backed fake runtime vertical과
-production composition root는 아직 연결하지 않았습니다.
+Dispatcher-backed fake runtime vertical은 test harness에서 연결됐지만 production composition
+root와 live Codex/Web session은 아직 연결하지 않았습니다.
 따라서 `/api/state`, Dashboard WebSocket, live run mutation은 의도적으로 `503`을 반환합니다.
-Health는 이 둘을 하나의 `orchestrationReady` 값으로 뭉개지 않고 다음 사실을 따로 반환합니다.
+현재 Health는 다음 값을 따로 반환합니다. 여기서 `coreOrchestrationReady`와
+`fakeVerticalSliceVerified`는 자동 검증 checkpoint이고, 실행 중 production component의
+준비 상태는 아닙니다. 이 naming과 runtime readiness 계산은 별도 composition 변경에서
+정정해야 합니다.
 
 ```text
 coreOrchestrationReady=true
@@ -53,12 +62,23 @@ liveSessionBindingReady=false
 liveOrchestrationReady=false
 ```
 
-다음 단계의 live dispatcher는 Codex/Web terminal output의 실제 parser evidence를 response
-처리기에 결박해야 합니다. 특히 protocol rejection의 packet-type 근거를 caller 문자열로
-임의 선택해서는 안 되며, redaction 후 저장된 raw-response artifact를 사용해야 합니다.
+Fake dispatcher는 Codex/Web terminal event와 completion을 exact turn에 결박하고, parser가
+검증한 packet만 response 처리기에 전달합니다. Malformed output은 raw provider text를 artifact에
+보존하지 않고 actor, parser stage와 strict framing에서 도출된 observed candidate type만 allowlist evidence로
+저장합니다. Terminal failure/interruption은 completion promise를 기다리지 않고 즉시 fail-closed하며,
+durable response 뒤 callback 실패는 `POST_COMMIT_EFFECT_FAILED`로 이미 commit된 경계와 구분합니다.
+이 검증은 synthetic evidence이며 live Codex/Web adapter 조립을 증명하지 않습니다. Fake Web의
+durable acknowledgement도 test binding callback으로만 검증됐고 production composition에는 아직
+연결되지 않았습니다.
 현재 Controller는 artifact 존재·hash를 검증하지만 이 내부 port를 HTTP/WS command로 노출하지
 않습니다. recovery scan 역시 불확실한 작업을 찾지만 provider reconciliation과 사용자 recovery
 decision 실행기는 아직 composition에 연결되지 않았습니다.
+
+Agent `BLOCKED`가 operational fact를 만드는 경로는 차단됐습니다. 다만
+`requestRuntimeApproval()`의 opaque scope를 실제 runtime request/session/turn evidence에
+결박하는 계약과 `SESSION_AUTH` blocker의 trusted creation provenance는 아직 부분 구현입니다.
+Fake dispatcher는 correlated approval event를 승인으로 만들지 않고 중단하지만, 이 두 저장소
+불변조건 자체는 live composition 전에 별도 변경으로 닫아야 합니다.
 
 ## 원본 ZIP 판정
 
@@ -139,14 +159,15 @@ http://127.0.0.1:8787/api/health
 ## 검증 범위
 
 현재 자동 검증은 domain, SQLite/outbox, hash-chain 변조 탐지, fake Codex lifecycle, strict
-output validation, durable Controller+SQLite consensus, response fault-injection rollback, extension
-authentication/binding/race, DOM fixtures, Dashboard model 및 split readiness를 포함합니다.
+output validation, durable Controller+SQLite consensus, response fault-injection rollback,
+dispatcher-backed fake Codex/Web 5-turn consensus, restart/reopen 및 exact event correlation,
+extension authentication/binding/race, DOM fixtures, Dashboard model 및 split readiness를 포함합니다.
 
 2026-09-04 fail-closed foundation checkpoint에서 다음을 로컬로 재현했습니다.
 
 ```text
-npm run check             306/306 PASS
-npm run test:integration   85/85 PASS
+npm run check             336/336 PASS
+npm run test:integration  123/123 PASS
 server smoke              core ready / live ready false / live api state=503
 ```
 

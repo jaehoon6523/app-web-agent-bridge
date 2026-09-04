@@ -10,6 +10,7 @@ import {
 import { getAgentTurnInputEntity } from "./agent-communications.js";
 import { DeliveryState } from "./schema.js";
 import { getAgentSessionEntity } from "./sqlite-entities.js";
+import { validateSubmittedProviderReceipt } from "./delivery-transition-input.js";
 
 const SUBMISSION_EVENT_TYPES = Object.freeze([
   "AGENT_TURN_SUBMITTED",
@@ -177,7 +178,7 @@ function decodeProviderReceipt(delivery, errors) {
     `delivery ${delivery.delivery_id} provider receipt`,
     (value) => {
       requireExactObject(value, Object.keys(value), "provider receipt");
-      requireString(value.externalTurnId, "provider receipt.externalTurnId");
+      validateSubmittedProviderReceipt({ providerReceipt: value });
     },
     errors,
   );
@@ -190,6 +191,7 @@ function verifyCurrentReceipt(submission, errors) {
     details.inputId !== delivery.input_id
     || details.attemptCount !== Number(delivery.attempt_count)
     || details.turnId !== receipt.externalTurnId
+    || details.sessionId !== receipt.sessionBinding.sessionId
     || details.providerReceiptHash !== sha256CanonicalJson(receipt)
   ) {
     integrity(
@@ -219,8 +221,10 @@ function verifyCurrentInFlightSession(database, delivery, submission, errors) {
     !submission
     || submission.details.attemptCount !== Number(delivery.attempt_count)
     || !CURRENT_IN_FLIGHT_STATES.has(delivery.state)
+    || delivery.provider_receipt_json === null
   ) return;
   const { details, session } = submission;
+  const receipt = decodeProviderReceipt(delivery, errors);
   const run = readCurrentRun(database, delivery.run_id, errors);
   if (
     run.phase !== RUNNING_PHASE_BY_ACTOR[details.targetActor]
@@ -229,6 +233,10 @@ function verifyCurrentInFlightSession(database, delivery, submission, errors) {
   if (
     session.status !== AgentSessionStatus.RUNNING
     || session.activeTurnId !== details.turnId
+    || session.sessionId !== receipt.sessionBinding.sessionId
+    || session.version !== receipt.sessionBinding.version + 1
+    || session.externalSessionId !== receipt.sessionBinding.externalSessionId
+    || session.externalLocator !== receipt.sessionBinding.externalLocator
   ) {
     integrity(
       errors,

@@ -446,7 +446,7 @@ export function createInitialRunState({
   return state;
 }
 
-export function transitionRunState(state, input) {
+function transitionRunStateInternal(state, input, { allowPausedTurnStart = false } = {}) {
   assertRunState(state);
   const request = requireMutationInput(input, "transitionRunState");
   assertExpectedVersion(state, request.expectedVersion);
@@ -502,7 +502,8 @@ export function transitionRunState(state, input) {
     const queuesNextDelivery = request.to === RunPhase.CODEX_TO_WEB_PENDING
       || request.to === RunPhase.WEB_TO_CODEX_PENDING;
     assertTurnMayStart(state, request.to, nextBlocker, {
-      allowPausedQueue: queuesNextDelivery,
+      allowPausedQueue: queuesNextDelivery
+        || (allowPausedTurnStart && requiredActorForPhase(request.to) !== null),
       allowBlockedQueue: queuesNextDelivery,
     });
   }
@@ -538,7 +539,15 @@ export function transitionRunState(state, input) {
   });
 }
 
-export function startProtocolRepairTurn(state, input) {
+export function transitionRunState(state, input) {
+  return transitionRunStateInternal(state, input);
+}
+
+function startProtocolRepairTurnInternal(
+  state,
+  input,
+  { allowPausedTurnStart = false } = {},
+) {
   assertRunState(state);
   const request = requireMutationInput(input, "startProtocolRepairTurn");
   requireExactKeys(
@@ -570,12 +579,48 @@ export function startProtocolRepairTurn(state, input) {
   const targetPhase = actor === AgentActor.CODEX_AGENT
     ? RunPhase.CODEX_TURN_RUNNING
     : RunPhase.WEB_TURN_RUNNING;
-  assertTurnMayStart(state, targetPhase);
+  assertTurnMayStart(state, targetPhase, state.blocker, {
+    allowPausedQueue: allowPausedTurnStart,
+  });
   return buildNextState(state, {
     phase: targetPhase,
     activeActor: actor,
     updatedAt: request.updatedAt,
   });
+}
+
+export function startProtocolRepairTurn(state, input) {
+  return startProtocolRepairTurnInternal(state, input);
+}
+
+export function startClaimedAgentTurn(state, input) {
+  assertRunState(state);
+  const request = requireMutationInput(input, "startClaimedAgentTurn");
+  requireExactKeys(
+    request,
+    ["actor", "kind", "expectedVersion", "updatedAt"],
+    "startClaimedAgentTurn input",
+  );
+  const actor = requireAgentActor(request.actor, "startClaimedAgentTurn actor");
+  if (request.kind === AgentTurnInputKind.PROTOCOL_REPAIR) {
+    return startProtocolRepairTurnInternal(state, request, { allowPausedTurnStart: true });
+  }
+  if (
+    request.kind !== AgentTurnInputKind.INITIAL_OBJECTIVE
+    && request.kind !== AgentTurnInputKind.PEER_RELAY
+  ) {
+    throw new RunStateMachineError(
+      "A claimed discussion turn must be INITIAL_OBJECTIVE, PEER_RELAY, or PROTOCOL_REPAIR.",
+      "CLAIMED_TURN_INTENT_REQUIRED",
+    );
+  }
+  return transitionRunStateInternal(state, {
+    to: actor === AgentActor.CODEX_AGENT
+      ? RunPhase.CODEX_TURN_RUNNING
+      : RunPhase.WEB_TURN_RUNNING,
+    expectedVersion: request.expectedVersion,
+    updatedAt: request.updatedAt,
+  }, { allowPausedTurnStart: true });
 }
 
 export function adoptRecoveredCompletedResponse(state, input) {

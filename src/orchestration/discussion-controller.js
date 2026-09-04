@@ -8,9 +8,10 @@ import { sha256CanonicalJson } from "../domain/canonical-json.js";
 import { parseFinalControllerPacketEnvelope } from "../domain/controller-packet-envelope.js";
 import { validateAgentTurnInput } from "../domain/agent-messages.js";
 import { validateAgentRun } from "../domain/contracts.js";
+import { deriveProtocolRepairPolicy } from "../domain/protocol-repair-policy.js";
 import {
   createRunOutcome,
-  startProtocolRepairTurn,
+  startClaimedAgentTurn,
   transitionRunState,
 } from "../domain/run-state-machine.js";
 import {
@@ -44,7 +45,6 @@ import {
 import {
   assertSessionTurnIdAvailable,
   assertPacketReference,
-  expectedPacketTypeForRejection,
   responseMeaningContext,
   responseReference,
   sourceMessageForInput,
@@ -53,10 +53,17 @@ import {
   discussionResponseEventDetails,
   markDiscussionSessionWaiting,
 } from "./discussion-response-evidence.js";
+import { markDiscussionResponseStarted } from "./discussion-response-start.js";
 import {
   holdDiscussionForExistingBlocker,
   planBlockedDiscussionTransition,
 } from "./discussion-blocked.js";
+import { parseDiscussionRuntimeEvidence } from "./discussion-runtime-evidence.js";
+import {
+  markDiscussionSessionRunning,
+  requireSubmittedDiscussionSession,
+  sessionForDiscussionSubmission,
+} from "./discussion-session-binding.js";
 
 const READY_SESSION_STATES = new Set([
   AgentSessionStatus.READY,
@@ -143,62 +150,6 @@ function requireExpectedDelivery(store, deliveryId, expectedVersion) {
   return delivery;
 }
 
-function requireSessionForInput(store, run, turnInput, sessionId, turnId = null) {
-  const session = store.getAgentSession(sessionId);
-  if (!session) {
-    throw new DiscussionControllerError(
-      `Agent session ${sessionId} does not exist.`,
-      "AGENT_SESSION_NOT_FOUND",
-    );
-  }
-  if (session.runId !== run.runId || session.actor !== turnInput.targetActor) {
-    throw new DiscussionControllerError(
-      `Agent session ${sessionId} does not own input ${turnInput.inputId}.`,
-      "AGENT_SESSION_INPUT_MISMATCH",
-    );
-  }
-  if (
-    turnId !== null
-    && (
-      session.status !== AgentSessionStatus.RUNNING
-      || session.activeTurnId !== turnId
-    )
-  ) {
-    throw new DiscussionControllerError(
-      `Agent session ${sessionId} is not running attributed turn ${turnId}.`,
-      "AGENT_SESSION_TURN_MISMATCH",
-    );
-  }
-  return session;
-}
-
-function sessionForSubmission(store, run, turnInput) {
-  const matches = store.listAgentSessions(run.runId).filter((session) => (
-    session.actor === turnInput.targetActor
-  ));
-  if (matches.length !== 1 || !READY_SESSION_STATES.has(matches[0].status)) {
-    throw new DiscussionControllerError(
-      `Input ${turnInput.inputId} requires one ready ${turnInput.targetActor} session.`,
-      "DISCUSSION_SESSION_NOT_READY",
-    );
-  }
-  return matches[0];
-}
-
-function markSessionRunning(store, session, turnId, updatedAt) {
-  return store.upsertAgentSession({
-    session: {
-      ...session,
-      status: AgentSessionStatus.RUNNING,
-      activeTurnId: turnId,
-      lastObservedAt: updatedAt,
-      version: session.version + 1,
-    },
-    expectedVersion: session.version,
-    updatedAt,
-  });
-}
-
 function assertReadySessions(store, runId) {
   const sessions = store.listAgentSessions(runId);
   for (const actor of [AgentActor.CODEX_AGENT, AgentActor.CHATGPT_WEB_AGENT]) {
@@ -236,8 +187,14 @@ export class DiscussionController {
     if (typeof clock !== "function" || typeof idFactory !== "function") {
       throw new TypeError("clock and idFactory must be functions.");
     }
-    if (artifactStore !== null && typeof artifactStore?.verify !== "function") {
-      throw new TypeError("artifactStore must expose verify or be null.");
+    if (
+      artifactStore !== null
+      && (
+        typeof artifactStore?.verify !== "function"
+        || typeof artifactStore?.read !== "function"
+      )
+    ) {
+      throw new TypeError("artifactStore must expose verify/read or be null.");
     }
     this.#store = store;
     this.#artifactStore = artifactStore;
@@ -379,7 +336,12 @@ export class DiscussionController {
         providerReceipt.externalTurnId,
         "providerReceipt.externalTurnId",
       );
-      const session = sessionForSubmission(this.#store, run, turnInput);
+      const session = sessionForDiscussionSubmission(
+        this.#store,
+        run,
+        turnInput,
+        providerReceipt,
+      );
       assertSessionTurnIdAvailable(this.#store, session, externalTurnId);
       const protocolRepair = turnInput.kind === AgentTurnInputKind.PROTOCOL_REPAIR;
       if (!protocolRepair && !PENDING_PHASE_BY_ACTOR[turnInput.targetActor]?.has(run.phase)) {
@@ -389,18 +351,12 @@ export class DiscussionController {
         );
       }
       const at = this.#clock();
-      const running = protocolRepair
-        ? startProtocolRepairTurn(run, {
-          actor: turnInput.targetActor,
-          kind: AgentTurnInputKind.PROTOCOL_REPAIR,
-          expectedVersion: run.version,
-          updatedAt: at,
-        })
-        : transitionRunState(run, {
-          to: RUNNING_PHASE_BY_ACTOR[turnInput.targetActor],
-          expectedVersion: run.version,
-          updatedAt: at,
-        });
+      const running = startClaimedAgentTurn(run, {
+        actor: turnInput.targetActor,
+        kind: turnInput.kind,
+        expectedVersion: run.version,
+        updatedAt: at,
+      });
       const submitted = this.#store.transitionDelivery({
         deliveryId,
         expectedState: DeliveryState.DISPATCHING,
@@ -409,7 +365,7 @@ export class DiscussionController {
         providerReceipt,
         updatedAt: at,
       });
-      const runningSession = markSessionRunning(
+      const runningSession = markDiscussionSessionRunning(
         this.#store,
         session,
         externalTurnId,
@@ -435,6 +391,14 @@ export class DiscussionController {
     });
   }
 
+  markResponseStarted(input) {
+    return markDiscussionResponseStarted({
+      ...input,
+      store: this.#store,
+      clock: this.#clock,
+    });
+  }
+
   recordInvalidResponse({
     runId,
     expectedRunVersion,
@@ -446,7 +410,6 @@ export class DiscussionController {
     errorCode,
     errorSummary,
     rawResponseArtifactHash,
-    expectedPacketType = null,
   }) {
     requireNonEmptyString(runId, "runId");
     requirePositiveInteger(expectedRunVersion, "expectedRunVersion");
@@ -460,11 +423,14 @@ export class DiscussionController {
     requireNonEmptyString(rawResponseArtifactHash, "rawResponseArtifactHash");
     if (this.#artifactStore === null) {
       throw new DiscussionControllerError(
-        "Invalid responses require a verified redacted raw-response artifact.",
+        "Invalid responses require a verified sanitized runtime-response evidence artifact.",
         "RAW_RESPONSE_ARTIFACT_VERIFIER_REQUIRED",
       );
     }
     this.#artifactStore.verify(rawResponseArtifactHash);
+    const runtimeEvidenceText = this.#artifactStore
+      .read(rawResponseArtifactHash)
+      .toString("utf8");
 
     return this.#store.withTransaction(() => {
       const run = requireExpectedRun(this.#store, runId, expectedRunVersion);
@@ -484,6 +450,10 @@ export class DiscussionController {
       }
       const turnInput = this.#store.getAgentTurnInput(delivery.inputId);
       validateAgentTurnInput(turnInput);
+      parseDiscussionRuntimeEvidence(runtimeEvidenceText, {
+        actor: turnInput.targetActor,
+        parserStage,
+      });
       if (
         run.phase !== RUNNING_PHASE_BY_ACTOR[turnInput.targetActor]
         || run.activeActor !== turnInput.targetActor
@@ -493,13 +463,14 @@ export class DiscussionController {
           "RUN_RESPONSE_ROUTE_MISMATCH",
         );
       }
-      const session = requireSessionForInput(
-        this.#store,
+      const session = requireSubmittedDiscussionSession({
+        store: this.#store,
         run,
         turnInput,
+        delivery,
         sessionId,
         turnId,
-      );
+      });
       if (
         this.#store.getAgentMessageByInput(turnInput.inputId) !== null
         || this.#store.getAgentPacketRejectionByDelivery(deliveryId) !== null
@@ -511,14 +482,16 @@ export class DiscussionController {
       }
 
       const priorMessages = this.#store.listAgentMessages(runId);
-      const sourceMessage = turnInput.kind === AgentTurnInputKind.PROTOCOL_REPAIR
-        ? null
-        : sourceMessageForInput(turnInput, priorMessages);
-      const frozenExpectedPacketType = expectedPacketTypeForRejection(
+      const responseContext = responseMeaningContext(
+        this.#store,
         turnInput,
-        sourceMessage,
-        expectedPacketType,
+        priorMessages,
+        this.#store.listProposalArtifacts(runId),
       );
+      const repairPolicy = deriveProtocolRepairPolicy({
+        rejectedTurnInput: responseContext.semanticTurnInput,
+        sourceMessage: responseContext.sourceMessage,
+      });
       const counters = this.#store.getRunLimits(runId);
       const at = this.#clock();
       const decision = decideAgentPacketRejection({
@@ -537,7 +510,7 @@ export class DiscussionController {
         rawResponseArtifactHash,
         limits: counters.limits,
         protocolRepairsUsed: counters.protocolRepairsUsed,
-        expectedPacketType: frozenExpectedPacketType,
+        repairPolicy,
         createdAt: at,
       });
       const responseStored = transitionRunState(run, {
@@ -764,13 +737,14 @@ export class DiscussionController {
           "RUN_RESPONSE_ROUTE_MISMATCH",
         );
       }
-      const session = requireSessionForInput(
-        this.#store,
+      const session = requireSubmittedDiscussionSession({
+        store: this.#store,
         run,
         turnInput,
+        delivery,
         sessionId,
         turnId,
-      );
+      });
       if (this.#store.getAgentMessageByInput(turnInput.inputId) !== null) {
         throw new DiscussionControllerError(
           `Input ${turnInput.inputId} already produced a message.`,

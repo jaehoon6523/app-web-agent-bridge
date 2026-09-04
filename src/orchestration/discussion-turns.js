@@ -5,7 +5,7 @@ import {
   validateAgentTurnInput,
 } from "../domain/agent-messages.js";
 import { validateAgentRun, validateProposalArtifact } from "../domain/contracts.js";
-import { assertDiscussionPacketTypeAllowed } from "../domain/discussion-actions.js";
+import { assertProtocolRepairPolicyBinding } from "../domain/protocol-repair-policy.js";
 import {
   AgentActor,
   AgentMessageKind,
@@ -105,11 +105,11 @@ function assertRepairOrigin(run, repairTargetActor, repairPayload, rejectedTurnI
     throw new TypeError("Protocol repair target must match the rejected turn target.");
   }
   const source = sourceForRejectedInput(rejectedTurnInput, sourceMessage);
-  assertDiscussionPacketTypeAllowed({
-    inputKind: rejectedTurnInput.kind,
-    peerMessageKind: source?.kind ?? null,
-    expectedPacketType: null,
-  }, repairPayload.expectedPacketType);
+  assertProtocolRepairPolicyBinding({
+    repairPayload,
+    rejectedTurnInput,
+    sourceMessage: source,
+  });
   return source;
 }
 
@@ -283,7 +283,6 @@ export function buildProtocolRepairDiscussionTurn({
     policyHash: run.policyHash,
     turnNumber: run.currentTurn + 1,
     maxTurns: run.maxTurns,
-    expectedPacketType: repairPayload.expectedPacketType,
     protocolRepair: repairPayload,
     relayLimits,
   });
@@ -378,7 +377,6 @@ export function rematerializeDiscussionPrompt({
       policyHash: run.policyHash,
       turnNumber: run.currentTurn + 1,
       maxTurns: run.maxTurns,
-      expectedPacketType: turnInput.payload.expectedPacketType,
       protocolRepair: turnInput.payload,
       relayLimits,
     });

@@ -25,13 +25,18 @@ import {
 } from "../src/domain/vocabulary.js";
 import {
   AGENT_PROTOCOL_REPAIR_EXHAUSTED,
-  EXPECTED_PACKET_TYPE_REQUIRED,
   ProtocolFailureDecisionStatus,
 } from "../src/orchestration/protocol-failure.js";
 import { DiscussionController } from "../src/orchestration/discussion-controller.js";
+import {
+  DISCUSSION_RUNTIME_EVIDENCE_SCHEMA,
+  buildDiscussionRuntimeEvidence,
+} from "../src/orchestration/discussion-runtime-evidence.js";
 import { scanStartupRecovery } from "../src/orchestration/recovery-scan.js";
 import { RunService } from "../src/orchestration/run-service.js";
+import { calculateDomainEventHash } from "../src/persistence/event-chain.js";
 import { DeliveryState, SqliteStore } from "../src/persistence/sqlite-store.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 
 const T0 = "2026-09-04T05:00:00.000Z";
 
@@ -39,10 +44,6 @@ function fixture(t, maxTurns = 12) {
   const directory = mkdtempSync(join(tmpdir(), "discussion-repair-"));
   const filename = join(directory, "controller.sqlite");
   const artifactStore = new ArtifactStore(join(directory, "artifacts"));
-  const rawResponseArtifactHash = artifactStore.put(
-    "redacted invalid provider response",
-    { mimeType: "text/plain", redacted: true },
-  ).sha256;
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const store = new SqliteStore(filename);
   let id = 0;
@@ -79,8 +80,8 @@ function fixture(t, maxTurns = 12) {
   const started = controller.start({ runId: created.runId, expectedVersion: created.version });
   return {
     controller,
+    artifactStore,
     filename,
-    rawResponseArtifactHash,
     runService,
     store,
     run: started.run,
@@ -94,21 +95,40 @@ function claimAndSubmit(context, number) {
   });
   assert(claimed);
   const input = context.store.getAgentTurnInput(claimed.inputId);
+  const sessionId = input.targetActor === AgentActor.CODEX_AGENT
+    ? "session-codex"
+    : "session-web";
   const submitted = context.controller.markSubmitted({
     runId: context.run.runId,
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { externalTurnId: `external-${number}` },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      sessionId,
+      `external-${number}`,
+    ),
   });
   context.run = submitted.run;
   return { ...submitted, input };
 }
 
-function reject(context, submitted, number, expectedPacketType = undefined) {
+function reject(context, submitted, number, observedCandidatePacketType = undefined) {
   const sessionId = submitted.input.targetActor === AgentActor.CODEX_AGENT
     ? "session-codex"
     : "session-web";
+  const parserStage = AgentPacketParserStage.SCHEMA_VALIDATION;
+  const rawText = observedCandidatePacketType === undefined
+    ? "{}"
+    : canonicalJson({ type: observedCandidatePacketType });
+  const rawResponseArtifactHash = context.artifactStore.put(
+    buildDiscussionRuntimeEvidence({
+      actor: submitted.input.targetActor,
+      parserStage,
+      rawText,
+    }),
+    { mimeType: "application/json", redacted: true },
+  ).sha256;
   const input = {
     runId: context.run.runId,
     expectedRunVersion: context.run.version,
@@ -116,12 +136,11 @@ function reject(context, submitted, number, expectedPacketType = undefined) {
     expectedDeliveryVersion: submitted.delivery.version,
     sessionId,
     turnId: `external-${number}`,
-    parserStage: AgentPacketParserStage.SCHEMA_VALIDATION,
+    parserStage,
     errorCode: "INVALID_AGENT_PACKET_SCHEMA",
     errorSummary: "The final packet did not match its strict schema.",
-    rawResponseArtifactHash: context.rawResponseArtifactHash,
+    rawResponseArtifactHash,
   };
-  if (expectedPacketType !== undefined) input.expectedPacketType = expectedPacketType;
   const result = context.controller.recordInvalidResponse(input);
   context.run = result.run;
   return result;
@@ -139,6 +158,11 @@ test("one malformed response reserves one same-actor repair and a strict repair 
   assert.equal(rejected.nextDelivery.turnInput.kind, AgentTurnInputKind.PROTOCOL_REPAIR);
   assert.equal(rejected.nextDelivery.turnInput.targetActor, AgentActor.CODEX_AGENT);
   assert.equal(rejected.nextDelivery.turnInput.sourceMessageId, null);
+  assert.deepEqual(rejected.nextDelivery.turnInput.payload.allowedPacketTypes, [
+    AgentPacketType.PROPOSAL,
+    AgentPacketType.BLOCKED,
+  ]);
+  assert.match(rejected.nextDelivery.turnInput.payload.repairPolicyHash, /^sha256:[0-9a-f]{64}$/u);
   assert.deepEqual(rejected.rejectionEvent.repair, {
     inputId: rejected.nextDelivery.turnInput.inputId,
     inputHash: sha256CanonicalJson(rejected.nextDelivery.turnInput),
@@ -237,6 +261,64 @@ test("coherent repair input and idempotency tampering is detected on reopen", (t
   );
 });
 
+test("startup re-derives and rejects a coherently forged repair policy", (t) => {
+  const context = fixture(t);
+  const first = claimAndSubmit(context, 1);
+  const rejected = reject(context, first, 1, AgentPacketType.PROPOSAL);
+  const repair = context.store.getAgentTurnInput(rejected.rejectionEvent.repair.inputId);
+  context.store.close();
+
+  const forged = {
+    ...repair,
+    payload: {
+      ...repair.payload,
+      allowedPacketTypes: [AgentPacketType.BLOCKED],
+      repairPolicyHash: sha256Text("forged repair authority"),
+    },
+  };
+  forged.payloadHash = sha256CanonicalJson(forged.payload);
+  const forgedInputHash = sha256CanonicalJson(forged);
+  const database = new DatabaseSync(context.filename);
+  database.prepare(`
+    UPDATE agent_turn_inputs
+    SET payload_hash = ?, input_json = ?
+    WHERE input_id = ?
+  `).run(forged.payloadHash, canonicalJson(forged), forged.inputId);
+  const row = database.prepare(`
+    SELECT run_id, sequence, event_id, event_type, payload_json,
+           previous_hash, created_at
+    FROM domain_events
+    WHERE event_type = 'AGENT_PACKET_REJECTED'
+    ORDER BY sequence DESC LIMIT 1
+  `).get();
+  const payload = JSON.parse(row.payload_json);
+  payload.details.repair.inputHash = forgedInputHash;
+  const eventHash = calculateDomainEventHash(row.previous_hash, {
+    sequence: Number(row.sequence),
+    eventId: row.event_id,
+    runId: row.run_id,
+    eventType: row.event_type,
+    payload,
+    createdAt: row.created_at,
+  });
+  database.prepare(`
+    UPDATE domain_events SET payload_json = ?, event_hash = ?
+    WHERE run_id = ? AND sequence = ?
+  `).run(canonicalJson(payload), eventHash, row.run_id, row.sequence);
+  database.prepare(`
+    UPDATE runs SET last_event_hash = ? WHERE run_id = ?
+  `).run(eventHash, row.run_id);
+  database.prepare(`
+    UPDATE run_projections SET last_event_hash = ? WHERE run_id = ?
+  `).run(eventHash, row.run_id);
+  database.close();
+
+  assert.throws(
+    () => new SqliteStore(context.filename),
+    /protocol repair policy binding is inconsistent/u,
+  );
+});
+
 test("a provider turn id rejected earlier cannot be reused by the same session", (t) => {
   const context = fixture(t);
   const first = claimAndSubmit(context, 1);
@@ -257,7 +339,11 @@ test("a provider turn id rejected earlier cannot be reused by the same session",
     expectedRunVersion: context.run.version,
     deliveryId: repair.deliveryId,
     expectedDeliveryVersion: repair.version,
-    providerReceipt: { externalTurnId: "external-1" },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      "session-codex",
+      "external-1",
+    ),
   }), (error) => error.code === "AGENT_SESSION_TURN_ID_REUSED");
 
   assert.deepEqual(context.store.getRun(context.run.runId), before.run);
@@ -271,7 +357,7 @@ test("a provider turn id rejected earlier cannot be reused by the same session",
   reopened.close();
 });
 
-test("invalid response handling refuses an unverified raw-response artifact boundary", (t) => {
+test("invalid response handling refuses an unverified runtime-evidence artifact boundary", (t) => {
   const context = fixture(t);
   const first = claimAndSubmit(context, 1);
   const withoutArtifactVerifier = new DiscussionController({ store: context.store });
@@ -292,9 +378,76 @@ test("invalid response handling refuses an unverified raw-response artifact boun
     parserStage: AgentPacketParserStage.JSON_PARSE,
     errorCode: "INVALID_AGENT_PACKET_JSON",
     errorSummary: "The packet was invalid.",
-    rawResponseArtifactHash: context.rawResponseArtifactHash,
-    expectedPacketType: AgentPacketType.PROPOSAL,
+    rawResponseArtifactHash: context.artifactStore.put(
+      buildDiscussionRuntimeEvidence({
+        actor: AgentActor.CODEX_AGENT,
+        parserStage: AgentPacketParserStage.JSON_PARSE,
+        rawText: "not-json",
+      }),
+      { mimeType: "application/json", redacted: true },
+    ).sha256,
   }), (error) => error.code === "RAW_RESPONSE_ARTIFACT_VERIFIER_REQUIRED");
+
+  assert.deepEqual(context.store.getRun(context.run.runId), before.run);
+  assert.deepEqual(context.store.getDelivery(first.delivery.deliveryId), before.delivery);
+  assert.deepEqual(context.store.getAgentSession("session-codex"), before.session);
+  assert.deepEqual(context.store.listDomainEvents(context.run.runId), before.events);
+  context.store.close();
+});
+
+test("invalid response handling rejects arbitrary or context-forged evidence artifacts", (t) => {
+  const context = fixture(t);
+  const first = claimAndSubmit(context, 1);
+  const arbitraryHash = context.artifactStore.put(
+    "an arbitrary artifact is not runtime-response evidence",
+    { mimeType: "text/plain", redacted: true },
+  ).sha256;
+  const wrongActorHash = context.artifactStore.put(
+    buildDiscussionRuntimeEvidence({
+      actor: AgentActor.CHATGPT_WEB_AGENT,
+      parserStage: AgentPacketParserStage.SCHEMA_VALIDATION,
+      rawText: canonicalJson({ type: AgentPacketType.PROPOSAL }),
+    }),
+    { mimeType: "application/json", redacted: true },
+  ).sha256;
+  const forgedUntypedCandidateHash = context.artifactStore.put(
+    canonicalJson({
+      actor: AgentActor.CODEX_AGENT,
+      observedCandidatePacketType: AgentPacketType.PROPOSAL,
+      parserStage: AgentPacketParserStage.JSON_PARSE,
+      schema: DISCUSSION_RUNTIME_EVIDENCE_SCHEMA,
+    }),
+    { mimeType: "application/json", redacted: true },
+  ).sha256;
+  const before = {
+    run: context.store.getRun(context.run.runId),
+    delivery: context.store.getDelivery(first.delivery.deliveryId),
+    session: context.store.getAgentSession("session-codex"),
+    events: context.store.listDomainEvents(context.run.runId),
+  };
+
+  for (const [rawResponseArtifactHash, parserStage, code] of [
+    [arbitraryHash, AgentPacketParserStage.SCHEMA_VALIDATION, "RUNTIME_EVIDENCE_INVALID_JSON"],
+    [wrongActorHash, AgentPacketParserStage.SCHEMA_VALIDATION, "RUNTIME_EVIDENCE_CONTEXT_MISMATCH"],
+    [
+      forgedUntypedCandidateHash,
+      AgentPacketParserStage.JSON_PARSE,
+      "INVALID_DISCUSSION_RUNTIME_EVIDENCE",
+    ],
+  ]) {
+    assert.throws(() => context.controller.recordInvalidResponse({
+      runId: context.run.runId,
+      expectedRunVersion: context.run.version,
+      deliveryId: first.delivery.deliveryId,
+      expectedDeliveryVersion: first.delivery.version,
+      sessionId: "session-codex",
+      turnId: "external-1",
+      parserStage,
+      errorCode: "INVALID_AGENT_PACKET_SCHEMA",
+      errorSummary: "The packet was invalid.",
+      rawResponseArtifactHash,
+    }), (error) => error.code === code);
+  }
 
   assert.deepEqual(context.store.getRun(context.run.runId), before.run);
   assert.deepEqual(context.store.getDelivery(first.delivery.deliveryId), before.delivery);
@@ -340,21 +493,40 @@ test("a second malformed response exhausts repair and durably fails without a pe
   reopened.close();
 });
 
-test("an ambiguous expected packet type stops for authority without spending repair budget", (t) => {
-  const context = fixture(t);
-  const first = claimAndSubmit(context, 1);
-  const rejected = reject(context, first, 1);
+test("typed diagnostic evidence cannot choose protocol repair authority", (t) => {
+  const policies = [];
+  for (const observedCandidatePacketType of [
+    AgentPacketType.PROPOSAL,
+    AgentPacketType.BLOCKED,
+    AgentPacketType.ACCEPT,
+    AgentPacketType.CRITIQUE,
+    undefined,
+  ]) {
+    const context = fixture(t);
+    const first = claimAndSubmit(context, 1);
+    const rejected = reject(context, first, 1, observedCandidatePacketType);
+    assert.equal(rejected.protocolFailureStatus, ProtocolFailureDecisionStatus.REPAIR_REQUIRED);
+    const payload = rejected.nextDelivery.turnInput.payload;
+    assert.deepEqual(payload.allowedPacketTypes, [
+      AgentPacketType.PROPOSAL,
+      AgentPacketType.BLOCKED,
+    ]);
+    assert.equal(Object.hasOwn(payload, "expectedPacketType"), false);
+    policies.push(canonicalJson({
+      allowedPacketTypes: payload.allowedPacketTypes,
+      repairPolicyHash: payload.repairPolicyHash,
+    }));
+    context.store.close();
 
-  assert.equal(rejected.protocolFailureStatus, ProtocolFailureDecisionStatus.AUTHORITY_REQUIRED);
-  assert.equal(rejected.rejectionEvent.recoverability, "AMBIGUOUS");
-  assert.equal(rejected.run.phase, RunPhase.HUMAN_GATE);
-  assert.equal(rejected.run.blocker.type, "USER_DECISION");
-  assert.equal(rejected.nextDelivery, null);
-  assert.equal(rejected.counters.protocolRepairsUsed, 0);
-  const authorityEvent = context.store.listDomainEvents(context.run.runId).at(-1);
-  assert.equal(authorityEvent.eventType, "AGENT_PROTOCOL_AUTHORITY_REQUIRED");
-  assert.equal(authorityEvent.payload.details.reason, EXPECTED_PACKET_TYPE_REQUIRED);
-  context.store.close();
+    const reopened = new SqliteStore(context.filename);
+    assert.deepEqual(
+      reopened.getAgentTurnInput(rejected.nextDelivery.turnInput.inputId).payload,
+      payload,
+    );
+    assert.deepEqual(reopened.verifyAgentPacketRejections(), { valid: true, rejections: 1 });
+    reopened.close();
+  }
+  assert.equal(new Set(policies).size, 1);
 });
 
 test("a response turn must match the Controller-recorded session turn exactly", (t) => {
@@ -377,8 +549,14 @@ test("a response turn must match the Controller-recorded session turn exactly", 
     parserStage: AgentPacketParserStage.JSON_PARSE,
     errorCode: "INVALID_AGENT_PACKET_JSON",
     errorSummary: "The packet was invalid.",
-    rawResponseArtifactHash: context.rawResponseArtifactHash,
-    expectedPacketType: AgentPacketType.PROPOSAL,
+    rawResponseArtifactHash: context.artifactStore.put(
+      buildDiscussionRuntimeEvidence({
+        actor: AgentActor.CODEX_AGENT,
+        parserStage: AgentPacketParserStage.JSON_PARSE,
+        rawText: "not-json",
+      }),
+      { mimeType: "application/json", redacted: true },
+    ).sha256,
   }), (error) => error.code === "AGENT_SESSION_TURN_MISMATCH");
 
   assert.deepEqual(context.store.getRun(context.run.runId), before.run);

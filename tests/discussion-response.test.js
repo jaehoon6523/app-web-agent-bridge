@@ -5,6 +5,7 @@ import { buildAgentMessage } from "../src/domain/agent-messages.js";
 import { canonicalJson, sha256Text } from "../src/domain/canonical-json.js";
 import { buildAgentRun } from "../src/domain/contracts.js";
 import { createDiscussionRunPolicy } from "../src/domain/run-policy.js";
+import { deriveProtocolRepairPolicy } from "../src/domain/protocol-repair-policy.js";
 import {
   AgentActor,
   AgentMessageKind,
@@ -72,7 +73,8 @@ function packetContent(packet) {
 function repairDecision({
   actor,
   deliveryId,
-  expectedPacketType,
+  rejectedTurnInput,
+  sourceMessage = null,
   turnId = `turn-rejected-${actor}`,
 }) {
   return decideAgentPacketRejection({
@@ -91,7 +93,7 @@ function repairDecision({
     rawResponseArtifactHash: sha256Text(`redacted-${deliveryId}`),
     limits: createDiscussionRunPolicy().limits,
     protocolRepairsUsed: 0,
-    expectedPacketType,
+    repairPolicy: deriveProtocolRepairPolicy({ rejectedTurnInput, sourceMessage }),
     createdAt: T0,
   });
 }
@@ -220,7 +222,7 @@ test("protocol repair prompt rematerializes and an initial repaired proposal kee
   const decision = repairDecision({
     actor: AgentActor.CODEX_AGENT,
     deliveryId: "delivery-rejected-initial",
-    expectedPacketType: AgentPacketType.PROPOSAL,
+    rejectedTurnInput: rejectedTurn.turnInput,
   });
   const repair = buildProtocolRepairDiscussionTurn({
     run: stored,
@@ -305,7 +307,8 @@ test("a repaired proposal after a rejected critique response keeps REVISION mean
   const decision = repairDecision({
     actor: AgentActor.CODEX_AGENT,
     deliveryId: "delivery-rejected-revision",
-    expectedPacketType: AgentPacketType.PROPOSAL,
+    rejectedTurnInput: rejectedTurn.turnInput,
+    sourceMessage: critique,
   });
   const repair = buildProtocolRepairDiscussionTurn({
     run: stored,

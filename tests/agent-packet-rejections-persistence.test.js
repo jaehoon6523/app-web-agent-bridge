@@ -31,6 +31,7 @@ import {
   discussionSubmissionEvidence,
   discussionTurnEvidence,
 } from "../src/orchestration/discussion-turn-evidence.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 
 const T0 = "2026-09-04T00:00:00.000Z";
 const T1 = "2026-09-04T00:01:00.000Z";
@@ -124,7 +125,11 @@ function fixture(t) {
     expectedState: delivery.state,
     expectedVersion: delivery.version,
     nextState: "SUBMITTED",
-    providerReceipt: { externalTurnId: "turn-rejection" },
+    providerReceipt: providerReceiptForSession(
+      store,
+      "session-codex",
+      "turn-rejection",
+    ),
     updatedAt: T0,
   });
   const running = createAgentRun({
@@ -171,7 +176,7 @@ function fixture(t) {
     parserStage: AgentPacketParserStage.JSON_PARSE,
     errorCode: "INVALID_AGENT_PACKET_JSON",
     errorSummary: "The final packet was not valid JSON.",
-    rawResponseArtifactHash: sha256Text("redacted raw response artifact"),
+    rawResponseArtifactHash: sha256Text("sanitized runtime response evidence"),
     protocolRepairsUsed: 1,
     recoverability: AgentPacketRejectionRecoverability.EXHAUSTED,
     createdAt: T1,
@@ -372,7 +377,7 @@ test("rejection lookup rejects forged actor/session attribution", (t) => {
     runId: originalRun.runId,
     actor: AgentActor.CODEX_AGENT,
     provider: SessionProvider.CODEX_APP_SERVER,
-    externalSessionId: null,
+    externalSessionId: "thread-codex",
     externalLocator: null,
     status: AgentSessionStatus.READY,
     activeTurnId: null,
@@ -385,6 +390,8 @@ test("rejection lookup rejects forged actor/session attribution", (t) => {
     sessionId: "session-web",
     actor: AgentActor.CHATGPT_WEB_AGENT,
     provider: SessionProvider.CHATGPT_WEB,
+    externalSessionId: "conversation-web",
+    externalLocator: "https://chatgpt.com/c/conversation-web",
   });
   forgedStore.createAgentSession({ session: codex, createdAt: T0, updatedAt: T0 });
   forgedStore.createAgentSession({ session: web, createdAt: T0, updatedAt: T0 });
@@ -430,7 +437,11 @@ test("rejection lookup rejects forged actor/session attribution", (t) => {
     expectedState: delivery.state,
     expectedVersion: delivery.version,
     nextState: "SUBMITTED",
-    providerReceipt: { externalTurnId: rejection.turnId },
+    providerReceipt: providerReceiptForSession(
+      forgedStore,
+      "session-codex",
+      rejection.turnId,
+    ),
     updatedAt: T0,
   });
   const running = createAgentRun({

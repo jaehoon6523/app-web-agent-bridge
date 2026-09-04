@@ -14,6 +14,7 @@ import {
   assertDiscussionPacketTypeAllowed,
   blockedRoutingResult,
 } from "../domain/discussion-actions.js";
+import { assertProtocolRepairPolicyBinding } from "../domain/protocol-repair-policy.js";
 import { createRunOutcome } from "../domain/run-state-machine.js";
 import {
   AgentActor,
@@ -92,11 +93,6 @@ function sourceMessageForInput(turnInput, messages) {
   return source;
 }
 
-function expectedPacketTypeForRepair(turnInput) {
-  if (turnInput.kind !== AgentTurnInputKind.PROTOCOL_REPAIR) return null;
-  return turnInput.payload?.expectedPacketType ?? null;
-}
-
 function requireRepairResponseContext(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new DiscussionResponseError(
@@ -171,11 +167,11 @@ function responseMeaningContext(turnInput, messages, repairContext) {
     );
   }
   const sourceMessage = sourceMessageForInput(rejectedTurnInput, messages);
-  assertDiscussionPacketTypeAllowed({
-    inputKind: rejectedTurnInput.kind,
-    peerMessageKind: sourceMessage?.kind ?? null,
-    expectedPacketType: null,
-  }, turnInput.payload.expectedPacketType);
+  assertProtocolRepairPolicyBinding({
+    repairPayload: turnInput.payload,
+    rejectedTurnInput,
+    sourceMessage,
+  });
   return {
     semanticTurnInput: rejectedTurnInput,
     semanticSourceMessage: sourceMessage,
@@ -299,11 +295,8 @@ export function planDiscussionResponse({
     repairContext,
   );
   assertDiscussionPacketTypeAllowed({
-    inputKind: turnInput.kind,
-    peerMessageKind: turnInput.kind === AgentTurnInputKind.PEER_RELAY
-      ? semanticSourceMessage?.kind ?? null
-      : null,
-    expectedPacketType: expectedPacketTypeForRepair(turnInput),
+    inputKind: semanticTurnInput.kind,
+    peerMessageKind: semanticSourceMessage?.kind ?? null,
   }, packet.type);
 
   const message = buildAgentMessage({

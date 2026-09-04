@@ -1,11 +1,12 @@
 import { validateAgentMessage, validateAgentTurnInput } from "../domain/agent-messages.js";
-import { assertDiscussionPacketTypeAllowed } from "../domain/discussion-actions.js";
+import { assertProtocolRepairPolicyBinding } from "../domain/protocol-repair-policy.js";
 import {
   AgentMessageKind,
   AgentPacketType,
   AgentTurnInputKind,
 } from "../domain/vocabulary.js";
 import { DeliveryState } from "../persistence/schema.js";
+import { validateProtocolRepairPayload } from "./protocol-failure.js";
 
 export class DiscussionResponseContextError extends TypeError {
   constructor(message, code = "DISCUSSION_RESPONSE_CONTEXT_ERROR") {
@@ -95,6 +96,7 @@ export function responseMeaningContext(store, turnInput, messages, proposals) {
   }
 
   const rejectedDeliveryId = turnInput.payload?.rejectedDeliveryId;
+  validateProtocolRepairPayload(turnInput.payload);
   const rejectedDelivery = store.getDelivery(rejectedDeliveryId);
   if (
     rejectedDelivery === null
@@ -130,6 +132,11 @@ export function responseMeaningContext(store, turnInput, messages, proposals) {
     );
   }
   const sourceMessage = sourceMessageForInput(rejectedTurnInput, messages);
+  assertProtocolRepairPolicyBinding({
+    repairPayload: turnInput.payload,
+    rejectedTurnInput,
+    sourceMessage,
+  });
   return {
     semanticTurnInput: rejectedTurnInput,
     sourceMessage,
@@ -177,24 +184,4 @@ export function assertPacketReference(packet, expectedReference) {
       );
     }
   }
-}
-
-export function expectedPacketTypeForRejection(turnInput, sourceMessage, requestedType) {
-  if (turnInput.kind === AgentTurnInputKind.PROTOCOL_REPAIR) {
-    const expected = turnInput.payload?.expectedPacketType ?? null;
-    if (requestedType !== null && requestedType !== expected) {
-      throw new DiscussionResponseContextError(
-        "A rejected protocol repair must retain its frozen expected packet type.",
-        "PROTOCOL_REPAIR_EXPECTATION_MISMATCH",
-      );
-    }
-    return expected;
-  }
-  if (requestedType === null) return null;
-  assertDiscussionPacketTypeAllowed({
-    inputKind: turnInput.kind,
-    peerMessageKind: sourceMessage?.kind ?? null,
-    expectedPacketType: null,
-  }, requestedType);
-  return requestedType;
 }

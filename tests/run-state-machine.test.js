@@ -21,6 +21,7 @@ import {
   requestPause,
   resumeRun,
   setRunBlocker,
+  startClaimedAgentTurn,
   startProtocolRepairTurn,
   transitionRunState,
   validateRunLimits,
@@ -209,7 +210,39 @@ test("a run may be cancelled before session startup", () => {
   assert.equal(cancelled.activeActor, null);
 });
 
-test("pause stores an active response and queues, but does not start, the next delivery", () => {
+test("pause preserves a claimed turn and its response but blocks an unclaimed next turn", () => {
+  const created = newRun();
+  const starting = transitionRunState(created, {
+    to: RunPhase.STARTING_SESSIONS,
+    expectedVersion: created.version,
+    updatedAt: TIMES.started,
+  });
+  const pending = transitionRunState(starting, {
+    to: RunPhase.CODEX_TURN_PENDING,
+    expectedVersion: starting.version,
+    updatedAt: TIMES.pending,
+  });
+  const pausedPending = requestPause(pending, {
+    expectedVersion: pending.version,
+    updatedAt: TIMES.paused,
+  });
+  assert.throws(
+    () => transitionRunState(pausedPending, {
+      to: RunPhase.CODEX_TURN_RUNNING,
+      expectedVersion: pausedPending.version,
+      updatedAt: TIMES.running,
+    }),
+    (error) => error.code === "RUN_PAUSED",
+  );
+  const claimedRunning = startClaimedAgentTurn(pausedPending, {
+    actor: AgentActor.CODEX_AGENT,
+    kind: AgentTurnInputKind.INITIAL_OBJECTIVE,
+    expectedVersion: pausedPending.version,
+    updatedAt: TIMES.running,
+  });
+  assert.equal(claimedRunning.paused, true);
+  assert.equal(claimedRunning.phase, RunPhase.CODEX_TURN_RUNNING);
+
   const running = codexRunning();
   const paused = requestPause(running, {
     expectedVersion: running.version,

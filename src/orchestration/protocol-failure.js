@@ -2,7 +2,6 @@ import { validateRunLimits, validateRunOutcome } from "../domain/run-state-machi
 import { buildAgentTurnInput, SHA256_DIGEST_PATTERN } from "../domain/agent-messages.js";
 import {
   AGENT_PACKET_REJECTED_EVENT_TYPE,
-  AgentPacketParserStage,
   AgentPacketRejectionRecoverability,
   buildAgentPacketRejectedEvent,
 } from "../domain/agent-packet-rejection.js";
@@ -14,6 +13,10 @@ import {
   isVocabularyValue,
 } from "../domain/vocabulary.js";
 import { createRunOutcome } from "../domain/run-state-machine.js";
+import {
+  PROTOCOL_REPAIR_PAYLOAD_FIELDS,
+  validateProtocolRepairPayload,
+} from "../domain/protocol-repair-policy.js";
 import { nextProtocolRepairCount } from "./run-limits.js";
 
 export const ProtocolFailureDecisionStatus = Object.freeze({
@@ -23,7 +26,7 @@ export const ProtocolFailureDecisionStatus = Object.freeze({
 });
 
 export const AGENT_PROTOCOL_REPAIR_EXHAUSTED = "AGENT_PROTOCOL_REPAIR_EXHAUSTED";
-export const EXPECTED_PACKET_TYPE_REQUIRED = "EXPECTED_PACKET_TYPE_REQUIRED";
+export const REPAIR_POLICY_REQUIRED = "REPAIR_POLICY_REQUIRED";
 
 const ATTRIBUTION_FIELDS = Object.freeze([
   "runId",
@@ -43,14 +46,6 @@ const REPAIR_INPUT_DRAFT_FIELDS = Object.freeze([
   "createdAt",
 ]);
 
-export const PROTOCOL_REPAIR_PAYLOAD_FIELDS = Object.freeze([
-  "rejectedDeliveryId",
-  "parserStage",
-  "errorCode",
-  "errorSummary",
-  "expectedPacketType",
-]);
-
 const DECISION_FIELDS = Object.freeze([
   "status",
   "rejectionEvent",
@@ -65,7 +60,8 @@ const REPAIR_CONTEXT_FIELDS = Object.freeze([
   "targetActor",
   "objectiveHash",
   "policyHash",
-  "expectedPacketType",
+  "allowedPacketTypes",
+  "repairPolicyHash",
 ]);
 
 export class ProtocolFailureDecisionError extends TypeError {
@@ -126,28 +122,6 @@ function requireHash(value, name) {
   return value;
 }
 
-export function validateProtocolRepairPayload(value) {
-  const payload = requireExactKeys(
-    value,
-    PROTOCOL_REPAIR_PAYLOAD_FIELDS,
-    "protocol repair payload",
-  );
-  requireNonEmptyString(payload.rejectedDeliveryId, "protocol repair payload.rejectedDeliveryId");
-  if (!isVocabularyValue(AgentPacketParserStage, payload.parserStage)) {
-    throw new ProtocolFailureDecisionError(
-      "protocol repair payload.parserStage must be an AgentPacketParserStage.",
-    );
-  }
-  requireNonEmptyString(payload.errorCode, "protocol repair payload.errorCode");
-  requireNonEmptyString(payload.errorSummary, "protocol repair payload.errorSummary");
-  if (!isVocabularyValue(AgentPacketType, payload.expectedPacketType)) {
-    throw new ProtocolFailureDecisionError(
-      "protocol repair payload.expectedPacketType must be an AgentPacketType.",
-    );
-  }
-  return payload;
-}
-
 export function buildProtocolRepairPayload(decision) {
   validateProtocolFailureDecision(decision);
   if (
@@ -164,7 +138,8 @@ export function buildProtocolRepairPayload(decision) {
     parserStage: decision.rejectionEvent.parserStage,
     errorCode: decision.rejectionEvent.errorCode,
     errorSummary: decision.rejectionEvent.errorSummary,
-    expectedPacketType: decision.repairContext.expectedPacketType,
+    allowedPacketTypes: decision.repairContext.allowedPacketTypes,
+    repairPolicyHash: decision.repairContext.repairPolicyHash,
   });
   return deepFreeze(structuredClone(payload));
 }
@@ -229,11 +204,19 @@ function requireDecisionRepairContext(value, rejectionEvent) {
   }
   requireHash(context.objectiveHash, "repairContext.objectiveHash");
   requireHash(context.policyHash, "repairContext.policyHash");
-  if (!isVocabularyValue(AgentPacketType, context.expectedPacketType)) {
+  if (
+    !Array.isArray(context.allowedPacketTypes)
+    || context.allowedPacketTypes.length === 0
+    || new Set(context.allowedPacketTypes).size !== context.allowedPacketTypes.length
+    || context.allowedPacketTypes.some(
+      (packetType) => !isVocabularyValue(AgentPacketType, packetType),
+    )
+  ) {
     throw new ProtocolFailureDecisionError(
-      "repairContext.expectedPacketType must be an AgentPacketType.",
+      "repairContext.allowedPacketTypes must be a non-empty unique AgentPacketType list.",
     );
   }
+  requireHash(context.repairPolicyHash, "repairContext.repairPolicyHash");
   if (context.runId !== rejectionEvent.runId) {
     throw new ProtocolFailureDecisionError(
       "repairContext.runId must match rejectionEvent.runId.",
@@ -311,9 +294,9 @@ export function validateProtocolFailureDecision(value) {
       }
       requireNull(decision.repairContext, "AUTHORITY_REQUIRED repairContext");
       requireNull(decision.outcome, "AUTHORITY_REQUIRED outcome");
-      if (decision.reason !== EXPECTED_PACKET_TYPE_REQUIRED) {
+      if (decision.reason !== REPAIR_POLICY_REQUIRED) {
         throw new ProtocolFailureDecisionError(
-          `AUTHORITY_REQUIRED reason must be ${EXPECTED_PACKET_TYPE_REQUIRED}.`,
+          `AUTHORITY_REQUIRED reason must be ${REPAIR_POLICY_REQUIRED}.`,
           "PROTOCOL_FAILURE_DECISION_BINDING_MISMATCH",
         );
       }
@@ -342,7 +325,7 @@ export function decideAgentPacketRejection(input = {}) {
     rawResponseArtifactHash,
     limits,
     protocolRepairsUsed,
-    expectedPacketType = null,
+    repairPolicy = null,
     createdAt,
   } = input;
   const attribution = requireConfirmedAttribution(confirmedAttribution);
@@ -379,7 +362,18 @@ export function decideAgentPacketRejection(input = {}) {
     });
   }
 
-  if (!isVocabularyValue(AgentPacketType, expectedPacketType)) {
+  const repairPolicyValid = repairPolicy !== null
+    && typeof repairPolicy === "object"
+    && !Array.isArray(repairPolicy)
+    && Array.isArray(repairPolicy.allowedPacketTypes)
+    && repairPolicy.allowedPacketTypes.length > 0
+    && new Set(repairPolicy.allowedPacketTypes).size === repairPolicy.allowedPacketTypes.length
+    && repairPolicy.allowedPacketTypes.every(
+      (packetType) => isVocabularyValue(AgentPacketType, packetType),
+    )
+    && typeof repairPolicy.repairPolicyHash === "string"
+    && SHA256_DIGEST_PATTERN.test(repairPolicy.repairPolicyHash);
+  if (!repairPolicyValid) {
     const rejectionEvent = buildAgentPacketRejectedEvent({
       eventType: AGENT_PACKET_REJECTED_EVENT_TYPE,
       runId: attribution.runId,
@@ -401,7 +395,7 @@ export function decideAgentPacketRejection(input = {}) {
       protocolRepairsUsed: currentRepairCount,
       repairContext: null,
       outcome: null,
-      reason: EXPECTED_PACKET_TYPE_REQUIRED,
+      reason: REPAIR_POLICY_REQUIRED,
     });
   }
 
@@ -430,7 +424,8 @@ export function decideAgentPacketRejection(input = {}) {
       targetActor: attribution.actor,
       objectiveHash: attribution.objectiveHash,
       policyHash: attribution.policyHash,
-      expectedPacketType,
+      allowedPacketTypes: [...repairPolicy.allowedPacketTypes],
+      repairPolicyHash: repairPolicy.repairPolicyHash,
     },
     outcome: null,
     reason: null,
@@ -470,3 +465,5 @@ export function buildProtocolRepairTurnInput(decision, draft) {
     createdAt: input.createdAt,
   });
 }
+
+export { PROTOCOL_REPAIR_PAYLOAD_FIELDS, validateProtocolRepairPayload };

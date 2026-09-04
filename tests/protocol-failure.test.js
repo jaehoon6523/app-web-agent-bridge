@@ -18,7 +18,7 @@ import {
 } from "../src/domain/vocabulary.js";
 import {
   AGENT_PROTOCOL_REPAIR_EXHAUSTED,
-  EXPECTED_PACKET_TYPE_REQUIRED,
+  REPAIR_POLICY_REQUIRED,
   ProtocolFailureDecisionError,
   ProtocolFailureDecisionStatus,
   buildProtocolRepairTurnInput,
@@ -30,6 +30,11 @@ const AT = "2026-09-04T02:00:00.000Z";
 const HASH_A = sha256Text("objective");
 const HASH_B = sha256Text("policy");
 const RAW_ARTIFACT_HASH = sha256Text("redacted pre-parse response");
+const REPAIR_POLICY_HASH = sha256Text("derived repair policy");
+const REPAIR_POLICY = Object.freeze({
+  allowedPacketTypes: Object.freeze([AgentPacketType.PROPOSAL, AgentPacketType.BLOCKED]),
+  repairPolicyHash: REPAIR_POLICY_HASH,
+});
 
 function attribution(overrides = {}) {
   return {
@@ -72,7 +77,7 @@ function decisionInput(overrides = {}) {
     rawResponseArtifactHash: RAW_ARTIFACT_HASH,
     limits: createDiscussionRunPolicy().limits,
     protocolRepairsUsed: 0,
-    expectedPacketType: AgentPacketType.PROPOSAL,
+    repairPolicy: REPAIR_POLICY,
     createdAt: AT,
     ...overrides,
   };
@@ -110,7 +115,8 @@ test("first confirmed rejection reserves the one repair and fixes the same-actor
     AgentPacketRejectionRecoverability.REPAIRABLE,
   );
   assert.equal(decision.rejectionEvent.protocolRepairsUsed, 1);
-  assert.equal(decision.repairContext.expectedPacketType, AgentPacketType.PROPOSAL);
+  assert.deepEqual(decision.repairContext.allowedPacketTypes, REPAIR_POLICY.allowedPacketTypes);
+  assert.equal(decision.repairContext.repairPolicyHash, REPAIR_POLICY_HASH);
 
   const repairInput = buildProtocolRepairTurnInput(decision, {
     inputId: "input-repair-01",
@@ -130,7 +136,8 @@ test("first confirmed rejection reserves the one repair and fixes the same-actor
     parserStage: AgentPacketParserStage.JSON_PARSE,
     errorCode: "INVALID_AGENT_PACKET_JSON",
     errorSummary: "The final packet was not valid JSON.",
-    expectedPacketType: AgentPacketType.PROPOSAL,
+    allowedPacketTypes: [...REPAIR_POLICY.allowedPacketTypes],
+    repairPolicyHash: REPAIR_POLICY_HASH,
   });
   assert.equal(Object.hasOwn(repairInput.payload, "rawResponseArtifactHash"), false);
   assert.throws(
@@ -146,13 +153,13 @@ test("first confirmed rejection reserves the one repair and fixes the same-actor
   );
 });
 
-test("an absent or ambiguous expected packet type fails closed without spending repair budget", () => {
-  for (const expectedPacketType of [null, undefined, [AgentPacketType.PROPOSAL], "PROTOCOL_ERROR"]) {
-    const input = decisionInput({ expectedPacketType });
-    if (expectedPacketType === undefined) delete input.expectedPacketType;
+test("an absent or malformed repair policy fails closed without spending repair budget", () => {
+  for (const repairPolicy of [null, undefined, { allowedPacketTypes: [] }, "PROTOCOL_ERROR"]) {
+    const input = decisionInput({ repairPolicy });
+    if (repairPolicy === undefined) delete input.repairPolicy;
     const decision = decideAgentPacketRejection(input);
     assert.equal(decision.status, ProtocolFailureDecisionStatus.AUTHORITY_REQUIRED);
-    assert.equal(decision.reason, EXPECTED_PACKET_TYPE_REQUIRED);
+    assert.equal(decision.reason, REPAIR_POLICY_REQUIRED);
     assert.equal(decision.protocolRepairsUsed, 0);
     assert.equal(decision.repairContext, null);
     assert.equal(decision.outcome, null);
@@ -169,10 +176,10 @@ test("an absent or ambiguous expected packet type fails closed without spending 
 
 });
 
-test("an exhausted repair budget wins before packet-type ambiguity and always fails", () => {
+test("an exhausted repair budget wins before repair-policy ambiguity and always fails", () => {
   const decision = decideAgentPacketRejection(decisionInput({
     protocolRepairsUsed: 1,
-    expectedPacketType: null,
+    repairPolicy: null,
   }));
   assert.equal(decision.status, ProtocolFailureDecisionStatus.FAILED);
   assert.equal(decision.protocolRepairsUsed, 1);
@@ -217,7 +224,7 @@ test("full decision validation rejects forged counters, routes, outcomes, and co
       },
     },
     { ...repair, outcome: { type: RunOutcomeType.FAILED, errorCode: "FORGED" } },
-    { ...repair, reason: EXPECTED_PACKET_TYPE_REQUIRED },
+    { ...repair, reason: REPAIR_POLICY_REQUIRED },
   ];
   for (const forged of forgeries) {
     assert.throws(

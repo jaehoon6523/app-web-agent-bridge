@@ -41,25 +41,24 @@ test("discussion-actions-v1 is the approved state-specific action matrix", () =>
   }
 });
 
-test("protocol repair accepts exactly the expected prior packet type", () => {
+test("protocol repair accepts the frozen allowed packet-type set", () => {
   const context = {
     inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
-    expectedPacketType: "CRITIQUE",
+    allowedPacketTypes: ["CRITIQUE", "BLOCKED"],
   };
   const resolved = resolveDiscussionActionPolicy(context);
   assert.deepEqual(resolved.allowedActions, []);
-  assert.deepEqual(resolved.allowedPacketTypes, ["CRITIQUE"]);
-  assert.equal(resolved.expectedPacketType, "CRITIQUE");
+  assert.deepEqual(resolved.allowedPacketTypes, ["CRITIQUE", "BLOCKED"]);
+  assert.equal(resolved.expectedPacketType, null);
   assert.equal(assertDiscussionPacketTypeAllowed(context, "CRITIQUE"), "CRITIQUE");
-  assert.throws(
-    () => assertDiscussionPacketTypeAllowed(context, "BLOCKED"),
+  assert.equal(assertDiscussionPacketTypeAllowed(context, "BLOCKED"), "BLOCKED");
+  assert.throws(() => assertDiscussionPacketTypeAllowed(context, "ACCEPT"),
     (error) => error instanceof DiscussionActionPolicyError
-      && error.code === "DISCUSSION_PACKET_TYPE_NOT_ALLOWED",
-  );
+      && error.code === "DISCUSSION_PACKET_TYPE_NOT_ALLOWED");
   assert.throws(
     () => resolveDiscussionActionPolicy({
       inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
-      expectedPacketType: "PROTOCOL_ERROR",
+      allowedPacketTypes: ["CRITIQUE", "CRITIQUE"],
     }),
     (error) => error.code === "INVALID_PROTOCOL_REPAIR_EXPECTATION",
   );

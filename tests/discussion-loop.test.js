@@ -24,6 +24,7 @@ import { DiscussionController } from "../src/orchestration/discussion-controller
 import { scanStartupRecovery } from "../src/orchestration/recovery-scan.js";
 import { RunService } from "../src/orchestration/run-service.js";
 import { DeliveryState, SqliteStore } from "../src/persistence/sqlite-store.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 
 const T0 = "2026-09-04T04:00:00.000Z";
 
@@ -118,12 +119,20 @@ function submitTurn(context, turnNumber) {
   assert(claimed, `turn ${turnNumber} must have one dispatchable delivery`);
   assert.equal(claimed.state, DeliveryState.DISPATCHING);
   const input = context.store.getAgentTurnInput(claimed.inputId);
+  const sessionId = input.targetActor === AgentActor.CODEX_AGENT
+    ? "session-codex"
+    : "session-web";
   const submitted = context.controller.markSubmitted({
     runId: context.run.runId,
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { accepted: true, externalTurnId: `external-turn-${turnNumber}` },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      sessionId,
+      `external-turn-${turnNumber}`,
+      { accepted: true },
+    ),
   });
   context.run = submitted.run;
   return { input, submitted };
@@ -344,7 +353,12 @@ test("a late outcome insert failure rolls the whole final response back", (t) =>
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { accepted: true, externalTurnId: "external-turn-5" },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      "session-codex",
+      "external-turn-5",
+      { accepted: true },
+    ),
   });
   context.run = submitted.run;
   const before = {
@@ -478,7 +492,12 @@ test("pause during an active turn stores the response and holds the queued peer 
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { accepted: true, externalTurnId: "paused-turn-1" },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      "session-codex",
+      "paused-turn-1",
+      { accepted: true },
+    ),
   });
   const paused = context.service.pause({
     runId: context.run.runId,
@@ -532,7 +551,12 @@ test("an in-flight response is stored while a blocker holds its queued peer deli
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { accepted: true, externalTurnId: "blocked-turn-1" },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      "session-codex",
+      "blocked-turn-1",
+      { accepted: true },
+    ),
   });
   context.run = submitted.run;
   const blocked = requestRuntimeApproval(context).run;
@@ -603,7 +627,11 @@ for (const priorState of [
       expectedState: prior.state,
       expectedVersion: prior.version,
       nextState: DeliveryState.SUBMITTED,
-      providerReceipt: { externalTurnId: "persisted-code-turn" },
+      providerReceipt: providerReceiptForSession(
+        context.store,
+        "session-codex",
+        "persisted-code-turn",
+      ),
       updatedAt: T0,
     });
     if (priorState !== DeliveryState.SUBMITTED) {
@@ -641,7 +669,11 @@ test("a reopened valid history cannot reuse a RELAYED CODEX provider turn id", (
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { externalTurnId: "external-turn-1" },
+    providerReceipt: providerReceiptForSession(
+      reopened,
+      "session-codex",
+      "external-turn-1",
+    ),
   }), (error) => error.code === "AGENT_SESSION_TURN_ID_REUSED");
   reopened.close();
 });
@@ -658,7 +690,11 @@ test("the same provider turn id remains distinct across CODEX and WEB actors", (
     expectedRunVersion: context.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { externalTurnId: "external-turn-1" },
+    providerReceipt: providerReceiptForSession(
+      context.store,
+      "session-web",
+      "external-turn-1",
+    ),
   });
   assert.equal(submitted.turnInput.targetActor, AgentActor.CHATGPT_WEB_AGENT);
   assert.equal(submitted.session.sessionId, "session-web");
@@ -724,7 +760,7 @@ test("startup rejects a provider receipt changed after submission evidence", (t)
   database.prepare(`
     UPDATE delivery_attempts SET provider_receipt_json = ? WHERE delivery_id = ?
   `).run(
-    canonicalJson({ accepted: true, externalTurnId: "external-turn-1", forged: true }),
+    canonicalJson({ ...completed.delivery.providerReceipt, forged: true }),
     completed.delivery.deliveryId,
   );
   database.close();

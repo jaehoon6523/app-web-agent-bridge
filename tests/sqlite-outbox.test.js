@@ -28,6 +28,7 @@ import {
   OptimisticConcurrencyError,
   SqliteStore,
 } from "../src/persistence/sqlite-store.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 
 const T0 = "2026-09-04T00:00:00.000Z";
 const T1 = "2026-09-04T00:01:00.000Z";
@@ -219,7 +220,11 @@ function submitQueuedInitialInput(store, run, suffix, turnId) {
     expectedState: claimed.state,
     expectedVersion: claimed.version,
     nextState: DeliveryState.SUBMITTED,
-    providerReceipt: { externalTurnId: turnId },
+    providerReceipt: providerReceiptForSession(
+      store,
+      "codex-session-01",
+      turnId,
+    ),
     updatedAt: T2,
   });
   const running = createAgentRun({
@@ -353,7 +358,11 @@ test("claim is deterministic and SUBMITTED delivery is not retried after reopen"
     expectedState: DeliveryState.DISPATCHING,
     expectedVersion: claimed.version,
     nextState: DeliveryState.SUBMITTED,
-    providerReceipt: { externalTurnId: "turn-01" },
+    providerReceipt: providerReceiptForSession(
+      store,
+      "codex-session-01",
+      "turn-01",
+    ),
     updatedAt: T2,
   });
   assert.equal(submitted.state, DeliveryState.SUBMITTED);
@@ -395,7 +404,10 @@ test("claim is deterministic and SUBMITTED delivery is not retried after reopen"
   database.prepare(`
     UPDATE delivery_attempts SET provider_receipt_json = ? WHERE delivery_id = ?
   `).run(
-    canonicalJson({ externalTurnId: "forged-in-flight-turn" }),
+    canonicalJson({
+      ...submitted.providerReceipt,
+      forged: true,
+    }),
     submitted.deliveryId,
   );
   assert.throws(
@@ -432,7 +444,11 @@ test("startup rejects a provider receipt without submission evidence", (t) => {
     expectedState: DeliveryState.DISPATCHING,
     expectedVersion: claimed.version,
     nextState: DeliveryState.SUBMITTED,
-    providerReceipt: { externalTurnId: "turn-without-submission-event" },
+    providerReceipt: providerReceiptForSession(
+      store,
+      "codex-session-01",
+      "turn-without-submission-event",
+    ),
     updatedAt: T2,
   });
   store.close();
@@ -511,7 +527,13 @@ test("delivery transitions reject stale state, stale version, and duplicate term
       expectedVersion: delivery.version,
       nextState,
       ...(nextState === DeliveryState.SUBMITTED
-        ? { providerReceipt: { externalTurnId: "turn-transition-chain" } }
+        ? {
+            providerReceipt: providerReceiptForSession(
+              store,
+              "codex-session-01",
+              "turn-transition-chain",
+            ),
+          }
         : {}),
       updatedAt: T3,
     });

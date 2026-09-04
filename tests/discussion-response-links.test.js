@@ -36,6 +36,7 @@ import {
 } from "../src/persistence/sqlite-store.js";
 import { getProposalArtifactByReferenceEntity } from "../src/persistence/proposal-artifacts.js";
 import { runOutcomeHash } from "../src/persistence/run-outcomes.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 import { discussionSubmissionEvidence } from "../src/orchestration/discussion-turn-evidence.js";
 
 const T0 = "2026-09-04T00:00:00.000Z";
@@ -77,8 +78,12 @@ function makeSession(runId, actor) {
     provider: actor === AgentActor.CODEX_AGENT
       ? SessionProvider.CODEX_APP_SERVER
       : SessionProvider.CHATGPT_WEB,
-    externalSessionId: null,
-    externalLocator: null,
+    externalSessionId: actor === AgentActor.CODEX_AGENT
+      ? "thread-codex"
+      : "conversation-web",
+    externalLocator: actor === AgentActor.CODEX_AGENT
+      ? null
+      : "https://chatgpt.com/c/conversation-web",
     status: AgentSessionStatus.READY,
     activeTurnId: null,
     lastCompletedTurnId: null,
@@ -262,7 +267,11 @@ function openFixture(t, disposition = "RELAY", { omitResponseEvent = false } = {
     expectedState: sourceDelivery.state,
     expectedVersion: sourceDelivery.version,
     nextState: "SUBMITTED",
-    providerReceipt: { externalTurnId: message.turnId },
+    providerReceipt: providerReceiptForSession(
+      store,
+      message.sessionId,
+      message.turnId,
+    ),
     updatedAt: T0,
   });
   const runningRun = createAgentRun({
@@ -444,7 +453,10 @@ test("discussion response links hash-bind complete AgentMessage metadata", (t) =
   const { database, message } = openFixture(t);
   const changedTurnId = "turn-response-forged";
   const changedMessage = { ...message, turnId: changedTurnId };
-  const changedReceipt = { externalTurnId: changedTurnId };
+  const originalReceipt = JSON.parse(database.prepare(`
+    SELECT provider_receipt_json FROM delivery_attempts WHERE delivery_id = ?
+  `).get("delivery-response").provider_receipt_json);
+  const changedReceipt = { ...originalReceipt, externalTurnId: changedTurnId };
   database.prepare(`
     UPDATE agent_messages SET turn_id = ?, message_json = ? WHERE message_id = ?
   `).run(changedTurnId, canonicalJson(changedMessage), message.messageId);
@@ -483,10 +495,13 @@ test("discussion response links bind the response to the submitted session", (t)
 
 test("discussion response links reject provider receipt mutation", (t) => {
   const { database } = openFixture(t);
+  const originalReceipt = JSON.parse(database.prepare(`
+    SELECT provider_receipt_json FROM delivery_attempts WHERE delivery_id = ?
+  `).get("delivery-response").provider_receipt_json);
   database.prepare(`
     UPDATE delivery_attempts SET provider_receipt_json = ? WHERE delivery_id = ?
   `).run(
-    canonicalJson({ externalTurnId: "turn-response", forged: true }),
+    canonicalJson({ ...originalReceipt, forged: true }),
     "delivery-response",
   );
   assert.throws(

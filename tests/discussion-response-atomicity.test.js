@@ -16,6 +16,7 @@ import {
 import { DiscussionController } from "../src/orchestration/discussion-controller.js";
 import { RunService } from "../src/orchestration/run-service.js";
 import { SqliteStore } from "../src/persistence/sqlite-store.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 
 const T0 = "2026-09-04T07:00:00.000Z";
 
@@ -81,7 +82,12 @@ function fixture(t, suffix) {
     expectedRunVersion: started.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { accepted: true, externalTurnId: `turn-${suffix}` },
+    providerReceipt: providerReceiptForSession(
+      store,
+      `session-codex-${suffix}`,
+      `turn-${suffix}`,
+      { accepted: true },
+    ),
   });
   return {
     controller,

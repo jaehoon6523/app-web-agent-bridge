@@ -67,7 +67,7 @@ function assertPacketJsonDepth(value, maxDepth) {
   visit(value, 1);
 }
 
-export function parseFinalControllerPacketEnvelope(rawText, { maxJsonDepth = 20 } = {}) {
+export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth = 20 } = {}) {
   if (typeof rawText !== "string" || rawText.trim() === "") {
     throw new ControllerPacketEnvelopeError(
       "Agent response must be a non-empty string.",
@@ -126,6 +126,12 @@ export function parseFinalControllerPacketEnvelope(rawText, { maxJsonDepth = 20 
   }
   assertPacketJsonDepth(parsed, maxJsonDepth);
 
+  const body = trimmedEnd.slice(0, openOffset).trimEnd();
+  return Object.freeze({ body, parsed, packetText });
+}
+
+export function parseFinalControllerPacketEnvelope(rawText, options = undefined) {
+  const { body, parsed, packetText } = parseFinalControllerPacketJsonEnvelope(rawText, options);
   let packet;
   try {
     packet = parseAgentPacket(parsed);
@@ -137,7 +143,5 @@ export function parseFinalControllerPacketEnvelope(rawText, { maxJsonDepth = 20 
     error.cause = cause;
     throw error;
   }
-
-  const body = trimmedEnd.slice(0, openOffset).trimEnd();
   return Object.freeze({ body, packet, packetText });
 }

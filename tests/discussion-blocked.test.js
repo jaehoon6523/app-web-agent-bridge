@@ -29,6 +29,7 @@ import { DiscussionController } from "../src/orchestration/discussion-controller
 import { scanStartupRecovery } from "../src/orchestration/recovery-scan.js";
 import { RunService } from "../src/orchestration/run-service.js";
 import { DeliveryState, SqliteStore } from "../src/persistence/sqlite-store.js";
+import { providerReceiptForSession } from "./support/discussion-provider-receipt.js";
 
 const T0 = "2026-09-04T06:00:00.000Z";
 
@@ -78,7 +79,11 @@ function fixture(t, runId) {
     expectedRunVersion: started.run.version,
     deliveryId: claimed.deliveryId,
     expectedDeliveryVersion: claimed.version,
-    providerReceipt: { externalTurnId: "external-blocked" },
+    providerReceipt: providerReceiptForSession(
+      store,
+      `${runId}-codex`,
+      "external-blocked",
+    ),
   });
   return {
     controller,

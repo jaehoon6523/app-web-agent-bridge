@@ -9,12 +9,16 @@ import {
   sha256Text,
 } from "../domain/canonical-json.js";
 import { validateAgentRun } from "../domain/contracts.js";
+import { assertProtocolRepairPolicyBinding } from "../domain/protocol-repair-policy.js";
 import {
   AgentActor,
   AgentTurnInputKind,
   RunPhase,
 } from "../domain/vocabulary.js";
-import { getAgentTurnInputEntity } from "./agent-communications.js";
+import {
+  getAgentMessageEntity,
+  getAgentTurnInputEntity,
+} from "./agent-communications.js";
 import { getAgentSessionEntity } from "./sqlite-entities.js";
 import { DeliveryState } from "./schema.js";
 import { getTurnSubmissionEvidenceByDeliveryEntity } from "./turn-submission-links.js";
@@ -200,6 +204,18 @@ function verifyRejectionLinks(database, row, rejection, errors) {
         !== rejection.repair.idempotencyKeyHash
     ) {
       integrity(errors, context, "protocol repair input/delivery link is inconsistent");
+    }
+    try {
+      const sourceMessage = input.sourceMessageId === null
+        ? null
+        : getAgentMessageEntity(database, input.sourceMessageId, errors);
+      assertProtocolRepairPolicyBinding({
+        repairPayload: repairInput.payload,
+        rejectedTurnInput: input,
+        sourceMessage,
+      });
+    } catch (cause) {
+      integrity(errors, context, "protocol repair policy binding is inconsistent", { cause });
     }
   }
 
