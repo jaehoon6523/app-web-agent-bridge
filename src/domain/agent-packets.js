@@ -1,7 +1,7 @@
 import { sha256CanonicalJson } from "./canonical-json.js";
 import {
+  AgentBlockedReason,
   AgentPacketType,
-  HumanGateReason,
   isVocabularyValue,
 } from "./vocabulary.js";
 
@@ -174,8 +174,8 @@ function validateAccept(packet, requireCanonical) {
 
 function validateBlocked(packet, requireCanonical) {
   requireExactKeys(packet, PACKET_KEYS.BLOCKED, "packet");
-  if (!isVocabularyValue(HumanGateReason, packet.reason_code)) {
-    throw new AgentPacketValidationError("must be a HumanGateReason", "packet.reason_code");
+  if (!isVocabularyValue(AgentBlockedReason, packet.reason_code)) {
+    throw new AgentPacketValidationError("must be an AgentBlockedReason", "packet.reason_code");
   }
   requireNonEmptyString(packet.description, "packet.description");
   requireNormalizableTextArray(packet.required_decisions, "packet.required_decisions", requireCanonical);

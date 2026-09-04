@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { sha256Text } from "../src/domain/canonical-json.js";
 import {
+  AgentBlockedReason,
   AgentActor,
   AgentTurnInputKind,
+  OperationalBlockerReason,
   RunBlockerType,
   RunMode,
   RunOutcomeType,
@@ -120,6 +122,15 @@ test("RunLimits and RunOutcome remain closed, immutable contract unions", () => 
     () => createRunOutcome({ ...outcomes[0], unownedStatus: "PASS" }),
     /unsupported property/i,
   );
+  for (const gateReason of Object.values(AgentBlockedReason)) {
+    assert.equal(createRunOutcome({ type: RunOutcomeType.BLOCKED, gateReason }).gateReason, gateReason);
+  }
+  for (const gateReason of [...Object.values(OperationalBlockerReason), "POLICY_VIOLATION"]) {
+    assert.throws(
+      () => createRunOutcome({ type: RunOutcomeType.BLOCKED, gateReason }),
+      /AgentBlockedReason/u,
+    );
+  }
 });
 
 test("initial state and transitions keep phase, actor, turn, and version consistent", () => {

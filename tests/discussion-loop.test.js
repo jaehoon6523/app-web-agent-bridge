@@ -165,7 +165,7 @@ function runFirstFourTurns(context) {
   return finalRef;
 }
 
-test("fake CODEX/WEB sessions complete the exact five-turn durable consensus vertical", (t) => {
+test("DiscussionController and SQLite complete the exact five-turn consensus integration", (t) => {
   const context = fixture(t);
   const finalRef = runFirstFourTurns(context);
   const fifth = executeTurn(context, accept(finalRef), 5);

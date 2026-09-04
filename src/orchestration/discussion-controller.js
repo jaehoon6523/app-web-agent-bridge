@@ -55,7 +55,6 @@ import {
 } from "./discussion-response-evidence.js";
 import {
   holdDiscussionForExistingBlocker,
-  persistBlockedSideRecord,
   planBlockedDiscussionTransition,
 } from "./discussion-blocked.js";
 
@@ -816,7 +815,6 @@ export class DiscussionController {
       let checking = null;
       let nextDelivery = null;
       let outcome = plan.outcome;
-      let sideRecord = null;
       let disposition = plan.disposition;
 
       if (
@@ -839,11 +837,9 @@ export class DiscussionController {
           run: responseStored,
           message: plan.message,
           updatedAt: at,
-          id: (prefix) => this.#id(prefix),
         });
         finalRun = blocked.state;
         outcome = blocked.outcome;
-        sideRecord = blocked.sideRecord;
       } else {
         checking = transitionRunState(responseStored, {
           to: RunPhase.CONSENSUS_CHECK,
@@ -949,14 +945,6 @@ export class DiscussionController {
           nextState: DeliveryState.RELAYED,
           updatedAt: at,
         });
-      } else if (sideRecord !== null) {
-        const sideRecordEvidence = persistBlockedSideRecord(this.#store, sideRecord);
-        this.#appendTransition(responseStored, finalRun, "AGENT_RESPONSE_BLOCKED", {
-          messageId: plan.message.messageId,
-          reasonCode: plan.message.normalizedPacket.reason_code,
-          blocker: finalRun.blocker,
-          sideRecord: sideRecordEvidence,
-        }, at);
       } else if (disposition === DiscussionResponseDisposition.HELD) {
         this.#appendTransition(checking, finalRun, "AGENT_RESPONSE_HELD_FOR_BLOCKER", {
           messageId: plan.message.messageId,

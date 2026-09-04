@@ -10,15 +10,17 @@ import {
 } from "../src/domain/canonical-json.js";
 import { createAgentSessionRecord } from "../src/domain/contracts.js";
 import { createDiscussionRunPolicy } from "../src/domain/run-policy.js";
+import { calculateDomainEventHash } from "../src/persistence/event-chain.js";
 import {
   setRunBlocker,
   transitionRunState,
 } from "../src/domain/run-state-machine.js";
 import {
+  AgentBlockedReason,
   AgentActor,
   AgentPacketType,
   AgentSessionStatus,
-  HumanGateReason,
+  OperationalBlockerReason,
   RunBlockerType,
   RunPhase,
   SessionProvider,
@@ -111,54 +113,320 @@ function recordBlocked(context, reasonCode) {
   });
 }
 
-test("runtime approval BLOCKED creates one durable approval and no peer delivery", (t) => {
-  const context = fixture(t, "run-runtime-approval");
-  const result = recordBlocked(context, HumanGateReason.RUNTIME_APPROVAL_REQUIRED);
-
-  assert.equal(result.run.phase, RunPhase.HUMAN_GATE);
-  assert.equal(result.run.blocker.type, RunBlockerType.RUNTIME_APPROVAL);
-  assert.equal(result.delivery.state, DeliveryState.RESPONSE_COMPLETED);
-  assert.equal(result.nextDelivery, null);
-  assert.equal(context.store.listAgentMessages(context.run.runId).length, 1);
-  assert.equal(context.store.listAgentPackets(context.run.runId).length, 1);
-  assert.equal(context.store.listAgentTurnInputs(context.run.runId).length, 1);
-  const approvals = context.store.listApprovals({ runId: context.run.runId });
-  assert.equal(approvals.length, 1);
-  assert.equal(approvals[0].approvalId, result.run.blocker.approvalId);
-  assert.equal(approvals[0].status, "PENDING");
-  assert.equal(context.controller.claimNext({
-    runId: context.run.runId,
-    expectedRunVersion: result.run.version,
-  }), null);
-  context.store.close();
-
-  const reopened = new SqliteStore(context.filename);
-  assert.deepEqual(reopened.verifyControlSideRecordLinks(), {
-    valid: true,
-    sideRecords: 1,
+function forgeLastEvent(filename, sourceEventType, mutatePayload, replacementEventType = null) {
+  const database = new DatabaseSync(filename);
+  const row = database.prepare(`
+    SELECT run_id, sequence, event_id, event_type, payload_json,
+           previous_hash, created_at
+    FROM domain_events
+    WHERE event_type = ?
+    ORDER BY sequence DESC LIMIT 1
+  `).get(sourceEventType);
+  const payload = JSON.parse(row.payload_json);
+  mutatePayload(payload);
+  const eventType = replacementEventType ?? row.event_type;
+  const payloadJson = canonicalJson(payload);
+  const eventHash = calculateDomainEventHash(row.previous_hash, {
+    sequence: Number(row.sequence),
+    eventId: row.event_id,
+    runId: row.run_id,
+    eventType,
+    payload,
+    createdAt: row.created_at,
   });
-  reopened.close();
+  database.prepare(`
+    UPDATE domain_events SET event_type = ?, payload_json = ?, event_hash = ?
+    WHERE run_id = ? AND sequence = ?
+  `).run(eventType, payloadJson, eventHash, row.run_id, row.sequence);
+  database.prepare(`
+    UPDATE runs SET run_json = ?, last_event_hash = ? WHERE run_id = ?
+  `).run(canonicalJson(payload.run), eventHash, row.run_id);
+  database.prepare(`
+    UPDATE run_projections
+    SET projection_json = ?, last_event_hash = ? WHERE run_id = ?
+  `).run(canonicalJson(payload.run), eventHash, row.run_id);
+  database.close();
+}
+
+function forgeLastBlockedEvent(filename, mutatePayload) {
+  forgeLastEvent(filename, "AGENT_RESPONSE_BLOCKED", mutatePayload);
+}
+
+function forgeBlockedResponseHistoryAsHeldSessionAuth(filename) {
+  const database = new DatabaseSync(filename);
+  const storedRow = database.prepare(`
+    SELECT run_id, sequence, event_id, event_type, payload_json,
+           previous_hash, created_at
+    FROM domain_events
+    WHERE event_type = 'AGENT_RESPONSE_STORED'
+    ORDER BY sequence DESC LIMIT 1
+  `).get();
+  const finalRow = database.prepare(`
+    SELECT run_id, sequence, event_id, event_type, payload_json,
+           previous_hash, created_at
+    FROM domain_events
+    WHERE event_type = 'AGENT_RESPONSE_BLOCKED'
+    ORDER BY sequence DESC LIMIT 1
+  `).get();
+  const precedingRow = database.prepare(`
+    SELECT run_id, sequence, event_id, event_type, payload_json,
+           previous_hash, created_at
+    FROM domain_events
+    WHERE run_id = ? AND sequence < ?
+    ORDER BY sequence DESC LIMIT 1
+  `).get(storedRow.run_id, storedRow.sequence);
+  const blocker = {
+    type: RunBlockerType.SESSION_AUTH,
+    actor: AgentActor.CODEX_AGENT,
+  };
+  const precedingPayload = JSON.parse(precedingRow.payload_json);
+  precedingPayload.run.blocker = blocker;
+  const precedingPayloadJson = canonicalJson(precedingPayload);
+  const precedingHash = calculateDomainEventHash(precedingRow.previous_hash, {
+    sequence: Number(precedingRow.sequence),
+    eventId: precedingRow.event_id,
+    runId: precedingRow.run_id,
+    eventType: precedingRow.event_type,
+    payload: precedingPayload,
+    createdAt: precedingRow.created_at,
+  });
+  database.prepare(`
+    UPDATE domain_events SET payload_json = ?, event_hash = ?
+    WHERE run_id = ? AND sequence = ?
+  `).run(
+    precedingPayloadJson,
+    precedingHash,
+    precedingRow.run_id,
+    precedingRow.sequence,
+  );
+
+  const storedPayload = JSON.parse(storedRow.payload_json);
+  storedPayload.run.blocker = blocker;
+  storedPayload.details.disposition = "HELD";
+  const storedPayloadJson = canonicalJson(storedPayload);
+  const storedHash = calculateDomainEventHash(precedingHash, {
+    sequence: Number(storedRow.sequence),
+    eventId: storedRow.event_id,
+    runId: storedRow.run_id,
+    eventType: storedRow.event_type,
+    payload: storedPayload,
+    createdAt: storedRow.created_at,
+  });
+  database.prepare(`
+    UPDATE domain_events SET payload_json = ?, previous_hash = ?, event_hash = ?
+    WHERE run_id = ? AND sequence = ?
+  `).run(
+    storedPayloadJson,
+    precedingHash,
+    storedHash,
+    storedRow.run_id,
+    storedRow.sequence,
+  );
+
+  const finalPayload = JSON.parse(finalRow.payload_json);
+  finalPayload.run.blocker = blocker;
+  finalPayload.details = {
+    messageId: finalPayload.details.messageId,
+    plannedDisposition: "BLOCKED",
+    blocker,
+  };
+  const finalEventType = "AGENT_RESPONSE_HELD_FOR_BLOCKER";
+  const finalPayloadJson = canonicalJson(finalPayload);
+  const finalHash = calculateDomainEventHash(storedHash, {
+    sequence: Number(finalRow.sequence),
+    eventId: finalRow.event_id,
+    runId: finalRow.run_id,
+    eventType: finalEventType,
+    payload: finalPayload,
+    createdAt: finalRow.created_at,
+  });
+  database.prepare(`
+    UPDATE domain_events
+    SET event_type = ?, payload_json = ?, previous_hash = ?, event_hash = ?
+    WHERE run_id = ? AND sequence = ?
+  `).run(
+    finalEventType,
+    finalPayloadJson,
+    storedHash,
+    finalHash,
+    finalRow.run_id,
+    finalRow.sequence,
+  );
+  database.prepare(`
+    UPDATE runs SET run_json = ?, last_event_hash = ? WHERE run_id = ?
+  `).run(canonicalJson(finalPayload.run), finalHash, finalRow.run_id);
+  database.prepare(`
+    UPDATE run_projections
+    SET projection_json = ?, last_event_hash = ? WHERE run_id = ?
+  `).run(canonicalJson(finalPayload.run), finalHash, finalRow.run_id);
+  database.close();
+}
+
+test("Agent BLOCKED reasons create only a user-decision gate", (t) => {
+  for (const [index, reasonCode] of Object.values(AgentBlockedReason).entries()) {
+    const context = fixture(t, `run-agent-blocked-${index}`);
+    const result = recordBlocked(context, reasonCode);
+
+    assert.equal(result.run.phase, RunPhase.HUMAN_GATE);
+    assert.equal(result.run.blocker.type, RunBlockerType.USER_DECISION);
+    assert.equal(result.delivery.state, DeliveryState.RESPONSE_COMPLETED);
+    assert.equal(result.nextDelivery, null);
+    assert.equal(result.outcome, null);
+    assert.equal(context.store.listAgentMessages(context.run.runId).length, 1);
+    assert.equal(context.store.listAgentPackets(context.run.runId).length, 1);
+    assert.equal(context.store.listAgentTurnInputs(context.run.runId).length, 1);
+    assert.equal(context.store.listApprovals({ runId: context.run.runId }).length, 0);
+    assert.equal(context.store.listRecoveryOperations({ runId: context.run.runId }).length, 0);
+    assert.equal(
+      context.store.listDomainEvents(context.run.runId).at(-1).eventType,
+      "AGENT_RESPONSE_BLOCKED",
+    );
+    context.store.close();
+
+    const reopened = new SqliteStore(context.filename);
+    assert.deepEqual(reopened.verifyControlSideRecordLinks(), {
+      valid: true,
+      sideRecords: 0,
+    });
+    assert.equal(reopened.getRunOutcome(context.run.runId), null);
+    reopened.close();
+  }
 });
 
-test("policy violation BLOCKED terminates through one exact RUN_COMPLETED outcome", (t) => {
-  const context = fixture(t, "run-policy-violation");
-  const result = recordBlocked(context, HumanGateReason.POLICY_VIOLATION);
+test("Agent operational claims are rejected without canonical state mutation", (t) => {
+  const claims = [...Object.values(OperationalBlockerReason), "POLICY_VIOLATION"];
+  for (const [index, reasonCode] of claims.entries()) {
+    const context = fixture(t, `run-rejected-operational-claim-${index}`);
+    const before = {
+      run: context.store.getRun(context.run.runId),
+      delivery: context.store.getDelivery(context.delivery.deliveryId),
+      sessions: context.store.listAgentSessions(context.run.runId),
+      events: context.store.listDomainEvents(context.run.runId),
+    };
 
-  assert.equal(result.run.phase, RunPhase.FAILED);
-  assert.equal(result.run.blocker, null);
-  assert.equal(result.outcome.outcome.type, "FAILED");
-  assert.equal(result.outcome.outcome.errorCode, HumanGateReason.POLICY_VIOLATION);
-  assert.equal(result.nextDelivery, null);
-  assert.equal(
-    context.store.listDomainEvents(context.run.runId).at(-1).eventType,
-    "RUN_COMPLETED",
-  );
+    assert.throws(
+      () => recordBlocked(context, reasonCode),
+      (error) => error.code === "INVALID_AGENT_PACKET",
+    );
+    assert.deepEqual(context.store.getRun(context.run.runId), before.run);
+    assert.deepEqual(context.store.getDelivery(context.delivery.deliveryId), before.delivery);
+    assert.deepEqual(context.store.listAgentSessions(context.run.runId), before.sessions);
+    assert.deepEqual(context.store.listDomainEvents(context.run.runId), before.events);
+    assert.equal(context.store.listAgentMessages(context.run.runId).length, 0);
+    assert.equal(context.store.listAgentPackets(context.run.runId).length, 0);
+    assert.equal(context.store.listApprovals({ runId: context.run.runId }).length, 0);
+    assert.equal(context.store.listRecoveryOperations({ runId: context.run.runId }).length, 0);
+    assert.equal(context.store.getRunOutcome(context.run.runId), null);
+    context.store.close();
+  }
+});
+
+test("startup rejects an Agent BLOCKED event forged into a session-auth fact", (t) => {
+  const context = fixture(t, "run-forged-agent-auth");
+  recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
   context.store.close();
 
-  const reopened = new SqliteStore(context.filename);
-  assert.equal(reopened.getRun(context.run.runId).phase, RunPhase.FAILED);
-  assert.equal(reopened.getRunOutcome(context.run.runId).outcomeHash, result.outcome.outcomeHash);
-  reopened.close();
+  forgeLastBlockedEvent(context.filename, (payload) => {
+    payload.run.blocker = {
+      type: RunBlockerType.SESSION_AUTH,
+      actor: AgentActor.CODEX_AGENT,
+    };
+    payload.details.blocker = payload.run.blocker;
+  });
+
+  assert.throws(
+    () => new SqliteStore(context.filename),
+    /Agent BLOCKED must create only a user-decision blocker/u,
+  );
+});
+
+test("startup binds each BLOCKED response to its exact finalization event type", (t) => {
+  for (const replacementEventType of [
+    "AGENT_RESPONSE_HELD_FOR_BLOCKER",
+    "FORGED_AGENT_RESPONSE_FINALIZATION",
+  ]) {
+    const context = fixture(
+      t,
+      `run-forged-agent-finalization-${replacementEventType.toLowerCase()}`,
+    );
+    recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
+    context.store.close();
+
+    forgeLastEvent(
+      context.filename,
+      "AGENT_RESPONSE_BLOCKED",
+      (payload) => {
+        if (replacementEventType === "AGENT_RESPONSE_HELD_FOR_BLOCKER") {
+          payload.run.blocker = {
+            type: RunBlockerType.SESSION_AUTH,
+            actor: AgentActor.CODEX_AGENT,
+          };
+          payload.details = {
+            messageId: payload.details.messageId,
+            plannedDisposition: "BLOCKED",
+            blocker: payload.run.blocker,
+          };
+        }
+      },
+      replacementEventType,
+    );
+
+    assert.throws(
+      () => new SqliteStore(context.filename),
+      /does not match its stored response disposition|has no exact AGENT_RESPONSE_BLOCKED/u,
+    );
+  }
+});
+
+test("startup requires Controller-owned evidence for a held operational blocker", (t) => {
+  const context = fixture(t, "run-forged-held-history");
+  recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
+  context.store.close();
+
+  forgeBlockedResponseHistoryAsHeldSessionAuth(context.filename);
+
+  assert.throws(
+    () => new SqliteStore(context.filename),
+    (error) => error.code === "EVENT_CHAIN_INTEGRITY_FAILURE"
+      && /held blocker has no Controller-owned creation evidence/u.test(
+        `${error.message} ${error.cause?.message ?? ""}`,
+      ),
+  );
+});
+
+test("startup rejects Agent BLOCKED decision ids forged away from their message", (t) => {
+  const context = fixture(t, "run-forged-agent-decisions");
+  recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
+  context.store.close();
+
+  forgeLastBlockedEvent(context.filename, (payload) => {
+    payload.run.blocker.decisionIds = ["decision_forged"];
+    payload.details.blocker = payload.run.blocker;
+  });
+
+  assert.throws(
+    () => new SqliteStore(context.filename),
+    /Agent BLOCKED decision ids do not match their message evidence/u,
+  );
+});
+
+test("startup rejects an operational side record forged onto Agent BLOCKED", (t) => {
+  const context = fixture(t, "run-forged-agent-side-record");
+  recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
+  context.store.close();
+
+  forgeLastBlockedEvent(context.filename, (payload) => {
+    payload.details.sideRecord = {
+      type: "APPROVAL",
+      id: "approval-forged",
+      hash: null,
+    };
+  });
+
+  assert.throws(
+    () => new SqliteStore(context.filename),
+    /Agent BLOCKED must not declare an operational side record/u,
+  );
 });
 
 test("an existing approval blocker holds a later BLOCKED response without being replaced", (t) => {
@@ -170,7 +438,7 @@ test("an existing approval blocker holds a later BLOCKED response without being 
     scope: { operationId: "operation-existing" },
   });
   context.run = requested.run;
-  const result = recordBlocked(context, HumanGateReason.POLICY_VIOLATION);
+  const result = recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
 
   assert.equal(result.run.phase, RunPhase.HUMAN_GATE);
   assert.deepEqual(result.run.blocker, requested.run.blocker);
@@ -189,6 +457,36 @@ test("an existing approval blocker holds a later BLOCKED response without being 
   assert.equal(finding.phase, RunPhase.HUMAN_GATE);
   assert.deepEqual(finding.reasons.map((item) => item.type), ["APPROVAL_PENDING"]);
   reopened.close();
+});
+
+test("startup rejects a held Agent response that changes its pre-existing blocker", (t) => {
+  const context = fixture(t, "run-forged-held-blocker");
+  const requested = context.service.requestRuntimeApproval({
+    runId: context.run.runId,
+    expectedVersion: context.run.version,
+    approvalId: "approval-held-forged",
+    scope: { operationId: "operation-held-forged" },
+  });
+  context.run = requested.run;
+  recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
+  context.store.close();
+
+  forgeLastEvent(
+    context.filename,
+    "AGENT_RESPONSE_HELD_FOR_BLOCKER",
+    (payload) => {
+      payload.run.blocker = {
+        type: RunBlockerType.SESSION_AUTH,
+        actor: AgentActor.CODEX_AGENT,
+      };
+      payload.details.blocker = payload.run.blocker;
+    },
+  );
+
+  assert.throws(
+    () => new SqliteStore(context.filename),
+    /held response changed its pre-existing blocker/u,
+  );
 });
 
 test("a held-response event failure rolls back the response and preserves the existing approval", (t) => {
@@ -217,7 +515,7 @@ test("a held-response event failure rolls back the response and preserves the ex
   database.close();
 
   assert.throws(
-    () => recordBlocked(context, HumanGateReason.PRODUCT_DECISION_REQUIRED),
+    () => recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED),
     /injected held response event failure/u,
   );
   assert.deepEqual(context.store.getRun(context.run.runId), before.run);
@@ -227,72 +525,6 @@ test("a held-response event failure rolls back the response and preserves the ex
   assert.equal(context.store.listAgentPackets(context.run.runId).length, 0);
   assert.equal(context.store.listApprovals({ runId: context.run.runId }).length, 1);
   context.store.close();
-});
-
-test("recovery ambiguity BLOCKED creates one recovery operation and no peer delivery", (t) => {
-  const context = fixture(t, "run-recovery-gate");
-  const result = recordBlocked(context, HumanGateReason.RECOVERY_AMBIGUOUS);
-
-  assert.equal(result.run.phase, RunPhase.RECOVERY_REQUIRED);
-  assert.equal(result.run.blocker.type, RunBlockerType.RECOVERY_CONFIRMATION);
-  assert.equal(result.nextDelivery, null);
-  const operations = context.store.listRecoveryOperations({ runId: context.run.runId });
-  assert.equal(operations.length, 1);
-  assert.equal(operations[0].operationId, result.run.blocker.operationId);
-  assert.equal(operations[0].status, "PENDING");
-  assert.deepEqual(context.store.verifyEventChains(context.run.runId).valid, true);
-  context.store.close();
-
-  const reopened = new SqliteStore(context.filename);
-  const findings = scanStartupRecovery(reopened);
-  assert.equal(findings.length, 1);
-  assert.equal(findings[0].runId, context.run.runId);
-  assert.deepEqual(findings[0].reasons, [{
-    type: "RECOVERY_OPERATION_PENDING",
-    operationId: result.run.blocker.operationId,
-    detailsHash: operations[0].detailsHash,
-  }]);
-  reopened.close();
-});
-
-test("startup rejects coherently forged approval scope and scope hash", (t) => {
-  const context = fixture(t, "run-forged-approval");
-  recordBlocked(context, HumanGateReason.RUNTIME_APPROVAL_REQUIRED);
-  context.store.close();
-
-  const database = new DatabaseSync(context.filename);
-  const row = database.prepare("SELECT approval_json FROM approvals").get();
-  const forged = JSON.parse(row.approval_json);
-  forged.scope = { ...forged.scope, requiredDecisions: ["Forged decision"] };
-  forged.scopeHash = sha256CanonicalJson(forged.scope);
-  database.prepare("UPDATE approvals SET approval_json = ?").run(canonicalJson(forged));
-  database.close();
-
-  assert.throws(
-    () => new SqliteStore(context.filename),
-    /does not match its creation evidence/u,
-  );
-});
-
-test("startup rejects coherently forged recovery details and details hash", (t) => {
-  const context = fixture(t, "run-forged-recovery");
-  recordBlocked(context, HumanGateReason.RECOVERY_AMBIGUOUS);
-  context.store.close();
-
-  const database = new DatabaseSync(context.filename);
-  const row = database.prepare("SELECT operation_json FROM recovery_operations").get();
-  const forged = JSON.parse(row.operation_json);
-  forged.details = { ...forged.details, requiredDecisions: ["Forged recovery"] };
-  forged.detailsHash = sha256CanonicalJson(forged.details);
-  database.prepare("UPDATE recovery_operations SET operation_json = ?").run(
-    canonicalJson(forged),
-  );
-  database.close();
-
-  assert.throws(
-    () => new SqliteStore(context.filename),
-    /does not match its creation evidence/u,
-  );
 });
 
 test("startup rejects a coherently forged RunService approval scope", (t) => {
@@ -382,7 +614,7 @@ test("response content cannot be routed using a different caller-supplied packet
   const context = fixture(t, "run-content-packet-binding");
   const beforeRun = context.store.getRun(context.run.runId);
   const beforeDelivery = context.store.getDelivery(context.delivery.deliveryId);
-  const contentPacket = blockedPacket(HumanGateReason.PRODUCT_DECISION_REQUIRED);
+  const contentPacket = blockedPacket(AgentBlockedReason.PRODUCT_DECISION_REQUIRED);
   const assertedPacket = {
     type: AgentPacketType.PROPOSAL,
     summary: "Fabricated proposal",
@@ -410,7 +642,7 @@ test("response content cannot be routed using a different caller-supplied packet
   context.store.close();
 });
 
-test("a late BLOCKED event failure rolls its approval and response transaction back", (t) => {
+test("a late BLOCKED event failure rolls the response transaction back", (t) => {
   const context = fixture(t, "run-blocked-rollback");
   const before = {
     run: context.store.getRun(context.run.runId),
@@ -430,7 +662,7 @@ test("a late BLOCKED event failure rolls its approval and response transaction b
   database.close();
 
   assert.throws(
-    () => recordBlocked(context, HumanGateReason.RUNTIME_APPROVAL_REQUIRED),
+    () => recordBlocked(context, AgentBlockedReason.PRODUCT_DECISION_REQUIRED),
     /injected blocked event failure/u,
   );
   assert.deepEqual(context.store.getRun(context.run.runId), before.run);

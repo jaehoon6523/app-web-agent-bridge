@@ -9,8 +9,9 @@ import {
   resolveDiscussionActionPolicy,
 } from "../src/domain/discussion-actions.js";
 import {
+  AgentBlockedReason,
   AgentTurnInputKind,
-  HumanGateReason,
+  OperationalBlockerReason,
   RunPhase,
 } from "../src/domain/vocabulary.js";
 
@@ -64,7 +65,7 @@ test("protocol repair accepts exactly the expected prior packet type", () => {
   );
 });
 
-test("peer BLOCKED is not relayable and every BLOCKED reason has an explicit route", () => {
+test("peer BLOCKED is not relayable and only Agent-owned blockers have routes", () => {
   assert.throws(() => resolveDiscussionActionPolicy({
     inputKind: AgentTurnInputKind.PEER_RELAY,
     peerMessageKind: "BLOCKER",
@@ -72,16 +73,23 @@ test("peer BLOCKED is not relayable and every BLOCKED reason has an explicit rou
 
   assert.deepEqual(BLOCKED_ROUTE_BY_REASON, {
     PRODUCT_DECISION_REQUIRED: RunPhase.HUMAN_GATE,
-    RUNTIME_APPROVAL_REQUIRED: RunPhase.HUMAN_GATE,
-    SESSION_AUTH_REQUIRED: RunPhase.HUMAN_GATE,
-    RECOVERY_AMBIGUOUS: RunPhase.RECOVERY_REQUIRED,
     CONSENSUS_NOT_REACHED: RunPhase.HUMAN_GATE,
-    POLICY_VIOLATION: RunPhase.FAILED,
-    MANUAL_INTERVENTION_DETECTED: RunPhase.HUMAN_GATE,
+    INSUFFICIENT_INFORMATION: RunPhase.HUMAN_GATE,
+    AGENT_CAPABILITY_LIMIT: RunPhase.HUMAN_GATE,
   });
-  for (const reasonCode of Object.values(HumanGateReason)) {
+  for (const reasonCode of Object.values(AgentBlockedReason)) {
     const result = blockedRoutingResult(reasonCode);
     assert.equal(result.reasonCode, reasonCode);
     assert.equal(result.route, BLOCKED_ROUTE_BY_REASON[reasonCode]);
   }
+  for (const reasonCode of Object.values(OperationalBlockerReason)) {
+    assert.throws(
+      () => blockedRoutingResult(reasonCode),
+      (error) => error.code === "UNKNOWN_BLOCKED_REASON",
+    );
+  }
+  assert.throws(
+    () => blockedRoutingResult("POLICY_VIOLATION"),
+    (error) => error.code === "UNKNOWN_BLOCKED_REASON",
+  );
 });

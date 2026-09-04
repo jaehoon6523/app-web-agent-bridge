@@ -5,9 +5,9 @@ import {
   validateRunBlocker,
 } from "./contracts.js";
 import {
+  AgentBlockedReason,
   AgentActor,
   AgentTurnInputKind,
-  HumanGateReason,
   RunBlockerType,
   RunOutcomeType,
   RunPhase,
@@ -377,8 +377,10 @@ export function validateRunOutcome(value) {
       break;
     case RunOutcomeType.BLOCKED:
       requireExactKeys(outcome, ["type", "gateReason"], "RunOutcome");
-      if (!isVocabularyValue(HumanGateReason, outcome.gateReason)) {
-        throw new RunStateMachineError("RunOutcome.gateReason must be a HumanGateReason.");
+      if (!isVocabularyValue(AgentBlockedReason, outcome.gateReason)) {
+        throw new RunStateMachineError(
+          "RunOutcome.gateReason must be an AgentBlockedReason.",
+        );
       }
       break;
     case RunOutcomeType.CANCELLED:

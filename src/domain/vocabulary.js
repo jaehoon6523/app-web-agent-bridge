@@ -37,14 +37,19 @@ export const RunPhase = enumObject([
   "CANCELLED",
 ]);
 
-export const HumanGateReason = enumObject([
+export const AgentBlockedReason = enumObject([
   "PRODUCT_DECISION_REQUIRED",
+  "CONSENSUS_NOT_REACHED",
+  "INSUFFICIENT_INFORMATION",
+  "AGENT_CAPABILITY_LIMIT",
+]);
+
+export const OperationalBlockerReason = enumObject([
   "RUNTIME_APPROVAL_REQUIRED",
   "SESSION_AUTH_REQUIRED",
   "RECOVERY_AMBIGUOUS",
-  "CONSENSUS_NOT_REACHED",
-  "POLICY_VIOLATION",
   "MANUAL_INTERVENTION_DETECTED",
+  "POLICY_VIOLATION_DETECTED",
 ]);
 
 export const SessionProvider = enumObject([
@@ -103,7 +108,10 @@ export const RunOutcomeType = enumObject([
 export const AGENT_ACTORS = Object.freeze(Object.values(AgentActor));
 export const RUN_MODES = Object.freeze(Object.values(RunMode));
 export const RUN_PHASES = Object.freeze(Object.values(RunPhase));
-export const HUMAN_GATE_REASONS = Object.freeze(Object.values(HumanGateReason));
+export const AGENT_BLOCKED_REASONS = Object.freeze(Object.values(AgentBlockedReason));
+export const OPERATIONAL_BLOCKER_REASONS = Object.freeze(
+  Object.values(OperationalBlockerReason),
+);
 export const SESSION_PROVIDERS = Object.freeze(Object.values(SessionProvider));
 export const AGENT_SESSION_STATUSES = Object.freeze(Object.values(AgentSessionStatus));
 export const AGENT_MESSAGE_KINDS = Object.freeze(Object.values(AgentMessageKind));

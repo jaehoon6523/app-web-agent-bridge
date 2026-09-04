@@ -32,11 +32,14 @@ import {
   packetJsonSchema,
 } from "../src/domain/packet-json-schemas.js";
 import {
+  AGENT_BLOCKED_REASONS,
+  OPERATIONAL_BLOCKER_REASONS,
+  AgentBlockedReason,
   AgentActor,
   AgentMessageKind,
   AgentSessionStatus,
   AgentTurnInputKind,
-  HumanGateReason,
+  OperationalBlockerReason,
   RunMode,
   RunPhase,
   SessionProvider,
@@ -73,7 +76,21 @@ test("canonical vocabulary exposes only the authorized string values", () => {
   ]);
   assert.equal(RunMode.CODE_CHANGE, "CODE_CHANGE");
   assert.equal(RunPhase.CONSENSUS_CHECK, "CONSENSUS_CHECK");
-  assert.equal(HumanGateReason.POLICY_VIOLATION, "POLICY_VIOLATION");
+  assert.deepEqual(Object.values(AgentBlockedReason), [
+    "PRODUCT_DECISION_REQUIRED",
+    "CONSENSUS_NOT_REACHED",
+    "INSUFFICIENT_INFORMATION",
+    "AGENT_CAPABILITY_LIMIT",
+  ]);
+  assert.deepEqual(AGENT_BLOCKED_REASONS, Object.values(AgentBlockedReason));
+  assert.deepEqual(Object.values(OperationalBlockerReason), [
+    "RUNTIME_APPROVAL_REQUIRED",
+    "SESSION_AUTH_REQUIRED",
+    "RECOVERY_AMBIGUOUS",
+    "MANUAL_INTERVENTION_DETECTED",
+    "POLICY_VIOLATION_DETECTED",
+  ]);
+  assert.deepEqual(OPERATIONAL_BLOCKER_REASONS, Object.values(OperationalBlockerReason));
   assert.equal(SessionProvider.CHATGPT_WEB, "CHATGPT_WEB");
 });
 
@@ -216,7 +233,7 @@ test("all defined agent packet variants are strict and canonical-hashable", () =
     },
     {
       type: AgentPacketType.BLOCKED,
-      reason_code: HumanGateReason.PRODUCT_DECISION_REQUIRED,
+      reason_code: AgentBlockedReason.PRODUCT_DECISION_REQUIRED,
       description: "One product choice remains.",
       required_decisions: ["Choose retention behavior"],
     },
@@ -236,6 +253,21 @@ test("all defined agent packet variants are strict and canonical-hashable", () =
     () => validateAgentPacket({ ...proposalPacket(), assumptions: [{}] }),
     /non-empty string/,
   );
+  assert.deepEqual(
+    AGENT_PACKET_JSON_SCHEMAS.BLOCKED.properties.reason_code.enum,
+    AGENT_BLOCKED_REASONS,
+  );
+  for (const reasonCode of Object.values(OperationalBlockerReason)) {
+    assert.throws(
+      () => validateAgentPacket({
+        type: AgentPacketType.BLOCKED,
+        reason_code: reasonCode,
+        description: "An operational fact cannot originate in an Agent packet.",
+        required_decisions: [],
+      }),
+      /AgentBlockedReason/u,
+    );
+  }
   assert.throws(
     () => validateAgentPacket({
       ...proposalPacket(),
@@ -275,7 +307,7 @@ test("finding, open-decision, and request text is normalized without reordering 
 
   const blocked = parseAgentPacket({
     type: AgentPacketType.BLOCKED,
-    reason_code: HumanGateReason.PRODUCT_DECISION_REQUIRED,
+    reason_code: AgentBlockedReason.PRODUCT_DECISION_REQUIRED,
     description: "A decision is required.",
     required_decisions: ["  decide  "],
   });
@@ -306,7 +338,7 @@ test("finding, open-decision, and request arrays may be empty but reject blank i
     },
     {
       type: AgentPacketType.BLOCKED,
-      reason_code: HumanGateReason.PRODUCT_DECISION_REQUIRED,
+      reason_code: AgentBlockedReason.PRODUCT_DECISION_REQUIRED,
       description: "A decision is required.",
       required_decisions: ["\t"],
     },

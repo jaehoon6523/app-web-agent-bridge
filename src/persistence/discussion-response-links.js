@@ -158,8 +158,11 @@ function decodeResponseEvent(row, errors) {
     ) {
       throw new TypeError("COMPLETE requires outcome and forbids next");
     }
-    if (details.disposition === RESPONSE_DISPOSITIONS.BLOCKED && details.next !== null) {
-      throw new TypeError("BLOCKED forbids next");
+    if (
+      details.disposition === RESPONSE_DISPOSITIONS.BLOCKED
+      && (details.next !== null || details.outcome !== null)
+    ) {
+      throw new TypeError("BLOCKED forbids next and outcome");
     }
     if (
       details.disposition === RESPONSE_DISPOSITIONS.HELD

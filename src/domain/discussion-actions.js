@@ -1,8 +1,8 @@
 import {
+  AgentBlockedReason,
   AgentMessageKind,
   AgentPacketType,
   AgentTurnInputKind,
-  HumanGateReason,
   RunPhase,
   isVocabularyValue,
 } from "./vocabulary.js";
@@ -71,13 +71,10 @@ export const DISCUSSION_ACTION_MATRIX = Object.freeze({
 });
 
 export const BLOCKED_ROUTE_BY_REASON = Object.freeze({
-  [HumanGateReason.PRODUCT_DECISION_REQUIRED]: RunPhase.HUMAN_GATE,
-  [HumanGateReason.RUNTIME_APPROVAL_REQUIRED]: RunPhase.HUMAN_GATE,
-  [HumanGateReason.SESSION_AUTH_REQUIRED]: RunPhase.HUMAN_GATE,
-  [HumanGateReason.RECOVERY_AMBIGUOUS]: RunPhase.RECOVERY_REQUIRED,
-  [HumanGateReason.CONSENSUS_NOT_REACHED]: RunPhase.HUMAN_GATE,
-  [HumanGateReason.POLICY_VIOLATION]: RunPhase.FAILED,
-  [HumanGateReason.MANUAL_INTERVENTION_DETECTED]: RunPhase.HUMAN_GATE,
+  [AgentBlockedReason.PRODUCT_DECISION_REQUIRED]: RunPhase.HUMAN_GATE,
+  [AgentBlockedReason.CONSENSUS_NOT_REACHED]: RunPhase.HUMAN_GATE,
+  [AgentBlockedReason.INSUFFICIENT_INFORMATION]: RunPhase.HUMAN_GATE,
+  [AgentBlockedReason.AGENT_CAPABILITY_LIMIT]: RunPhase.HUMAN_GATE,
 });
 
 export class DiscussionActionPolicyError extends TypeError {
@@ -167,9 +164,9 @@ export function assertDiscussionPacketTypeAllowed(context, packetType) {
 }
 
 export function blockedRoutingResult(reasonCode) {
-  if (!isVocabularyValue(HumanGateReason, reasonCode)) {
+  if (!isVocabularyValue(AgentBlockedReason, reasonCode)) {
     throw new DiscussionActionPolicyError(
-      "reasonCode must be a HumanGateReason.",
+      "reasonCode must be an AgentBlockedReason.",
       "UNKNOWN_BLOCKED_REASON",
     );
   }

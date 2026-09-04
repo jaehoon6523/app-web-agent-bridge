@@ -418,6 +418,15 @@ test("discussion response detail schema is exact and disposition-aware", (t) => 
   );
 });
 
+test("a BLOCKED response cannot carry a canonical outcome", (t) => {
+  const { database } = openFixture(t, "BLOCKED");
+  assert.throws(
+    () => verifyDiscussionResponseLinksEntity(database, ERRORS),
+    (error) => error instanceof EventChainIntegrityError
+      && /BLOCKED forbids next and outcome/.test(error.cause?.message ?? ""),
+  );
+});
+
 test("discussion response links reject validly shaped but stale hashes", (t) => {
   const { database } = openFixture(t);
   replaceDetails(database, (details) => ({

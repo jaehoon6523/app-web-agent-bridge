@@ -1,4 +1,4 @@
-import { HUMAN_GATE_REASONS } from "./vocabulary.js";
+import { AGENT_BLOCKED_REASONS } from "./vocabulary.js";
 
 const NON_EMPTY_STRING = Object.freeze({ type: "string", minLength: 1 });
 const SHA256_STRING = Object.freeze({
@@ -53,7 +53,7 @@ export const BlockedPacketSchema = closedObject({
   type: discriminator("BLOCKED"),
   reason_code: Object.freeze({
     type: "string",
-    enum: HUMAN_GATE_REASONS,
+    enum: AGENT_BLOCKED_REASONS,
   }),
   description: NON_EMPTY_STRING,
   required_decisions: NORMALIZABLE_TEXT_ARRAY,

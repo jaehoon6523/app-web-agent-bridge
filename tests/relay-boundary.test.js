@@ -81,6 +81,12 @@ test("initial and protocol-repair prompts carry their exact packet constraints",
   const initial = JSON.parse(initialPrompt.slice(initialPrompt.lastIndexOf("\n\n") + 2));
   assert.deepEqual(initial.controller_directive.allowed_actions, ["PROPOSE", "BLOCKED"]);
   assert.deepEqual(initial.controller_directive.allowed_packet_types, ["PROPOSAL", "BLOCKED"]);
+  assert.deepEqual(initial.controller_directive.blocked_route_by_reason, {
+    PRODUCT_DECISION_REQUIRED: "HUMAN_GATE",
+    CONSENSUS_NOT_REACHED: "HUMAN_GATE",
+    INSUFFICIENT_INFORMATION: "HUMAN_GATE",
+    AGENT_CAPABILITY_LIMIT: "HUMAN_GATE",
+  });
 
   const repairPrompt = buildControllerPrompt({
     ...common,

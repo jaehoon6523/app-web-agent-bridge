@@ -12,7 +12,7 @@ Controller           = 상태·전달·복구·종료 판정의 유일한 writer
 
 ## 현재 구현 상태
 
-현재 코드는 fake runtime 기준의 durable discussion core와, 아직 연결되지 않은 live runtime
+현재 코드는 Controller+SQLite 기준의 durable discussion core와, 아직 연결되지 않은 runtime
 surface를 명시적으로 분리합니다.
 
 - strict domain records, run state machine, four caller-frozen limits
@@ -29,7 +29,8 @@ surface를 명시적으로 분리합니다.
 - hash-chained submission receipt/session/turn과 response/rejection provenance 검증
 - 한 transaction 안의 response/message/packet/proposal/event/outcome/next-outbox 처리
 - 상태별 action matrix, same-actor protocol repair, 동일-hash 양측 consensus
-- fake CODEX/WEB 5-turn vertical과 마지막 ACCEPT 뒤 추가 delivery 억제
+- Controller+SQLite 5-turn integration과 마지막 ACCEPT 뒤 추가 delivery 억제
+- Agent-owned BLOCKED 사유와 Controller/runtime-owned operational blocker 사유 분리
 
 동일한 normalized proposal이 다시 제출되면 새 canonical proposal을 만들지 않고 기존
 `proposalRefHash`를 재사용합니다. 각 source message의 occurrence는 hash-chained
@@ -38,7 +39,8 @@ surface를 명시적으로 분리합니다.
 수 있을 때만 자동 생성하며, 허용 타입이 여러 개이거나 근거가 불명확하면 현재는 fail-closed로
 중단합니다.
 
-Discussion core와 fake vertical은 준비됐지만 production composition root는 아직 연결하지 않았습니다.
+Discussion core의 direct integration은 준비됐지만 dispatcher-backed fake runtime vertical과
+production composition root는 아직 연결하지 않았습니다.
 따라서 `/api/state`, Dashboard WebSocket, live run mutation은 의도적으로 `503`을 반환합니다.
 Health는 이 둘을 하나의 `orchestrationReady` 값으로 뭉개지 않고 다음 사실을 따로 반환합니다.
 
@@ -137,13 +139,13 @@ http://127.0.0.1:8787/api/health
 ## 검증 범위
 
 현재 자동 검증은 domain, SQLite/outbox, hash-chain 변조 탐지, fake Codex lifecycle, strict
-output validation, durable fake two-agent consensus, response fault-injection rollback, extension
+output validation, durable Controller+SQLite consensus, response fault-injection rollback, extension
 authentication/binding/race, DOM fixtures, Dashboard model 및 split readiness를 포함합니다.
 
 2026-09-04 fail-closed foundation checkpoint에서 다음을 로컬로 재현했습니다.
 
 ```text
-npm run check             302/302 PASS
+npm run check             306/306 PASS
 npm run test:integration   85/85 PASS
 server smoke              core ready / live ready false / live api state=503
 ```

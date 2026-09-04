@@ -76,7 +76,8 @@ Agent output is accepted only as a strict schema with
 - `CRITIQUE {type:'CRITIQUE', target_proposal_sha256,
   blocking_findings:[], non_blocking_findings:[], requested_changes:[]}`
 - `ACCEPT {type:'ACCEPT', accepted_proposal_sha256, blocking_findings:[]}`
-- `BLOCKED {type:'BLOCKED', reason_code:'PRODUCT_DECISION_REQUIRED',
+- `BLOCKED {type:'BLOCKED', reason_code: one of 'PRODUCT_DECISION_REQUIRED',
+  'CONSENSUS_NOT_REACHED', 'INSUFFICIENT_INFORMATION', or 'AGENT_CAPABILITY_LIMIT',
   description, required_decisions:[]}`
 
 `ProtocolErrorPacket` is named by the TODO, but its fields are not specified:
