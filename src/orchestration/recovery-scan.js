@@ -1,4 +1,8 @@
-import { AgentSessionStatus, RunPhase } from "../domain/vocabulary.js";
+import {
+  AgentSessionStatus,
+  RunBlockerType,
+  RunPhase,
+} from "../domain/vocabulary.js";
 import { DeliveryState } from "../persistence/schema.js";
 
 const ACTIVE_TURN_PHASES = new Set([
@@ -9,7 +13,6 @@ const UNCERTAIN_DELIVERY_STATES = new Set([
   DeliveryState.DISPATCHING,
   DeliveryState.SUBMITTED,
   DeliveryState.RESPONSE_STARTED,
-  DeliveryState.RESPONSE_COMPLETED,
   DeliveryState.AMBIGUOUS,
 ]);
 
@@ -19,6 +22,10 @@ function requireStore(store) {
     "listAgentSessions",
     "listDeliveries",
     "listApprovals",
+    "listRecoveryOperations",
+    "getRunLimits",
+    "getAgentMessageByInput",
+    "getAgentPacketRejectionByDelivery",
   ]) {
     if (typeof store?.[method] !== "function") {
       throw new TypeError(`Recovery scan requires store.${method}().`);
@@ -29,6 +36,45 @@ function requireStore(store) {
 
 function reason(type, fields = {}) {
   return Object.freeze({ type, ...fields });
+}
+
+function pendingRecoveryOperation(store, run) {
+  const pending = store.listRecoveryOperations({ runId: run.runId })
+    .filter((operation) => operation.status === "PENDING");
+  const blockerOperationId = run.phase === RunPhase.RECOVERY_REQUIRED
+    && run.blocker?.type === RunBlockerType.RECOVERY_CONFIRMATION
+    ? run.blocker.operationId
+    : null;
+
+  if (
+    blockerOperationId === null
+      ? pending.length > 0
+      : pending.length !== 1 || pending[0].operationId !== blockerOperationId
+  ) {
+    throw new TypeError(
+      `Run ${run.runId} pending recovery operation does not match its active blocker.`,
+    );
+  }
+  return blockerOperationId === null ? null : pending[0];
+}
+
+function pendingRuntimeApproval(store, run) {
+  const pending = store.listApprovals({ runId: run.runId })
+    .filter((approval) => approval.status === "PENDING");
+  const blockerApprovalId = run.blocker?.type === RunBlockerType.RUNTIME_APPROVAL
+    ? run.blocker.approvalId
+    : null;
+
+  if (
+    blockerApprovalId === null
+      ? pending.length > 0
+      : pending.length !== 1 || pending[0].approvalId !== blockerApprovalId
+  ) {
+    throw new TypeError(
+      `Run ${run.runId} pending runtime approval does not match its active blocker.`,
+    );
+  }
+  return blockerApprovalId === null ? null : pending[0];
 }
 
 /**
@@ -42,6 +88,21 @@ export function scanStartupRecovery(store) {
 
   for (const run of store.listRuns()) {
     const reasons = [];
+    const runLimits = store.getRunLimits(run.runId);
+    if (
+      !Number.isSafeInteger(runLimits?.limits?.maxDeliveryAttempts)
+      || runLimits.limits.maxDeliveryAttempts < 1
+    ) {
+      throw new TypeError(`Run ${run.runId} has no valid maxDeliveryAttempts.`);
+    }
+    const recoveryOperation = pendingRecoveryOperation(store, run);
+    if (recoveryOperation !== null) {
+      reasons.push(reason("RECOVERY_OPERATION_PENDING", {
+        operationId: recoveryOperation.operationId,
+        detailsHash: recoveryOperation.detailsHash,
+      }));
+    }
+    const runtimeApproval = pendingRuntimeApproval(store, run);
     if (ACTIVE_TURN_PHASES.has(run.phase)) {
       reasons.push(reason("TURN_RUNNING", {
         actor: run.activeActor,
@@ -50,7 +111,30 @@ export function scanStartupRecovery(store) {
     }
 
     for (const delivery of store.listDeliveries(run.runId)) {
-      if (UNCERTAIN_DELIVERY_STATES.has(delivery.state)) {
+      let completedWithoutCanonicalResponse = false;
+      if (delivery.state === DeliveryState.FAILED) {
+        const exhausted = delivery.attemptCount >= runLimits.limits.maxDeliveryAttempts;
+        reasons.push(reason(
+          exhausted ? "DELIVERY_ATTEMPTS_EXHAUSTED" : "DELIVERY_FAILED_RETRYABLE",
+          {
+          deliveryId: delivery.deliveryId,
+          inputId: delivery.inputId,
+          attemptCount: delivery.attemptCount,
+          maxDeliveryAttempts: runLimits.limits.maxDeliveryAttempts,
+          },
+        ));
+      }
+      if (delivery.state === DeliveryState.RESPONSE_COMPLETED) {
+        const message = store.getAgentMessageByInput(delivery.inputId);
+        const rejection = store.getAgentPacketRejectionByDelivery(delivery.deliveryId);
+        if (message !== null && rejection !== null) {
+          throw new TypeError(
+            `Delivery ${delivery.deliveryId} has both a message and packet rejection.`,
+          );
+        }
+        completedWithoutCanonicalResponse = message === null && rejection === null;
+      }
+      if (UNCERTAIN_DELIVERY_STATES.has(delivery.state) || completedWithoutCanonicalResponse) {
         reasons.push(reason("DELIVERY_UNCERTAIN", {
           deliveryId: delivery.deliveryId,
           inputId: delivery.inputId,
@@ -69,14 +153,11 @@ export function scanStartupRecovery(store) {
         }));
       }
     }
-
-    for (const approval of store.listApprovals({ runId: run.runId })) {
-      if (approval.status === "PENDING") {
-        reasons.push(reason("APPROVAL_PENDING", {
-          approvalId: approval.approvalId,
-          scopeHash: approval.scopeHash,
-        }));
-      }
+    if (runtimeApproval !== null) {
+      reasons.push(reason("APPROVAL_PENDING", {
+        approvalId: runtimeApproval.approvalId,
+        scopeHash: runtimeApproval.scopeHash,
+      }));
     }
 
     if (reasons.length > 0) {

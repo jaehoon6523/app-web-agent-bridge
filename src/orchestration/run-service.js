@@ -4,13 +4,11 @@ import { calculateRunPolicyHash, freezeRunPolicy } from "../domain/run-policy.js
 import {
   createRunLimits,
   createInitialRunState,
-  enforceTurnLimit,
   requestPause,
   resumeRun,
   setRunBlocker,
-  transitionRunState,
 } from "../domain/run-state-machine.js";
-import { RunPhase } from "../domain/vocabulary.js";
+import { RunBlockerType, RunPhase } from "../domain/vocabulary.js";
 
 export class RunServiceError extends Error {
   constructor(message, code = "RUN_SERVICE_ERROR") {
@@ -66,7 +64,9 @@ export class RunService {
   constructor({ store, clock = () => new Date().toISOString(), idFactory = randomUUID }) {
     if (!store || typeof store.createRun !== "function"
       || typeof store.appendEventAndUpdateProjection !== "function"
-      || typeof store.getRun !== "function") {
+      || typeof store.getRun !== "function"
+      || typeof store.createApproval !== "function"
+      || typeof store.withTransaction !== "function") {
       throw new TypeError("RunService requires a compatible SQLite store.");
     }
     if (typeof clock !== "function" || typeof idFactory !== "function") {
@@ -113,20 +113,6 @@ export class RunService {
     return this.#store.getRun(runId);
   }
 
-  transition({ runId, expectedVersion, to, blocker }) {
-    if (to === RunPhase.COMPLETE) {
-      throw new RunServiceError(
-        "COMPLETE requires a persisted, independently evaluated RunOutcome.",
-        "RUN_COMPLETION_EVIDENCE_REQUIRED",
-      );
-    }
-    return this.#write(runId, expectedVersion, "RUN_PHASE_CHANGED", (current, at) => {
-      const input = { expectedVersion, to, updatedAt: at };
-      if (blocker !== undefined) input.blocker = blocker;
-      return transitionRunState(current, input);
-    }, { to });
-  }
-
   pause({ runId, expectedVersion }) {
     return this.#write(runId, expectedVersion, "RUN_PAUSED", (current, at) => requestPause(current, {
       expectedVersion,
@@ -141,16 +127,9 @@ export class RunService {
     }));
   }
 
-  setBlocker({ runId, expectedVersion, blocker }) {
-    return this.#write(runId, expectedVersion, "RUN_BLOCKER_CHANGED", (current, at) => setRunBlocker(current, {
-      expectedVersion,
-      blocker,
-      updatedAt: at,
-    }), { blocker });
-  }
-
-  enforceMaxTurns({ runId, expectedVersion, unresolvedFindings = [] }) {
+  requestRuntimeApproval({ runId, expectedVersion, approvalId, scope }) {
     requiredString(runId, "runId");
+    requiredString(approvalId, "approvalId");
     requiredExpectedVersion(expectedVersion);
     return this.#exclusive(runId, () => {
       const current = this.#requireRun(runId);
@@ -160,17 +139,34 @@ export class RunService {
           "RUN_VERSION_CONFLICT",
         );
       }
+      if (current.blocker !== null) {
+        throw new RunServiceError(
+          `Run ${runId} already has an unresolved blocker.`,
+          "RUN_BLOCKER_ALREADY_PRESENT",
+        );
+      }
       const at = this.#clock();
-      const result = enforceTurnLimit(current, {
+      const blocker = { type: RunBlockerType.RUNTIME_APPROVAL, approvalId };
+      const next = setRunBlocker(current, {
         expectedVersion,
-        unresolvedFindings,
+        blocker,
         updatedAt: at,
       });
-      if (result.outcome === null) return result;
-      this.#persist(current, result.state, "RUN_COMPLETED", {
-        outcome: result.outcome,
-      }, at);
-      return result;
+      return this.#store.withTransaction((store) => {
+        const approval = store.createApproval({
+          approvalId,
+          runId,
+          status: "PENDING",
+          scope,
+          createdAt: at,
+          updatedAt: at,
+        });
+        this.#persist(current, next, "RUNTIME_APPROVAL_REQUESTED", {
+          approvalId,
+          scopeHash: approval.scopeHash,
+        }, at);
+        return Object.freeze({ run: next, approval });
+      });
     });
   }
 

@@ -49,6 +49,7 @@ import {
   resetConsecutiveActorFailuresEntity,
 } from "./run-limits.js";
 import {
+  getAgentMessageByInputEntity,
   getAgentMessageEntity,
   getAgentTurnInputEntity,
   listAgentMessagesEntity,
@@ -58,13 +59,19 @@ import {
   verifyAgentCommunicationLinksEntity,
 } from "./agent-communications.js";
 import {
+  getProposalArtifactByReferenceEntity,
   getProposalArtifactBySourceMessageEntity,
   getProposalArtifactEntity,
   listProposalArtifactsEntity,
   saveProposalArtifactEntity,
   verifyProposalArtifactsEntity,
 } from "./proposal-artifacts.js";
-
+import { verifyDiscussionResponseLinksEntity } from "./discussion-response-links.js";
+import { getAgentPacketRejectionByDeliveryEntity, verifyAgentPacketRejectionsEntity } from "./agent-packet-rejections.js";
+import { getRunOutcomeEntity, saveRunOutcomeEntity, verifyRunOutcomesEntity } from "./run-outcomes.js";
+import { verifyTurnQueueLinksEntity } from "./turn-queue-links.js";
+import { verifyControlSideRecordLinksEntity } from "./control-side-record-links.js";
+import { validateSubmittedProviderReceipt } from "./delivery-transition-input.js";
 const DELIVERY_STATES = new Set(Object.values(DeliveryState));
 
 function persistenceErrorTypes() {
@@ -156,6 +163,11 @@ export class SqliteStore {
         this.verifyEventChains();
         this.verifyAgentCommunicationLinks();
         this.verifyProposalArtifacts();
+        this.verifyRunOutcomes();
+        this.verifyDiscussionResponseLinks();
+        this.verifyAgentPacketRejections();
+        this.verifyTurnQueueLinks();
+        this.verifyControlSideRecordLinks();
         this.rebuildRunProjections({ compare: true });
       }
     } catch (error) {
@@ -199,6 +211,25 @@ export class SqliteStore {
     } finally {
       this.#transactionDepth = 0;
     }
+  }
+
+  /**
+   * Joins Controller-owned synchronous persistence operations into one SQLite
+   * transaction.  The callback receives this store so callers cannot reach
+   * the underlying database handle or bypass the validated store methods.
+   */
+  withTransaction(operation) {
+    this.#assertOpen();
+    if (typeof operation !== "function") {
+      throw new TypeError("withTransaction requires a synchronous function");
+    }
+    return this.#transaction(() => {
+      const result = operation(this);
+      if (result !== null && typeof result === "object" && typeof result.then === "function") {
+        throw new TypeError("withTransaction does not accept an asynchronous operation");
+      }
+      return result;
+    });
   }
 
   createRun(run, eventOptions = {}) {
@@ -367,12 +398,16 @@ export class SqliteStore {
 
   createAgentSession(input) {
     this.#assertOpen();
-    return createAgentSessionEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      createAgentSessionEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   upsertAgentSession(input) {
     this.#assertOpen();
-    return upsertAgentSessionEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      upsertAgentSessionEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   updateAgentSession(input) {
@@ -391,7 +426,9 @@ export class SqliteStore {
 
   saveAgentPacket(input) {
     this.#assertOpen();
-    return saveAgentPacketEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      saveAgentPacketEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   getAgentPacket(packetId) {
@@ -406,12 +443,16 @@ export class SqliteStore {
 
   createApproval(input) {
     this.#assertOpen();
-    return createApprovalEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      createApprovalEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   resolveApproval(input) {
     this.#assertOpen();
-    return resolveApprovalEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      resolveApprovalEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   getApproval(approvalId) {
@@ -426,12 +467,16 @@ export class SqliteStore {
 
   createRecoveryOperation(input) {
     this.#assertOpen();
-    return createRecoveryOperationEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      createRecoveryOperationEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   resolveRecoveryOperation(input) {
     this.#assertOpen();
-    return resolveRecoveryOperationEntity(this.#database, input, persistenceErrorTypes());
+    return this.#transaction(() => (
+      resolveRecoveryOperationEntity(this.#database, input, persistenceErrorTypes())
+    ));
   }
 
   getRecoveryOperation(operationId) {
@@ -638,6 +683,11 @@ export class SqliteStore {
     return getAgentMessageEntity(this.#database, messageId, persistenceErrorTypes());
   }
 
+  getAgentMessageByInput(inputId) {
+    this.#assertOpen();
+    return getAgentMessageByInputEntity(this.#database, inputId, persistenceErrorTypes());
+  }
+
   listAgentMessages(runId) {
     this.#assertOpen();
     return listAgentMessagesEntity(this.#database, runId, persistenceErrorTypes());
@@ -664,6 +714,16 @@ export class SqliteStore {
     );
   }
 
+  getProposalArtifactByReference(runId, proposalRefHash) {
+    this.#assertOpen();
+    return getProposalArtifactByReferenceEntity(
+      this.#database,
+      runId,
+      proposalRefHash,
+      persistenceErrorTypes(),
+    );
+  }
+
   listProposalArtifacts(runId) {
     this.#assertOpen();
     return listProposalArtifactsEntity(this.#database, runId, persistenceErrorTypes());
@@ -672,6 +732,49 @@ export class SqliteStore {
   verifyProposalArtifacts() {
     this.#assertOpen();
     return verifyProposalArtifactsEntity(this.#database, persistenceErrorTypes());
+  }
+
+  saveRunOutcome(input) {
+    this.#assertOpen();
+    return this.#transaction(() => (
+      saveRunOutcomeEntity(this.#database, input, persistenceErrorTypes())
+    ));
+  }
+
+  getRunOutcome(runId) {
+    this.#assertOpen();
+    return getRunOutcomeEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  verifyRunOutcomes() {
+    this.#assertOpen();
+    return verifyRunOutcomesEntity(this.#database, persistenceErrorTypes());
+  }
+
+  verifyDiscussionResponseLinks() {
+    this.#assertOpen();
+    return verifyDiscussionResponseLinksEntity(this.#database, persistenceErrorTypes());
+  }
+
+  getAgentPacketRejectionByDelivery(deliveryId) {
+    this.#assertOpen();
+    return getAgentPacketRejectionByDeliveryEntity(
+      this.#database,
+      deliveryId,
+      persistenceErrorTypes(),
+    );
+  }
+
+  verifyAgentPacketRejections() {
+    this.#assertOpen();
+    return verifyAgentPacketRejectionsEntity(this.#database, persistenceErrorTypes());
+  }
+
+  verifyTurnQueueLinks() {
+    this.#assertOpen(); return verifyTurnQueueLinksEntity(this.#database, persistenceErrorTypes());
+  }
+  verifyControlSideRecordLinks() {
+    this.#assertOpen(); return verifyControlSideRecordLinksEntity(this.#database, persistenceErrorTypes());
   }
 
   getDelivery(deliveryId) {
@@ -835,7 +938,7 @@ export class SqliteStore {
           `delivery ${deliveryId} expected version ${expectedVersion}, observed ${row.version}`,
         );
       }
-
+      if (nextState === DeliveryState.SUBMITTED) validateSubmittedProviderReceipt(input);
       const isRetryReset = expectedState === DeliveryState.FAILED
         && nextState === DeliveryState.PENDING;
       if (isRetryReset) {

@@ -131,6 +131,13 @@ function validateAgentRunInvariants(run) {
       "RUN_ACTOR_PHASE_MISMATCH",
     );
   }
+  if (expectedActor !== null && run.currentTurn >= run.maxTurns) {
+    throw new DomainContractError(
+      `must be less than maxTurns while phase is ${run.phase}`,
+      "AgentRun.currentTurn",
+      "RUN_TURN_LIMIT_REACHED",
+    );
+  }
   if (run.phase === RunPhase.HUMAN_GATE && run.blocker === null) {
     throw new DomainContractError(
       "must be present in HUMAN_GATE",
@@ -155,33 +162,10 @@ function validateAgentRunInvariants(run) {
       "TERMINAL_RUN_BLOCKER_PRESENT",
     );
   }
-  const oddTurnPhases = new Set([
-    RunPhase.CODEX_RESPONSE_STORED,
-    RunPhase.CODEX_TO_WEB_PENDING,
-    RunPhase.WEB_TURN_RUNNING,
-  ]);
-  const evenTurnPhases = new Set([
-    RunPhase.CODEX_TURN_PENDING,
-    RunPhase.CODEX_TURN_RUNNING,
-    RunPhase.WEB_RESPONSE_STORED,
-    RunPhase.WEB_TO_CODEX_PENDING,
-  ]);
-  if (oddTurnPhases.has(run.phase) && run.currentTurn % 2 !== 1) {
-    throw new DomainContractError(
-      `must be odd while phase is ${run.phase}`,
-      "AgentRun.currentTurn",
-      "RUN_TURN_PHASE_MISMATCH",
-    );
-  }
-  if (evenTurnPhases.has(run.phase) && run.currentTurn % 2 !== 0) {
-    throw new DomainContractError(
-      `must be even while phase is ${run.phase}`,
-      "AgentRun.currentTurn",
-      "RUN_TURN_PHASE_MISMATCH",
-    );
-  }
   if (
-    (run.phase === RunPhase.WEB_RESPONSE_STORED
+    (run.phase === RunPhase.CODEX_RESPONSE_STORED
+      || run.phase === RunPhase.WEB_RESPONSE_STORED
+      || run.phase === RunPhase.CODEX_TO_WEB_PENDING
       || run.phase === RunPhase.WEB_TO_CODEX_PENDING
       || run.phase === RunPhase.CONSENSUS_CHECK)
     && run.currentTurn === 0

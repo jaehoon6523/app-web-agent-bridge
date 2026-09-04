@@ -134,9 +134,23 @@ test("AgentRun contract rejects phase, actor, and blocker contradictions", () =>
     () => validateAgentRun({
       ...base,
       phase: RunPhase.CODEX_TO_WEB_PENDING,
-      currentTurn: 2,
+      currentTurn: 0,
     }),
     (error) => error.code === "RUN_TURN_PHASE_MISMATCH",
+  );
+  assert.equal(validateAgentRun({
+    ...base,
+    phase: RunPhase.CODEX_RESPONSE_STORED,
+    currentTurn: 2,
+  }).currentTurn, 2, "same-actor protocol repairs make turn parity non-authoritative");
+  assert.throws(
+    () => validateAgentRun({
+      ...base,
+      phase: RunPhase.CODEX_TURN_RUNNING,
+      activeActor: AgentActor.CODEX_AGENT,
+      currentTurn: base.maxTurns,
+    }),
+    (error) => error.code === "RUN_TURN_LIMIT_REACHED",
   );
   assert.throws(
     () => buildAgentRun({ ...base, phase: RunPhase.HUMAN_GATE, blocker: null }),

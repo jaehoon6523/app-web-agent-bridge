@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { sha256Text } from "../src/domain/canonical-json.js";
+import { canonicalJson, sha256Text } from "../src/domain/canonical-json.js";
 import { createAgentRun, createAgentSessionRecord } from "../src/domain/contracts.js";
 import { buildAgentMessage, buildAgentTurnInput } from "../src/domain/agent-messages.js";
 import {
@@ -17,6 +17,11 @@ import {
   RunPhase,
   SessionProvider,
 } from "../src/domain/vocabulary.js";
+import { scanStartupRecovery } from "../src/orchestration/recovery-scan.js";
+import {
+  discussionSubmissionEvidence,
+  discussionTurnEvidence,
+} from "../src/orchestration/discussion-turn-evidence.js";
 import {
   DeliveryState,
   DeliveryTransitionError,
@@ -164,6 +169,89 @@ function saveInput(store, turnInput, suffix = "01") {
   });
 }
 
+function saveQueuedInitialInput(store, run, suffix = "01") {
+  const turnInput = makeTurnInput(run, { inputId: `input-${suffix}` });
+  const request = {
+    turnInput,
+    deliveryId: `delivery-${suffix}`,
+    idempotencyKey: `idempotency-${suffix}`,
+    createdAt: turnInput.createdAt,
+  };
+  const delivery = store.saveAgentTurnInputWithDelivery(request);
+  const queued = createAgentRun({
+    ...run,
+    phase: RunPhase.CODEX_TURN_PENDING,
+    version: run.version + 1,
+    updatedAt: turnInput.createdAt,
+  });
+  store.appendEventAndUpdateProjection({
+    runId: run.runId,
+    expectedVersion: run.version,
+    eventId: `event-queue-${suffix}`,
+    eventType: "AGENT_TURN_QUEUED",
+    payload: { run: queued, details: discussionTurnEvidence(request) },
+    createdAt: turnInput.createdAt,
+    nextRun: queued,
+  });
+  return { delivery, queued, turnInput };
+}
+
+function markCodexSessionRunning(store, turnId) {
+  const session = store.getAgentSession("codex-session-01");
+  return store.updateAgentSession({
+    session: createAgentSessionRecord({
+      ...session,
+      status: AgentSessionStatus.RUNNING,
+      activeTurnId: turnId,
+      lastObservedAt: T2,
+      version: session.version + 1,
+    }),
+    expectedVersion: session.version,
+    updatedAt: T2,
+  });
+}
+
+function submitQueuedInitialInput(store, run, suffix, turnId) {
+  const queuedFixture = saveQueuedInitialInput(store, run, suffix);
+  const claimed = store.claimNextPendingDelivery({ runId: run.runId, claimedAt: T1 });
+  const submitted = store.transitionDelivery({
+    deliveryId: claimed.deliveryId,
+    expectedState: claimed.state,
+    expectedVersion: claimed.version,
+    nextState: DeliveryState.SUBMITTED,
+    providerReceipt: { externalTurnId: turnId },
+    updatedAt: T2,
+  });
+  const running = createAgentRun({
+    ...queuedFixture.queued,
+    phase: RunPhase.CODEX_TURN_RUNNING,
+    activeActor: AgentActor.CODEX_AGENT,
+    version: queuedFixture.queued.version + 1,
+    updatedAt: T2,
+  });
+  markCodexSessionRunning(store, turnId);
+  store.appendEventAndUpdateProjection({
+    runId: run.runId,
+    expectedVersion: queuedFixture.queued.version,
+    eventId: `event-submitted-${suffix}`,
+    eventType: "AGENT_TURN_SUBMITTED",
+    payload: {
+      run: running,
+      details: discussionSubmissionEvidence({
+        turnInput: queuedFixture.turnInput,
+        deliveryId: submitted.deliveryId,
+        sessionId: "codex-session-01",
+        turnId,
+        providerReceipt: submitted.providerReceipt,
+        attemptCount: submitted.attemptCount,
+      }),
+    },
+    createdAt: T2,
+    nextRun: running,
+  });
+  return { ...queuedFixture, running, submitted };
+}
+
 test("AgentTurnInput and PENDING delivery are committed atomically", (t) => {
   const { store, run } = openStore(t);
   const first = makeTurnInput(run);
@@ -186,6 +274,17 @@ test("AgentTurnInput and PENDING delivery are committed atomically", (t) => {
   assert.equal(store.getDelivery("delivery-02"), null);
   assert.deepEqual(store.listAgentTurnInputs(run.runId), [first]);
   store.close();
+});
+
+test("startup rejects a non-repair input with no queue event", (t) => {
+  const { filename, store, run } = openStore(t);
+  saveInput(store, makeTurnInput(run));
+  store.close();
+
+  assert.throws(
+    () => new SqliteStore(filename),
+    /non-repair turn input without exact queue evidence/u,
+  );
 });
 
 test("AgentMessage is bound to one input and does not create a next delivery", (t) => {
@@ -244,7 +343,7 @@ test("PEER_RELAY requires an existing opposite-actor AgentMessage", (t) => {
 
 test("claim is deterministic and SUBMITTED delivery is not retried after reopen", (t) => {
   const { filename, store, run } = openStore(t);
-  saveInput(store, makeTurnInput(run));
+  const queuedFixture = saveQueuedInitialInput(store, run);
   const claimed = store.claimNextPendingDelivery({ claimedAt: T1 });
   assert.equal(claimed.state, DeliveryState.DISPATCHING);
   assert.equal(claimed.attemptCount, 1);
@@ -258,12 +357,120 @@ test("claim is deterministic and SUBMITTED delivery is not retried after reopen"
     updatedAt: T2,
   });
   assert.equal(submitted.state, DeliveryState.SUBMITTED);
+  markCodexSessionRunning(store, submitted.providerReceipt.externalTurnId);
+  const running = createAgentRun({
+    ...queuedFixture.queued,
+    phase: RunPhase.CODEX_TURN_RUNNING,
+    activeActor: AgentActor.CODEX_AGENT,
+    version: queuedFixture.queued.version + 1,
+    updatedAt: T2,
+  });
+  store.appendEventAndUpdateProjection({
+    runId: run.runId,
+    expectedVersion: queuedFixture.queued.version,
+    eventId: "event-submitted-01",
+    eventType: "AGENT_TURN_SUBMITTED",
+    payload: {
+      run: running,
+      details: discussionSubmissionEvidence({
+        turnInput: queuedFixture.turnInput,
+        deliveryId: submitted.deliveryId,
+        sessionId: "codex-session-01",
+        turnId: submitted.providerReceipt.externalTurnId,
+        providerReceipt: submitted.providerReceipt,
+        attemptCount: submitted.attemptCount,
+      }),
+    },
+    createdAt: T2,
+    nextRun: running,
+  });
   store.close();
 
   const reopened = new SqliteStore(filename);
   assert.deepEqual(reopened.listDispatchableDeliveries(), []);
   assert.equal(reopened.claimNextPendingDelivery({ claimedAt: T3 }), null);
   reopened.close();
+
+  const database = new DatabaseSync(filename);
+  database.prepare(`
+    UPDATE delivery_attempts SET provider_receipt_json = ? WHERE delivery_id = ?
+  `).run(
+    canonicalJson({ externalTurnId: "forged-in-flight-turn" }),
+    submitted.deliveryId,
+  );
+  assert.throws(
+    () => new SqliteStore(filename),
+    /current provider receipt does not match its latest submission evidence/u,
+  );
+  database.prepare(`
+    UPDATE delivery_attempts SET provider_receipt_json = NULL WHERE delivery_id = ?
+  `).run(submitted.deliveryId);
+  assert.throws(
+    () => new SqliteStore(filename),
+    /state SUBMITTED requires a provider receipt and submission evidence/u,
+  );
+  database.prepare(`
+    UPDATE delivery_attempts SET state = ?, provider_receipt_json = ? WHERE delivery_id = ?
+  `).run(
+    DeliveryState.PENDING,
+    canonicalJson(submitted.providerReceipt),
+    submitted.deliveryId,
+  );
+  database.close();
+  assert.throws(
+    () => new SqliteStore(filename),
+    /state PENDING must not retain a provider receipt/u,
+  );
+});
+
+test("startup rejects a provider receipt without submission evidence", (t) => {
+  const { filename, store, run } = openStore(t);
+  saveQueuedInitialInput(store, run);
+  const claimed = store.claimNextPendingDelivery({ claimedAt: T1 });
+  store.transitionDelivery({
+    deliveryId: claimed.deliveryId,
+    expectedState: DeliveryState.DISPATCHING,
+    expectedVersion: claimed.version,
+    nextState: DeliveryState.SUBMITTED,
+    providerReceipt: { externalTurnId: "turn-without-submission-event" },
+    updatedAt: T2,
+  });
+  store.close();
+
+  assert.throws(
+    () => new SqliteStore(filename),
+    /provider receipt without hash-chained submission evidence/u,
+  );
+});
+
+test("startup rejects a lost current-attempt receipt after submission", (t) => {
+  for (const targetState of [DeliveryState.FAILED, DeliveryState.AMBIGUOUS]) {
+    const { filename, store, run } = openStore(t);
+    const { submitted } = submitQueuedInitialInput(
+      store,
+      run,
+      targetState.toLowerCase(),
+      `turn-${targetState.toLowerCase()}`,
+    );
+    store.transitionDelivery({
+      deliveryId: submitted.deliveryId,
+      expectedState: submitted.state,
+      expectedVersion: submitted.version,
+      nextState: targetState,
+      updatedAt: T3,
+    });
+    store.close();
+
+    const database = new DatabaseSync(filename);
+    database.prepare(`
+      UPDATE delivery_attempts SET provider_receipt_json = NULL WHERE delivery_id = ?
+    `).run(submitted.deliveryId);
+    database.close();
+    assert.throws(
+      () => new SqliteStore(filename),
+      new RegExp(`state ${targetState} lost its current-attempt provider receipt`, "u"),
+    );
+  }
 });
 
 test("delivery transitions reject stale state, stale version, and duplicate terminal transition", (t) => {
@@ -284,6 +491,13 @@ test("delivery transitions reject stale state, stale version, and duplicate term
     nextState: DeliveryState.SUBMITTED,
     updatedAt: T2,
   }), OptimisticConcurrencyError);
+  assert.throws(() => store.transitionDelivery({
+    deliveryId: delivery.deliveryId,
+    expectedState: delivery.state,
+    expectedVersion: delivery.version,
+    nextState: DeliveryState.SUBMITTED,
+    updatedAt: T2,
+  }), /providerReceipt is required for a SUBMITTED delivery/u);
 
   for (const nextState of [
     DeliveryState.SUBMITTED,
@@ -296,6 +510,9 @@ test("delivery transitions reject stale state, stale version, and duplicate term
       expectedState: delivery.state,
       expectedVersion: delivery.version,
       nextState,
+      ...(nextState === DeliveryState.SUBMITTED
+        ? { providerReceipt: { externalTurnId: "turn-transition-chain" } }
+        : {}),
       updatedAt: T3,
     });
   }
@@ -310,8 +527,8 @@ test("delivery transitions reject stale state, stale version, and duplicate term
 });
 
 test("FAILED delivery retries only through explicit PENDING and stops at frozen limit", (t) => {
-  const { store, run } = openStore(t);
-  saveInput(store, makeTurnInput(run));
+  const { filename, store, run } = openStore(t);
+  saveQueuedInitialInput(store, run);
   let delivery;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     delivery = store.claimNextPendingDelivery({ claimedAt: T1 });
@@ -342,12 +559,53 @@ test("FAILED delivery retries only through explicit PENDING and stops at frozen 
     updatedAt: T4,
   }), (error) => error.code === "RUN_LIMIT_EXCEEDED");
   store.close();
+
+  const reopened = new SqliteStore(filename);
+  const findings = scanStartupRecovery(reopened);
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0].reasons, [{
+    type: "DELIVERY_ATTEMPTS_EXHAUSTED",
+    deliveryId: delivery.deliveryId,
+    inputId: delivery.inputId,
+    attemptCount: 3,
+    maxDeliveryAttempts: 3,
+  }]);
+  reopened.close();
+});
+
+test("a retryable FAILED delivery remains failed and visible to startup recovery after reopen", (t) => {
+  const { filename, store, run } = openStore(t);
+  saveQueuedInitialInput(store, run);
+  let delivery = store.claimNextPendingDelivery({ claimedAt: T1 });
+  delivery = store.transitionDelivery({
+    deliveryId: delivery.deliveryId,
+    expectedState: DeliveryState.DISPATCHING,
+    expectedVersion: delivery.version,
+    nextState: DeliveryState.FAILED,
+    error: { code: "PRE_SUBMISSION_CONNECTION_FAILURE", retrySafe: true },
+    updatedAt: T2,
+  });
+  store.close();
+
+  const reopened = new SqliteStore(filename);
+  assert.equal(reopened.getDelivery(delivery.deliveryId).state, DeliveryState.FAILED);
+  assert.equal(reopened.claimNextPendingDelivery({ claimedAt: T3 }), null);
+  const findings = scanStartupRecovery(reopened);
+  assert.equal(findings.length, 1);
+  assert.deepEqual(findings[0].reasons, [{
+    type: "DELIVERY_FAILED_RETRYABLE",
+    deliveryId: delivery.deliveryId,
+    inputId: delivery.inputId,
+    attemptCount: 1,
+    maxDeliveryAttempts: 3,
+  }]);
+  reopened.close();
 });
 
 test("startup integrity verification detects AgentMessage metadata tampering", (t) => {
   const { filename, store, run } = openStore(t);
   const input = makeTurnInput(run);
-  saveInput(store, input);
+  saveQueuedInitialInput(store, run);
   const message = makeMessage(run);
   store.saveAgentMessage({ inputId: input.inputId, message });
   store.close();

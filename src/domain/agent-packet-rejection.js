@@ -30,7 +30,16 @@ const EVENT_FIELDS = Object.freeze([
   "rawResponseArtifactHash",
   "protocolRepairsUsed",
   "recoverability",
+  "repair",
   "createdAt",
+]);
+const REPAIR_FIELDS = Object.freeze([
+  "inputId",
+  "inputHash",
+  "deliveryId",
+  "idempotencyKeyHash",
+  "targetActor",
+  "sourceMessageId",
 ]);
 
 const PARSER_STAGES = new Set(Object.values(AgentPacketParserStage));
@@ -148,12 +157,38 @@ export function validateAgentPacketRejectedEvent(value) {
       "AgentPacketRejectedEvent.recoverability",
     );
   }
+  if (event.repair !== null) {
+    requireExactKeys(event.repair, REPAIR_FIELDS, "AgentPacketRejectedEvent.repair");
+    requireNonEmptyString(event.repair.inputId, "AgentPacketRejectedEvent.repair.inputId");
+    requireHash(event.repair.inputHash, "AgentPacketRejectedEvent.repair.inputHash");
+    requireNonEmptyString(
+      event.repair.deliveryId,
+      "AgentPacketRejectedEvent.repair.deliveryId",
+    );
+    requireHash(
+      event.repair.idempotencyKeyHash,
+      "AgentPacketRejectedEvent.repair.idempotencyKeyHash",
+    );
+    if (!isVocabularyValue(AgentActor, event.repair.targetActor)) {
+      throw new AgentPacketRejectionContractError(
+        "must be an AgentActor",
+        "AgentPacketRejectedEvent.repair.targetActor",
+      );
+    }
+    if (event.repair.sourceMessageId !== null) {
+      throw new AgentPacketRejectionContractError(
+        "must be null",
+        "AgentPacketRejectedEvent.repair.sourceMessageId",
+      );
+    }
+  }
   requireNonEmptyString(event.createdAt, "AgentPacketRejectedEvent.createdAt");
   return event;
 }
 
 export function buildAgentPacketRejectedEvent(value) {
-  const event = structuredClone(value);
+  const draft = structuredClone(value);
+  const event = Object.hasOwn(draft, "repair") ? draft : { ...draft, repair: null };
   validateAgentPacketRejectedEvent(event);
   return deepFreeze(event);
 }

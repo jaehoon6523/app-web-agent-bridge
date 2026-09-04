@@ -5,7 +5,11 @@ import {
   validateAgentTurnInput,
 } from "../domain/agent-messages.js";
 import { validateAgentRun } from "../domain/contracts.js";
-import { AgentActor, AgentTurnInputKind } from "../domain/vocabulary.js";
+import {
+  AgentActor,
+  AgentTurnInputKind,
+  RunPhase,
+} from "../domain/vocabulary.js";
 import { DeliveryState } from "./schema.js";
 
 function requireObject(value, name) {
@@ -112,6 +116,12 @@ export function saveAgentTurnInputWithDeliveryEntity(database, value, errors) {
 
   const run = requireRun(database, turnInput.runId, errors);
   assertRunHashes(turnInput, run, "agent turn input", turnInput.inputId, errors);
+  if (new Set([RunPhase.COMPLETE, RunPhase.FAILED, RunPhase.CANCELLED]).has(run.phase)) {
+    throw new errors.PersistenceError(
+      `terminal run ${run.runId} cannot accept another AgentTurnInput`,
+      "TERMINAL_RUN_INPUT_FORBIDDEN",
+    );
+  }
 
   if (turnInput.kind === AgentTurnInputKind.INITIAL_OBJECTIVE) {
     if (turnInput.targetActor !== AgentActor.CODEX_AGENT) {
@@ -281,6 +291,14 @@ export function getAgentMessageEntity(database, messageId, errors) {
   const row = database.prepare(
     "SELECT * FROM agent_messages WHERE message_id = ?",
   ).get(messageId);
+  return row ? decodeAgentMessage(row, errors) : null;
+}
+
+export function getAgentMessageByInputEntity(database, inputId, errors) {
+  requireString(inputId, "inputId");
+  const row = database.prepare(
+    "SELECT * FROM agent_messages WHERE input_id = ?",
+  ).get(inputId);
   return row ? decodeAgentMessage(row, errors) : null;
 }
 

@@ -3,12 +3,14 @@ import test from "node:test";
 import { sha256Text } from "../src/domain/canonical-json.js";
 import {
   AgentActor,
+  AgentTurnInputKind,
   RunBlockerType,
   RunMode,
   RunOutcomeType,
   RunPhase,
 } from "../src/domain/vocabulary.js";
 import {
+  adoptRecoveredCompletedResponse,
   assertRunState,
   createRunLimits,
   createRunOutcome,
@@ -17,6 +19,7 @@ import {
   requestPause,
   resumeRun,
   setRunBlocker,
+  startProtocolRepairTurn,
   transitionRunState,
   validateRunLimits,
   validateRunOutcome,
@@ -195,7 +198,7 @@ test("a run may be cancelled before session startup", () => {
   assert.equal(cancelled.activeActor, null);
 });
 
-test("pause never interrupts an active turn and blocks the next delivery boundary", () => {
+test("pause stores an active response and queues, but does not start, the next delivery", () => {
   const running = codexRunning();
   const paused = requestPause(running, {
     expectedVersion: running.version,
@@ -218,32 +221,25 @@ test("pause never interrupts an active turn and blocks the next delivery boundar
     expectedVersion: stored.version,
     updatedAt: TIMES.consensus,
   });
-  assert.throws(
-    () => transitionRunState(checking, {
-      to: RunPhase.CODEX_TO_WEB_PENDING,
-      expectedVersion: checking.version,
-      updatedAt: TIMES.next,
-    }),
-    /paused/i,
-  );
-
-  const resumed = resumeRun(checking, {
+  const deliveryPending = transitionRunState(checking, {
+    to: RunPhase.CODEX_TO_WEB_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
     expectedVersion: checking.version,
+    updatedAt: TIMES.next,
+  });
+  assert.equal(deliveryPending.paused, true);
+  assert.equal(deliveryPending.phase, RunPhase.CODEX_TO_WEB_PENDING);
+
+  const resumed = resumeRun(deliveryPending, {
+    expectedVersion: deliveryPending.version,
     updatedAt: TIMES.resumed,
   });
   assert.equal(resumed.paused, false);
-  assert.equal(resumed.phase, RunPhase.CONSENSUS_CHECK);
+  assert.equal(resumed.phase, RunPhase.CODEX_TO_WEB_PENDING);
   assert.equal(resumed.activeActor, null);
-
-  const deliveryPending = transitionRunState(resumed, {
-    to: RunPhase.CODEX_TO_WEB_PENDING,
-    expectedVersion: resumed.version,
-    updatedAt: TIMES.next,
-  });
-  assert.equal(deliveryPending.phase, RunPhase.CODEX_TO_WEB_PENDING);
 });
 
-test("an unresolved blocker prevents a new delivery or turn but not in-flight storage", () => {
+test("an unresolved blocker allows a queued delivery but prevents its turn from starting", () => {
   const running = codexRunning();
   const blocked = setRunBlocker(running, {
     blocker: {
@@ -265,28 +261,32 @@ test("an unresolved blocker prevents a new delivery or turn but not in-flight st
     expectedVersion: stored.version,
     updatedAt: TIMES.consensus,
   });
-  assert.throws(
-    () => transitionRunState(checking, {
-      to: RunPhase.CODEX_TO_WEB_PENDING,
-      expectedVersion: checking.version,
-      updatedAt: TIMES.next,
-    }),
-    /blocker/i,
-  );
-
-  const unblocked = setRunBlocker(checking, {
-    blocker: null,
+  const queued = transitionRunState(checking, {
+    to: RunPhase.CODEX_TO_WEB_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
     expectedVersion: checking.version,
+    updatedAt: TIMES.next,
+  });
+  assert.equal(queued.blocker.type, RunBlockerType.RUNTIME_APPROVAL);
+  assert.throws(() => transitionRunState(queued, {
+    to: RunPhase.WEB_TURN_RUNNING,
+    expectedVersion: queued.version,
+    updatedAt: TIMES.next,
+  }), /blocker/i);
+
+  const unblocked = setRunBlocker(queued, {
+    blocker: null,
+    expectedVersion: queued.version,
     updatedAt: TIMES.resumed,
   });
   assert.equal(unblocked.blocker, null);
   assert.equal(
     transitionRunState(unblocked, {
-      to: RunPhase.CODEX_TO_WEB_PENDING,
+      to: RunPhase.WEB_TURN_RUNNING,
       expectedVersion: unblocked.version,
       updatedAt: TIMES.next,
     }).phase,
-    RunPhase.CODEX_TO_WEB_PENDING,
+    RunPhase.WEB_TURN_RUNNING,
   );
 });
 
@@ -355,6 +355,7 @@ test("reaching maxTurns completes with an INCONCLUSIVE outcome, not a human gate
   assert.throws(
     () => transitionRunState(result.state, {
       to: RunPhase.CODEX_TO_WEB_PENDING,
+      sourceActor: AgentActor.CODEX_AGENT,
       expectedVersion: result.state.version,
       updatedAt: "2026-09-04T00:00:10.000Z",
     }),
@@ -378,6 +379,7 @@ test("maxTurns prevents dispatching one more turn before completion is recorded"
   assert.throws(
     () => transitionRunState(checking, {
       to: RunPhase.CODEX_TO_WEB_PENDING,
+      sourceActor: AgentActor.CODEX_AGENT,
       expectedVersion: checking.version,
       updatedAt: TIMES.next,
     }),
@@ -385,7 +387,7 @@ test("maxTurns prevents dispatching one more turn before completion is recorded"
   );
 });
 
-test("consensus checking preserves strict actor alternation", () => {
+test("consensus checking requires the explicit response source for peer alternation", () => {
   const running = codexRunning();
   const stored = transitionRunState(running, {
     to: RunPhase.CODEX_RESPONSE_STORED,
@@ -398,15 +400,104 @@ test("consensus checking preserves strict actor alternation", () => {
     updatedAt: TIMES.consensus,
   });
   assert.throws(() => transitionRunState(checking, {
+    to: RunPhase.CODEX_TO_WEB_PENDING,
+    expectedVersion: checking.version,
+    updatedAt: TIMES.next,
+  }), /sourceActor/i);
+  assert.throws(() => transitionRunState(checking, {
     to: RunPhase.WEB_TO_CODEX_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
     expectedVersion: checking.version,
     updatedAt: TIMES.next,
   }), (error) => error.code === "RUN_ACTOR_ALTERNATION_VIOLATION");
   assert.equal(transitionRunState(checking, {
     to: RunPhase.CODEX_TO_WEB_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
     expectedVersion: checking.version,
     updatedAt: TIMES.next,
   }).phase, RunPhase.CODEX_TO_WEB_PENDING);
+});
+
+test("a same-actor protocol repair is explicit and every terminal response counts as a turn", () => {
+  const running = codexRunning();
+  const invalidResponseStored = transitionRunState(running, {
+    to: RunPhase.CODEX_RESPONSE_STORED,
+    expectedVersion: running.version,
+    updatedAt: TIMES.stored,
+  });
+  assert.equal(invalidResponseStored.currentTurn, 1);
+
+  assert.throws(() => transitionRunState(invalidResponseStored, {
+    to: RunPhase.CODEX_TURN_RUNNING,
+    expectedVersion: invalidResponseStored.version,
+    updatedAt: TIMES.next,
+  }), /transition/i, "the generic transition cannot silently become a repair");
+  assert.throws(() => startProtocolRepairTurn(invalidResponseStored, {
+    actor: AgentActor.CODEX_AGENT,
+    kind: AgentTurnInputKind.PEER_RELAY,
+    expectedVersion: invalidResponseStored.version,
+    updatedAt: TIMES.next,
+  }), (error) => error.code === "PROTOCOL_REPAIR_INTENT_REQUIRED");
+  assert.throws(() => startProtocolRepairTurn(invalidResponseStored, {
+    actor: AgentActor.CHATGPT_WEB_AGENT,
+    kind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedVersion: invalidResponseStored.version,
+    updatedAt: TIMES.next,
+  }), (error) => error.code === "PROTOCOL_REPAIR_ACTOR_MISMATCH");
+
+  const repairRunning = startProtocolRepairTurn(invalidResponseStored, {
+    actor: AgentActor.CODEX_AGENT,
+    kind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedVersion: invalidResponseStored.version,
+    updatedAt: TIMES.next,
+  });
+  assert.equal(repairRunning.phase, RunPhase.CODEX_TURN_RUNNING);
+  assert.equal(repairRunning.activeActor, AgentActor.CODEX_AGENT);
+  assert.equal(repairRunning.currentTurn, 1, "starting a repair does not count a response");
+
+  const repairResponseStored = transitionRunState(repairRunning, {
+    to: RunPhase.CODEX_RESPONSE_STORED,
+    expectedVersion: repairRunning.version,
+    updatedAt: TIMES.completed,
+  });
+  assert.equal(repairResponseStored.currentTurn, 2);
+
+  const checking = transitionRunState(invalidResponseStored, {
+    to: RunPhase.CONSENSUS_CHECK,
+    expectedVersion: invalidResponseStored.version,
+    updatedAt: TIMES.consensus,
+  });
+  const webPending = transitionRunState(checking, {
+    to: RunPhase.CODEX_TO_WEB_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
+    expectedVersion: checking.version,
+    updatedAt: TIMES.next,
+  });
+  const webRunning = transitionRunState(webPending, {
+    to: RunPhase.WEB_TURN_RUNNING,
+    expectedVersion: webPending.version,
+    updatedAt: TIMES.running,
+  });
+  const invalidWebResponseStored = transitionRunState(webRunning, {
+    to: RunPhase.WEB_RESPONSE_STORED,
+    expectedVersion: webRunning.version,
+    updatedAt: TIMES.stored,
+  });
+  assert.equal(invalidWebResponseStored.currentTurn, 2);
+  const webRepairRunning = startProtocolRepairTurn(invalidWebResponseStored, {
+    actor: AgentActor.CHATGPT_WEB_AGENT,
+    kind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedVersion: invalidWebResponseStored.version,
+    updatedAt: TIMES.next,
+  });
+  assert.equal(webRepairRunning.phase, RunPhase.WEB_TURN_RUNNING);
+  assert.equal(webRepairRunning.currentTurn, 2);
+  const webRepairResponseStored = transitionRunState(webRepairRunning, {
+    to: RunPhase.WEB_RESPONSE_STORED,
+    expectedVersion: webRepairRunning.version,
+    updatedAt: TIMES.completed,
+  });
+  assert.equal(webRepairResponseStored.currentTurn, 3);
 });
 
 test("externally active pending phases can fail closed into recovery", () => {
@@ -423,6 +514,7 @@ test("externally active pending phases can fail closed into recovery", () => {
   });
   const webPending = transitionRunState(checking, {
     to: RunPhase.CODEX_TO_WEB_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
     expectedVersion: checking.version,
     updatedAt: TIMES.next,
   });
@@ -438,28 +530,55 @@ test("externally active pending phases can fail closed into recovery", () => {
   assert.equal(recovery.phase, RunPhase.RECOVERY_REQUIRED);
   assert.throws(() => transitionRunState(recovery, {
     to: RunPhase.CODEX_TO_WEB_PENDING,
+    sourceActor: AgentActor.CODEX_AGENT,
     expectedVersion: recovery.version,
     updatedAt: "2026-09-04T00:00:10.000Z",
   }), (error) => error.code === "RUN_BLOCKER_NOT_RESOLVED");
 });
 
-test("recovery may adopt a confirmed completed response exactly once", () => {
+test("recovery adopts an explicitly attributed completed response without turn parity", () => {
   const running = codexRunning();
-  const recovery = transitionRunState(running, {
+  const invalidResponseStored = transitionRunState(running, {
+    to: RunPhase.CODEX_RESPONSE_STORED,
+    expectedVersion: running.version,
+    updatedAt: TIMES.stored,
+  });
+  const repairRunning = startProtocolRepairTurn(invalidResponseStored, {
+    actor: AgentActor.CODEX_AGENT,
+    kind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedVersion: invalidResponseStored.version,
+    updatedAt: TIMES.next,
+  });
+  assert.equal(repairRunning.currentTurn, 1);
+
+  const recovery = transitionRunState(repairRunning, {
     to: RunPhase.RECOVERY_REQUIRED,
     blocker: {
       type: RunBlockerType.RECOVERY_CONFIRMATION,
       operationId: "recover-completed-codex-turn",
     },
-    expectedVersion: running.version,
-    updatedAt: TIMES.stored,
+    expectedVersion: repairRunning.version,
+    updatedAt: TIMES.completed,
   });
-  const adopted = transitionRunState(recovery, {
+  assert.throws(() => transitionRunState(recovery, {
     to: RunPhase.CODEX_RESPONSE_STORED,
-    blocker: null,
+    expectedVersion: recovery.version,
+    updatedAt: TIMES.resumed,
+  }), /transition/i, "generic recovery does not infer response ownership from parity");
+  assert.throws(() => adoptRecoveredCompletedResponse(recovery, {
+    actor: AgentActor.CODEX_AGENT,
+    operationId: "different-operation",
+    expectedVersion: recovery.version,
+    updatedAt: TIMES.resumed,
+  }), (error) => error.code === "RECOVERY_OPERATION_MISMATCH");
+
+  const adopted = adoptRecoveredCompletedResponse(recovery, {
+    actor: AgentActor.CODEX_AGENT,
+    operationId: "recover-completed-codex-turn",
     expectedVersion: recovery.version,
     updatedAt: TIMES.resumed,
   });
-  assert.equal(adopted.currentTurn, 1);
+  assert.equal(adopted.phase, RunPhase.CODEX_RESPONSE_STORED);
+  assert.equal(adopted.currentTurn, 2, "the recovered repair response is another terminal turn");
   assert.equal(adopted.blocker, null);
 });

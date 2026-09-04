@@ -15,8 +15,8 @@ const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
 const publicDir = path.resolve(dirname, "../public");
 const MAX_LOCAL_MESSAGE_BYTES = 1024 * 1024;
-const ORCHESTRATION_UNAVAILABLE =
-  "Controller orchestration is unavailable until the new persistent Controller is integrated.";
+const LIVE_ORCHESTRATION_UNAVAILABLE =
+  "Live Controller orchestration is unavailable until Codex and ChatGPT Web runtimes are composed.";
 
 /** @typedef {ReturnType<typeof loadConfig>} RuntimeConfig */
 
@@ -69,18 +69,23 @@ export function createBridgeServer({ runtimeConfig } = {}) {
       ok: true,
       at: nowIso(),
       demoMode: runtimeConfig.demoMode,
-      orchestrationReady: false,
+      coreOrchestrationReady: true,
+      fakeVerticalSliceVerified: true,
+      codexRuntimeReady: false,
+      webRuntimeReady: false,
+      liveSessionBindingReady: false,
+      liveOrchestrationReady: false,
       webConnected: Boolean(extensionTransport?.authenticated),
     });
   });
   app.get("/api/state", (_req, res) => {
-    res.status(503).json({ error: ORCHESTRATION_UNAVAILABLE });
+    res.status(503).json({ error: LIVE_ORCHESTRATION_UNAVAILABLE });
   });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "Unknown API route." });
   });
   app.use(["/runs", "/approvals"], (_req, res) => {
-    res.status(503).json({ error: ORCHESTRATION_UNAVAILABLE });
+    res.status(503).json({ error: LIVE_ORCHESTRATION_UNAVAILABLE });
   });
   app.use(express.static(publicDir));
   app.use((req, res) => {
@@ -108,7 +113,7 @@ export function createBridgeServer({ runtimeConfig } = {}) {
     }
 
     if (url.pathname === "/ws/dashboard") {
-      writeUpgradeRejection(socket, "503 Service Unavailable", ORCHESTRATION_UNAVAILABLE);
+      writeUpgradeRejection(socket, "503 Service Unavailable", LIVE_ORCHESTRATION_UNAVAILABLE);
       return;
     }
 
@@ -200,7 +205,7 @@ export async function main(runtimeConfig = loadConfig()) {
 
   console.log(`\nApp/Web Agent Bridge running at ${runtimeConfig.baseUrl}`);
   console.log(`Mode: ${runtimeConfig.demoMode ? "DEMO (transport disabled)" : "LIVE"}`);
-  console.warn(ORCHESTRATION_UNAVAILABLE);
+  console.warn(LIVE_ORCHESTRATION_UNAVAILABLE);
   console.log("");
 
   let shuttingDown = false;

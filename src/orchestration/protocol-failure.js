@@ -2,6 +2,7 @@ import { validateRunLimits, validateRunOutcome } from "../domain/run-state-machi
 import { buildAgentTurnInput, SHA256_DIGEST_PATTERN } from "../domain/agent-messages.js";
 import {
   AGENT_PACKET_REJECTED_EVENT_TYPE,
+  AgentPacketParserStage,
   AgentPacketRejectionRecoverability,
   buildAgentPacketRejectedEvent,
 } from "../domain/agent-packet-rejection.js";
@@ -40,6 +41,14 @@ const REPAIR_INPUT_DRAFT_FIELDS = Object.freeze([
   "promptTemplateVersion",
   "promptHash",
   "createdAt",
+]);
+
+export const PROTOCOL_REPAIR_PAYLOAD_FIELDS = Object.freeze([
+  "rejectedDeliveryId",
+  "parserStage",
+  "errorCode",
+  "errorSummary",
+  "expectedPacketType",
 ]);
 
 const DECISION_FIELDS = Object.freeze([
@@ -115,6 +124,49 @@ function requireHash(value, name) {
     );
   }
   return value;
+}
+
+export function validateProtocolRepairPayload(value) {
+  const payload = requireExactKeys(
+    value,
+    PROTOCOL_REPAIR_PAYLOAD_FIELDS,
+    "protocol repair payload",
+  );
+  requireNonEmptyString(payload.rejectedDeliveryId, "protocol repair payload.rejectedDeliveryId");
+  if (!isVocabularyValue(AgentPacketParserStage, payload.parserStage)) {
+    throw new ProtocolFailureDecisionError(
+      "protocol repair payload.parserStage must be an AgentPacketParserStage.",
+    );
+  }
+  requireNonEmptyString(payload.errorCode, "protocol repair payload.errorCode");
+  requireNonEmptyString(payload.errorSummary, "protocol repair payload.errorSummary");
+  if (!isVocabularyValue(AgentPacketType, payload.expectedPacketType)) {
+    throw new ProtocolFailureDecisionError(
+      "protocol repair payload.expectedPacketType must be an AgentPacketType.",
+    );
+  }
+  return payload;
+}
+
+export function buildProtocolRepairPayload(decision) {
+  validateProtocolFailureDecision(decision);
+  if (
+    decision?.status !== ProtocolFailureDecisionStatus.REPAIR_REQUIRED
+    || decision.repairContext === null
+  ) {
+    throw new ProtocolFailureDecisionError(
+      "A REPAIR_REQUIRED decision is required to build a protocol repair payload.",
+      "PROTOCOL_REPAIR_NOT_AUTHORIZED",
+    );
+  }
+  const payload = validateProtocolRepairPayload({
+    rejectedDeliveryId: decision.rejectionEvent.deliveryId,
+    parserStage: decision.rejectionEvent.parserStage,
+    errorCode: decision.rejectionEvent.errorCode,
+    errorSummary: decision.rejectionEvent.errorSummary,
+    expectedPacketType: decision.repairContext.expectedPacketType,
+  });
+  return deepFreeze(structuredClone(payload));
 }
 
 function requireConfirmedAttribution(value) {
@@ -411,13 +463,7 @@ export function buildProtocolRepairTurnInput(decision, draft) {
     sourceMessageId: null,
     instructionId: input.instructionId,
     promptTemplateVersion: input.promptTemplateVersion,
-    payload: {
-      rejectedDeliveryId: decision.rejectionEvent.deliveryId,
-      parserStage: decision.rejectionEvent.parserStage,
-      errorCode: decision.rejectionEvent.errorCode,
-      errorSummary: decision.rejectionEvent.errorSummary,
-      expectedPacketType: decision.repairContext.expectedPacketType,
-    },
+    payload: buildProtocolRepairPayload(decision),
     promptHash: input.promptHash,
     objectiveHash: decision.repairContext.objectiveHash,
     policyHash: decision.repairContext.policyHash,

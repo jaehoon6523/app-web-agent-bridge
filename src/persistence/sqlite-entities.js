@@ -96,22 +96,6 @@ function rowChanges(result) {
   return Number(result.changes);
 }
 
-function transact(database, operation) {
-  database.exec("BEGIN IMMEDIATE");
-  try {
-    const result = operation();
-    database.exec("COMMIT");
-    return result;
-  } catch (error) {
-    try {
-      database.exec("ROLLBACK");
-    } catch {
-      // The original operation error remains authoritative.
-    }
-    throw error;
-  }
-}
-
 function requireRun(database, runId, errors) {
   const row = database.prepare("SELECT 1 AS present FROM runs WHERE run_id = ?").get(runId);
   if (!row) throw new errors.PersistenceError(`run ${runId} does not exist`, "RUN_NOT_FOUND");
@@ -167,88 +151,86 @@ export function upsertAgentSessionEntity(database, input, errors) {
   if (input.createdAt !== undefined) requireString(input.createdAt, "createdAt");
   if (input.expectedVersion !== null) requireVersion(input.expectedVersion, "expectedVersion");
 
-  return transact(database, () => {
-    requireRun(database, input.session.runId, errors);
-    const existing = database.prepare(
-      "SELECT * FROM agent_sessions WHERE session_id = ?",
-    ).get(input.session.sessionId);
+  requireRun(database, input.session.runId, errors);
+  const existing = database.prepare(
+    "SELECT * FROM agent_sessions WHERE session_id = ?",
+  ).get(input.session.sessionId);
 
-    if (!existing) {
-      if (input.expectedVersion !== null) {
-        throw new errors.OptimisticConcurrencyError(
-          `agent session ${input.session.sessionId} does not exist at expected version ${input.expectedVersion}`,
-        );
-      }
-      if (input.session.version !== 1) {
-        throw new errors.OptimisticConcurrencyError("new agent session version must be 1");
-      }
-      requireString(input.createdAt, "createdAt");
-      database.prepare(`
-        INSERT INTO agent_sessions (
-          session_id, run_id, actor, session_json, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, 1, ?, ?)
-      `).run(
-        input.session.sessionId,
-        input.session.runId,
-        input.session.actor,
-        encode(input.session),
-        input.createdAt,
-        input.updatedAt,
-      );
-      return structuredClone(input.session);
-    }
-
-    if (existing.run_id !== input.session.runId) {
-      throw ownershipError(
-        "agent session",
-        input.session.sessionId,
-        input.session.runId,
-        existing.run_id,
-        errors,
-      );
-    }
-    if (existing.actor !== input.session.actor) {
-      throw new errors.PersistenceError(
-        `agent session ${input.session.sessionId} actor is immutable`,
-        "IMMUTABLE_METADATA",
-      );
-    }
-    if (input.expectedVersion === null || Number(existing.version) !== input.expectedVersion) {
+  if (!existing) {
+    if (input.expectedVersion !== null) {
       throw new errors.OptimisticConcurrencyError(
-        `agent session ${input.session.sessionId} version conflict`,
+        `agent session ${input.session.sessionId} does not exist at expected version ${input.expectedVersion}`,
       );
     }
-    if (input.session.version !== input.expectedVersion + 1) {
-      throw new errors.OptimisticConcurrencyError(
-        "updated agent session version must equal expectedVersion + 1",
-      );
+    if (input.session.version !== 1) {
+      throw new errors.OptimisticConcurrencyError("new agent session version must be 1");
     }
-    if (input.createdAt !== undefined && input.createdAt !== existing.created_at) {
-      throw new errors.PersistenceError(
-        `agent session ${input.session.sessionId} createdAt is immutable`,
-        "IMMUTABLE_METADATA",
-      );
-    }
-
-    const update = database.prepare(`
-      UPDATE agent_sessions
-      SET session_json = ?, version = ?, updated_at = ?
-      WHERE session_id = ? AND run_id = ? AND version = ?
+    requireString(input.createdAt, "createdAt");
+    database.prepare(`
+      INSERT INTO agent_sessions (
+        session_id, run_id, actor, session_json, version, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 1, ?, ?)
     `).run(
-      encode(input.session),
-      input.session.version,
-      input.updatedAt,
       input.session.sessionId,
       input.session.runId,
-      input.expectedVersion,
+      input.session.actor,
+      encode(input.session),
+      input.createdAt,
+      input.updatedAt,
     );
-    if (rowChanges(update) !== 1) {
-      throw new errors.OptimisticConcurrencyError(
-        `agent session ${input.session.sessionId} changed concurrently`,
-      );
-    }
     return structuredClone(input.session);
-  });
+  }
+
+  if (existing.run_id !== input.session.runId) {
+    throw ownershipError(
+      "agent session",
+      input.session.sessionId,
+      input.session.runId,
+      existing.run_id,
+      errors,
+    );
+  }
+  if (existing.actor !== input.session.actor) {
+    throw new errors.PersistenceError(
+      `agent session ${input.session.sessionId} actor is immutable`,
+      "IMMUTABLE_METADATA",
+    );
+  }
+  if (input.expectedVersion === null || Number(existing.version) !== input.expectedVersion) {
+    throw new errors.OptimisticConcurrencyError(
+      `agent session ${input.session.sessionId} version conflict`,
+    );
+  }
+  if (input.session.version !== input.expectedVersion + 1) {
+    throw new errors.OptimisticConcurrencyError(
+      "updated agent session version must equal expectedVersion + 1",
+    );
+  }
+  if (input.createdAt !== undefined && input.createdAt !== existing.created_at) {
+    throw new errors.PersistenceError(
+      `agent session ${input.session.sessionId} createdAt is immutable`,
+      "IMMUTABLE_METADATA",
+    );
+  }
+
+  const update = database.prepare(`
+    UPDATE agent_sessions
+    SET session_json = ?, version = ?, updated_at = ?
+    WHERE session_id = ? AND run_id = ? AND version = ?
+  `).run(
+    encode(input.session),
+    input.session.version,
+    input.updatedAt,
+    input.session.sessionId,
+    input.session.runId,
+    input.expectedVersion,
+  );
+  if (rowChanges(update) !== 1) {
+    throw new errors.OptimisticConcurrencyError(
+      `agent session ${input.session.sessionId} changed concurrently`,
+    );
+  }
+  return structuredClone(input.session);
 }
 
 export function getAgentSessionEntity(database, sessionId, errors) {
@@ -309,41 +291,39 @@ export function saveAgentPacketEntity(database, input, errors) {
     }
   }
 
-  return transact(database, () => {
-    requireRun(database, input.runId, errors);
-    const message = database.prepare(
-      "SELECT run_id, message_json FROM agent_messages WHERE message_id = ?",
-    ).get(input.messageId);
-    if (!message) {
-      throw new errors.PersistenceError(
-        `agent message ${input.messageId} does not exist`,
-        "AGENT_MESSAGE_NOT_FOUND",
-      );
-    }
-    if (message.run_id !== input.runId) {
-      throw ownershipError("agent message", input.messageId, input.runId, message.run_id, errors);
-    }
-    const agentMessage = decode(message.message_json, `agent message ${input.messageId}`, errors);
-    if (encode(agentMessage.normalizedPacket) !== encode(input.packet)) {
-      throw new errors.PersistenceError(
-        `agent packet does not match agent message ${input.messageId}`,
-        "AGENT_MESSAGE_PACKET_MISMATCH",
-      );
-    }
-    database.prepare(`
-      INSERT INTO agent_packets (
-        packet_id, run_id, message_id, packet_hash, packet_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      input.packetId,
-      input.runId,
-      input.messageId,
-      packetHash,
-      encode(input.packet),
-      input.createdAt,
+  requireRun(database, input.runId, errors);
+  const message = database.prepare(
+    "SELECT run_id, message_json FROM agent_messages WHERE message_id = ?",
+  ).get(input.messageId);
+  if (!message) {
+    throw new errors.PersistenceError(
+      `agent message ${input.messageId} does not exist`,
+      "AGENT_MESSAGE_NOT_FOUND",
     );
-    return getAgentPacketEntity(database, input.packetId, errors);
-  });
+  }
+  if (message.run_id !== input.runId) {
+    throw ownershipError("agent message", input.messageId, input.runId, message.run_id, errors);
+  }
+  const agentMessage = decode(message.message_json, `agent message ${input.messageId}`, errors);
+  if (encode(agentMessage.normalizedPacket) !== encode(input.packet)) {
+    throw new errors.PersistenceError(
+      `agent packet does not match agent message ${input.messageId}`,
+      "AGENT_MESSAGE_PACKET_MISMATCH",
+    );
+  }
+  database.prepare(`
+    INSERT INTO agent_packets (
+      packet_id, run_id, message_id, packet_hash, packet_json, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `).run(
+    input.packetId,
+    input.runId,
+    input.messageId,
+    packetHash,
+    encode(input.packet),
+    input.createdAt,
+  );
+  return getAgentPacketEntity(database, input.packetId, errors);
 }
 
 export function getAgentPacketEntity(database, packetId, errors) {
@@ -430,22 +410,20 @@ function createOpaqueRecord(database, input, kind, errors) {
   const idColumn = kind === "approval" ? "approval_id" : "operation_id";
   const jsonColumn = kind === "approval" ? "approval_json" : "operation_json";
 
-  return transact(database, () => {
-    requireRun(database, input.runId, errors);
-    database.prepare(`
-      INSERT INTO ${table} (
-        ${idColumn}, run_id, status, ${jsonColumn}, version, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 1, ?, ?)
-    `).run(
-      input[idName],
-      input.runId,
-      input.status,
-      encode(record),
-      input.createdAt,
-      input.updatedAt,
-    );
-    return structuredClone(record);
-  });
+  requireRun(database, input.runId, errors);
+  database.prepare(`
+    INSERT INTO ${table} (
+      ${idColumn}, run_id, status, ${jsonColumn}, version, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, 1, ?, ?)
+  `).run(
+    input[idName],
+    input.runId,
+    input.status,
+    encode(record),
+    input.createdAt,
+    input.updatedAt,
+  );
+  return structuredClone(record);
 }
 
 function resolveOpaqueRecord(database, input, kind, errors) {
@@ -472,59 +450,60 @@ function resolveOpaqueRecord(database, input, kind, errors) {
   const idColumn = kind === "approval" ? "approval_id" : "operation_id";
   const jsonColumn = kind === "approval" ? "approval_json" : "operation_json";
 
-  return transact(database, () => {
-    const row = database.prepare(`SELECT * FROM ${table} WHERE ${idColumn} = ?`).get(input[idName]);
-    if (!row) {
-      throw new errors.PersistenceError(`${kind} ${input[idName]} does not exist`, `${kind.toUpperCase()}_NOT_FOUND`);
-    }
-    if (row.run_id !== input.runId) {
-      throw ownershipError(kind, input[idName], input.runId, row.run_id, errors);
-    }
-    const current = decodeOpaqueRecord(row, kind, errors);
-    if (current.status !== input.expectedStatus) {
-      throw new errors.PersistenceError(
-        `${kind} ${input[idName]} status conflict`,
-        `${kind.toUpperCase()}_STATUS_CONFLICT`,
-      );
-    }
-    if (current.version !== input.expectedVersion) {
-      throw new errors.OptimisticConcurrencyError(`${kind} ${input[idName]} version conflict`);
-    }
-    if (
-      input[expectedHashName] !== undefined
-      && input[expectedHashName] !== current[hashName]
-    ) {
-      throw new errors.PersistenceError(
-        `${kind} ${input[idName]} ${opaqueName} hash conflict`,
-        "OPAQUE_SCOPE_HASH_CONFLICT",
-      );
-    }
-    const next = {
-      ...current,
-      status: input.nextStatus,
-      resolution: opaqueValue(input.resolution, "resolution"),
-      version: current.version + 1,
-      updatedAt: input.updatedAt,
-    };
-    const update = database.prepare(`
-      UPDATE ${table}
-      SET status = ?, ${jsonColumn} = ?, version = ?, updated_at = ?
-      WHERE ${idColumn} = ? AND run_id = ? AND status = ? AND version = ?
-    `).run(
-      next.status,
-      encode(next),
-      next.version,
-      next.updatedAt,
-      input[idName],
-      input.runId,
-      input.expectedStatus,
-      input.expectedVersion,
+  const row = database.prepare(`SELECT * FROM ${table} WHERE ${idColumn} = ?`).get(input[idName]);
+  if (!row) {
+    throw new errors.PersistenceError(
+      `${kind} ${input[idName]} does not exist`,
+      `${kind.toUpperCase()}_NOT_FOUND`,
     );
-    if (rowChanges(update) !== 1) {
-      throw new errors.OptimisticConcurrencyError(`${kind} ${input[idName]} changed concurrently`);
-    }
-    return structuredClone(next);
-  });
+  }
+  if (row.run_id !== input.runId) {
+    throw ownershipError(kind, input[idName], input.runId, row.run_id, errors);
+  }
+  const current = decodeOpaqueRecord(row, kind, errors);
+  if (current.status !== input.expectedStatus) {
+    throw new errors.PersistenceError(
+      `${kind} ${input[idName]} status conflict`,
+      `${kind.toUpperCase()}_STATUS_CONFLICT`,
+    );
+  }
+  if (current.version !== input.expectedVersion) {
+    throw new errors.OptimisticConcurrencyError(`${kind} ${input[idName]} version conflict`);
+  }
+  if (
+    input[expectedHashName] !== undefined
+    && input[expectedHashName] !== current[hashName]
+  ) {
+    throw new errors.PersistenceError(
+      `${kind} ${input[idName]} ${opaqueName} hash conflict`,
+      "OPAQUE_SCOPE_HASH_CONFLICT",
+    );
+  }
+  const next = {
+    ...current,
+    status: input.nextStatus,
+    resolution: opaqueValue(input.resolution, "resolution"),
+    version: current.version + 1,
+    updatedAt: input.updatedAt,
+  };
+  const update = database.prepare(`
+    UPDATE ${table}
+    SET status = ?, ${jsonColumn} = ?, version = ?, updated_at = ?
+    WHERE ${idColumn} = ? AND run_id = ? AND status = ? AND version = ?
+  `).run(
+    next.status,
+    encode(next),
+    next.version,
+    next.updatedAt,
+    input[idName],
+    input.runId,
+    input.expectedStatus,
+    input.expectedVersion,
+  );
+  if (rowChanges(update) !== 1) {
+    throw new errors.OptimisticConcurrencyError(`${kind} ${input[idName]} changed concurrently`);
+  }
+  return structuredClone(next);
 }
 
 function getOpaqueRecord(database, id, kind, errors) {

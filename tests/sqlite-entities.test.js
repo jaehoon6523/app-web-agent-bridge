@@ -335,3 +335,84 @@ test("recovery operations use opaque details and expected status/version CAS", (
   }), (error) => error.code === "RUN_OWNERSHIP_MISMATCH");
   store.close();
 });
+
+test("session and opaque mutations join an outer transaction and roll back together", (t) => {
+  const { store, runA } = openStore(t);
+  const approval = store.createApproval({
+    approvalId: "approval-existing",
+    runId: runA.runId,
+    status: "PENDING",
+    scope: { operation: "BLOCKED_APPROVAL" },
+    createdAt: T0,
+    updatedAt: T0,
+  });
+  const recovery = store.createRecoveryOperation({
+    operationId: "recovery-existing",
+    runId: runA.runId,
+    status: "PENDING",
+    details: { operation: "BLOCKED_RECOVERY" },
+    createdAt: T0,
+    updatedAt: T0,
+  });
+  const rollback = new Error("rollback discussion transaction");
+
+  assert.throws(() => store.withTransaction((transaction) => {
+    transaction.createAgentSession({
+      session: makeSession(runA.runId),
+      createdAt: T0,
+      updatedAt: T0,
+    });
+    transaction.upsertAgentSession({
+      session: makeSession(runA.runId, {
+        status: AgentSessionStatus.READY,
+        externalSessionId: "thread-rollback",
+        lastObservedAt: T1,
+        version: 2,
+      }),
+      expectedVersion: 1,
+      updatedAt: T1,
+    });
+    transaction.resolveApproval({
+      approvalId: approval.approvalId,
+      runId: runA.runId,
+      expectedStatus: "PENDING",
+      expectedVersion: 1,
+      expectedScopeHash: approval.scopeHash,
+      nextStatus: "APPROVED",
+      resolution: { decidedBy: "controller" },
+      updatedAt: T1,
+    });
+    transaction.resolveRecoveryOperation({
+      operationId: recovery.operationId,
+      runId: runA.runId,
+      expectedStatus: "PENDING",
+      expectedVersion: 1,
+      expectedDetailsHash: recovery.detailsHash,
+      nextStatus: "RESOLVED",
+      resolution: { action: "RETRY" },
+      updatedAt: T1,
+    });
+    transaction.createApproval({
+      approvalId: "approval-rollback",
+      runId: runA.runId,
+      status: "PENDING",
+      createdAt: T1,
+      updatedAt: T1,
+    });
+    transaction.createRecoveryOperation({
+      operationId: "recovery-rollback",
+      runId: runA.runId,
+      status: "PENDING",
+      createdAt: T1,
+      updatedAt: T1,
+    });
+    throw rollback;
+  }), (error) => error === rollback);
+
+  assert.equal(store.getAgentSession("session-codex"), null);
+  assert.deepEqual(store.getApproval(approval.approvalId), approval);
+  assert.deepEqual(store.getRecoveryOperation(recovery.operationId), recovery);
+  assert.equal(store.getApproval("approval-rollback"), null);
+  assert.equal(store.getRecoveryOperation("recovery-rollback"), null);
+  store.close();
+});

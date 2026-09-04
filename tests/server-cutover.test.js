@@ -129,7 +129,22 @@ test("server rejects token URLs and authenticates the exact extension identity b
   assert.match(healthResponse.headers.get("content-security-policy"), /frame-ancestors 'none'/u);
   const health = await healthResponse.json();
   assert.equal(health.webConnected, true);
-  assert.equal(health.orchestrationReady, false);
+  assert.deepEqual({
+    coreOrchestrationReady: health.coreOrchestrationReady,
+    fakeVerticalSliceVerified: health.fakeVerticalSliceVerified,
+    codexRuntimeReady: health.codexRuntimeReady,
+    webRuntimeReady: health.webRuntimeReady,
+    liveSessionBindingReady: health.liveSessionBindingReady,
+    liveOrchestrationReady: health.liveOrchestrationReady,
+  }, {
+    coreOrchestrationReady: true,
+    fakeVerticalSliceVerified: true,
+    codexRuntimeReady: false,
+    webRuntimeReady: false,
+    liveSessionBindingReady: false,
+    liveOrchestrationReady: false,
+  });
+  assert.equal(Object.hasOwn(health, "orchestrationReady"), false);
 
   const closed = once(socket, "close");
   socket.close();

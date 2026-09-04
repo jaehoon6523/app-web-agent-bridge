@@ -6,6 +6,7 @@ import {
 } from "./contracts.js";
 import {
   AgentActor,
+  AgentTurnInputKind,
   HumanGateReason,
   RunBlockerType,
   RunOutcomeType,
@@ -22,9 +23,7 @@ const TERMINAL_PHASE_SET = new Set([
 const SAFE_RESUME_PHASES = Object.freeze([
   RunPhase.STARTING_SESSIONS,
   RunPhase.CODEX_TURN_PENDING,
-  RunPhase.CODEX_RESPONSE_STORED,
   RunPhase.CODEX_TO_WEB_PENDING,
-  RunPhase.WEB_RESPONSE_STORED,
   RunPhase.WEB_TO_CODEX_PENDING,
   RunPhase.CONSENSUS_CHECK,
 ]);
@@ -71,6 +70,7 @@ export const ALLOWED_RUN_TRANSITIONS = Object.freeze({
   [RunPhase.CODEX_RESPONSE_STORED]: Object.freeze([
     RunPhase.CONSENSUS_CHECK,
     RunPhase.HUMAN_GATE,
+    RunPhase.RECOVERY_REQUIRED,
     RunPhase.FAILED,
     RunPhase.CANCELLED,
   ]),
@@ -90,6 +90,7 @@ export const ALLOWED_RUN_TRANSITIONS = Object.freeze({
   [RunPhase.WEB_RESPONSE_STORED]: Object.freeze([
     RunPhase.CONSENSUS_CHECK,
     RunPhase.HUMAN_GATE,
+    RunPhase.RECOVERY_REQUIRED,
     RunPhase.FAILED,
     RunPhase.CANCELLED,
   ]),
@@ -105,6 +106,7 @@ export const ALLOWED_RUN_TRANSITIONS = Object.freeze({
     RunPhase.WEB_TO_CODEX_PENDING,
     RunPhase.COMPLETE,
     RunPhase.HUMAN_GATE,
+    RunPhase.RECOVERY_REQUIRED,
     RunPhase.FAILED,
     RunPhase.CANCELLED,
   ]),
@@ -130,6 +132,16 @@ const RUNNING_ACTOR = Object.freeze({
 const RESPONSE_COMPLETION = Object.freeze({
   [RunPhase.CODEX_TURN_RUNNING]: RunPhase.CODEX_RESPONSE_STORED,
   [RunPhase.WEB_TURN_RUNNING]: RunPhase.WEB_RESPONSE_STORED,
+});
+
+const RESPONSE_SOURCE_ACTOR = Object.freeze({
+  [RunPhase.CODEX_RESPONSE_STORED]: AgentActor.CODEX_AGENT,
+  [RunPhase.WEB_RESPONSE_STORED]: AgentActor.CHATGPT_WEB_AGENT,
+});
+
+const PEER_PENDING_BY_SOURCE_ACTOR = Object.freeze({
+  [AgentActor.CODEX_AGENT]: RunPhase.CODEX_TO_WEB_PENDING,
+  [AgentActor.CHATGPT_WEB_AGENT]: RunPhase.WEB_TO_CODEX_PENDING,
 });
 
 const BOUNDARY_PHASES = new Set([
@@ -228,6 +240,39 @@ function assertExpectedVersion(state, expectedVersion) {
 
 function requiredActorForPhase(phase) {
   return RUNNING_ACTOR[phase] ?? null;
+}
+
+function requireAgentActor(value, name) {
+  if (!isVocabularyValue(AgentActor, value)) {
+    throw new RunStateMachineError(`${name} must be an AgentActor.`);
+  }
+  return value;
+}
+
+function assertTurnMayStart(
+  state,
+  targetPhase,
+  blocker = state.blocker,
+  { allowPausedQueue = false, allowBlockedQueue = false } = {},
+) {
+  if (state.paused && !allowPausedQueue) {
+    throw new RunStateMachineError(
+      `Run is paused; transition to ${targetPhase} cannot start a delivery or turn.`,
+      "RUN_PAUSED",
+    );
+  }
+  if (blocker !== null && !allowBlockedQueue) {
+    throw new RunStateMachineError(
+      `Run has an unresolved blocker; transition to ${targetPhase} is refused.`,
+      "RUN_BLOCKED",
+    );
+  }
+  if (state.currentTurn >= state.maxTurns) {
+    throw new RunStateMachineError(
+      `Run has reached maxTurns (${state.maxTurns}); another delivery or turn is refused.`,
+      "RUN_TURN_LIMIT_REACHED",
+    );
+  }
 }
 
 function validatePhaseInvariants(state) {
@@ -417,21 +462,6 @@ export function transitionRunState(state, input) {
     );
   }
 
-  if (
-    request.to === RunPhase.CODEX_TO_WEB_PENDING
-    || request.to === RunPhase.WEB_TO_CODEX_PENDING
-  ) {
-    const expectedPendingPhase = state.currentTurn % 2 === 1
-      ? RunPhase.CODEX_TO_WEB_PENDING
-      : RunPhase.WEB_TO_CODEX_PENDING;
-    if (request.to !== expectedPendingPhase) {
-      throw new RunStateMachineError(
-        `Turn ${state.currentTurn} requires ${expectedPendingPhase}.`,
-        "RUN_ACTOR_ALTERNATION_VIOLATION",
-      );
-    }
-  }
-
   const nextActor = requiredActorForPhase(request.to);
   if (Object.hasOwn(request, "activeActor") && request.activeActor !== nextActor) {
     throw new RunStateMachineError(
@@ -466,31 +496,29 @@ export function transitionRunState(state, input) {
     nextBlocker = null;
   }
 
-  if (state.paused && BOUNDARY_PHASES.has(request.to)) {
-    throw new RunStateMachineError(
-      `Run is paused; transition to ${request.to} cannot start a delivery or turn.`,
-      "RUN_PAUSED",
-    );
+  if (BOUNDARY_PHASES.has(request.to)) {
+    const queuesNextDelivery = request.to === RunPhase.CODEX_TO_WEB_PENDING
+      || request.to === RunPhase.WEB_TO_CODEX_PENDING;
+    assertTurnMayStart(state, request.to, nextBlocker, {
+      allowPausedQueue: queuesNextDelivery,
+      allowBlockedQueue: queuesNextDelivery,
+    });
   }
-  if (nextBlocker !== null && BOUNDARY_PHASES.has(request.to)) {
-    throw new RunStateMachineError(
-      `Run has an unresolved blocker; transition to ${request.to} is refused.`,
-      "RUN_BLOCKED",
-    );
-  }
-  if (state.currentTurn >= state.maxTurns && BOUNDARY_PHASES.has(request.to)) {
-    throw new RunStateMachineError(
-      `Run has reached maxTurns (${state.maxTurns}); another delivery or turn is refused.`,
-      "RUN_TURN_LIMIT_REACHED",
-    );
+  if (
+    request.to === RunPhase.CODEX_TO_WEB_PENDING
+    || request.to === RunPhase.WEB_TO_CODEX_PENDING
+  ) {
+    const sourceActor = requireAgentActor(request.sourceActor, "sourceActor");
+    const expectedPendingPhase = PEER_PENDING_BY_SOURCE_ACTOR[sourceActor];
+    if (request.to !== expectedPendingPhase) {
+      throw new RunStateMachineError(
+        `${sourceActor} response requires ${expectedPendingPhase}.`,
+        "RUN_ACTOR_ALTERNATION_VIOLATION",
+      );
+    }
   }
 
-  const recoversCompletedResponse = state.phase === RunPhase.RECOVERY_REQUIRED && (
-    (request.to === RunPhase.CODEX_RESPONSE_STORED && state.currentTurn % 2 === 0)
-    || (request.to === RunPhase.WEB_RESPONSE_STORED && state.currentTurn % 2 === 1)
-  );
-  const completesResponse = RESPONSE_COMPLETION[state.phase] === request.to
-    || recoversCompletedResponse;
+  const completesResponse = RESPONSE_COMPLETION[state.phase] === request.to;
   const currentTurn = state.currentTurn + (completesResponse ? 1 : 0);
   if (currentTurn > state.maxTurns) {
     throw new RunStateMachineError(
@@ -504,6 +532,90 @@ export function transitionRunState(state, input) {
     activeActor: nextActor,
     currentTurn,
     blocker: nextBlocker,
+    updatedAt: request.updatedAt,
+  });
+}
+
+export function startProtocolRepairTurn(state, input) {
+  assertRunState(state);
+  const request = requireMutationInput(input, "startProtocolRepairTurn");
+  requireExactKeys(
+    request,
+    ["actor", "kind", "expectedVersion", "updatedAt"],
+    "startProtocolRepairTurn input",
+  );
+  assertExpectedVersion(state, request.expectedVersion);
+  const actor = requireAgentActor(request.actor, "startProtocolRepairTurn actor");
+  if (request.kind !== AgentTurnInputKind.PROTOCOL_REPAIR) {
+    throw new RunStateMachineError(
+      "startProtocolRepairTurn kind must be PROTOCOL_REPAIR.",
+      "PROTOCOL_REPAIR_INTENT_REQUIRED",
+    );
+  }
+  const responseActor = RESPONSE_SOURCE_ACTOR[state.phase];
+  if (responseActor === undefined) {
+    throw new RunStateMachineError(
+      `A protocol repair cannot start from ${state.phase}.`,
+      "PROTOCOL_REPAIR_PHASE_MISMATCH",
+    );
+  }
+  if (actor !== responseActor) {
+    throw new RunStateMachineError(
+      `Protocol repair actor ${actor} does not match stored response actor ${responseActor}.`,
+      "PROTOCOL_REPAIR_ACTOR_MISMATCH",
+    );
+  }
+  const targetPhase = actor === AgentActor.CODEX_AGENT
+    ? RunPhase.CODEX_TURN_RUNNING
+    : RunPhase.WEB_TURN_RUNNING;
+  assertTurnMayStart(state, targetPhase);
+  return buildNextState(state, {
+    phase: targetPhase,
+    activeActor: actor,
+    updatedAt: request.updatedAt,
+  });
+}
+
+export function adoptRecoveredCompletedResponse(state, input) {
+  assertRunState(state);
+  const request = requireMutationInput(input, "adoptRecoveredCompletedResponse");
+  requireExactKeys(
+    request,
+    ["actor", "operationId", "expectedVersion", "updatedAt"],
+    "adoptRecoveredCompletedResponse input",
+  );
+  assertExpectedVersion(state, request.expectedVersion);
+  const actor = requireAgentActor(request.actor, "adoptRecoveredCompletedResponse actor");
+  if (
+    state.phase !== RunPhase.RECOVERY_REQUIRED
+    || state.blocker?.type !== RunBlockerType.RECOVERY_CONFIRMATION
+  ) {
+    throw new RunStateMachineError(
+      "A completed response can only be adopted from RECOVERY_REQUIRED.",
+      "RECOVERY_RESPONSE_PHASE_MISMATCH",
+    );
+  }
+  requireNonEmptyString(request.operationId, "adoptRecoveredCompletedResponse operationId");
+  if (request.operationId !== state.blocker.operationId) {
+    throw new RunStateMachineError(
+      "Recovery operationId does not match the active recovery blocker.",
+      "RECOVERY_OPERATION_MISMATCH",
+    );
+  }
+  if (state.currentTurn >= state.maxTurns) {
+    throw new RunStateMachineError(
+      `Completing this response would exceed maxTurns (${state.maxTurns}).`,
+      "RUN_TURN_LIMIT_REACHED",
+    );
+  }
+  const targetPhase = actor === AgentActor.CODEX_AGENT
+    ? RunPhase.CODEX_RESPONSE_STORED
+    : RunPhase.WEB_RESPONSE_STORED;
+  return buildNextState(state, {
+    phase: targetPhase,
+    activeActor: null,
+    currentTurn: state.currentTurn + 1,
+    blocker: null,
     updatedAt: request.updatedAt,
   });
 }

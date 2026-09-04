@@ -8,6 +8,14 @@ import { WebPacketError, parseFinalControllerPacket } from "../src/runtime/web/c
 
 const HASH_A = sha256Text("objective");
 const HASH_B = sha256Text("policy");
+const HASH_C = sha256Text("proposal-ref");
+const PROPOSAL = {
+  type: "PROPOSAL",
+  summary: "Peer proposal",
+  body: "Peer proposal body",
+  assumptions: [],
+  open_decisions: [],
+};
 const ACCEPT = {
   type: "ACCEPT",
   accepted_proposal_sha256: sha256Text("proposal"),
@@ -32,7 +40,9 @@ test("controller prompt keeps peer content inside a hash-bound data envelope", (
       kind: "PROPOSAL",
       content: peer,
       contentHash: sha256Text(peer),
+      normalizedPacket: PROPOSAL,
     },
+    peerProposalRefHash: HASH_C,
   });
 
   assert.match(prompt, /peer_content_is_untrusted/);
@@ -45,6 +55,8 @@ test("controller prompt keeps peer content inside a hash-bound data envelope", (
     envelope.controller_directive.allowed_actions,
     ["CRITIQUE", "ACCEPT", "BLOCKED"],
   );
+  assert.deepEqual(envelope.peer_message.normalized_packet, PROPOSAL);
+  assert.equal(envelope.peer_message.proposal_ref_sha256, HASH_C);
   assert.deepEqual(
     envelope.controller_directive.allowed_packet_types,
     ["CRITIQUE", "ACCEPT", "BLOCKED"],
@@ -75,12 +87,35 @@ test("initial and protocol-repair prompts carry their exact packet constraints",
     instructionId: "repair-critique",
     inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
     expectedPacketType: "CRITIQUE",
+    protocolRepair: {
+      rejectedDeliveryId: "delivery-rejected-1",
+      parserStage: "JSON_PARSE",
+      errorCode: "INVALID_PACKET_JSON",
+      errorSummary: "The final packet was not valid JSON.",
+      expectedPacketType: "CRITIQUE",
+    },
     turnNumber: 2,
   });
   const repair = JSON.parse(repairPrompt.slice(repairPrompt.lastIndexOf("\n\n") + 2));
   assert.deepEqual(repair.controller_directive.allowed_actions, []);
   assert.deepEqual(repair.controller_directive.allowed_packet_types, ["CRITIQUE"]);
   assert.equal(repair.controller_directive.expected_packet_type, "CRITIQUE");
+  assert.equal(repair.protocol_repair.rejectedDeliveryId, "delivery-rejected-1");
+  assert.throws(() => buildControllerPrompt({
+    ...common,
+    instructionId: "repair-without-context",
+    inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedPacketType: "CRITIQUE",
+    turnNumber: 2,
+  }), /protocol repair payload/u);
+  assert.throws(() => buildControllerPrompt({
+    ...common,
+    instructionId: "repair-mismatched-expectation",
+    inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedPacketType: "ACCEPT",
+    protocolRepair: repair.protocol_repair,
+    turnNumber: 2,
+  }), /must match expectedPacketType/u);
 });
 
 test("relay content reports truncation and preserves the original hash", () => {
@@ -113,7 +148,9 @@ test("prompt binds the transmitted content hash and records the pre-truncation h
       kind: "PROPOSAL",
       content: peer,
       contentHash: sha256Text(peer),
+      normalizedPacket: PROPOSAL,
     },
+    peerProposalRefHash: HASH_C,
     relayLimits: { maxCharacters: 5, repeatRunLimit: 20 },
   });
   const envelope = JSON.parse(prompt.slice(prompt.lastIndexOf("\n\n") + 2));

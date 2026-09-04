@@ -1,6 +1,9 @@
 import { canonicalJson, sha256Text } from "../domain/canonical-json.js";
+import { validateAgentPacket } from "../domain/agent-packets.js";
 import {
   AgentActor,
+  AgentMessageKind,
+  AgentPacketType,
   AgentTurnInputKind,
   RunMode,
   isVocabularyValue,
@@ -10,7 +13,16 @@ import {
   PACKET_TYPE_BY_ACTION,
   resolveDiscussionActionPolicy,
 } from "../domain/discussion-actions.js";
+import { validateProtocolRepairPayload } from "./protocol-failure.js";
 import { sanitizeRelayContent } from "./relay-content.js";
+
+const PACKET_TYPE_BY_MESSAGE_KIND = Object.freeze({
+  [AgentMessageKind.PROPOSAL]: AgentPacketType.PROPOSAL,
+  [AgentMessageKind.REVISION]: AgentPacketType.PROPOSAL,
+  [AgentMessageKind.CRITIQUE]: AgentPacketType.CRITIQUE,
+  [AgentMessageKind.ACCEPTANCE]: AgentPacketType.ACCEPT,
+  [AgentMessageKind.BLOCKER]: AgentPacketType.BLOCKED,
+});
 
 function requiredString(value, name) {
   if (typeof value !== "string" || value.trim() === "") {
@@ -44,7 +56,9 @@ export function buildControllerPrompt({
   turnNumber,
   maxTurns,
   peerMessage = null,
+  peerProposalRefHash = null,
   expectedPacketType = null,
+  protocolRepair = null,
   relayLimits,
 }) {
   requiredString(instructionId, "instructionId");
@@ -74,6 +88,10 @@ export function buildControllerPrompt({
     }
     requiredString(peerMessage.messageId, "peerMessage.messageId");
     requiredString(peerMessage.kind, "peerMessage.kind");
+    validateAgentPacket(peerMessage.normalizedPacket);
+    if (peerMessage.normalizedPacket.type !== PACKET_TYPE_BY_MESSAGE_KIND[peerMessage.kind]) {
+      throw new TypeError("peerMessage kind does not match its normalized packet.");
+    }
     if (!isVocabularyValue(AgentActor, peerMessage.actor)) {
       throw new TypeError("peerMessage.actor must be an AgentActor.");
     }
@@ -84,12 +102,24 @@ export function buildControllerPrompt({
     if (peerMessage.contentHash !== sanitized.originalHash) {
       throw new TypeError("peerMessage.contentHash does not match the original peer content.");
     }
+    const proposalMessage = peerMessage.kind === AgentMessageKind.PROPOSAL
+      || peerMessage.kind === AgentMessageKind.REVISION;
+    if (proposalMessage) {
+      requiredHash(peerProposalRefHash, "peerProposalRefHash");
+      if (peerMessage.normalizedPacket.type !== AgentPacketType.PROPOSAL) {
+        throw new TypeError("proposal/revision peer message must contain a PROPOSAL packet.");
+      }
+    } else if (peerProposalRefHash !== null) {
+      throw new TypeError("peerProposalRefHash is only valid for proposal/revision messages.");
+    }
     peerEnvelope = {
       message_id: peerMessage.messageId,
       from_actor: peerMessage.actor,
       kind: peerMessage.kind,
       content_sha256: sanitized.contentHash,
       content: sanitized.content,
+      normalized_packet: peerMessage.normalizedPacket,
+      proposal_ref_sha256: peerProposalRefHash,
     };
     relayMetadata = {
       truncated: sanitized.truncated,
@@ -105,6 +135,19 @@ export function buildControllerPrompt({
   }
   if (inputKind !== AgentTurnInputKind.PEER_RELAY && peerEnvelope !== null) {
     throw new TypeError(`${String(inputKind)} must not include peerMessage.`);
+  }
+  if (inputKind !== AgentTurnInputKind.PEER_RELAY && peerProposalRefHash !== null) {
+    throw new TypeError(`${String(inputKind)} must not include peerProposalRefHash.`);
+  }
+  if (inputKind === AgentTurnInputKind.PROTOCOL_REPAIR) {
+    validateProtocolRepairPayload(protocolRepair);
+    if (protocolRepair.expectedPacketType !== expectedPacketType) {
+      throw new TypeError(
+        "protocolRepair.expectedPacketType must match expectedPacketType.",
+      );
+    }
+  } else if (protocolRepair !== null) {
+    throw new TypeError(`${String(inputKind)} must not include protocolRepair.`);
   }
   const actionPolicy = resolveDiscussionActionPolicy({
     inputKind,
@@ -133,6 +176,9 @@ export function buildControllerPrompt({
     },
     peer_message: peerEnvelope,
     relay_metadata: relayMetadata,
+    protocol_repair: inputKind === AgentTurnInputKind.PROTOCOL_REPAIR
+      ? structuredClone(protocolRepair)
+      : null,
   };
 
   return [

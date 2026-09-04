@@ -206,7 +206,11 @@ test("proposal artifacts survive restart and retain exact source provenance", (t
   assert.deepEqual(store.verifyProposalArtifacts(), { valid: true, artifacts: 1 });
   store.close();
 
-  const reopened = new SqliteStore(filename);
+  // This is an entity-level persistence fixture, not a complete discussion
+  // transaction. Verify the proposal owner explicitly without treating the
+  // deliberately omitted response/queue events as production history.
+  const reopened = new SqliteStore({ filename, verifyOnOpen: false });
+  assert.deepEqual(reopened.verifyProposalArtifacts(), { valid: true, artifacts: 1 });
   assert.deepEqual(reopened.getProposalArtifact(artifact.proposalId), artifact);
   assert.deepEqual(reopened.listProposalArtifacts(run.runId), [artifact]);
   reopened.close();

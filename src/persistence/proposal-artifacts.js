@@ -255,6 +255,21 @@ export function getProposalArtifactBySourceMessageEntity(database, messageId, er
   return row ? decodeArtifactRow(database, row, errors) : null;
 }
 
+export function getProposalArtifactByReferenceEntity(
+  database,
+  runId,
+  proposalRefHash,
+  errors,
+) {
+  requireNonEmptyString(runId, "runId");
+  requireNonEmptyString(proposalRefHash, "proposalRefHash");
+  const row = database.prepare(`
+    SELECT * FROM proposal_artifacts
+    WHERE run_id = ? AND proposal_ref_hash = ?
+  `).get(runId, proposalRefHash);
+  return row ? decodeArtifactRow(database, row, errors) : null;
+}
+
 export function listProposalArtifactsEntity(database, runId, errors) {
   requireNonEmptyString(runId, "runId");
   readRun(database, runId, errors);

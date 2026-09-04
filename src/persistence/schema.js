@@ -1,4 +1,6 @@
-export const SQLITE_SCHEMA_VERSION = 4;
+import { RunPhase, isVocabularyValue } from "../domain/vocabulary.js";
+
+export const SQLITE_SCHEMA_VERSION = 5;
 
 export const REQUIRED_TABLES = Object.freeze([
   "runs",
@@ -9,6 +11,7 @@ export const REQUIRED_TABLES = Object.freeze([
   "delivery_attempts",
   "agent_packets",
   "proposal_artifacts",
+  "run_outcomes",
   "domain_events",
   "approvals",
   "run_projections",
@@ -48,6 +51,16 @@ const PROPOSAL_ARTIFACTS_SQL = `
   ) STRICT;
   CREATE INDEX proposal_artifacts_run_idx
     ON proposal_artifacts(run_id, created_at, proposal_id);
+`;
+
+const RUN_OUTCOMES_SQL = `
+  CREATE TABLE run_outcomes (
+    run_id TEXT PRIMARY KEY REFERENCES runs(run_id),
+    outcome_type TEXT NOT NULL,
+    outcome_hash TEXT NOT NULL,
+    outcome_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
 `;
 
 const SCHEMA_SQL = `
@@ -178,6 +191,8 @@ const SCHEMA_SQL = `
   CREATE INDEX agent_packets_run_idx ON agent_packets(run_id, created_at);
 
   ${PROPOSAL_ARTIFACTS_SQL}
+
+  ${RUN_OUTCOMES_SQL}
 
   CREATE TABLE domain_events (
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
@@ -331,6 +346,41 @@ function migrateVersion3ToVersion4(database) {
   database.exec(PROPOSAL_ARTIFACTS_SQL);
 }
 
+function migrateVersion4ToVersion5(database) {
+  const terminalPhases = new Set([
+    RunPhase.COMPLETE,
+    RunPhase.FAILED,
+    RunPhase.CANCELLED,
+  ]);
+  for (const row of database.prepare("SELECT run_id, run_json FROM runs").all()) {
+    let run;
+    try {
+      run = JSON.parse(row.run_json);
+    } catch (cause) {
+      throw new Error(
+        `schema v4 run ${row.run_id} has invalid canonical state; explicit recovery is required`,
+        { cause },
+      );
+    }
+    if (
+      run === null
+      || typeof run !== "object"
+      || Array.isArray(run)
+      || !isVocabularyValue(RunPhase, run.phase)
+    ) {
+      throw new Error(
+        `schema v4 run ${row.run_id} has invalid canonical state; explicit recovery is required`,
+      );
+    }
+    if (terminalPhases.has(run?.phase)) {
+      throw new Error(
+        `schema v4 contains terminal run ${row.run_id} whose RunOutcome cannot be inferred; explicit recovery is required`,
+      );
+    }
+  }
+  database.exec(RUN_OUTCOMES_SQL);
+}
+
 export function initializeSqliteSchema(database) {
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA busy_timeout = 5000");
@@ -345,7 +395,7 @@ export function initializeSqliteSchema(database) {
     assertRequiredTables(database);
     return version;
   }
-  if (version !== 0 && version !== 2 && version !== 3) {
+  if (version !== 0 && version !== 2 && version !== 3 && version !== 4) {
     throw new Error(`no migration exists from database schema version ${version}`);
   }
 
@@ -355,7 +405,8 @@ export function initializeSqliteSchema(database) {
       database.exec(SCHEMA_SQL);
     } else {
       if (version === 2) migrateVersion2ToVersion3(database);
-      migrateVersion3ToVersion4(database);
+      if (version === 2 || version === 3) migrateVersion3ToVersion4(database);
+      migrateVersion4ToVersion5(database);
     }
     assertRequiredTables(database);
     database.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);

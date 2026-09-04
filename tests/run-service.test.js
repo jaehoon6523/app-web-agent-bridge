@@ -8,7 +8,9 @@ import {
   calculateRunPolicyHash,
   createDiscussionRunPolicy,
 } from "../src/domain/run-policy.js";
-import { RunPhase } from "../src/domain/vocabulary.js";
+import {
+  RunPhase,
+} from "../src/domain/vocabulary.js";
 import { RunService, RunServiceError } from "../src/orchestration/run-service.js";
 import { SqliteStore } from "../src/persistence/sqlite-store.js";
 
@@ -36,109 +38,122 @@ test("RunService is the versioned single writer for state and event projection",
   assert.equal(store.getRunLimits(created.runId).limits.maxTurns, 4);
   assert.equal(created.policyHash, calculateRunPolicyHash(policy));
 
-  const starting = service.transition({
+  const paused = service.pause({
     runId: created.runId,
     expectedVersion: created.version,
-    to: RunPhase.STARTING_SESSIONS,
   });
-  assert.equal(starting.version, 2);
-  assert.equal(store.getRunProjection(created.runId).run.phase, RunPhase.STARTING_SESSIONS);
+  assert.equal(paused.version, 2);
+  assert.equal(store.getRunProjection(created.runId).run.paused, true);
   assert.equal(store.listDomainEvents(created.runId).length, 2);
 
   assert.throws(
-    () => service.transition({
+    () => service.resume({
       runId: created.runId,
       expectedVersion: 1,
-      to: RunPhase.CODEX_TURN_PENDING,
     }),
     (error) => error instanceof RunServiceError && error.code === "RUN_VERSION_CONFLICT",
   );
   store.close();
 });
 
-test("pause is persisted without advancing a running turn", () => {
+test("pause and resume persist without changing the Controller-owned phase", () => {
   const { store, service } = fixture();
-  let run = service.createRun({
+  const run = service.createRun({
     runId: "run-service-pause",
     objective: "pause semantics",
     policy: createDiscussionRunPolicy({ maxTurns: 4 }),
   });
-  for (const phase of [
-    RunPhase.STARTING_SESSIONS,
-    RunPhase.CODEX_TURN_PENDING,
-    RunPhase.CODEX_TURN_RUNNING,
-  ]) {
-    run = service.transition({ runId: run.runId, expectedVersion: run.version, to: phase });
-  }
   const paused = service.pause({ runId: run.runId, expectedVersion: run.version });
   assert.equal(paused.paused, true);
-  assert.equal(paused.phase, RunPhase.CODEX_TURN_RUNNING);
-  assert.equal(paused.activeActor, "CODEX_AGENT");
-
-  const stored = service.transition({
-    runId: run.runId,
-    expectedVersion: paused.version,
-    to: RunPhase.CODEX_RESPONSE_STORED,
-  });
-  assert.equal(stored.currentTurn, 1);
-  const checking = service.transition({
-    runId: run.runId,
-    expectedVersion: stored.version,
-    to: RunPhase.CONSENSUS_CHECK,
-  });
-  assert.throws(
-    () => service.transition({
-      runId: run.runId,
-      expectedVersion: checking.version,
-      to: RunPhase.CODEX_TO_WEB_PENDING,
-    }),
-    /paused/u,
-  );
+  assert.equal(paused.phase, RunPhase.CREATED);
+  const resumed = service.resume({ runId: run.runId, expectedVersion: paused.version });
+  assert.equal(resumed.paused, false);
+  assert.equal(resumed.phase, RunPhase.CREATED);
   store.close();
 });
 
-test("generic phase transition cannot bypass evidence-backed completion", () => {
+test("RunService exposes no evidence-free phase, blocker, or completion mutation", () => {
   const { store, service } = fixture();
-  let run = service.createRun({
+  service.createRun({
     runId: "run-completion-guard",
     objective: "Reach evidence-backed consensus",
     policy: createDiscussionRunPolicy({ maxTurns: 4 }),
   });
-  run = service.transition({
-    runId: run.runId,
-    expectedVersion: run.version,
-    to: RunPhase.STARTING_SESSIONS,
+  assert.equal(service.transition, undefined);
+  assert.equal(service.setBlocker, undefined);
+  assert.equal(service.enforceMaxTurns, undefined);
+  assert.equal(service.startProtocolRepair, undefined);
+  assert.equal(service.adoptRecoveredResponse, undefined);
+  store.close();
+});
+
+test("runtime approval blocker and its pending record are created atomically", () => {
+  const { store, service } = fixture();
+  const created = service.createRun({
+    runId: "run-backed-approval",
+    objective: "Preserve an exact runtime approval gate",
+    policy: createDiscussionRunPolicy(),
   });
-  run = service.transition({
-    runId: run.runId,
-    expectedVersion: run.version,
-    to: RunPhase.CODEX_TURN_PENDING,
-  });
-  run = service.transition({
-    runId: run.runId,
-    expectedVersion: run.version,
-    to: RunPhase.CODEX_TURN_RUNNING,
-  });
-  run = service.transition({
-    runId: run.runId,
-    expectedVersion: run.version,
-    to: RunPhase.CODEX_RESPONSE_STORED,
-  });
-  run = service.transition({
-    runId: run.runId,
-    expectedVersion: run.version,
-    to: RunPhase.CONSENSUS_CHECK,
+  const requested = service.requestRuntimeApproval({
+    runId: created.runId,
+    expectedVersion: created.version,
+    approvalId: "approval-backed",
+    scope: { operationId: "operation-backed" },
   });
 
-  assert.throws(
-    () => service.transition({
-      runId: run.runId,
-      expectedVersion: run.version,
-      to: RunPhase.COMPLETE,
-    }),
-    (error) => error?.code === "RUN_COMPLETION_EVIDENCE_REQUIRED",
-  );
-  assert.equal(service.getRun(run.runId).phase, RunPhase.CONSENSUS_CHECK);
+  assert.deepEqual(requested.run.blocker, {
+    type: "RUNTIME_APPROVAL",
+    approvalId: "approval-backed",
+  });
+  assert.equal(requested.approval.status, "PENDING");
+  assert.equal(store.getApproval("approval-backed").approvalId, "approval-backed");
+  assert.equal(store.listDomainEvents(created.runId).at(-1).eventType, "RUNTIME_APPROVAL_REQUESTED");
+  assert.throws(() => service.requestRuntimeApproval({
+    runId: created.runId,
+    expectedVersion: requested.run.version,
+    approvalId: "approval-replacement",
+    scope: { operationId: "operation-replacement" },
+  }), (error) => error.code === "RUN_BLOCKER_ALREADY_PRESENT");
+  assert.equal(store.getApproval("approval-replacement"), null);
+  store.close();
+});
+
+test("runtime approval request rolls back its side record when the blocker event fails", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "run-service-approval-atomic-"));
+  const filename = path.join(directory, "controller.sqlite");
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const store = new SqliteStore(filename);
+  const service = new RunService({
+    store,
+    clock: () => "2026-09-04T00:20:00.000Z",
+    idFactory: () => "approval-atomic-event",
+  });
+  const created = service.createRun({
+    runId: "run-approval-rollback",
+    objective: "Keep the blocker and approval atomic",
+    policy: createDiscussionRunPolicy(),
+  });
+  const eventsBefore = store.listDomainEvents(created.runId);
+  const database = new DatabaseSync(filename);
+  database.exec(`
+    CREATE TRIGGER reject_runtime_approval_event
+    BEFORE INSERT ON domain_events
+    WHEN NEW.event_type = 'RUNTIME_APPROVAL_REQUESTED'
+    BEGIN
+      SELECT RAISE(ABORT, 'injected runtime approval event failure');
+    END;
+  `);
+  database.close();
+
+  assert.throws(() => service.requestRuntimeApproval({
+    runId: created.runId,
+    expectedVersion: created.version,
+    approvalId: "approval-rollback",
+    scope: { operationId: "operation-rollback" },
+  }), /injected runtime approval event failure/u);
+  assert.deepEqual(store.getRun(created.runId), created);
+  assert.deepEqual(store.listDomainEvents(created.runId), eventsBefore);
+  assert.equal(store.getApproval("approval-rollback"), null);
   store.close();
 });
 
