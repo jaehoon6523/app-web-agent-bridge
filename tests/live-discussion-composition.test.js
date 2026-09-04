@@ -6,7 +6,10 @@ import test from "node:test";
 import { ArtifactStore } from "../src/evidence/artifact-store.js";
 import { AgentActor, AgentPacketType, RunPhase } from "../src/domain/vocabulary.js";
 import { createDiscussionRunPolicy } from "../src/domain/run-policy.js";
-import { LiveDiscussionComposition } from "../src/orchestration/live-discussion-composition.js";
+import {
+  createInitialWebSessionBinding,
+  LiveDiscussionComposition,
+} from "../src/orchestration/live-discussion-composition.js";
 import { SqliteStore } from "../src/persistence/sqlite-store.js";
 import {
   createFakeDiscussionSessions,
@@ -44,11 +47,18 @@ test("composition provisions durable runtime identities before queueing the firs
     createWebSession: () => sessions.CHATGPT_WEB_AGENT,
   });
 
+  const firstBinding = createInitialWebSessionBinding({
+    runId: "run-live-composition",
+    sessionId: "planned-web-session",
+    conversationUrl: "https://chatgpt.com/c/conversation-web?ignored=value",
+  });
+  assert.equal(firstBinding.bindingStatus, "NEEDS_REBIND");
+  assert.equal(firstBinding.conversationUrl, "https://chatgpt.com/c/conversation-web");
   const provisioned = await composition.provisionRun({
     runId: "run-live-composition",
     objective: "Reach one identical accepted proposal.",
     policy: createDiscussionRunPolicy({ maxTurns: 8 }),
-    webBinding: { conversationUrl: "https://chatgpt.com/c/conversation-web" },
+    webConversationUrl: firstBinding.conversationUrl,
   });
   assert.equal(provisioned.run.phase, RunPhase.CODEX_TURN_PENDING);
   assert.equal(store.getAgentSession(provisioned.codexSessionId).externalSessionId, "thread-codex");

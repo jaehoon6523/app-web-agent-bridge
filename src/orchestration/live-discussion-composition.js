@@ -1,6 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { createAgentSessionRecord } from "../domain/contracts.js";
 import {
+  canonicalConversationUrl,
+  createWebSessionBinding,
+  extractConversationId,
+} from "../runtime/web/binding.js";
+import {
   AgentActor,
   AgentSessionStatus,
   SessionProvider,
@@ -47,6 +52,37 @@ export class LiveDiscussionCompositionError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+/**
+ * Builds the Controller-owned first-run binding from a user-selected existing
+ * ChatGPT conversation URL. The extension must later prove there is exactly
+ * one tab displaying this conversation before it becomes BOUND.
+ */
+/** @param {{runId: string, sessionId: string, conversationUrl: string}} input */
+export function createInitialWebSessionBinding({ runId, sessionId, conversationUrl }) {
+  nonEmpty(runId, "runId");
+  nonEmpty(sessionId, "sessionId");
+  const canonicalUrl = canonicalConversationUrl(conversationUrl);
+  const conversationId = extractConversationId(canonicalUrl);
+  if (canonicalUrl === null || conversationId === null) {
+    throw new LiveDiscussionCompositionError(
+      "A canonical https://chatgpt.com/c/<conversation-id> URL is required.",
+      "CHATGPT_CONVERSATION_URL_INVALID",
+    );
+  }
+  return createWebSessionBinding({
+    sessionId,
+    runId,
+    tabId: null,
+    windowId: null,
+    conversationUrl: canonicalUrl,
+    conversationId,
+    title: null,
+    lastObservedUserMessageId: null,
+    lastObservedAssistantMessageId: null,
+    bindingStatus: "NEEDS_REBIND",
+  });
 }
 
 /**
@@ -109,13 +145,18 @@ export class LiveDiscussionComposition {
     return this.#dispatchers.get(runId) ?? null;
   }
 
-  /** @param {{runId?: string, objective: string, policy: any, webBinding: any}} input */
-  async provisionRun({ runId, objective, policy, webBinding }) {
+  /** @param {{runId?: string, objective: string, policy: any, webConversationUrl: string}} input */
+  async provisionRun({ runId, objective, policy, webConversationUrl }) {
     const runInput = { objective, policy };
     if (runId !== undefined) runInput.runId = runId;
     const run = this.#runService.createRun(runInput);
     const codexSessionId = `session_codex_${this.#idFactory()}`;
     const webSessionId = `session_web_${this.#idFactory()}`;
+    const webBinding = createInitialWebSessionBinding({
+      runId: run.runId,
+      sessionId: webSessionId,
+      conversationUrl: webConversationUrl,
+    });
     this.#createSession({
       sessionId: codexSessionId,
       runId: run.runId,
@@ -158,11 +199,14 @@ export class LiveDiscussionComposition {
     }
 
     const web = this.#createWebSession({ run, sessionId: webSessionId });
-    if (typeof web?.start !== "function") {
-      throw new LiveDiscussionCompositionError("Web runtime cannot start a session.", "WEB_RUNTIME_INVALID");
+    const beginWebSession = webBinding?.tabId === null ? web?.resume : web?.start;
+    if (typeof beginWebSession !== "function") {
+      throw new LiveDiscussionCompositionError("Web runtime cannot start or resume a session.", "WEB_RUNTIME_INVALID");
     }
     try {
-      const binding = await web.start({ binding: webBinding });
+      // First-run URL binding deliberately resumes only an exact existing
+      // conversation. The extension rejects zero or multiple matching tabs.
+      const binding = await beginWebSession.call(web, { binding: webBinding });
       runtimeActor(web, AgentActor.CHATGPT_WEB_AGENT);
       this.#markReady({
         sessionId: webSessionId,
