@@ -32,6 +32,16 @@ function requiredString(env, name) {
   return value.trim();
 }
 
+function optionalStrongToken(env, name) {
+  const value = env[name];
+  if (value === undefined || value.trim() === "") return null;
+  const token = requireStrongSharedSecret(value.trim(), name);
+  if (!/^[A-Za-z0-9_-]+$/u.test(token)) {
+    throw new Error(`${name} must use base64url-safe characters only.`);
+  }
+  return token;
+}
+
 export function loadConfig({
   env = process.env,
   cwd = process.cwd(),
@@ -66,6 +76,9 @@ export function loadConfig({
         : null,
       authPathKeys: env.CODEX_HOME?.trim() ? Object.freeze(["CODEX_HOME"]) : Object.freeze([]),
       approvalPolicy: "untrusted",
+    }),
+    dashboard: Object.freeze({
+      token: optionalStrongToken(env, "DASHBOARD_TOKEN"),
     }),
     demoMode,
     webExtension: Object.freeze({

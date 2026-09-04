@@ -8,8 +8,9 @@ import { createBridgeServer } from "../src/server.js";
 
 const SHARED_SECRET = "integration-shared-secret-0123456789abcdef";
 const EXTENSION_IDENTITY = "extension-integration";
+const DASHBOARD_TOKEN = "dashboard-token-0123456789abcdef-dashboard-token";
 
-function runtimeConfig({ demoMode = false } = {}) {
+function runtimeConfig({ demoMode = false, dashboardToken = null, codexExecutablePath = null } = {}) {
   return {
     host: "127.0.0.1",
     port: 0,
@@ -17,6 +18,8 @@ function runtimeConfig({ demoMode = false } = {}) {
     workspace: process.cwd(),
     logDir: process.cwd(),
     demoMode,
+    dashboard: { token: dashboardToken },
+    codex: { executablePath: codexExecutablePath },
     webExtension: {
       sharedSecret: demoMode ? null : SHARED_SECRET,
       expectedExtensionIdentity: demoMode ? null : EXTENSION_IDENTITY,
@@ -163,4 +166,81 @@ test("demo mode is transport-free and does not accept extension or dashboard upg
   const { port } = bridge.server.address();
   assert.equal(await rejectedStatus(`ws://127.0.0.1:${port}/ws/extension`), 409);
   assert.equal(await rejectedStatus(`ws://127.0.0.1:${port}/ws/dashboard`), 503);
+});
+
+test("authenticated start provisions the exact Web conversation before dispatching", async (t) => {
+  const calls = [];
+  const bridge = createBridgeServer({
+    runtimeConfig: runtimeConfig({
+      dashboardToken: DASHBOARD_TOKEN,
+      codexExecutablePath: "C:\\safe\\codex.exe",
+    }),
+    createLiveRuntime: async () => ({
+      composition: {
+        async provisionRun(input) {
+          calls.push({ type: "provision", input });
+          return {
+            run: { runId: "run_live_test", maxTurns: 5 },
+            dispatcher: {
+              async runUntilSettled(input) {
+                calls.push({ type: "dispatch", input });
+                return { status: "COMPLETE", outcome: { type: "CONSENSUS" } };
+              },
+            },
+          };
+        },
+      },
+      async close() {},
+    }),
+  });
+  await bridge.listen();
+  t.after(async () => {
+    for (const client of bridge.extensionWss.clients) client.terminate();
+    await bridge.close();
+  });
+  const { port } = bridge.server.address();
+  const baseHttp = `http://127.0.0.1:${port}`;
+  const baseWs = `ws://127.0.0.1:${port}`;
+
+  assert.equal(
+    (await fetch(`${baseHttp}/api/runs/start`, { method: "POST" })).status,
+    403,
+  );
+
+  const socket = new WebSocket(`${baseWs}/ws/extension`);
+  const [challengeRaw] = await once(socket, "message");
+  const challenge = JSON.parse(String(challengeRaw));
+  socket.send(JSON.stringify({
+    type: "extension.auth.response",
+    protocolVersion: challenge.protocolVersion,
+    challengeId: challenge.challengeId,
+    extensionIdentity: EXTENSION_IDENTITY,
+    hmacSha256: computeWebChallengeHmac(challenge.nonce, SHARED_SECRET),
+  }));
+  await once(socket, "message");
+
+  const response = await fetch(`${baseHttp}/api/runs/start`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${DASHBOARD_TOKEN}`,
+      origin: "http://127.0.0.1:0",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      objective: "서로에게 짧게 인사해.",
+      conversationUrl: "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60",
+    }),
+  });
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), {
+    runId: "run_live_test",
+    status: "COMPLETE",
+    outcome: { type: "CONSENSUS" },
+  });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].type, "provision");
+  assert.equal(calls[0].input.webConversationUrl, "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60");
+  assert.equal(calls[1].type, "dispatch");
+  assert.deepEqual(calls[1].input, { runId: "run_live_test", maxDispatches: 5 });
+  socket.close();
 });

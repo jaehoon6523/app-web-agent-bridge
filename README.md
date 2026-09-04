@@ -13,7 +13,8 @@ Controller           = 상태·전달·복구·종료 판정의 유일한 writer
 ## 현재 구현 상태
 
 현재 코드는 Controller+SQLite 기준의 durable discussion core, dispatcher-backed fake runtime
-수직 경로와 아직 연결되지 않은 production runtime surface를 명시적으로 분리합니다.
+수직 경로 및 authenticated live-start composition을 명시적으로 분리합니다. 실제 Provider E2E와
+crash/recovery reconciliation은 아직 별도 검증 대상입니다.
 
 - strict domain records, run state machine, four caller-frozen limits
 - SQLite event/projection store, hash chain, transactional relay/outbox
@@ -47,9 +48,10 @@ Controller           = 상태·전달·복구·종료 판정의 유일한 writer
 
 Dispatcher-backed fake runtime vertical은 test harness에서 연결됐습니다. production composition
 factory는 SQLite, artifact store, pinned Codex process manager 및 exact Web adapter를 조립하며,
-`provisionRun()`이 호출되기 전에는 thread나 Web prompt를 시작하지 않습니다. 그러나 local-auth
-command API, recovery executor 및 Dashboard command projection은 아직 연결하지 않았습니다.
-따라서 `/api/state`, Dashboard WebSocket, live run mutation은 의도적으로 `503`을 반환합니다.
+`provisionRun()`이 호출되기 전에는 thread나 Web prompt를 시작하지 않습니다. 인증된
+`POST /api/runs/start`는 exact Web conversation binding을 먼저 완료하고, 그 뒤에만 Codex
+thread를 열어 dispatcher를 시작합니다. `/api/state`와 Dashboard WebSocket은 아직 command
+projection이 아니므로 `503`을 반환합니다.
 현재 Health는 다음 값을 따로 반환합니다. 여기서 `coreOrchestrationReady`와
 `fakeVerticalSliceVerified`는 자동 검증 checkpoint이고, 실행 중 production component의
 준비 상태는 아닙니다. 이 naming과 runtime readiness 계산은 별도 composition 변경에서
@@ -130,8 +132,8 @@ WebSocket URL에는 token, query string 또는 fragment를 넣지 않습니다. 
 
 ## 서버 smoke
 
-현재 서버는 extension transport, 정적 Dashboard, live-composition configuration과 split-readiness health만 확인하는
-fail-closed live smoke surface입니다.
+현재 서버는 extension transport, 정적 Dashboard, live-composition configuration, split-readiness
+health와 인증된 live run start surface를 제공합니다.
 
 ```powershell
 Copy-Item .env.example .env
@@ -148,6 +150,36 @@ http://127.0.0.1:8787/api/health
 `webConnected`는 HMAC 인증까지 끝난 연결만 뜻하며 `webRuntimeReady` 또는
 `liveOrchestrationReady`를 뜻하지 않습니다. `DEMO_MODE=true`는 정적 UI/server smoke일 뿐
 가짜 Agent 응답이나 합성 성공을 만들지 않습니다.
+
+## 첫 Live run
+
+실제 Codex 또는 ChatGPT Web 호출은 비용·외부 전송을 발생시킬 수 있습니다. 실행 전에 `.env`에
+별도 base64url dashboard token을 추가하고 서버를 재시작합니다. Extension secret과 같은 값을 쓰지 않습니다.
+
+```powershell
+$bytes = [byte[]]::new(32)
+[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+$token = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
+# .env의 DASHBOARD_TOKEN= 뒤에 $token 값을 넣는다.
+```
+
+확장이 HMAC 인증을 끝내고 `/api/preflight`의 `readyForProvisioning`이 `true`가 된 뒤,
+다음처럼 정확한 ChatGPT conversation URL로 시작합니다. `Origin`은 서버의 `HOST`/`PORT`와 같아야 합니다.
+
+```powershell
+$headers = @{
+  Authorization = "Bearer <DASHBOARD_TOKEN>"
+  Origin = "http://127.0.0.1:8787"
+}
+$body = @{
+  objective = "서로에게 짧게 인사해."
+  conversationUrl = "https://chatgpt.com/c/<conversation-id>"
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8787/api/runs/start" `
+  -Headers $headers -ContentType "application/json" -Body $body
+```
+
+URL이 결박되지 않거나 확장이 인증되지 않으면 Codex thread를 열지 않고 시작 요청을 거절합니다.
 
 ## 보안 및 운영 경계
 
@@ -172,7 +204,7 @@ extension authentication/binding/race, DOM fixtures, Dashboard model 및 split r
 ```text
 npm run check             336/336 PASS
 npm run test:integration  123/123 PASS
-server smoke              core ready / live ready false / live api state=503
+server smoke              core ready / dashboard state API=503
 ```
 
 두 test 실행은 fake Codex app-server와 DOM fixture만 사용했으며 네트워크, 실제 Provider 또는 실제 브라우저를 사용하지 않았습니다. 이 수치는 아래 미구현 범위를 통과했다는 뜻이 아닙니다.

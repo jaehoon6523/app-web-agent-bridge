@@ -5,11 +5,13 @@ import process from "node:process";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "./config.js";
+import { createDiscussionRunPolicy } from "./domain/run-policy.js";
 import {
   ChatGptWebSessionAdapter,
   WebExtensionTransport,
 } from "./runtime/web/index.js";
 import { createLiveDiscussionRuntime } from "./runtime/live-discussion-runtime.js";
+import { LocalAuthError, LocalSessionAuthenticator } from "./security/local-auth.js";
 import { nowIso } from "./utils.js";
 
 const filename = fileURLToPath(import.meta.url);
@@ -34,8 +36,11 @@ function writeUpgradeRejection(socket, statusLine, message = "") {
   socket.destroy();
 }
 
-/** @param {{runtimeConfig?: RuntimeConfig}} [options] */
-export function createBridgeServer({ runtimeConfig } = {}) {
+/** @param {{runtimeConfig?: RuntimeConfig, createLiveRuntime?: typeof createLiveDiscussionRuntime}} [options] */
+export function createBridgeServer({
+  runtimeConfig,
+  createLiveRuntime = createLiveDiscussionRuntime,
+} = {}) {
   if (!runtimeConfig || typeof runtimeConfig !== "object") {
     throw new TypeError("createBridgeServer requires runtimeConfig.");
   }
@@ -49,6 +54,12 @@ export function createBridgeServer({ runtimeConfig } = {}) {
         transport: extensionTransport,
         responseTimeoutMs: runtimeConfig.relay.webResponseTimeoutMs,
       });
+  const dashboardAuth = runtimeConfig.dashboard?.token
+    ? new LocalSessionAuthenticator({
+        token: runtimeConfig.dashboard.token,
+        allowedOrigins: [runtimeConfig.baseUrl],
+      })
+    : null;
   let liveRuntime = null;
   let liveRuntimePromise = null;
 
@@ -58,7 +69,7 @@ export function createBridgeServer({ runtimeConfig } = {}) {
     }
     if (liveRuntime !== null) return liveRuntime;
     if (liveRuntimePromise === null) {
-      liveRuntimePromise = createLiveDiscussionRuntime({ runtimeConfig, webSession })
+      liveRuntimePromise = createLiveRuntime({ runtimeConfig, webSession })
         .then((runtime) => {
           liveRuntime = runtime;
           return runtime;
@@ -91,11 +102,49 @@ export function createBridgeServer({ runtimeConfig } = {}) {
       codexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
       extensionAuthenticated: Boolean(extensionTransport?.authenticated),
       webAdapterAvailable: webSession !== null,
+      commandAuthenticationConfigured: dashboardAuth !== null,
     };
     const missing = Object.entries(checks)
       .filter(([, ready]) => !ready)
       .map(([name]) => name);
     return Object.freeze({ checks, missing, readyForProvisioning: missing.length === 0 });
+  }
+
+  function requireDashboardMutation(req, res, next) {
+    if (dashboardAuth === null) {
+      res.status(503).json({ error: "DASHBOARD_TOKEN must be configured before live run commands." });
+      return;
+    }
+    try {
+      dashboardAuth.verifyMutation({
+        authorization: req.get("authorization"),
+        origin: req.get("origin"),
+      });
+      next();
+    } catch (error) {
+      const status = error instanceof LocalAuthError ? error.statusCode : 401;
+      res.status(status).json({ error: error.message });
+    }
+  }
+
+  function startRequest(body) {
+    if (body === null || typeof body !== "object" || Array.isArray(body)) {
+      throw new TypeError("Start request must be an object.");
+    }
+    const allowed = new Set(["objective", "conversationUrl"]);
+    for (const key of Object.keys(body)) {
+      if (!allowed.has(key)) throw new TypeError(`Unsupported start field ${JSON.stringify(key)}.`);
+    }
+    if (typeof body.objective !== "string" || body.objective.trim() === "") {
+      throw new TypeError("objective must be a non-empty string.");
+    }
+    if (typeof body.conversationUrl !== "string" || body.conversationUrl.trim() === "") {
+      throw new TypeError("conversationUrl must be a non-empty string.");
+    }
+    return Object.freeze({
+      objective: body.objective.trim(),
+      conversationUrl: body.conversationUrl.trim(),
+    });
   }
 
   app.get("/api/health", (_req, res) => {
@@ -116,6 +165,42 @@ export function createBridgeServer({ runtimeConfig } = {}) {
   });
   app.get("/api/preflight", (_req, res) => {
     res.json(livePreflight());
+  });
+  app.post("/api/runs/start", requireDashboardMutation, async (req, res) => {
+    const preflight = livePreflight();
+    if (!preflight.readyForProvisioning) {
+      res.status(409).json({ error: "Live run preflight is incomplete.", preflight });
+      return;
+    }
+    let request;
+    try {
+      request = startRequest(req.body);
+    } catch (error) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    try {
+      const live = await getLiveRuntime();
+      const provisioned = await live.composition.provisionRun({
+        objective: request.objective,
+        policy: createDiscussionRunPolicy(),
+        webConversationUrl: request.conversationUrl,
+      });
+      const result = await provisioned.dispatcher.runUntilSettled({
+        runId: provisioned.run.runId,
+        maxDispatches: provisioned.run.maxTurns,
+      });
+      res.status(200).json({
+        runId: provisioned.run.runId,
+        status: result.status,
+        outcome: result.outcome,
+      });
+    } catch (error) {
+      res.status(502).json({
+        error: "Live run did not complete.",
+        code: error?.code || "LIVE_RUN_FAILED",
+      });
+    }
   });
   app.get("/api/state", (_req, res) => {
     res.status(503).json({ error: LIVE_ORCHESTRATION_UNAVAILABLE });
