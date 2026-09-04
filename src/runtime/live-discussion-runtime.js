@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { ArtifactStore } from "../evidence/artifact-store.js";
 import { LiveDiscussionComposition } from "../orchestration/live-discussion-composition.js";
 import { SqliteStore } from "../persistence/sqlite-store.js";
@@ -34,6 +36,9 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession })
     throw new LiveDiscussionRuntimeError("A ChatGPT Web session adapter is required.", "WEB_ADAPTER_REQUIRED");
   }
 
+  // DatabaseSync creates the database file but not its parent directory. The
+  // persistence root must exist before any live run is provisioned.
+  fs.mkdirSync(path.dirname(runtimeConfig.persistence.databasePath), { recursive: true });
   const store = new SqliteStore(runtimeConfig.persistence.databasePath);
   const artifactStore = new ArtifactStore(runtimeConfig.persistence.artifactDirectory);
   let manager;
