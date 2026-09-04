@@ -13,8 +13,6 @@ const HASH_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const PACKET_KEYS = Object.freeze({
   [AgentPacketType.PROPOSAL]: Object.freeze([
     "type",
-    "proposal_id",
-    "proposal_sha256",
     "summary",
     "body",
     "assumptions",
@@ -46,17 +44,6 @@ export class AgentPacketValidationError extends TypeError {
     this.name = "AgentPacketValidationError";
     this.code = code;
     this.path = path;
-  }
-}
-
-export class ProtocolErrorPacketAuthorityGapError extends AgentPacketValidationError {
-  constructor() {
-    super(
-      "PROTOCOL_ERROR packet fields are not defined by the current authority",
-      "packet.type",
-      "PROTOCOL_ERROR_PACKET_SCHEMA_UNDEFINED",
-    );
-    this.name = "ProtocolErrorPacketAuthorityGapError";
   }
 }
 
@@ -110,63 +97,116 @@ function requireStringArray(value, path) {
   return value;
 }
 
-function validateProposal(packet) {
+function normalizeTextItem(value) {
+  return typeof value === "string" ? value.normalize("NFC").trim() : value;
+}
+
+function requireNormalizableTextArray(value, path, requireCanonical) {
+  if (!Array.isArray(value)) {
+    throw new AgentPacketValidationError("must be an array", path);
+  }
+  value.forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    const normalized = normalizeTextItem(item);
+    if (typeof normalized !== "string" || normalized.length === 0) {
+      throw new AgentPacketValidationError("must be a non-blank string", itemPath);
+    }
+    if (requireCanonical && item !== normalized) {
+      throw new AgentPacketValidationError("must be NFC-normalized and trimmed", itemPath);
+    }
+  });
+  return value;
+}
+
+function normalizeTextArray(value) {
+  if (!Array.isArray(value)) return value;
+  return value.map(normalizeTextItem);
+}
+
+function normalizePacketTextArrays(value) {
+  const packet = structuredClone(value);
+  switch (packet.type) {
+    case AgentPacketType.PROPOSAL:
+      packet.open_decisions = normalizeTextArray(packet.open_decisions);
+      break;
+    case AgentPacketType.CRITIQUE:
+      packet.blocking_findings = normalizeTextArray(packet.blocking_findings);
+      packet.non_blocking_findings = normalizeTextArray(packet.non_blocking_findings);
+      packet.requested_changes = normalizeTextArray(packet.requested_changes);
+      break;
+    case AgentPacketType.ACCEPT:
+      packet.blocking_findings = normalizeTextArray(packet.blocking_findings);
+      break;
+    case AgentPacketType.BLOCKED:
+      packet.required_decisions = normalizeTextArray(packet.required_decisions);
+      break;
+    default:
+      break;
+  }
+  return packet;
+}
+
+function validateProposal(packet, requireCanonical) {
   requireExactKeys(packet, PACKET_KEYS.PROPOSAL, "packet");
-  requireNonEmptyString(packet.proposal_id, "packet.proposal_id");
-  requireHash(packet.proposal_sha256, "packet.proposal_sha256");
   requireNonEmptyString(packet.summary, "packet.summary");
   requireNonEmptyString(packet.body, "packet.body");
   requireStringArray(packet.assumptions, "packet.assumptions");
-  requireStringArray(packet.open_decisions, "packet.open_decisions");
+  requireNormalizableTextArray(packet.open_decisions, "packet.open_decisions", requireCanonical);
 }
 
-function validateCritique(packet) {
+function validateCritique(packet, requireCanonical) {
   requireExactKeys(packet, PACKET_KEYS.CRITIQUE, "packet");
   requireHash(packet.target_proposal_sha256, "packet.target_proposal_sha256");
-  requireStringArray(packet.blocking_findings, "packet.blocking_findings");
-  requireStringArray(packet.non_blocking_findings, "packet.non_blocking_findings");
-  requireStringArray(packet.requested_changes, "packet.requested_changes");
+  requireNormalizableTextArray(packet.blocking_findings, "packet.blocking_findings", requireCanonical);
+  requireNormalizableTextArray(
+    packet.non_blocking_findings,
+    "packet.non_blocking_findings",
+    requireCanonical,
+  );
+  requireNormalizableTextArray(packet.requested_changes, "packet.requested_changes", requireCanonical);
 }
 
-function validateAccept(packet) {
+function validateAccept(packet, requireCanonical) {
   requireExactKeys(packet, PACKET_KEYS.ACCEPT, "packet");
   requireHash(packet.accepted_proposal_sha256, "packet.accepted_proposal_sha256");
-  requireStringArray(packet.blocking_findings, "packet.blocking_findings");
+  requireNormalizableTextArray(packet.blocking_findings, "packet.blocking_findings", requireCanonical);
 }
 
-function validateBlocked(packet) {
+function validateBlocked(packet, requireCanonical) {
   requireExactKeys(packet, PACKET_KEYS.BLOCKED, "packet");
   if (!isVocabularyValue(HumanGateReason, packet.reason_code)) {
     throw new AgentPacketValidationError("must be a HumanGateReason", "packet.reason_code");
   }
   requireNonEmptyString(packet.description, "packet.description");
-  requireStringArray(packet.required_decisions, "packet.required_decisions");
+  requireNormalizableTextArray(packet.required_decisions, "packet.required_decisions", requireCanonical);
 }
 
-export function validateAgentPacket(value) {
+function validateAgentPacketValue(value, requireCanonical) {
   const packet = requirePlainObject(value, "packet");
   requireNonEmptyString(packet.type, "packet.type");
 
   switch (packet.type) {
     case AgentPacketType.PROPOSAL:
-      validateProposal(packet);
+      validateProposal(packet, requireCanonical);
       break;
     case AgentPacketType.CRITIQUE:
-      validateCritique(packet);
+      validateCritique(packet, requireCanonical);
       break;
     case AgentPacketType.ACCEPT:
-      validateAccept(packet);
+      validateAccept(packet, requireCanonical);
       break;
     case AgentPacketType.BLOCKED:
-      validateBlocked(packet);
+      validateBlocked(packet, requireCanonical);
       break;
-    case AgentPacketType.PROTOCOL_ERROR:
-      throw new ProtocolErrorPacketAuthorityGapError();
     default:
       throw new AgentPacketValidationError("has an unknown packet type", "packet.type");
   }
 
   return packet;
+}
+
+export function validateAgentPacket(value) {
+  return validateAgentPacketValue(value, true);
 }
 
 export function validateProposalPacket(value) {
@@ -210,8 +250,10 @@ function deepFreeze(value) {
 }
 
 export function buildAgentPacket(value) {
-  validateAgentPacket(value);
-  return deepFreeze(structuredClone(value));
+  validateAgentPacketValue(value, false);
+  const packet = normalizePacketTextArrays(value);
+  validateAgentPacket(packet);
+  return deepFreeze(packet);
 }
 
 export function parseAgentPacket(input) {

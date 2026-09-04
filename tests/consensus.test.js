@@ -3,13 +3,13 @@ import test from "node:test";
 import { sha256Text } from "../src/domain/canonical-json.js";
 import {
   buildProposalArtifact,
-  buildRelayMessage,
 } from "../src/domain/contracts.js";
+import { buildAgentMessage } from "../src/domain/agent-messages.js";
 import { evaluateConsensus } from "../src/domain/consensus.js";
 import {
   AgentActor,
   AgentPacketType,
-  RelayMessageKind,
+  AgentMessageKind,
   RunOutcomeType,
 } from "../src/domain/vocabulary.js";
 
@@ -44,18 +44,14 @@ function acceptance({
     accepted_proposal_sha256: acceptedProposalHash,
     blocking_findings: blockingFindings,
   };
-  return buildRelayMessage({
+  return buildAgentMessage({
     messageId: `message-${sequence}`,
     runId,
     sequence,
-    fromActor: actor,
-    toActor: actor === AgentActor.CODEX_AGENT
-      ? AgentActor.CHATGPT_WEB_AGENT
-      : AgentActor.CODEX_AGENT,
-    sourceSessionId: `session-${actor}`,
-    sourceTurnId: `turn-${sequence}`,
-    inReplyTo: null,
-    kind: RelayMessageKind.ACCEPTANCE,
+    actor,
+    sessionId: `session-${actor}`,
+    turnId: `turn-${sequence}`,
+    kind: AgentMessageKind.ACCEPTANCE,
     content: JSON.stringify(packet),
     normalizedPacket: packet,
     objectiveHash: messageObjectiveHash,
@@ -68,7 +64,7 @@ function consensusInput(overrides = {}) {
   const artifact = proposal();
   return {
     runId: "run-001",
-    packets: [
+    messages: [
       acceptance({
         actor: AgentActor.CODEX_AGENT,
         acceptedProposalHash: artifact.proposalHash,
@@ -100,13 +96,13 @@ test("consensus requires both actors to ACCEPT the same persisted proposal", () 
 
 test("one actor, mismatched proposal hashes, and blocking findings cannot complete", () => {
   const input = consensusInput();
-  assert.equal(evaluateConsensus({ ...input, packets: input.packets.slice(0, 1) }), null);
+  assert.equal(evaluateConsensus({ ...input, messages: input.messages.slice(0, 1) }), null);
 
   const otherHash = sha256Text("a proposal that was not persisted");
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [
-      input.packets[0],
+    messages: [
+      input.messages[0],
       acceptance({
         actor: AgentActor.CHATGPT_WEB_AGENT,
         acceptedProposalHash: otherHash,
@@ -117,8 +113,8 @@ test("one actor, mismatched proposal hashes, and blocking findings cannot comple
 
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [
-      input.packets[0],
+    messages: [
+      input.messages[0],
       acceptance({
         actor: AgentActor.CHATGPT_WEB_AGENT,
         acceptedProposalHash: input.proposals[0].proposalHash,
@@ -140,15 +136,15 @@ test("an ACCEPT hash must resolve to a valid ProposalArtifact from the same run"
   assert.equal(evaluateConsensus({ ...input, proposals: [tampered] }), null);
 
   const otherRun = proposal({ runId: "run-002", proposalId: "proposal-002" });
-  const otherRunPackets = input.packets.map((message, index) => acceptance({
-    actor: message.fromActor,
+  const otherRunPackets = input.messages.map((message, index) => acceptance({
+    actor: message.actor,
     acceptedProposalHash: otherRun.proposalHash,
     sequence: index + 5,
     runId: "run-001",
   }));
   assert.equal(evaluateConsensus({
     ...input,
-    packets: otherRunPackets,
+    messages: otherRunPackets,
     proposals: [otherRun],
   }), null);
 });
@@ -181,7 +177,7 @@ test("a newer stale response supersedes an older ACCEPT instead of reviving stal
   });
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [...input.packets, stale],
+    messages: [...input.messages, stale],
     objectiveHash,
     policyHash,
     policyViolation: false,
@@ -190,31 +186,31 @@ test("a newer stale response supersedes an older ACCEPT instead of reviving stal
 
 test("the latest invalid normalized packet cannot fall back to an earlier ACCEPT", () => {
   const input = consensusInput();
-  const invalidLatest = structuredClone(input.packets[0]);
+  const invalidLatest = structuredClone(input.messages[0]);
   invalidLatest.messageId = "message-invalid-latest";
   invalidLatest.sequence = 4;
   invalidLatest.normalizedPacket.unowned_completion_flag = true;
 
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [...input.packets, invalidLatest],
+    messages: [...input.messages, invalidLatest],
   }), null);
 
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [invalidLatest, ...input.packets],
-  }), null, "RelayMessage.sequence, not caller array order, determines the latest packet");
+    messages: [invalidLatest, ...input.messages],
+  }), null, "AgentMessage.sequence, not caller array order, determines the latest packet");
 });
 
 test("consensus binds messages to one requested run and rejects duplicate run sequences", () => {
   const input = consensusInput();
-  const foreign = input.packets.map((message, index) => acceptance({
-    actor: message.fromActor,
+  const foreign = input.messages.map((message, index) => acceptance({
+    actor: message.actor,
     acceptedProposalHash: input.proposals[0].proposalHash,
     sequence: index + 20,
     runId: "run-foreign",
   }));
-  assert.deepEqual(evaluateConsensus({ ...input, packets: [...foreign, ...input.packets] }), {
+  assert.deepEqual(evaluateConsensus({ ...input, messages: [...foreign, ...input.messages] }), {
     type: RunOutcomeType.CONSENSUS,
     proposalHash: input.proposals[0].proposalHash,
   });
@@ -222,11 +218,11 @@ test("consensus binds messages to one requested run and rejects duplicate run se
   const duplicateSequence = acceptance({
     actor: AgentActor.CHATGPT_WEB_AGENT,
     acceptedProposalHash: input.proposals[0].proposalHash,
-    sequence: input.packets[0].sequence,
+    sequence: input.messages[0].sequence,
   });
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [input.packets[0], duplicateSequence],
+    messages: [input.messages[0], duplicateSequence],
   }), null);
   assert.throws(() => evaluateConsensus({ ...input, runId: "" }), /runId/i);
 });
@@ -236,23 +232,19 @@ test("a PROPOSAL packet does not substitute for the persisted ProposalArtifact",
   const artifact = input.proposals[0];
   const proposalPacket = {
     type: AgentPacketType.PROPOSAL,
-    proposal_id: artifact.proposalId,
-    proposal_sha256: artifact.proposalHash,
     summary: artifact.title,
     body: artifact.body,
     assumptions: artifact.assumptions,
     open_decisions: artifact.decisions,
   };
-  const proposalMessage = buildRelayMessage({
+  const proposalMessage = buildAgentMessage({
     messageId: "message-proposal",
     runId: artifact.runId,
     sequence: 1,
-    fromActor: AgentActor.CODEX_AGENT,
-    toActor: AgentActor.CHATGPT_WEB_AGENT,
-    sourceSessionId: "session-codex",
-    sourceTurnId: "turn-1",
-    inReplyTo: null,
-    kind: RelayMessageKind.PROPOSAL,
+    actor: AgentActor.CODEX_AGENT,
+    sessionId: "session-codex",
+    turnId: "turn-1",
+    kind: AgentMessageKind.PROPOSAL,
     content: JSON.stringify(proposalPacket),
     normalizedPacket: proposalPacket,
     objectiveHash,
@@ -262,7 +254,7 @@ test("a PROPOSAL packet does not substitute for the persisted ProposalArtifact",
 
   assert.equal(evaluateConsensus({
     ...input,
-    packets: [proposalMessage, ...input.packets],
+    messages: [proposalMessage, ...input.messages],
     proposals: [],
   }), null);
 });

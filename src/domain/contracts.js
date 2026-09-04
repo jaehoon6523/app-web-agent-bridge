@@ -1,10 +1,7 @@
 import { sha256CanonicalJson, sha256Text } from "./canonical-json.js";
-import { validateAgentPacket } from "./agent-packets.js";
 import {
   AgentActor,
-  AgentPacketType,
   AgentSessionStatus,
-  RelayMessageKind,
   RunBlockerType,
   RunMode,
   RunPhase,
@@ -240,24 +237,6 @@ export const AGENT_SESSION_RECORD_FIELDS = Object.freeze([
   "version",
 ]);
 
-export const RELAY_MESSAGE_FIELDS = Object.freeze([
-  "messageId",
-  "runId",
-  "sequence",
-  "fromActor",
-  "toActor",
-  "sourceSessionId",
-  "sourceTurnId",
-  "inReplyTo",
-  "kind",
-  "content",
-  "contentHash",
-  "normalizedPacket",
-  "objectiveHash",
-  "policyHash",
-  "createdAt",
-]);
-
 export const PROPOSAL_ARTIFACT_FIELDS = Object.freeze([
   "proposalId",
   "runId",
@@ -380,80 +359,6 @@ export function buildAgentSessionRecord(input) {
 
 export const createAgentSessionRecord = buildAgentSessionRecord;
 
-export function validateRelayMessage(value) {
-  const message = requirePlainObject(value, "RelayMessage");
-  requireExactKeys(message, RELAY_MESSAGE_FIELDS, "RelayMessage");
-  requireNonEmptyString(message.messageId, "RelayMessage.messageId");
-  requireNonEmptyString(message.runId, "RelayMessage.runId");
-  requireInteger(message.sequence, "RelayMessage.sequence", 1);
-  requireEnum(message.fromActor, AgentActor, "AgentActor", "RelayMessage.fromActor");
-  requireEnum(message.toActor, AgentActor, "AgentActor", "RelayMessage.toActor");
-  if (message.fromActor === message.toActor) {
-    throw new DomainContractError(
-      "must differ from fromActor",
-      "RelayMessage.toActor",
-      "INVALID_RELAY_ROUTE",
-    );
-  }
-  requireNonEmptyString(message.sourceSessionId, "RelayMessage.sourceSessionId");
-  requireNullableString(message.sourceTurnId, "RelayMessage.sourceTurnId");
-  requireNullableString(message.inReplyTo, "RelayMessage.inReplyTo");
-  requireEnum(message.kind, RelayMessageKind, "RelayMessageKind", "RelayMessage.kind");
-  if (message.kind === RelayMessageKind.INITIAL_OBJECTIVE) {
-    throw new DomainContractError(
-      "sender and source-session provenance are not defined by the current authority",
-      "RelayMessage.kind",
-      "INITIAL_OBJECTIVE_PROVENANCE_UNDEFINED",
-    );
-  }
-  requireNonEmptyString(message.content, "RelayMessage.content");
-  requireHash(message.contentHash, "RelayMessage.contentHash");
-  if (message.contentHash !== sha256Text(message.content)) {
-    throw new DomainContractError("does not match content", "RelayMessage.contentHash", "HASH_MISMATCH");
-  }
-  if (message.normalizedPacket !== null) validateAgentPacket(message.normalizedPacket);
-  const expectedPacketType = {
-    [RelayMessageKind.PROPOSAL]: AgentPacketType.PROPOSAL,
-    [RelayMessageKind.REVISION]: AgentPacketType.PROPOSAL,
-    [RelayMessageKind.CRITIQUE]: AgentPacketType.CRITIQUE,
-    [RelayMessageKind.ACCEPTANCE]: AgentPacketType.ACCEPT,
-    [RelayMessageKind.BLOCKER]: AgentPacketType.BLOCKED,
-  }[message.kind];
-  if (expectedPacketType !== undefined) {
-    if (message.normalizedPacket === null) {
-      throw new DomainContractError(
-        `requires a ${expectedPacketType} normalized packet`,
-        "RelayMessage.normalizedPacket",
-        "RELAY_PACKET_REQUIRED",
-      );
-    }
-    if (message.normalizedPacket.type !== expectedPacketType) {
-      throw new DomainContractError(
-        `must be ${expectedPacketType} for ${message.kind}`,
-        "RelayMessage.normalizedPacket.type",
-        "RELAY_PACKET_KIND_MISMATCH",
-      );
-    }
-  }
-  requireHash(message.objectiveHash, "RelayMessage.objectiveHash");
-  requireHash(message.policyHash, "RelayMessage.policyHash");
-  requireNonEmptyString(message.createdAt, "RelayMessage.createdAt");
-  return message;
-}
-
-export function buildRelayMessage(input) {
-  const required = RELAY_MESSAGE_FIELDS.filter((key) => key !== "contentHash");
-  requireBuilderKeys(input, required, ["contentHash"], "RelayMessage input");
-  const message = {
-    ...structuredClone(input),
-    contentHash: input.contentHash ?? sha256Text(input.content),
-  };
-  validateRelayMessage(message);
-  return immutableClone(message);
-}
-
-export const createRelayMessage = buildRelayMessage;
-
 export function proposalArtifactDigestInput(value) {
   const artifact = requirePlainObject(value, "ProposalArtifact");
   const allowed = new Set(PROPOSAL_ARTIFACT_FIELDS);
@@ -522,3 +427,13 @@ export function buildProposalArtifact(input) {
 }
 
 export const createProposalArtifact = buildProposalArtifact;
+
+export {
+  AGENT_MESSAGE_FIELDS,
+  AGENT_TURN_INPUT_FIELDS,
+  AgentCommunicationContractError,
+  buildAgentMessage,
+  buildAgentTurnInput,
+  validateAgentMessage,
+  validateAgentTurnInput,
+} from "./agent-messages.js";

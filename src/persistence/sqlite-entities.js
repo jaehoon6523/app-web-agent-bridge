@@ -312,28 +312,22 @@ export function saveAgentPacketEntity(database, input, errors) {
   return transact(database, () => {
     requireRun(database, input.runId, errors);
     const message = database.prepare(
-      "SELECT run_id, message_json FROM relay_messages WHERE message_id = ?",
+      "SELECT run_id, message_json FROM agent_messages WHERE message_id = ?",
     ).get(input.messageId);
     if (!message) {
       throw new errors.PersistenceError(
-        `relay message ${input.messageId} does not exist`,
-        "RELAY_MESSAGE_NOT_FOUND",
+        `agent message ${input.messageId} does not exist`,
+        "AGENT_MESSAGE_NOT_FOUND",
       );
     }
     if (message.run_id !== input.runId) {
-      throw ownershipError("relay message", input.messageId, input.runId, message.run_id, errors);
+      throw ownershipError("agent message", input.messageId, input.runId, message.run_id, errors);
     }
-    const relay = decode(message.message_json, `relay message ${input.messageId}`, errors);
-    if (relay.normalizedPacket === null) {
+    const agentMessage = decode(message.message_json, `agent message ${input.messageId}`, errors);
+    if (encode(agentMessage.normalizedPacket) !== encode(input.packet)) {
       throw new errors.PersistenceError(
-        `relay message ${input.messageId} has no normalized packet`,
-        "RELAY_PACKET_MISSING",
-      );
-    }
-    if (encode(relay.normalizedPacket) !== encode(input.packet)) {
-      throw new errors.PersistenceError(
-        `agent packet does not match relay message ${input.messageId}`,
-        "RELAY_PACKET_MISMATCH",
+        `agent packet does not match agent message ${input.messageId}`,
+        "AGENT_MESSAGE_PACKET_MISMATCH",
       );
     }
     database.prepare(`

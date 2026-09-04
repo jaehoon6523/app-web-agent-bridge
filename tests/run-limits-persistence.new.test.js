@@ -8,10 +8,16 @@ import { canonicalJson, sha256Text } from "../src/domain/canonical-json.js";
 import { createAgentRun } from "../src/domain/contracts.js";
 import { RunMode, RunPhase } from "../src/domain/vocabulary.js";
 import {
+  ActorFailureDecision,
+  DeliveryRetryEvidence,
+  actorFailureBudgetAfterFailure,
+  canAutomaticallyRetryDelivery,
   nextConsecutiveActorFailureCount,
   nextDeliveryAttemptCount,
   nextProtocolRepairCount,
   nextTurnNumber,
+  observeProviderTurn,
+  resetActorFailureBudgetAfterStrictPacket,
 } from "../src/orchestration/run-limits.js";
 import { OptimisticConcurrencyError } from "../src/persistence/errors.js";
 import {
@@ -268,4 +274,60 @@ test("pure guards cover all four limits without supplying policy defaults", () =
   assert.throws(() => nextProtocolRepairCount(supplied, 0), RunLimitExceededError);
   assert.throws(() => nextDeliveryAttemptCount(supplied, 3), RunLimitExceededError);
   assert.throws(() => nextConsecutiveActorFailureCount(supplied, 2), RunLimitExceededError);
+});
+
+test("provider turn budget counts terminal submitted turns regardless of packet validity", () => {
+  const supplied = limits({ maxTurns: 2 });
+  assert.equal(observeProviderTurn(supplied, 0, { submitted: false, terminal: false }), 0);
+  assert.equal(observeProviderTurn(supplied, 0, { submitted: true, terminal: false }), 0);
+  assert.equal(observeProviderTurn(supplied, 0, { submitted: true, terminal: true }), 1);
+  assert.equal(observeProviderTurn(supplied, 1, { submitted: true, terminal: true }), 2);
+  assert.throws(
+    () => observeProviderTurn(supplied, 0, { submitted: false, terminal: true }),
+    /cannot be terminal before it was submitted/u,
+  );
+  assert.throws(
+    () => observeProviderTurn(supplied, 2, { submitted: true, terminal: true }),
+    RunLimitExceededError,
+  );
+});
+
+test("delivery attempts include the initial try and only explicit safe failures retry", () => {
+  const supplied = limits();
+  assert.equal(nextDeliveryAttemptCount(supplied, 0), 1);
+  assert.equal(canAutomaticallyRetryDelivery(supplied, {
+    state: "FAILED",
+    attemptCount: 1,
+    retryEvidence: DeliveryRetryEvidence.PRE_SUBMISSION_CONNECTION_FAILURE,
+  }), true);
+  for (const state of ["SUBMITTED", "RESPONSE_STARTED", "AMBIGUOUS"]) {
+    assert.equal(canAutomaticallyRetryDelivery(supplied, {
+      state,
+      attemptCount: 1,
+      retryEvidence: DeliveryRetryEvidence.EXPLICIT_RETRY_SAFE_FAILURE,
+    }), false);
+  }
+  assert.equal(canAutomaticallyRetryDelivery(supplied, {
+    state: "FAILED",
+    attemptCount: 3,
+    retryEvidence: DeliveryRetryEvidence.PROVIDER_CONFIRMED_NOT_RECEIVED,
+  }), false);
+  assert.throws(() => canAutomaticallyRetryDelivery(supplied, {
+    state: "FAILED",
+    attemptCount: 1,
+    retryEvidence: "ASSUMED_SAFE",
+  }), /explicit retry-safe evidence/u);
+});
+
+test("the second consecutive actor failure stops and a strict packet resets the counter", () => {
+  const supplied = limits({ maxConsecutiveActorFailures: 2 });
+  assert.deepEqual(actorFailureBudgetAfterFailure(supplied, 0), {
+    count: 1,
+    decision: ActorFailureDecision.CONTINUE,
+  });
+  assert.deepEqual(actorFailureBudgetAfterFailure(supplied, 1), {
+    count: 2,
+    decision: ActorFailureDecision.STOP,
+  });
+  assert.equal(resetActorFailureBudgetAfterStrictPacket(), 0);
 });

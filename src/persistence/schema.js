@@ -1,10 +1,11 @@
-export const SQLITE_SCHEMA_VERSION = 2;
+export const SQLITE_SCHEMA_VERSION = 3;
 
 export const REQUIRED_TABLES = Object.freeze([
   "runs",
   "run_limits",
   "agent_sessions",
-  "relay_messages",
+  "agent_turn_inputs",
+  "agent_messages",
   "delivery_attempts",
   "agent_packets",
   "domain_events",
@@ -96,23 +97,43 @@ const SCHEMA_SQL = `
   ) STRICT;
   CREATE INDEX agent_sessions_run_idx ON agent_sessions(run_id, actor);
 
-  CREATE TABLE relay_messages (
+  CREATE TABLE agent_turn_inputs (
+    input_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+    target_actor TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    source_message_id TEXT REFERENCES agent_messages(message_id) ON DELETE RESTRICT,
+    payload_hash TEXT NOT NULL,
+    prompt_hash TEXT NOT NULL,
+    input_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX agent_turn_inputs_run_idx
+    ON agent_turn_inputs(run_id, created_at, input_id);
+
+  CREATE TABLE agent_messages (
     message_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+    input_id TEXT NOT NULL UNIQUE
+      REFERENCES agent_turn_inputs(input_id) ON DELETE RESTRICT,
     sequence INTEGER NOT NULL CHECK (sequence >= 1),
-    from_actor TEXT NOT NULL,
-    to_actor TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE RESTRICT,
+    turn_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     message_json TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    UNIQUE (run_id, sequence)
+    UNIQUE (run_id, sequence),
+    UNIQUE (session_id, turn_id)
   ) STRICT;
-  CREATE INDEX relay_messages_run_idx ON relay_messages(run_id, sequence);
+  CREATE INDEX agent_messages_run_idx ON agent_messages(run_id, sequence);
 
   CREATE TABLE delivery_attempts (
     delivery_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
-    message_id TEXT NOT NULL UNIQUE REFERENCES relay_messages(message_id) ON DELETE RESTRICT,
+    input_id TEXT NOT NULL UNIQUE
+      REFERENCES agent_turn_inputs(input_id) ON DELETE RESTRICT,
     idempotency_key TEXT NOT NULL UNIQUE,
     state TEXT NOT NULL CHECK (state IN (${DELIVERY_STATE_CHECK})),
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
@@ -128,7 +149,7 @@ const SCHEMA_SQL = `
   CREATE TABLE agent_packets (
     packet_id TEXT PRIMARY KEY,
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
-    message_id TEXT NOT NULL UNIQUE REFERENCES relay_messages(message_id) ON DELETE RESTRICT,
+    message_id TEXT NOT NULL UNIQUE REFERENCES agent_messages(message_id) ON DELETE RESTRICT,
     packet_hash TEXT NOT NULL,
     packet_json TEXT NOT NULL,
     created_at TEXT NOT NULL
@@ -200,6 +221,89 @@ function assertRequiredTables(database) {
   }
 }
 
+function migrateVersion2ToVersion3(database) {
+  const legacyCounts = database.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM relay_messages) AS messages,
+      (SELECT COUNT(*) FROM delivery_attempts) AS deliveries,
+      (SELECT COUNT(*) FROM agent_packets) AS packets
+  `).get();
+  if (
+    Number(legacyCounts.messages) !== 0
+    || Number(legacyCounts.deliveries) !== 0
+    || Number(legacyCounts.packets) !== 0
+  ) {
+    throw new Error(
+      "schema v2 contains legacy relay data whose AgentTurnInput provenance cannot be inferred; explicit recovery is required",
+    );
+  }
+
+  database.exec(`
+    DROP TABLE agent_packets;
+    DROP TABLE delivery_attempts;
+    DROP TABLE relay_messages;
+
+    CREATE TABLE agent_turn_inputs (
+      input_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+      target_actor TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      source_message_id TEXT REFERENCES agent_messages(message_id) ON DELETE RESTRICT,
+      payload_hash TEXT NOT NULL,
+      prompt_hash TEXT NOT NULL,
+      input_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX agent_turn_inputs_run_idx
+      ON agent_turn_inputs(run_id, created_at, input_id);
+
+    CREATE TABLE agent_messages (
+      message_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+      input_id TEXT NOT NULL UNIQUE
+        REFERENCES agent_turn_inputs(input_id) ON DELETE RESTRICT,
+      sequence INTEGER NOT NULL CHECK (sequence >= 1),
+      actor TEXT NOT NULL,
+      session_id TEXT NOT NULL REFERENCES agent_sessions(session_id) ON DELETE RESTRICT,
+      turn_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      message_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      UNIQUE (run_id, sequence),
+      UNIQUE (session_id, turn_id)
+    ) STRICT;
+    CREATE INDEX agent_messages_run_idx ON agent_messages(run_id, sequence);
+
+    CREATE TABLE delivery_attempts (
+      delivery_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+      input_id TEXT NOT NULL UNIQUE
+        REFERENCES agent_turn_inputs(input_id) ON DELETE RESTRICT,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      state TEXT NOT NULL CHECK (state IN (${DELIVERY_STATE_CHECK})),
+      attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+      version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+      provider_receipt_json TEXT,
+      error_json TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX delivery_attempts_dispatch_idx
+      ON delivery_attempts(state, created_at, delivery_id);
+
+    CREATE TABLE agent_packets (
+      packet_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+      message_id TEXT NOT NULL UNIQUE REFERENCES agent_messages(message_id) ON DELETE RESTRICT,
+      packet_hash TEXT NOT NULL,
+      packet_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    ) STRICT;
+    CREATE INDEX agent_packets_run_idx ON agent_packets(run_id, created_at);
+  `);
+}
+
 export function initializeSqliteSchema(database) {
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA busy_timeout = 5000");
@@ -214,13 +318,14 @@ export function initializeSqliteSchema(database) {
     assertRequiredTables(database);
     return version;
   }
-  if (version !== 0) {
+  if (version !== 0 && version !== 2) {
     throw new Error(`no migration exists from database schema version ${version}`);
   }
 
   database.exec("BEGIN IMMEDIATE");
   try {
-    database.exec(SCHEMA_SQL);
+    if (version === 0) database.exec(SCHEMA_SQL);
+    else migrateVersion2ToVersion3(database);
     database.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (error) {

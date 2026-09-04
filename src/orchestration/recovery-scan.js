@@ -53,7 +53,7 @@ export function scanStartupRecovery(store) {
       if (UNCERTAIN_DELIVERY_STATES.has(delivery.state)) {
         reasons.push(reason("DELIVERY_UNCERTAIN", {
           deliveryId: delivery.deliveryId,
-          messageId: delivery.messageId,
+          inputId: delivery.inputId,
           state: delivery.state,
           attemptCount: delivery.attemptCount,
         }));

@@ -30,7 +30,7 @@ test("startup recovery scan finds active turns, uncertain delivery, disconnect, 
     deliveries: {
       "run-1": [{
         deliveryId: "delivery-1",
-        messageId: "message-1",
+        inputId: "input-1",
         state: "SUBMITTED",
         attemptCount: 1,
       }],
@@ -70,7 +70,7 @@ test("startup recovery scan does not reinterpret stable waiting state as recover
     deliveries: {
       "run-stable": [{
         deliveryId: "delivery-complete",
-        messageId: "message-complete",
+        inputId: "input-complete",
         state: "RELAYED",
         attemptCount: 1,
       }],
@@ -85,7 +85,7 @@ test("a completed provider response that has not been relayed requires recovery"
     deliveries: {
       "run-relay-pending": [{
         deliveryId: "delivery-response-complete",
-        messageId: "message-response-complete",
+        inputId: "input-response-complete",
         state: "RESPONSE_COMPLETED",
         attemptCount: 1,
       }],

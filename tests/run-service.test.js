@@ -4,8 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import { sha256Text } from "../src/domain/canonical-json.js";
-import { RunMode, RunPhase } from "../src/domain/vocabulary.js";
+import {
+  calculateRunPolicyHash,
+  createDiscussionRunPolicy,
+} from "../src/domain/run-policy.js";
+import { RunPhase } from "../src/domain/vocabulary.js";
 import { RunService, RunServiceError } from "../src/orchestration/run-service.js";
 import { SqliteStore } from "../src/persistence/sqlite-store.js";
 
@@ -21,26 +24,17 @@ function fixture() {
   return { store, service };
 }
 
-function limits(maxTurns) {
-  return {
-    maxTurns,
-    maxProtocolRepairs: 1,
-    maxDeliveryAttempts: 3,
-    maxConsecutiveActorFailures: 2,
-  };
-}
-
 test("RunService is the versioned single writer for state and event projection", () => {
   const { store, service } = fixture();
+  const policy = createDiscussionRunPolicy({ maxTurns: 4 });
   const created = service.createRun({
     runId: "run-service-1",
-    mode: RunMode.DISCUSSION,
     objective: "Have two agents review a design",
-    policyHash: sha256Text("policy"),
-    limits: limits(4),
+    policy,
   });
   assert.equal(created.phase, RunPhase.CREATED);
   assert.equal(store.getRunLimits(created.runId).limits.maxTurns, 4);
+  assert.equal(created.policyHash, calculateRunPolicyHash(policy));
 
   const starting = service.transition({
     runId: created.runId,
@@ -66,10 +60,8 @@ test("pause is persisted without advancing a running turn", () => {
   const { store, service } = fixture();
   let run = service.createRun({
     runId: "run-service-pause",
-    mode: RunMode.DISCUSSION,
     objective: "pause semantics",
-    policyHash: sha256Text("policy"),
-    limits: limits(3),
+    policy: createDiscussionRunPolicy({ maxTurns: 4 }),
   });
   for (const phase of [
     RunPhase.STARTING_SESSIONS,
@@ -109,10 +101,8 @@ test("generic phase transition cannot bypass evidence-backed completion", () => 
   const { store, service } = fixture();
   let run = service.createRun({
     runId: "run-completion-guard",
-    mode: "DISCUSSION",
     objective: "Reach evidence-backed consensus",
-    policyHash: sha256Text("policy"),
-    limits: limits(4),
+    policy: createDiscussionRunPolicy({ maxTurns: 4 }),
   });
   run = service.transition({
     runId: run.runId,
@@ -174,12 +164,32 @@ test("run creation rolls back when the frozen RunLimits insert fails", (t) => {
   });
   assert.throws(() => service.createRun({
     runId: "run-atomic",
-    mode: RunMode.DISCUSSION,
     objective: "freeze limits atomically",
-    policyHash: sha256Text("policy"),
-    limits: limits(2),
+    policy: createDiscussionRunPolicy({ maxTurns: 2 }),
   }), /injected run_limits failure/u);
   assert.equal(store.getRun("run-atomic"), null);
   assert.equal(store.getRunProjection("run-atomic"), null);
+  store.close();
+});
+
+test("RunService rejects caller-owned policy hashes and freezes policy limits", () => {
+  const { store, service } = fixture();
+  const policy = structuredClone(createDiscussionRunPolicy({ maxTurns: 6 }));
+  const created = service.createRun({
+    runId: "run-policy-owner",
+    objective: "Controller owns policy identity",
+    policy,
+  });
+  policy.limits.maxTurns = 12;
+
+  assert.equal(created.maxTurns, 6);
+  assert.equal(store.getRunLimits(created.runId).limits.maxTurns, 6);
+  assert.equal(created.policyHash, calculateRunPolicyHash(createDiscussionRunPolicy({ maxTurns: 6 })));
+  assert.throws(() => service.createRun({
+    runId: "run-legacy-policy-hash",
+    objective: "Do not accept split policy identity",
+    policy: createDiscussionRunPolicy(),
+    policyHash: created.policyHash,
+  }), /unsupported property "policyHash"/u);
   store.close();
 });

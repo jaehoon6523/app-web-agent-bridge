@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   AgentPacketType,
-  ProtocolErrorPacketAuthorityGapError,
   agentPacketHash,
   parseAgentPacket,
   validateAgentPacket,
@@ -10,15 +9,18 @@ import {
 import { sha256Text } from "../src/domain/canonical-json.js";
 import {
   DomainContractError,
+  AgentCommunicationContractError,
+  buildAgentMessage,
   buildAgentRun,
   buildAgentSessionRecord,
+  buildAgentTurnInput,
   buildProposalArtifact,
-  buildRelayMessage,
   proposalArtifactHash,
+  validateAgentMessage,
   validateAgentRun,
   validateAgentSessionRecord,
+  validateAgentTurnInput,
   validateProposalArtifact,
-  validateRelayMessage,
   validateRunBlocker,
 } from "../src/domain/contracts.js";
 import {
@@ -28,9 +30,10 @@ import {
 } from "../src/domain/packet-json-schemas.js";
 import {
   AgentActor,
+  AgentMessageKind,
   AgentSessionStatus,
+  AgentTurnInputKind,
   HumanGateReason,
-  RelayMessageKind,
   RunMode,
   RunPhase,
   SessionProvider,
@@ -39,11 +42,9 @@ import {
 const policyHash = sha256Text("policy-v1");
 const objective = "Reach a reviewable proposal";
 
-function proposalPacket(proposalHash = sha256Text("proposal-reference")) {
+function proposalPacket() {
   return {
     type: AgentPacketType.PROPOSAL,
-    proposal_id: "proposal-1",
-    proposal_sha256: proposalHash,
     summary: "Small proposal",
     body: "Implement the bounded change.",
     assumptions: [],
@@ -53,6 +54,20 @@ function proposalPacket(proposalHash = sha256Text("proposal-reference")) {
 
 test("canonical vocabulary exposes only the authorized string values", () => {
   assert.deepEqual(Object.values(AgentActor), ["CODEX_AGENT", "CHATGPT_WEB_AGENT"]);
+  assert.deepEqual(Object.values(AgentPacketType), ["PROPOSAL", "CRITIQUE", "ACCEPT", "BLOCKED"]);
+  assert.deepEqual(Object.values(AgentMessageKind), [
+    "PROPOSAL",
+    "CRITIQUE",
+    "REVISION",
+    "ACCEPTANCE",
+    "BLOCKER",
+  ]);
+  assert.deepEqual(Object.values(AgentTurnInputKind), [
+    "INITIAL_OBJECTIVE",
+    "PEER_RELAY",
+    "PROTOCOL_REPAIR",
+    "USER_STEER",
+  ]);
   assert.equal(RunMode.CODE_CHANGE, "CODE_CHANGE");
   assert.equal(RunPhase.CONSENSUS_CHECK, "CONSENSUS_CHECK");
   assert.equal(HumanGateReason.POLICY_VIOLATION, "POLICY_VIOLATION");
@@ -167,18 +182,19 @@ test("AgentSessionRecord preserves explicitly nullable provider observations", (
 });
 
 test("all defined agent packet variants are strict and canonical-hashable", () => {
+  const proposalRefHash = sha256Text("proposal-reference");
   const packets = [
     proposalPacket(),
     {
       type: AgentPacketType.CRITIQUE,
-      target_proposal_sha256: sha256Text("proposal-reference"),
+      target_proposal_sha256: proposalRefHash,
       blocking_findings: ["Missing rollback evidence"],
       non_blocking_findings: [],
       requested_changes: ["Add the evidence"],
     },
     {
       type: AgentPacketType.ACCEPT,
-      accepted_proposal_sha256: sha256Text("proposal-reference"),
+      accepted_proposal_sha256: proposalRefHash,
       blocking_findings: [],
     },
     {
@@ -203,14 +219,93 @@ test("all defined agent packet variants are strict and canonical-hashable", () =
     () => validateAgentPacket({ ...proposalPacket(), assumptions: [{}] }),
     /non-empty string/,
   );
+  assert.throws(
+    () => validateAgentPacket({
+      ...proposalPacket(),
+      proposal_id: "provider-computed-id",
+      proposal_sha256: proposalRefHash,
+    }),
+    /unsupported property/,
+  );
 });
 
-test("PROTOCOL_ERROR remains explicit but fail-closed until its fields have an owner", () => {
-  assert.equal(AgentPacketType.PROTOCOL_ERROR, "PROTOCOL_ERROR");
+test("finding, open-decision, and request text is normalized without reordering or deduplication", () => {
+  const decomposed = "Cafe\u0301";
+  const normalized = "Caf\u00e9";
+  const proposal = parseAgentPacket({
+    ...proposalPacket(),
+    open_decisions: [`  ${decomposed}  `, ` ${decomposed} `],
+  });
+  assert.deepEqual(proposal.open_decisions, [normalized, normalized]);
+
+  const critique = parseAgentPacket({
+    type: AgentPacketType.CRITIQUE,
+    target_proposal_sha256: sha256Text("proposal-reference"),
+    blocking_findings: ["  first  ", " first "],
+    non_blocking_findings: [` ${decomposed} `],
+    requested_changes: ["  change  "],
+  });
+  assert.deepEqual(critique.blocking_findings, ["first", "first"]);
+  assert.deepEqual(critique.non_blocking_findings, [normalized]);
+  assert.deepEqual(critique.requested_changes, ["change"]);
+
+  const accept = parseAgentPacket({
+    type: AgentPacketType.ACCEPT,
+    accepted_proposal_sha256: sha256Text("proposal-reference"),
+    blocking_findings: ["  finding  "],
+  });
+  assert.deepEqual(accept.blocking_findings, ["finding"]);
+
+  const blocked = parseAgentPacket({
+    type: AgentPacketType.BLOCKED,
+    reason_code: HumanGateReason.PRODUCT_DECISION_REQUIRED,
+    description: "A decision is required.",
+    required_decisions: ["  decide  "],
+  });
+  assert.deepEqual(blocked.required_decisions, ["decide"]);
+});
+
+test("finding, open-decision, and request arrays may be empty but reject blank items", () => {
+  const cases = [
+    { ...proposalPacket(), open_decisions: [" \t\r\n "] },
+    {
+      type: AgentPacketType.CRITIQUE,
+      target_proposal_sha256: sha256Text("proposal-reference"),
+      blocking_findings: ["\u00a0"],
+      non_blocking_findings: [],
+      requested_changes: [],
+    },
+    {
+      type: AgentPacketType.CRITIQUE,
+      target_proposal_sha256: sha256Text("proposal-reference"),
+      blocking_findings: [],
+      non_blocking_findings: [],
+      requested_changes: ["   "],
+    },
+    {
+      type: AgentPacketType.ACCEPT,
+      accepted_proposal_sha256: sha256Text("proposal-reference"),
+      blocking_findings: ["\n"],
+    },
+    {
+      type: AgentPacketType.BLOCKED,
+      reason_code: HumanGateReason.PRODUCT_DECISION_REQUIRED,
+      description: "A decision is required.",
+      required_decisions: ["\t"],
+    },
+  ];
+  for (const packet of cases) {
+    assert.throws(() => parseAgentPacket(packet), /must be a non-blank string/);
+  }
+
+  assert.deepEqual(parseAgentPacket(proposalPacket()).open_decisions, []);
+});
+
+test("PROTOCOL_ERROR is not an Agent packet type", () => {
+  assert.equal(Object.hasOwn(AgentPacketType, "PROTOCOL_ERROR"), false);
   assert.throws(
     () => parseAgentPacket('{"type":"PROTOCOL_ERROR"}'),
-    (error) => error instanceof ProtocolErrorPacketAuthorityGapError
-      && error.code === "PROTOCOL_ERROR_PACKET_SCHEMA_UNDEFINED",
+    (error) => error.code === "INVALID_AGENT_PACKET" && /unknown packet type/.test(error.message),
   );
 });
 
@@ -247,59 +342,82 @@ test("ProposalArtifact hash binds every stable artifact field except itself", ()
   );
 });
 
-test("RelayMessage builder binds raw content while retaining a validated packet", () => {
+test("Controller AgentTurnInput and provider AgentMessage are separate hash-bound contracts", () => {
+  const objectiveHash = sha256Text(objective);
+  const turnInput = buildAgentTurnInput({
+    inputId: "input-1",
+    runId: "run-1",
+    targetActor: AgentActor.CODEX_AGENT,
+    kind: AgentTurnInputKind.INITIAL_OBJECTIVE,
+    sourceMessageId: null,
+    instructionId: "discuss-objective",
+    promptTemplateVersion: "discussion-prompt-v1",
+    payload: { objective },
+    promptHash: sha256Text("rendered prompt"),
+    objectiveHash,
+    policyHash,
+    createdAt: "2026-09-04T00:00:30.000Z",
+  });
+  assert.equal(validateAgentTurnInput(turnInput), turnInput);
+  assert.match(turnInput.payloadHash, /^sha256:[0-9a-f]{64}$/);
+  assert.throws(
+    () => validateAgentTurnInput({ ...turnInput, payload: { objective: "changed" } }),
+    (error) => error instanceof AgentCommunicationContractError
+      && error.code === "HASH_MISMATCH",
+  );
+  assert.throws(
+    () => buildAgentTurnInput({
+      ...turnInput,
+      inputId: "input-peer",
+      kind: AgentTurnInputKind.PEER_RELAY,
+      sourceMessageId: null,
+    }),
+    (error) => error.code === "TURN_INPUT_SOURCE_REQUIRED",
+  );
+
   const packet = proposalPacket();
   const content = JSON.stringify(packet);
-  const message = buildRelayMessage({
+  const message = buildAgentMessage({
     messageId: "message-1",
     runId: "run-1",
     sequence: 1,
-    fromActor: AgentActor.CODEX_AGENT,
-    toActor: AgentActor.CHATGPT_WEB_AGENT,
-    sourceSessionId: "session-1",
-    sourceTurnId: "turn-1",
-    inReplyTo: null,
-    kind: RelayMessageKind.PROPOSAL,
+    actor: AgentActor.CODEX_AGENT,
+    sessionId: "session-1",
+    turnId: "turn-1",
+    kind: AgentMessageKind.PROPOSAL,
     content,
     normalizedPacket: packet,
-    objectiveHash: sha256Text(objective),
+    objectiveHash,
     policyHash,
     createdAt: "2026-09-04T00:01:00.000Z",
   });
 
   assert.equal(message.contentHash, sha256Text(content));
-  assert.equal(validateRelayMessage(message), message);
+  assert.equal(validateAgentMessage(message), message);
   assert.ok(Object.isFrozen(message.normalizedPacket));
   assert.throws(
-    () => validateRelayMessage({ ...message, content: `${content}\n` }),
-    (error) => error instanceof DomainContractError && error.code === "HASH_MISMATCH",
+    () => validateAgentMessage({ ...message, content: `${content}\n` }),
+    (error) => error instanceof AgentCommunicationContractError
+      && error.code === "HASH_MISMATCH",
   );
   assert.throws(
-    () => validateRelayMessage({ ...message, normalizedPacket: { type: "PROTOCOL_ERROR" } }),
-    ProtocolErrorPacketAuthorityGapError,
+    () => validateAgentMessage({ ...message, normalizedPacket: { type: "PROTOCOL_ERROR" } }),
+    (error) => error.code === "INVALID_AGENT_PACKET",
   );
   assert.throws(
-    () => validateRelayMessage({
+    () => validateAgentMessage({
       ...message,
-      kind: RelayMessageKind.ACCEPTANCE,
+      kind: AgentMessageKind.ACCEPTANCE,
     }),
-    (error) => error.code === "RELAY_PACKET_KIND_MISMATCH",
+    (error) => error.code === "AGENT_MESSAGE_PACKET_KIND_MISMATCH",
   );
   assert.throws(
-    () => validateRelayMessage({ ...message, normalizedPacket: null }),
-    (error) => error.code === "RELAY_PACKET_REQUIRED",
-  );
-  assert.throws(
-    () => validateRelayMessage({
-      ...message,
-      kind: RelayMessageKind.INITIAL_OBJECTIVE,
-      normalizedPacket: null,
-    }),
-    (error) => error.code === "INITIAL_OBJECTIVE_PROVENANCE_UNDEFINED",
+    () => validateAgentMessage({ ...message, sourceMessageId: null }),
+    /unsupported property/,
   );
 });
 
-test("Codex output schemas are closed and omit undefined PROTOCOL_ERROR", () => {
+test("Codex output schemas expose only the four closed provider packet contracts", () => {
   assert.deepEqual(Object.keys(AGENT_PACKET_JSON_SCHEMAS), [
     "PROPOSAL",
     "CRITIQUE",
@@ -312,11 +430,22 @@ test("Codex output schemas are closed and omit undefined PROTOCOL_ERROR", () => 
     assert.deepEqual(new Set(schema.required), new Set(Object.keys(schema.properties)));
   }
   assert.equal(DiscussionPacketSchema.oneOf.length, 4);
+  assert.deepEqual(Object.keys(AGENT_PACKET_JSON_SCHEMAS.PROPOSAL.properties), [
+    "type",
+    "summary",
+    "body",
+    "assumptions",
+    "open_decisions",
+  ]);
+  assert.equal(
+    AGENT_PACKET_JSON_SCHEMAS.PROPOSAL.properties.open_decisions.items.pattern,
+    "\\S",
+  );
   const clone = packetJsonSchema("ACCEPT");
   clone.properties.type.enum[0] = "BROKEN";
   assert.equal(AGENT_PACKET_JSON_SCHEMAS.ACCEPT.properties.type.enum[0], "ACCEPT");
   assert.throws(
     () => packetJsonSchema("PROTOCOL_ERROR"),
-    (error) => error.code === "PROTOCOL_ERROR_PACKET_SCHEMA_UNDEFINED",
+    (error) => error.code === "UNKNOWN_AGENT_PACKET_TYPE",
   );
 });

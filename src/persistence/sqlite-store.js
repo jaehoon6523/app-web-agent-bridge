@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../domain/canonical-json.js";
-import { validateAgentRun, validateRelayMessage } from "../domain/contracts.js";
+import { validateAgentRun } from "../domain/contracts.js";
 import {
   DeliveryState,
   initializeSqliteSchema,
@@ -49,9 +49,14 @@ import {
   resetConsecutiveActorFailuresEntity,
 } from "./run-limits.js";
 import {
-  appendCompoundRelayEntity,
-  verifyCompoundRelayLinksEntity,
-} from "./compound-relay.js";
+  getAgentMessageEntity,
+  getAgentTurnInputEntity,
+  listAgentMessagesEntity,
+  listAgentTurnInputsEntity,
+  saveAgentMessageEntity,
+  saveAgentTurnInputWithDeliveryEntity,
+  verifyAgentCommunicationLinksEntity,
+} from "./agent-communications.js";
 
 const DELIVERY_STATES = new Set(Object.values(DeliveryState));
 
@@ -142,7 +147,7 @@ export class SqliteStore {
       initializeSqliteSchema(this.#database);
       if (options.verifyOnOpen !== false) {
         this.verifyEventChains();
-        this.verifyCompoundRelayLinks();
+        this.verifyAgentCommunicationLinks();
         this.rebuildRunProjections({ compare: true });
       }
     } catch (error) {
@@ -557,27 +562,6 @@ export class SqliteStore {
     return this.appendEventAndUpdateProjection(input);
   }
 
-  /**
-   * Atomically persists one already-normalized relay packet, its delivery
-   * outbox row, and the run event/projection that makes that write visible.
-   * The caller still owns the applicable RunPhase transition; this primitive
-   * only prevents a crash from exposing a partial combination of those rows.
-   */
-  appendEventProjectRelayPacketAndDelivery(input) {
-    this.#assertOpen();
-    return this.#transaction(() => appendCompoundRelayEntity(
-      this.#database,
-      input,
-      {
-        appendEvent: (event) => this.appendEventAndUpdateProjection(event),
-        saveRelay: (relay) => this.saveRelayMessageWithDelivery(relay),
-        getRelayMessage: (messageId) => this.getRelayMessage(messageId),
-        getAgentPacket: (packetId) => this.getAgentPacket(packetId),
-      },
-      persistenceErrorTypes(),
-    ));
-  }
-
   #insertEvent(event, previousHash, eventHash) {
     this.#database.prepare(`
       INSERT INTO domain_events (
@@ -606,174 +590,49 @@ export class SqliteStore {
     return verifyEventChainsEntity(this.#database, runId, persistenceErrorTypes());
   }
 
-  verifyCompoundRelayLinks() {
+  verifyAgentCommunicationLinks() {
     this.#assertOpen();
-    return verifyCompoundRelayLinksEntity(this.#database, persistenceErrorTypes());
+    return verifyAgentCommunicationLinksEntity(this.#database, persistenceErrorTypes());
   }
 
-  saveRelayMessageWithDelivery(input) {
+  saveAgentTurnInputWithDelivery(input) {
     this.#assertOpen();
-    if (input === null || typeof input !== "object" || Array.isArray(input)) {
-      throw new TypeError("relay delivery input must be an object");
-    }
-    const { message, deliveryId, idempotencyKey } = input;
-    validateRelayMessage(message);
-    requireNonEmptyString(deliveryId, "deliveryId");
-    requireNonEmptyString(idempotencyKey, "idempotencyKey");
-    const createdAt = input.createdAt ?? message.createdAt;
-    requireNonEmptyString(createdAt, "createdAt");
-
     return this.#transaction(() => {
-      const runRow = this.#database.prepare(
-        "SELECT run_json FROM runs WHERE run_id = ?",
-      ).get(message.runId);
-      if (!runRow) {
-        throw new PersistenceError(`run ${message.runId} does not exist`, "RUN_NOT_FOUND");
-      }
-      const run = decodeCanonicalJson(runRow.run_json, `run ${message.runId}`);
-      validateAgentRun(run);
-      if (message.objectiveHash !== run.objectiveHash || message.policyHash !== run.policyHash) {
-        throw new PersistenceError(
-          `relay message ${message.messageId} is not bound to the current run hashes`,
-          "RELAY_RUN_HASH_MISMATCH",
-        );
-      }
-      const sourceSession = this.#database.prepare(`
-        SELECT run_id, actor FROM agent_sessions WHERE session_id = ?
-      `).get(message.sourceSessionId);
-      if (!sourceSession) {
-        throw new PersistenceError(
-          `source session ${message.sourceSessionId} does not exist`,
-          "SOURCE_SESSION_NOT_FOUND",
-        );
-      }
-      if (sourceSession.run_id !== message.runId || sourceSession.actor !== message.fromActor) {
-        throw new PersistenceError(
-          `source session ${message.sourceSessionId} does not own relay message ${message.messageId}`,
-          "SOURCE_SESSION_MISMATCH",
-        );
-      }
-      const latest = this.#database.prepare(`
-        SELECT MAX(sequence) AS sequence FROM relay_messages WHERE run_id = ?
-      `).get(message.runId);
-      const expectedSequence = Number(latest.sequence ?? 0) + 1;
-      if (message.sequence !== expectedSequence) {
-        throw new PersistenceError(
-          `relay message sequence ${message.sequence} must be ${expectedSequence}`,
-          "RELAY_SEQUENCE_MISMATCH",
-        );
-      }
-      if (message.sequence === 1 && message.inReplyTo !== null) {
-        throw new PersistenceError(
-          "the first relay message cannot reply to another message",
-          "REPLY_TARGET_MISMATCH",
-        );
-      }
-      if (message.sequence > 1 && message.inReplyTo === null) {
-        throw new PersistenceError(
-          `relay message ${message.messageId} must identify its reply target`,
-          "REPLY_TARGET_REQUIRED",
-        );
-      }
-      if (message.inReplyTo !== null) {
-        const parent = this.#database.prepare(`
-          SELECT run_id, sequence, from_actor, to_actor
-          FROM relay_messages WHERE message_id = ?
-        `).get(message.inReplyTo);
-        if (!parent) {
-          throw new PersistenceError(
-            `reply target ${message.inReplyTo} does not exist`,
-            "REPLY_TARGET_NOT_FOUND",
-          );
-        }
-        if (parent.run_id !== message.runId || Number(parent.sequence) >= message.sequence) {
-          throw new PersistenceError(
-            `reply target ${message.inReplyTo} is not an earlier message in run ${message.runId}`,
-            "REPLY_TARGET_MISMATCH",
-          );
-        }
-        if (parent.to_actor !== message.fromActor || parent.from_actor !== message.toActor) {
-          throw new PersistenceError(
-            `reply route for ${message.messageId} does not reverse ${message.inReplyTo}`,
-            "REPLY_ROUTE_MISMATCH",
-          );
-        }
-      }
-      this.#database.prepare(`
-        INSERT INTO relay_messages (
-          message_id, run_id, sequence, from_actor, to_actor,
-          content_hash, message_json, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        message.messageId,
-        message.runId,
-        message.sequence,
-        message.fromActor,
-        message.toActor,
-        message.contentHash,
-        encodeJson(message),
-        message.createdAt,
+      saveAgentTurnInputWithDeliveryEntity(
+        this.#database,
+        input,
+        persistenceErrorTypes(),
       );
-
-      this.#database.prepare(`
-        INSERT INTO delivery_attempts (
-          delivery_id, run_id, message_id, idempotency_key, state,
-          attempt_count, version, provider_receipt_json, error_json,
-          created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, 0, 1, NULL, NULL, ?, ?)
-      `).run(
-        deliveryId,
-        message.runId,
-        message.messageId,
-        idempotencyKey,
-        DeliveryState.PENDING,
-        createdAt,
-        createdAt,
-      );
-
-      return this.getDelivery(deliveryId);
+      return this.getDelivery(input.deliveryId);
     });
   }
 
-  getRelayMessage(messageId) {
+  saveAgentMessage(input) {
     this.#assertOpen();
-    requireNonEmptyString(messageId, "messageId");
-    const row = this.#database
-      .prepare("SELECT * FROM relay_messages WHERE message_id = ?")
-      .get(messageId);
-    if (!row) return null;
-    const message = decodeCanonicalJson(row.message_json, `relay message ${messageId}`);
-    try {
-      validateRelayMessage(message);
-    } catch (cause) {
-      throw new EventChainIntegrityError(
-        `relay message ${messageId} violates its domain contract`,
-        { cause },
-      );
-    }
-    if (
-      message.messageId !== row.message_id
-      || message.runId !== row.run_id
-      || message.sequence !== Number(row.sequence)
-      || message.fromActor !== row.from_actor
-      || message.toActor !== row.to_actor
-      || message.contentHash !== row.content_hash
-      || message.createdAt !== row.created_at
-    ) {
-      throw new EventChainIntegrityError(
-        `relay message ${messageId} metadata does not match its JSON`,
-      );
-    }
-    return message;
+    return this.#transaction(() => {
+      saveAgentMessageEntity(this.#database, input, persistenceErrorTypes());
+      return this.getAgentMessage(input.message.messageId);
+    });
   }
 
-  listRelayMessages(runId) {
+  getAgentTurnInput(inputId) {
     this.#assertOpen();
-    requireNonEmptyString(runId, "runId");
-    return this.#database
-      .prepare("SELECT message_id FROM relay_messages WHERE run_id = ? ORDER BY sequence")
-      .all(runId)
-      .map((row) => this.getRelayMessage(row.message_id));
+    return getAgentTurnInputEntity(this.#database, inputId, persistenceErrorTypes());
+  }
+
+  listAgentTurnInputs(runId) {
+    this.#assertOpen();
+    return listAgentTurnInputsEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  getAgentMessage(messageId) {
+    this.#assertOpen();
+    return getAgentMessageEntity(this.#database, messageId, persistenceErrorTypes());
+  }
+
+  listAgentMessages(runId) {
+    this.#assertOpen();
+    return listAgentMessagesEntity(this.#database, runId, persistenceErrorTypes());
   }
 
   getDelivery(deliveryId) {
@@ -798,7 +657,7 @@ export class SqliteStore {
     return {
       deliveryId: row.delivery_id,
       runId: row.run_id,
-      messageId: row.message_id,
+      inputId: row.input_id,
       idempotencyKey: row.idempotency_key,
       state: row.state,
       attemptCount: Number(row.attempt_count),

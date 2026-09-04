@@ -1,12 +1,12 @@
 import {
   SHA256_DIGEST_PATTERN,
   validateProposalArtifact,
-  validateRelayMessage,
 } from "./contracts.js";
+import { validateAgentMessage } from "./agent-messages.js";
 import {
   AgentActor,
+  AgentMessageKind,
   AgentPacketType,
-  RelayMessageKind,
   RunOutcomeType,
 } from "./vocabulary.js";
 import { createRunOutcome } from "./run-state-machine.js";
@@ -22,26 +22,26 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function latestEnvelopeByActor(packets, runId) {
+function latestEnvelopeByActor(messages, runId) {
   const latest = new Map();
   const sequences = new Set();
-  for (const envelope of packets) {
+  for (const envelope of messages) {
     if (!isObject(envelope)) continue;
     if (envelope.runId !== runId) continue;
     if (
-      envelope.fromActor !== AgentActor.CODEX_AGENT
-      && envelope.fromActor !== AgentActor.CHATGPT_WEB_AGENT
+      envelope.actor !== AgentActor.CODEX_AGENT
+      && envelope.actor !== AgentActor.CHATGPT_WEB_AGENT
     ) {
       continue;
     }
     if (!Number.isSafeInteger(envelope.sequence) || envelope.sequence < 1) return null;
     if (sequences.has(envelope.sequence)) return null;
     sequences.add(envelope.sequence);
-    const previous = latest.get(envelope.fromActor);
+    const previous = latest.get(envelope.actor);
     if (!previous || envelope.sequence > previous.sequence) {
       // Select before validating the packet. That makes a newer malformed or
       // non-ACCEPT response supersede stale consent instead of falling back.
-      latest.set(envelope.fromActor, envelope);
+      latest.set(envelope.actor, envelope);
     }
   }
   return latest;
@@ -49,11 +49,11 @@ function latestEnvelopeByActor(packets, runId) {
 
 function validatedAcceptance(envelope) {
   try {
-    validateRelayMessage(envelope);
+    validateAgentMessage(envelope);
   } catch {
     return null;
   }
-  if (envelope.kind !== RelayMessageKind.ACCEPTANCE) return null;
+  if (envelope.kind !== AgentMessageKind.ACCEPTANCE) return null;
   const packet = envelope.normalizedPacket;
   if (packet?.type !== AgentPacketType.ACCEPT) return null;
   if (packet.blocking_findings.length !== 0) return null;
@@ -73,7 +73,7 @@ function hasPersistedProposal(proposals, proposalHash, runId) {
 
 export function evaluateConsensus({
   runId,
-  packets,
+  messages,
   proposals,
   objectiveHash,
   policyHash,
@@ -82,7 +82,7 @@ export function evaluateConsensus({
   if (typeof runId !== "string" || runId.length === 0) {
     throw new TypeError("runId must be a non-empty string.");
   }
-  if (!Array.isArray(packets)) throw new TypeError("packets must be a RelayMessage array.");
+  if (!Array.isArray(messages)) throw new TypeError("messages must be an AgentMessage array.");
   if (!Array.isArray(proposals)) throw new TypeError("proposals must be a ProposalArtifact array.");
   requireHash(objectiveHash, "objectiveHash");
   requireHash(policyHash, "policyHash");
@@ -91,7 +91,7 @@ export function evaluateConsensus({
   }
   if (policyViolation) return null;
 
-  const latest = latestEnvelopeByActor(packets, runId);
+  const latest = latestEnvelopeByActor(messages, runId);
   if (latest === null) return null;
   const codexEnvelope = latest.get(AgentActor.CODEX_AGENT);
   const webEnvelope = latest.get(AgentActor.CHATGPT_WEB_AGENT);

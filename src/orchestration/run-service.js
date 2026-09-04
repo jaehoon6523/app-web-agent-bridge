@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { sha256Text } from "../domain/canonical-json.js";
+import { calculateRunPolicyHash, freezeRunPolicy } from "../domain/run-policy.js";
 import {
   createRunLimits,
   createInitialRunState,
@@ -9,7 +10,7 @@ import {
   setRunBlocker,
   transitionRunState,
 } from "../domain/run-state-machine.js";
-import { RunMode, RunPhase, isVocabularyValue } from "../domain/vocabulary.js";
+import { RunPhase } from "../domain/vocabulary.js";
 
 export class RunServiceError extends Error {
   constructor(message, code = "RUN_SERVICE_ERROR") {
@@ -29,6 +30,29 @@ function requiredString(value, name) {
 function requiredExpectedVersion(value) {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new TypeError("expectedVersion must be a positive safe integer.");
+  }
+  return value;
+}
+
+function requireCreateRunInput(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("createRun input must be a plain object.");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw new TypeError("createRun input must be a plain object.");
+  }
+  if (Object.getOwnPropertySymbols(value).length > 0) {
+    throw new TypeError("createRun input must not contain symbol properties.");
+  }
+  const allowed = new Set(["runId", "objective", "policy"]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new TypeError(`createRun input contains unsupported property ${JSON.stringify(key)}.`);
+    }
+  }
+  if (!Object.hasOwn(value, "objective") || !Object.hasOwn(value, "policy")) {
+    throw new TypeError("createRun input requires objective and policy.");
   }
   return value;
 }
@@ -53,15 +77,21 @@ export class RunService {
     this.#idFactory = idFactory;
   }
 
-  createRun({ runId = `run_${this.#idFactory()}`, mode, objective, policyHash, limits }) {
-    if (!isVocabularyValue(RunMode, mode)) throw new TypeError("mode must be a RunMode.");
+  createRun(input) {
+    const request = requireCreateRunInput(input);
+    const runId = Object.hasOwn(request, "runId")
+      ? request.runId
+      : `run_${this.#idFactory()}`;
+    const { objective } = request;
+    requiredString(runId, "runId");
     requiredString(objective, "objective");
-    requiredString(policyHash, "policyHash");
-    const frozenLimits = createRunLimits(limits);
+    const frozenPolicy = freezeRunPolicy(request.policy);
+    const policyHash = calculateRunPolicyHash(frozenPolicy);
+    const frozenLimits = createRunLimits(frozenPolicy.limits);
     const at = this.#clock();
     const run = createInitialRunState({
       runId,
-      mode,
+      mode: frozenPolicy.mode,
       objective,
       objectiveHash: sha256Text(objective),
       policyHash,

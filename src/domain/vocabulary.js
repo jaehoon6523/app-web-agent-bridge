@@ -63,14 +63,19 @@ export const AgentSessionStatus = enumObject([
   "CLOSED",
 ]);
 
-export const RelayMessageKind = enumObject([
-  "INITIAL_OBJECTIVE",
+export const AgentMessageKind = enumObject([
   "PROPOSAL",
   "CRITIQUE",
   "REVISION",
   "ACCEPTANCE",
   "BLOCKER",
+]);
+
+export const AgentTurnInputKind = enumObject([
+  "INITIAL_OBJECTIVE",
+  "PEER_RELAY",
   "PROTOCOL_REPAIR",
+  "USER_STEER",
 ]);
 
 export const AgentPacketType = enumObject([
@@ -78,7 +83,6 @@ export const AgentPacketType = enumObject([
   "CRITIQUE",
   "ACCEPT",
   "BLOCKED",
-  "PROTOCOL_ERROR",
 ]);
 
 export const RunBlockerType = enumObject([
@@ -102,7 +106,8 @@ export const RUN_PHASES = Object.freeze(Object.values(RunPhase));
 export const HUMAN_GATE_REASONS = Object.freeze(Object.values(HumanGateReason));
 export const SESSION_PROVIDERS = Object.freeze(Object.values(SessionProvider));
 export const AGENT_SESSION_STATUSES = Object.freeze(Object.values(AgentSessionStatus));
-export const RELAY_MESSAGE_KINDS = Object.freeze(Object.values(RelayMessageKind));
+export const AGENT_MESSAGE_KINDS = Object.freeze(Object.values(AgentMessageKind));
+export const AGENT_TURN_INPUT_KINDS = Object.freeze(Object.values(AgentTurnInputKind));
 export const AGENT_PACKET_TYPES = Object.freeze(Object.values(AgentPacketType));
 export const RUN_BLOCKER_TYPES = Object.freeze(Object.values(RunBlockerType));
 export const RUN_OUTCOME_TYPES = Object.freeze(Object.values(RunOutcomeType));

@@ -9,6 +9,10 @@ const STRING_ARRAY = Object.freeze({
   type: "array",
   items: NON_EMPTY_STRING,
 });
+const NORMALIZABLE_TEXT_ARRAY = Object.freeze({
+  type: "array",
+  items: Object.freeze({ type: "string", pattern: "\\S" }),
+});
 
 function closedObject(properties, required = Object.keys(properties)) {
   return Object.freeze({
@@ -25,26 +29,24 @@ function discriminator(value) {
 
 export const ProposalPacketSchema = closedObject({
   type: discriminator("PROPOSAL"),
-  proposal_id: NON_EMPTY_STRING,
-  proposal_sha256: SHA256_STRING,
   summary: NON_EMPTY_STRING,
   body: NON_EMPTY_STRING,
   assumptions: STRING_ARRAY,
-  open_decisions: STRING_ARRAY,
+  open_decisions: NORMALIZABLE_TEXT_ARRAY,
 });
 
 export const CritiquePacketSchema = closedObject({
   type: discriminator("CRITIQUE"),
   target_proposal_sha256: SHA256_STRING,
-  blocking_findings: STRING_ARRAY,
-  non_blocking_findings: STRING_ARRAY,
-  requested_changes: STRING_ARRAY,
+  blocking_findings: NORMALIZABLE_TEXT_ARRAY,
+  non_blocking_findings: NORMALIZABLE_TEXT_ARRAY,
+  requested_changes: NORMALIZABLE_TEXT_ARRAY,
 });
 
 export const AcceptancePacketSchema = closedObject({
   type: discriminator("ACCEPT"),
   accepted_proposal_sha256: SHA256_STRING,
-  blocking_findings: STRING_ARRAY,
+  blocking_findings: NORMALIZABLE_TEXT_ARRAY,
 });
 
 export const BlockedPacketSchema = closedObject({
@@ -54,7 +56,7 @@ export const BlockedPacketSchema = closedObject({
     enum: HUMAN_GATE_REASONS,
   }),
   description: NON_EMPTY_STRING,
-  required_decisions: STRING_ARRAY,
+  required_decisions: NORMALIZABLE_TEXT_ARRAY,
 });
 
 export const DiscussionPacketSchema = Object.freeze({
@@ -79,9 +81,7 @@ export function packetJsonSchema(type) {
     const error = /** @type {TypeError & {code?: string}} */ (
       new TypeError(`No authorized output schema exists for packet type ${String(type)}.`)
     );
-    error.code = type === "PROTOCOL_ERROR"
-      ? "PROTOCOL_ERROR_PACKET_SCHEMA_UNDEFINED"
-      : "UNKNOWN_AGENT_PACKET_TYPE";
+    error.code = "UNKNOWN_AGENT_PACKET_TYPE";
     throw error;
   }
   return structuredClone(schema);

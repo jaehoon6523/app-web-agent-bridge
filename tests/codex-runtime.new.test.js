@@ -13,11 +13,13 @@ import {
   JsonlRpcPeer,
   assertStrictOutputSchema,
   buildCodexSandboxPolicy,
+  compileOutputSchema,
   createCodexChildEnvironment,
   resolvePinnedExecutable,
   verifyPinnedExecutable,
 } from "../src/runtime/codex/index.js";
 import { AGENT_SESSION_STATUSES } from "../src/domain/vocabulary.js";
+import { DiscussionPacketSchema } from "../src/domain/packet-json-schemas.js";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.dirname(TEST_DIR);
@@ -393,6 +395,26 @@ test("caller must provide a strict output schema", () => {
     (error) => error.code === "CODEX_OUTPUT_SCHEMA_NOT_STRICT",
   );
   assert.deepEqual(assertStrictOutputSchema(OUTPUT_SCHEMA), OUTPUT_SCHEMA);
+});
+
+test("Codex discussion output schema accepts content-only proposals and rejects blank decisions", () => {
+  const schema = assertStrictOutputSchema(DiscussionPacketSchema);
+  const validate = compileOutputSchema(schema);
+  const proposal = {
+    type: "PROPOSAL",
+    summary: "Bounded proposal",
+    body: "Implement the approved contract.",
+    assumptions: [],
+    open_decisions: [],
+  };
+
+  assert.equal(validate(proposal), true);
+  assert.equal(validate({
+    ...proposal,
+    proposal_id: "provider-owned-id",
+    proposal_sha256: `sha256:${"0".repeat(64)}`,
+  }), false);
+  assert.equal(validate({ ...proposal, open_decisions: ["   "] }), false);
 });
 
 test("approval bridge requires exact request/thread/turn correlation and never auto-accepts", async (t) => {

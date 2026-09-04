@@ -1,0 +1,87 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import {
+  BLOCKED_ROUTE_BY_REASON,
+  DISCUSSION_ACTION_MATRIX,
+  DiscussionActionPolicyError,
+  assertDiscussionPacketTypeAllowed,
+  blockedRoutingResult,
+  resolveDiscussionActionPolicy,
+} from "../src/domain/discussion-actions.js";
+import {
+  AgentTurnInputKind,
+  HumanGateReason,
+  RunPhase,
+} from "../src/domain/vocabulary.js";
+
+const EXPECTED_MATRIX = Object.freeze({
+  INITIAL_OBJECTIVE: ["PROPOSE", "BLOCKED"],
+  PEER_PROPOSAL: ["CRITIQUE", "ACCEPT", "BLOCKED"],
+  PEER_REVISION: ["CRITIQUE", "ACCEPT", "BLOCKED"],
+  PEER_CRITIQUE: ["REVISE", "BLOCKED"],
+  PEER_ACCEPTANCE: ["ACCEPT", "CRITIQUE", "BLOCKED"],
+});
+
+test("discussion-actions-v1 is the approved state-specific action matrix", () => {
+  assert.deepEqual(DISCUSSION_ACTION_MATRIX, EXPECTED_MATRIX);
+
+  const initial = resolveDiscussionActionPolicy({
+    inputKind: AgentTurnInputKind.INITIAL_OBJECTIVE,
+  });
+  assert.deepEqual(initial.allowedActions, EXPECTED_MATRIX.INITIAL_OBJECTIVE);
+  assert.deepEqual(initial.allowedPacketTypes, ["PROPOSAL", "BLOCKED"]);
+
+  for (const peerMessageKind of ["PROPOSAL", "REVISION", "CRITIQUE", "ACCEPTANCE"]) {
+    const resolved = resolveDiscussionActionPolicy({
+      inputKind: AgentTurnInputKind.PEER_RELAY,
+      peerMessageKind,
+    });
+    assert.deepEqual(resolved.allowedActions, EXPECTED_MATRIX[`PEER_${peerMessageKind}`]);
+  }
+});
+
+test("protocol repair accepts exactly the expected prior packet type", () => {
+  const context = {
+    inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    expectedPacketType: "CRITIQUE",
+  };
+  const resolved = resolveDiscussionActionPolicy(context);
+  assert.deepEqual(resolved.allowedActions, []);
+  assert.deepEqual(resolved.allowedPacketTypes, ["CRITIQUE"]);
+  assert.equal(resolved.expectedPacketType, "CRITIQUE");
+  assert.equal(assertDiscussionPacketTypeAllowed(context, "CRITIQUE"), "CRITIQUE");
+  assert.throws(
+    () => assertDiscussionPacketTypeAllowed(context, "BLOCKED"),
+    (error) => error instanceof DiscussionActionPolicyError
+      && error.code === "DISCUSSION_PACKET_TYPE_NOT_ALLOWED",
+  );
+  assert.throws(
+    () => resolveDiscussionActionPolicy({
+      inputKind: AgentTurnInputKind.PROTOCOL_REPAIR,
+      expectedPacketType: "PROTOCOL_ERROR",
+    }),
+    (error) => error.code === "INVALID_PROTOCOL_REPAIR_EXPECTATION",
+  );
+});
+
+test("peer BLOCKED is not relayable and every BLOCKED reason has an explicit route", () => {
+  assert.throws(() => resolveDiscussionActionPolicy({
+    inputKind: AgentTurnInputKind.PEER_RELAY,
+    peerMessageKind: "BLOCKER",
+  }), /no authorized PEER_RELAY action policy/u);
+
+  assert.deepEqual(BLOCKED_ROUTE_BY_REASON, {
+    PRODUCT_DECISION_REQUIRED: RunPhase.HUMAN_GATE,
+    RUNTIME_APPROVAL_REQUIRED: RunPhase.HUMAN_GATE,
+    SESSION_AUTH_REQUIRED: RunPhase.HUMAN_GATE,
+    RECOVERY_AMBIGUOUS: RunPhase.RECOVERY_REQUIRED,
+    CONSENSUS_NOT_REACHED: RunPhase.HUMAN_GATE,
+    POLICY_VIOLATION: RunPhase.FAILED,
+    MANUAL_INTERVENTION_DETECTED: RunPhase.HUMAN_GATE,
+  });
+  for (const reasonCode of Object.values(HumanGateReason)) {
+    const result = blockedRoutingResult(reasonCode);
+    assert.equal(result.reasonCode, reasonCode);
+    assert.equal(result.route, BLOCKED_ROUTE_BY_REASON[reasonCode]);
+  }
+});

@@ -8,12 +8,13 @@ import { sha256Text } from "../src/domain/canonical-json.js";
 import {
   createAgentRun,
   createAgentSessionRecord,
-  createRelayMessage,
 } from "../src/domain/contracts.js";
+import { buildAgentMessage, buildAgentTurnInput } from "../src/domain/agent-messages.js";
 import {
   AgentActor,
+  AgentMessageKind,
   AgentSessionStatus,
-  RelayMessageKind,
+  AgentTurnInputKind,
   RunMode,
   RunPhase,
   SessionProvider,
@@ -70,17 +71,32 @@ function makeSession(runId, overrides = {}) {
   });
 }
 
-function makeMessage(run, messageId = `message-${run.runId}`, normalizedPacket = null) {
-  return createRelayMessage({
+function makeTurnInput(run) {
+  return buildAgentTurnInput({
+    inputId: `input-${run.runId}`,
+    runId: run.runId,
+    targetActor: AgentActor.CODEX_AGENT,
+    kind: AgentTurnInputKind.INITIAL_OBJECTIVE,
+    sourceMessageId: null,
+    instructionId: "discuss-objective",
+    promptTemplateVersion: "discussion-prompt-v1",
+    payload: { objective: run.objective },
+    promptHash: sha256Text(`prompt-${run.runId}`),
+    objectiveHash: run.objectiveHash,
+    policyHash: run.policyHash,
+    createdAt: T0,
+  });
+}
+
+function makeMessage(run, messageId = `message-${run.runId}`, normalizedPacket = proposalPacket()) {
+  return buildAgentMessage({
     messageId,
     runId: run.runId,
     sequence: 1,
-    fromActor: AgentActor.CODEX_AGENT,
-    toActor: AgentActor.CHATGPT_WEB_AGENT,
-    sourceSessionId: "session-codex",
-    sourceTurnId: "turn-1",
-    inReplyTo: null,
-    kind: RelayMessageKind.PROPOSAL,
+    actor: AgentActor.CODEX_AGENT,
+    sessionId: "session-codex",
+    turnId: "turn-1",
+    kind: AgentMessageKind.PROPOSAL,
     content: "A proposal",
     normalizedPacket,
     objectiveHash: run.objectiveHash,
@@ -92,8 +108,6 @@ function makeMessage(run, messageId = `message-${run.runId}`, normalizedPacket =
 function proposalPacket() {
   return {
     type: "PROPOSAL",
-    proposal_id: "proposal-1",
-    proposal_sha256: sha256Text("proposal-1"),
     summary: "Summary",
     body: "Body",
     assumptions: [],
@@ -171,11 +185,14 @@ test("agent packet persistence validates strict packets, hashes, and message own
   });
   const packet = proposalPacket();
   const message = makeMessage(runA, `message-${runA.runId}`, packet);
-  store.saveRelayMessageWithDelivery({
-    message,
+  const turnInput = makeTurnInput(runA);
+  store.saveAgentTurnInputWithDelivery({
+    turnInput,
     deliveryId: "delivery-a",
     idempotencyKey: "key-a",
+    createdAt: T0,
   });
+  store.saveAgentMessage({ inputId: turnInput.inputId, message });
   const saved = store.saveAgentPacket({
     packetId: "packet-a",
     runId: runA.runId,
