@@ -15,7 +15,10 @@ import {
   buildAgentSessionRecord,
   buildAgentTurnInput,
   buildProposalArtifact,
-  proposalArtifactHash,
+  proposalContentHash,
+  proposalContentHashInput,
+  proposalRefHash,
+  proposalRefHashInput,
   validateAgentMessage,
   validateAgentRun,
   validateAgentSessionRecord,
@@ -309,36 +312,106 @@ test("PROTOCOL_ERROR is not an Agent packet type", () => {
   );
 });
 
-test("ProposalArtifact hash binds every stable artifact field except itself", () => {
+test("ProposalArtifact uses Controller-owned content and run-bound reference hashes", () => {
   const artifact = buildProposalArtifact({
     proposalId: "proposal-1",
     runId: "run-1",
     authorActor: AgentActor.CODEX_AGENT,
-    title: "Bounded implementation",
+    sourceMessageId: "message-1",
+    sourceSessionId: "session-codex",
+    sourceTurnId: "turn-1",
+    summary: "Bounded implementation",
     body: "Implement the exact authorized fields.",
     assumptions: ["The policy hash is frozen"],
-    decisions: ["Use strict additionalProperties behavior"],
-    createdFromMessageId: "message-1",
+    openDecisions: ["  Preserve order  ", " Preserve order "],
+    objectiveHash: sha256Text("objective-v1"),
+    policyHash,
+    createdAt: "2026-09-04T00:00:20.000Z",
   });
 
-  assert.equal(artifact.proposalHash, proposalArtifactHash(artifact));
+  assert.deepEqual(artifact.openDecisions, ["Preserve order", "Preserve order"]);
+  assert.deepEqual(proposalContentHashInput(artifact), {
+    schema: "proposal-content-v1",
+    summary: artifact.summary,
+    body: artifact.body,
+    assumptions: artifact.assumptions,
+    openDecisions: artifact.openDecisions,
+  });
+  assert.deepEqual(proposalRefHashInput(artifact), {
+    schema: "proposal-ref-v1",
+    runId: artifact.runId,
+    objectiveHash: artifact.objectiveHash,
+    policyHash: artifact.policyHash,
+    proposalContentHash: artifact.proposalContentHash,
+  });
+  assert.equal(artifact.proposalContentHash, proposalContentHash(artifact));
+  assert.equal(artifact.proposalRefHash, proposalRefHash(artifact));
   assert.equal(validateProposalArtifact(artifact), artifact);
   assert.throws(
     () => validateProposalArtifact({ ...artifact, body: "silently changed" }),
     (error) => error instanceof DomainContractError && error.code === "HASH_MISMATCH",
   );
   assert.throws(
+    () => validateProposalArtifact({ ...artifact, policyHash: sha256Text("policy-v2") }),
+    (error) => error instanceof DomainContractError && error.code === "HASH_MISMATCH",
+  );
+
+  const differentProvenance = buildProposalArtifact({
+    ...artifact,
+    proposalId: "proposal-2",
+    sourceMessageId: "message-2",
+    sourceSessionId: "session-web",
+    sourceTurnId: "turn-2",
+    createdAt: "2026-09-04T00:00:21.000Z",
+    proposalContentHash: undefined,
+    proposalRefHash: undefined,
+  });
+  assert.equal(differentProvenance.proposalContentHash, artifact.proposalContentHash);
+  assert.equal(differentProvenance.proposalRefHash, artifact.proposalRefHash);
+
+  const reboundToAnotherRun = buildProposalArtifact({
+    ...artifact,
+    proposalId: "proposal-3",
+    runId: "run-2",
+    sourceMessageId: "message-3",
+    sourceTurnId: "turn-3",
+    proposalContentHash: undefined,
+    proposalRefHash: undefined,
+  });
+  assert.equal(reboundToAnotherRun.proposalContentHash, artifact.proposalContentHash);
+  assert.notEqual(reboundToAnotherRun.proposalRefHash, artifact.proposalRefHash);
+
+  assert.throws(
     () => buildProposalArtifact({
-      proposalId: "proposal-2",
+      proposalId: "proposal-4",
       runId: "run-1",
       authorActor: AgentActor.CODEX_AGENT,
-      title: "Unowned decision schema",
+      sourceMessageId: "message-2",
+      sourceSessionId: "session-codex",
+      sourceTurnId: "turn-2",
+      summary: "Unowned decision schema",
       body: "Do not invent it.",
       assumptions: [],
-      decisions: [{ id: "not-authorized" }],
-      createdFromMessageId: "message-2",
+      openDecisions: [{ id: "not-authorized" }],
+      objectiveHash: sha256Text("objective-v1"),
+      policyHash,
+      createdAt: "2026-09-04T00:00:22.000Z",
     }),
-    /non-empty string/,
+    /non-blank string/,
+  );
+  assert.throws(
+    () => buildProposalArtifact({
+      ...artifact,
+      proposalId: "proposal-5",
+      openDecisions: ["   "],
+      proposalContentHash: undefined,
+      proposalRefHash: undefined,
+    }),
+    /non-blank string/,
+  );
+  assert.throws(
+    () => buildProposalArtifact({ ...artifact, title: "legacy field" }),
+    /unsupported property/,
   );
 });
 

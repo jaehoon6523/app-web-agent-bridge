@@ -60,14 +60,23 @@ function validatedAcceptance(envelope) {
   return packet;
 }
 
-function hasPersistedProposal(proposals, proposalHash, runId) {
-  return proposals.some((artifact) => {
+function findPersistedProposal({
+  proposals,
+  proposalRefHash,
+  runId,
+  objectiveHash,
+  policyHash,
+}) {
+  return proposals.find((artifact) => {
     try {
       validateProposalArtifact(artifact);
     } catch {
       return false;
     }
-    return artifact.proposalHash === proposalHash && artifact.runId === runId;
+    return artifact.proposalRefHash === proposalRefHash
+      && artifact.runId === runId
+      && artifact.objectiveHash === objectiveHash
+      && artifact.policyHash === policyHash;
   });
 }
 
@@ -110,12 +119,21 @@ export function evaluateConsensus({
   if (!codexAccept || !webAccept) return null;
   if (codexEnvelope.runId !== runId || webEnvelope.runId !== runId) return null;
 
-  const proposalHash = codexAccept.accepted_proposal_sha256;
-  if (proposalHash !== webAccept.accepted_proposal_sha256) return null;
-  if (!hasPersistedProposal(proposals, proposalHash, runId)) return null;
+  const acceptedProposalRefHash = codexAccept.accepted_proposal_sha256;
+  if (acceptedProposalRefHash !== webAccept.accepted_proposal_sha256) return null;
+  const proposal = findPersistedProposal({
+    proposals,
+    proposalRefHash: acceptedProposalRefHash,
+    runId,
+    objectiveHash,
+    policyHash,
+  });
+  if (!proposal || proposal.openDecisions.length !== 0) return null;
 
   return createRunOutcome({
     type: RunOutcomeType.CONSENSUS,
-    proposalHash,
+    // RunOutcome's current contract still names this field proposalHash. Its
+    // value is the Controller-computed, run-bound proposalRefHash.
+    proposalHash: acceptedProposalRefHash,
   });
 }

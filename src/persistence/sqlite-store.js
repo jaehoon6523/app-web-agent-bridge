@@ -57,6 +57,13 @@ import {
   saveAgentTurnInputWithDeliveryEntity,
   verifyAgentCommunicationLinksEntity,
 } from "./agent-communications.js";
+import {
+  getProposalArtifactBySourceMessageEntity,
+  getProposalArtifactEntity,
+  listProposalArtifactsEntity,
+  saveProposalArtifactEntity,
+  verifyProposalArtifactsEntity,
+} from "./proposal-artifacts.js";
 
 const DELIVERY_STATES = new Set(Object.values(DeliveryState));
 
@@ -148,6 +155,7 @@ export class SqliteStore {
       if (options.verifyOnOpen !== false) {
         this.verifyEventChains();
         this.verifyAgentCommunicationLinks();
+        this.verifyProposalArtifacts();
         this.rebuildRunProjections({ compare: true });
       }
     } catch (error) {
@@ -633,6 +641,37 @@ export class SqliteStore {
   listAgentMessages(runId) {
     this.#assertOpen();
     return listAgentMessagesEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  saveProposalArtifact(artifact) {
+    this.#assertOpen();
+    return this.#transaction(() => (
+      saveProposalArtifactEntity(this.#database, artifact, persistenceErrorTypes())
+    ));
+  }
+
+  getProposalArtifact(proposalId) {
+    this.#assertOpen();
+    return getProposalArtifactEntity(this.#database, proposalId, persistenceErrorTypes());
+  }
+
+  getProposalArtifactBySourceMessage(messageId) {
+    this.#assertOpen();
+    return getProposalArtifactBySourceMessageEntity(
+      this.#database,
+      messageId,
+      persistenceErrorTypes(),
+    );
+  }
+
+  listProposalArtifacts(runId) {
+    this.#assertOpen();
+    return listProposalArtifactsEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  verifyProposalArtifacts() {
+    this.#assertOpen();
+    return verifyProposalArtifactsEntity(this.#database, persistenceErrorTypes());
   }
 
   getDelivery(deliveryId) {

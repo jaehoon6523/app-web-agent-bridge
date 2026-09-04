@@ -241,13 +241,22 @@ export const PROPOSAL_ARTIFACT_FIELDS = Object.freeze([
   "proposalId",
   "runId",
   "authorActor",
-  "title",
+  "sourceMessageId",
+  "sourceSessionId",
+  "sourceTurnId",
+  "summary",
   "body",
   "assumptions",
-  "decisions",
-  "proposalHash",
-  "createdFromMessageId",
+  "openDecisions",
+  "objectiveHash",
+  "policyHash",
+  "proposalContentHash",
+  "proposalRefHash",
+  "createdAt",
 ]);
+
+export const PROPOSAL_CONTENT_HASH_SCHEMA = "proposal-content-v1";
+export const PROPOSAL_REF_HASH_SCHEMA = "proposal-ref-v1";
 
 export function validateRunBlocker(value, path = "blocker") {
   const blocker = requirePlainObject(value, path);
@@ -359,33 +368,67 @@ export function buildAgentSessionRecord(input) {
 
 export const createAgentSessionRecord = buildAgentSessionRecord;
 
-export function proposalArtifactDigestInput(value) {
-  const artifact = requirePlainObject(value, "ProposalArtifact");
-  const allowed = new Set(PROPOSAL_ARTIFACT_FIELDS);
-  for (const key of Object.keys(artifact)) {
-    if (!allowed.has(key)) {
-      throw new DomainContractError(
-        `contains unsupported property ${JSON.stringify(key)}`,
-        "ProposalArtifact",
-      );
-    }
-  }
-  const digestInput = {};
-  for (const key of PROPOSAL_ARTIFACT_FIELDS) {
-    if (key === "proposalHash") continue;
-    if (!Object.hasOwn(artifact, key)) {
-      throw new DomainContractError(
-        `is missing required property ${JSON.stringify(key)}`,
-        "ProposalArtifact",
-      );
-    }
-    digestInput[key] = structuredClone(artifact[key]);
-  }
-  return digestInput;
+function normalizeTextItem(value) {
+  return typeof value === "string" ? value.normalize("NFC").trim() : value;
 }
 
-export function proposalArtifactHash(value) {
-  return sha256CanonicalJson(proposalArtifactDigestInput(value));
+function normalizeTextArray(value) {
+  return Array.isArray(value) ? value.map(normalizeTextItem) : value;
+}
+
+function requireCanonicalTextArray(value, path) {
+  if (!Array.isArray(value)) {
+    throw new DomainContractError("must be an array", path);
+  }
+  value.forEach((item, index) => {
+    const itemPath = `${path}[${index}]`;
+    const normalized = normalizeTextItem(item);
+    if (typeof normalized !== "string" || normalized.length === 0) {
+      throw new DomainContractError("must be a non-blank string", itemPath);
+    }
+    if (item !== normalized) {
+      throw new DomainContractError("must be NFC-normalized and trimmed", itemPath);
+    }
+  });
+  return value;
+}
+
+export function proposalContentHashInput(value) {
+  const content = requirePlainObject(value, "ProposalContent");
+  requireNonEmptyString(content.summary, "ProposalContent.summary");
+  requireNonEmptyString(content.body, "ProposalContent.body");
+  requireStringArray(content.assumptions, "ProposalContent.assumptions");
+  requireCanonicalTextArray(content.openDecisions, "ProposalContent.openDecisions");
+  return {
+    schema: PROPOSAL_CONTENT_HASH_SCHEMA,
+    summary: content.summary,
+    body: content.body,
+    assumptions: structuredClone(content.assumptions),
+    openDecisions: structuredClone(content.openDecisions),
+  };
+}
+
+export function proposalContentHash(value) {
+  return sha256CanonicalJson(proposalContentHashInput(value));
+}
+
+export function proposalRefHashInput(value) {
+  const reference = requirePlainObject(value, "ProposalReference");
+  requireNonEmptyString(reference.runId, "ProposalReference.runId");
+  requireHash(reference.objectiveHash, "ProposalReference.objectiveHash");
+  requireHash(reference.policyHash, "ProposalReference.policyHash");
+  requireHash(reference.proposalContentHash, "ProposalReference.proposalContentHash");
+  return {
+    schema: PROPOSAL_REF_HASH_SCHEMA,
+    runId: reference.runId,
+    objectiveHash: reference.objectiveHash,
+    policyHash: reference.policyHash,
+    proposalContentHash: reference.proposalContentHash,
+  };
+}
+
+export function proposalRefHash(value) {
+  return sha256CanonicalJson(proposalRefHashInput(value));
 }
 
 export function validateProposalArtifact(value) {
@@ -394,34 +437,54 @@ export function validateProposalArtifact(value) {
   requireNonEmptyString(artifact.proposalId, "ProposalArtifact.proposalId");
   requireNonEmptyString(artifact.runId, "ProposalArtifact.runId");
   requireEnum(artifact.authorActor, AgentActor, "AgentActor", "ProposalArtifact.authorActor");
-  requireNonEmptyString(artifact.title, "ProposalArtifact.title");
+  requireNonEmptyString(artifact.sourceMessageId, "ProposalArtifact.sourceMessageId");
+  requireNonEmptyString(artifact.sourceSessionId, "ProposalArtifact.sourceSessionId");
+  requireNonEmptyString(artifact.sourceTurnId, "ProposalArtifact.sourceTurnId");
+  requireNonEmptyString(artifact.summary, "ProposalArtifact.summary");
   requireNonEmptyString(artifact.body, "ProposalArtifact.body");
   requireStringArray(artifact.assumptions, "ProposalArtifact.assumptions");
-  // ProposalDecision has no current schema owner; keep this at the authorized string[] boundary.
-  requireStringArray(artifact.decisions, "ProposalArtifact.decisions");
-  requireHash(artifact.proposalHash, "ProposalArtifact.proposalHash");
-  if (artifact.proposalHash !== proposalArtifactHash(artifact)) {
+  requireCanonicalTextArray(artifact.openDecisions, "ProposalArtifact.openDecisions");
+  requireHash(artifact.objectiveHash, "ProposalArtifact.objectiveHash");
+  requireHash(artifact.policyHash, "ProposalArtifact.policyHash");
+  requireHash(artifact.proposalContentHash, "ProposalArtifact.proposalContentHash");
+  if (artifact.proposalContentHash !== proposalContentHash(artifact)) {
     throw new DomainContractError(
-      "does not match the canonical proposal artifact fields",
-      "ProposalArtifact.proposalHash",
+      "does not match the canonical proposal content",
+      "ProposalArtifact.proposalContentHash",
       "HASH_MISMATCH",
     );
   }
-  requireNonEmptyString(
-    artifact.createdFromMessageId,
-    "ProposalArtifact.createdFromMessageId",
-  );
+  requireHash(artifact.proposalRefHash, "ProposalArtifact.proposalRefHash");
+  if (artifact.proposalRefHash !== proposalRefHash(artifact)) {
+    throw new DomainContractError(
+      "does not match the canonical run-bound proposal reference",
+      "ProposalArtifact.proposalRefHash",
+      "HASH_MISMATCH",
+    );
+  }
+  requireNonEmptyString(artifact.createdAt, "ProposalArtifact.createdAt");
   return artifact;
 }
 
 export function buildProposalArtifact(input) {
-  const required = PROPOSAL_ARTIFACT_FIELDS.filter((key) => key !== "proposalHash");
-  requireBuilderKeys(input, required, ["proposalHash"], "ProposalArtifact input");
-  const draft = structuredClone(input);
+  const derivedFields = new Set(["proposalContentHash", "proposalRefHash"]);
+  const required = PROPOSAL_ARTIFACT_FIELDS.filter((key) => !derivedFields.has(key));
+  requireBuilderKeys(
+    input,
+    required,
+    ["proposalContentHash", "proposalRefHash"],
+    "ProposalArtifact input",
+  );
+  const draft = {
+    ...structuredClone(input),
+    openDecisions: normalizeTextArray(input.openDecisions),
+  };
+  const contentHash = proposalContentHash(draft);
   const artifact = {
     ...draft,
-    proposalHash: draft.proposalHash ?? proposalArtifactHash(draft),
+    proposalContentHash: draft.proposalContentHash ?? contentHash,
   };
+  artifact.proposalRefHash = draft.proposalRefHash ?? proposalRefHash(artifact);
   validateProposalArtifact(artifact);
   return immutableClone(artifact);
 }

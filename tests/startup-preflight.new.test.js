@@ -47,7 +47,7 @@ test("startup preflight verifies workspace, SQLite schema, extension configurati
   assert.doesNotMatch(JSON.stringify(output), /must-not-appear|extension-identity/u);
   assert.deepEqual(
     output.checks.find((check) => check.check === "sqlite_store")?.detail,
-    { schemaVersion: 3 },
+    { schemaVersion: 4 },
   );
 });
 

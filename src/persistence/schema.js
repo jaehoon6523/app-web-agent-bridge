@@ -1,4 +1,4 @@
-export const SQLITE_SCHEMA_VERSION = 3;
+export const SQLITE_SCHEMA_VERSION = 4;
 
 export const REQUIRED_TABLES = Object.freeze([
   "runs",
@@ -8,6 +8,7 @@ export const REQUIRED_TABLES = Object.freeze([
   "agent_messages",
   "delivery_attempts",
   "agent_packets",
+  "proposal_artifacts",
   "domain_events",
   "approvals",
   "run_projections",
@@ -28,6 +29,26 @@ export const DeliveryState = Object.freeze({
 const DELIVERY_STATE_CHECK = Object.values(DeliveryState)
   .map((state) => `'${state}'`)
   .join(", ");
+
+const PROPOSAL_ARTIFACTS_SQL = `
+  CREATE TABLE proposal_artifacts (
+    proposal_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
+    source_message_id TEXT NOT NULL UNIQUE
+      REFERENCES agent_messages(message_id) ON DELETE RESTRICT,
+    author_actor TEXT NOT NULL,
+    source_session_id TEXT NOT NULL
+      REFERENCES agent_sessions(session_id) ON DELETE RESTRICT,
+    source_turn_id TEXT NOT NULL,
+    proposal_content_hash TEXT NOT NULL,
+    proposal_ref_hash TEXT NOT NULL,
+    artifact_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (run_id, proposal_ref_hash)
+  ) STRICT;
+  CREATE INDEX proposal_artifacts_run_idx
+    ON proposal_artifacts(run_id, created_at, proposal_id);
+`;
 
 const SCHEMA_SQL = `
   CREATE TABLE runs (
@@ -155,6 +176,8 @@ const SCHEMA_SQL = `
     created_at TEXT NOT NULL
   ) STRICT;
   CREATE INDEX agent_packets_run_idx ON agent_packets(run_id, created_at);
+
+  ${PROPOSAL_ARTIFACTS_SQL}
 
   CREATE TABLE domain_events (
     run_id TEXT NOT NULL REFERENCES runs(run_id) ON DELETE RESTRICT,
@@ -304,6 +327,10 @@ function migrateVersion2ToVersion3(database) {
   `);
 }
 
+function migrateVersion3ToVersion4(database) {
+  database.exec(PROPOSAL_ARTIFACTS_SQL);
+}
+
 export function initializeSqliteSchema(database) {
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA busy_timeout = 5000");
@@ -318,21 +345,25 @@ export function initializeSqliteSchema(database) {
     assertRequiredTables(database);
     return version;
   }
-  if (version !== 0 && version !== 2) {
+  if (version !== 0 && version !== 2 && version !== 3) {
     throw new Error(`no migration exists from database schema version ${version}`);
   }
 
   database.exec("BEGIN IMMEDIATE");
   try {
-    if (version === 0) database.exec(SCHEMA_SQL);
-    else migrateVersion2ToVersion3(database);
+    if (version === 0) {
+      database.exec(SCHEMA_SQL);
+    } else {
+      if (version === 2) migrateVersion2ToVersion3(database);
+      migrateVersion3ToVersion4(database);
+    }
+    assertRequiredTables(database);
     database.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (error) {
     database.exec("ROLLBACK");
     throw error;
   }
-  assertRequiredTables(database);
   return SQLITE_SCHEMA_VERSION;
 }
 

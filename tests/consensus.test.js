@@ -21,11 +21,16 @@ function proposal(overrides = {}) {
     proposalId: "proposal-001",
     runId: "run-001",
     authorActor: AgentActor.CODEX_AGENT,
-    title: "Deterministic relay",
+    sourceMessageId: "message-proposal",
+    sourceSessionId: "session-codex",
+    sourceTurnId: "turn-proposal",
+    summary: "Deterministic relay",
     body: "Store each validated response before forwarding it.",
     assumptions: [],
-    decisions: ["Use optimistic concurrency"],
-    createdFromMessageId: "message-proposal",
+    openDecisions: [],
+    objectiveHash,
+    policyHash,
+    createdAt: "2026-09-04T00:00:00.000Z",
     ...overrides,
   });
 }
@@ -67,12 +72,12 @@ function consensusInput(overrides = {}) {
     messages: [
       acceptance({
         actor: AgentActor.CODEX_AGENT,
-        acceptedProposalHash: artifact.proposalHash,
+        acceptedProposalHash: artifact.proposalRefHash,
         sequence: 2,
       }),
       acceptance({
         actor: AgentActor.CHATGPT_WEB_AGENT,
-        acceptedProposalHash: artifact.proposalHash,
+        acceptedProposalHash: artifact.proposalRefHash,
         sequence: 3,
       }),
     ],
@@ -89,7 +94,7 @@ test("consensus requires both actors to ACCEPT the same persisted proposal", () 
   const result = evaluateConsensus(input);
   assert.deepEqual(result, {
     type: RunOutcomeType.CONSENSUS,
-    proposalHash: input.proposals[0].proposalHash,
+    proposalHash: input.proposals[0].proposalRefHash,
   });
   assert.ok(Object.isFrozen(result));
 });
@@ -117,7 +122,7 @@ test("one actor, mismatched proposal hashes, and blocking findings cannot comple
       input.messages[0],
       acceptance({
         actor: AgentActor.CHATGPT_WEB_AGENT,
-        acceptedProposalHash: input.proposals[0].proposalHash,
+        acceptedProposalHash: input.proposals[0].proposalRefHash,
         blockingFindings: ["Unresolved persistence race"],
         sequence: 4,
       }),
@@ -138,7 +143,7 @@ test("an ACCEPT hash must resolve to a valid ProposalArtifact from the same run"
   const otherRun = proposal({ runId: "run-002", proposalId: "proposal-002" });
   const otherRunPackets = input.messages.map((message, index) => acceptance({
     actor: message.actor,
-    acceptedProposalHash: otherRun.proposalHash,
+    acceptedProposalHash: otherRun.proposalRefHash,
     sequence: index + 5,
     runId: "run-001",
   }));
@@ -146,6 +151,49 @@ test("an ACCEPT hash must resolve to a valid ProposalArtifact from the same run"
     ...input,
     messages: otherRunPackets,
     proposals: [otherRun],
+  }), null);
+
+  const otherObjective = proposal({
+    objectiveHash: sha256Text("a different objective"),
+    proposalId: "proposal-other-objective",
+  });
+  const otherObjectivePackets = input.messages.map((message, index) => acceptance({
+    actor: message.actor,
+    acceptedProposalHash: otherObjective.proposalRefHash,
+    sequence: index + 7,
+  }));
+  assert.equal(evaluateConsensus({
+    ...input,
+    messages: otherObjectivePackets,
+    proposals: [otherObjective],
+  }), null, "a persisted artifact remains bound to the current objective and policy");
+});
+
+test("a proposal with unresolved open decisions cannot reach consensus", () => {
+  const unresolved = proposal({
+    proposalId: "proposal-unresolved",
+    openDecisions: ["Choose the publication boundary"],
+  });
+  const messages = [
+    acceptance({
+      actor: AgentActor.CODEX_AGENT,
+      acceptedProposalHash: unresolved.proposalRefHash,
+      sequence: 2,
+    }),
+    acceptance({
+      actor: AgentActor.CHATGPT_WEB_AGENT,
+      acceptedProposalHash: unresolved.proposalRefHash,
+      sequence: 3,
+    }),
+  ];
+
+  assert.equal(evaluateConsensus({
+    runId: unresolved.runId,
+    messages,
+    proposals: [unresolved],
+    objectiveHash,
+    policyHash,
+    policyViolation: false,
   }), null);
 });
 
@@ -171,7 +219,7 @@ test("a newer stale response supersedes an older ACCEPT instead of reviving stal
   const staleObjective = sha256Text("new objective not bound to this run");
   const stale = acceptance({
     actor: AgentActor.CODEX_AGENT,
-    acceptedProposalHash: input.proposals[0].proposalHash,
+    acceptedProposalHash: input.proposals[0].proposalRefHash,
     sequence: 100,
     messageObjectiveHash: staleObjective,
   });
@@ -206,18 +254,18 @@ test("consensus binds messages to one requested run and rejects duplicate run se
   const input = consensusInput();
   const foreign = input.messages.map((message, index) => acceptance({
     actor: message.actor,
-    acceptedProposalHash: input.proposals[0].proposalHash,
+    acceptedProposalHash: input.proposals[0].proposalRefHash,
     sequence: index + 20,
     runId: "run-foreign",
   }));
   assert.deepEqual(evaluateConsensus({ ...input, messages: [...foreign, ...input.messages] }), {
     type: RunOutcomeType.CONSENSUS,
-    proposalHash: input.proposals[0].proposalHash,
+    proposalHash: input.proposals[0].proposalRefHash,
   });
 
   const duplicateSequence = acceptance({
     actor: AgentActor.CHATGPT_WEB_AGENT,
-    acceptedProposalHash: input.proposals[0].proposalHash,
+    acceptedProposalHash: input.proposals[0].proposalRefHash,
     sequence: input.messages[0].sequence,
   });
   assert.equal(evaluateConsensus({
@@ -232,10 +280,10 @@ test("a PROPOSAL packet does not substitute for the persisted ProposalArtifact",
   const artifact = input.proposals[0];
   const proposalPacket = {
     type: AgentPacketType.PROPOSAL,
-    summary: artifact.title,
+    summary: artifact.summary,
     body: artifact.body,
     assumptions: artifact.assumptions,
-    open_decisions: artifact.decisions,
+    open_decisions: artifact.openDecisions,
   };
   const proposalMessage = buildAgentMessage({
     messageId: "message-proposal",
