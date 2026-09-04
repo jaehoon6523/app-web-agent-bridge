@@ -189,6 +189,12 @@ export class CodexSessionAdapter {
     return this.#threadId;
   }
 
+  // Dispatcher bindings use the provider session identity, not the
+  // controller-local session record id. For Codex that identity is threadId.
+  get externalSessionId() {
+    return this.#threadId;
+  }
+
   get activeTurnId() {
     return this.#activeTurn?.turnId || null;
   }
@@ -910,7 +916,11 @@ export class CodexSessionAdapter {
 export function createCodexAgentSessionAdapter(options) {
   const runtime = new CodexSessionAdapter(options);
   return Object.freeze({
-    runtime,
+    get actor() { return runtime.actor; },
+    get externalSessionId() { return runtime.externalSessionId; },
+    get threadId() { return runtime.threadId; },
+    get activeTurnId() { return runtime.activeTurnId; },
+    get status() { return runtime.status; },
     start: (input) => /** @type {any} */ (runtime).start(input),
     resume: (input) => runtime.resume(input),
     inspect: (input) => /** @type {any} */ (runtime).inspect(input),

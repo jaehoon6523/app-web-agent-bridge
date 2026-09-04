@@ -283,6 +283,16 @@ export class ChatGptWebSessionAdapter {
     transport.on("diagnostic", (event) => this.#events.emit("diagnostic", event));
   }
 
+  get actor() {
+    return "CHATGPT_WEB_AGENT";
+  }
+
+  // The durable external identity is the exact ChatGPT conversation, never a
+  // transient browser tab id or an extension socket.
+  get externalSessionId() {
+    return this.#transport.snapshot.binding?.conversationId ?? null;
+  }
+
   /** @param {{binding?: WebSessionBindingValue, focus?: boolean}} [input] */
   async start({ binding, focus = false } = {}) {
     validateWebSessionBinding(binding);

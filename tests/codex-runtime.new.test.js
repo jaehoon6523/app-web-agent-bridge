@@ -93,6 +93,8 @@ test("one app-server process owns multiple independently persisted threads", asy
   assert.notEqual(firstHandle.threadId, secondHandle.threadId);
   assert.equal(first.persisted[0].threadId, firstHandle.threadId);
   assert.equal(second.persisted[0].threadId, secondHandle.threadId);
+  assert.equal(first.session.externalSessionId, firstHandle.threadId);
+  assert.equal(second.session.externalSessionId, secondHandle.threadId);
   assert.equal(spawnCount, 1);
   assert.equal(manager.processGeneration, 1);
   assert.equal(observedSpawnOptions.shell, false);

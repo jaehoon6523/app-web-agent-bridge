@@ -88,6 +88,8 @@ function authenticate(transport, socket) {
 
 async function readyAdapter(transport, socket, binding = boundSession()) {
   const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 500 });
+  assert.equal(adapter.actor, "CHATGPT_WEB_AGENT");
+  assert.equal(adapter.externalSessionId, null);
   const starting = adapter.start({ binding });
   const request = socket.sent.at(-1);
   assert.equal(request.type, "web.session.rebind");
