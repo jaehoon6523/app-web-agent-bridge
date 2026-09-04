@@ -9,6 +9,7 @@ import {
   ChatGptWebSessionAdapter,
   WebExtensionTransport,
 } from "./runtime/web/index.js";
+import { createLiveDiscussionRuntime } from "./runtime/live-discussion-runtime.js";
 import { nowIso } from "./utils.js";
 
 const filename = fileURLToPath(import.meta.url);
@@ -48,6 +49,26 @@ export function createBridgeServer({ runtimeConfig } = {}) {
         transport: extensionTransport,
         responseTimeoutMs: runtimeConfig.relay.webResponseTimeoutMs,
       });
+  let liveRuntime = null;
+  let liveRuntimePromise = null;
+
+  async function getLiveRuntime() {
+    if (runtimeConfig.demoMode) {
+      throw new Error("Demo mode cannot create a live discussion runtime.");
+    }
+    if (liveRuntime !== null) return liveRuntime;
+    if (liveRuntimePromise === null) {
+      liveRuntimePromise = createLiveDiscussionRuntime({ runtimeConfig, webSession })
+        .then((runtime) => {
+          liveRuntime = runtime;
+          return runtime;
+        })
+        .finally(() => {
+          liveRuntimePromise = null;
+        });
+    }
+    return liveRuntimePromise;
+  }
 
   const app = express();
   app.disable("x-powered-by");
@@ -75,6 +96,7 @@ export function createBridgeServer({ runtimeConfig } = {}) {
       webRuntimeReady: false,
       liveSessionBindingReady: false,
       liveOrchestrationReady: false,
+      liveCompositionConfigured: runtimeConfig.codex?.executablePath != null,
       webConnected: Boolean(extensionTransport?.authenticated),
     });
   });
@@ -157,6 +179,7 @@ export function createBridgeServer({ runtimeConfig } = {}) {
         }
       }
       await webSession?.close();
+      await liveRuntime?.close();
       /** @type {Promise<void>} */
       const websocketClose = new Promise((resolve, reject) => {
         extensionWss.close(() => {
@@ -194,6 +217,7 @@ export function createBridgeServer({ runtimeConfig } = {}) {
     extensionTransport,
     extensionWss,
     listen,
+    getLiveRuntime,
     server,
     webSession,
   });

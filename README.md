@@ -45,8 +45,10 @@ Controller           = 상태·전달·복구·종료 판정의 유일한 writer
 `observedCandidatePacketType`은 진단값일 뿐 repair 허용 범위나 다음 action을 선택하지 않습니다.
 생성, 응답 소비와 startup 재검증이 모두 같은 policy를 다시 계산하며 불일치는 fail-closed입니다.
 
-Dispatcher-backed fake runtime vertical은 test harness에서 연결됐지만 production composition
-root와 live Codex/Web session은 아직 연결하지 않았습니다.
+Dispatcher-backed fake runtime vertical은 test harness에서 연결됐습니다. production composition
+factory는 SQLite, artifact store, pinned Codex process manager 및 exact Web adapter를 조립하며,
+`provisionRun()`이 호출되기 전에는 thread나 Web prompt를 시작하지 않습니다. 그러나 local-auth
+command API, recovery executor 및 Dashboard command projection은 아직 연결하지 않았습니다.
 따라서 `/api/state`, Dashboard WebSocket, live run mutation은 의도적으로 `503`을 반환합니다.
 현재 Health는 다음 값을 따로 반환합니다. 여기서 `coreOrchestrationReady`와
 `fakeVerticalSliceVerified`는 자동 검증 checkpoint이고, 실행 중 production component의
@@ -72,7 +74,9 @@ durable acknowledgement도 test binding callback으로만 검증됐고 productio
 연결되지 않았습니다.
 현재 Controller는 artifact 존재·hash를 검증하지만 이 내부 port를 HTTP/WS command로 노출하지
 않습니다. recovery scan 역시 불확실한 작업을 찾지만 provider reconciliation과 사용자 recovery
-decision 실행기는 아직 composition에 연결되지 않았습니다.
+decision 실행기는 아직 composition에 연결되지 않았습니다. `CODEX_EXECUTABLE`을 설정하면
+health의 `liveCompositionConfigured`가 true가 되지만, 이는 executable pinning configuration만
+뜻하며 Provider 연결 또는 Live E2E 성공을 뜻하지 않습니다.
 
 Agent `BLOCKED`가 operational fact를 만드는 경로는 차단됐습니다. 다만
 `requestRuntimeApproval()`의 opaque scope를 실제 runtime request/session/turn evidence에
@@ -126,7 +130,7 @@ WebSocket URL에는 token, query string 또는 fragment를 넣지 않습니다. 
 
 ## 서버 smoke
 
-현재 서버는 extension transport, 정적 Dashboard와 split-readiness health만 확인하는
+현재 서버는 extension transport, 정적 Dashboard, live-composition configuration과 split-readiness health만 확인하는
 fail-closed live smoke surface입니다.
 
 ```powershell

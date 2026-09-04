@@ -42,6 +42,7 @@ export function loadConfig({
   }
   const port = integer(env, "PORT", 8787, { min: 1, max: 65535 });
   const workspace = path.resolve(cwd, env.WORKSPACE || ".");
+  const dataDirectory = path.resolve(workspace, env.CONTROLLER_DATA_DIR || ".agent-controller");
   const demoMode = boolean(env, "DEMO_MODE", false);
   const sharedSecret = demoMode
     ? (env.WEB_EXTENSION_SHARED_SECRET?.trim() || null)
@@ -55,6 +56,17 @@ export function loadConfig({
     port,
     baseUrl: `http://${host}:${port}`,
     workspace,
+    persistence: Object.freeze({
+      databasePath: path.join(dataDirectory, "controller.sqlite"),
+      artifactDirectory: path.join(dataDirectory, "artifacts"),
+    }),
+    codex: Object.freeze({
+      executablePath: typeof env.CODEX_EXECUTABLE === "string" && env.CODEX_EXECUTABLE.trim() !== ""
+        ? path.resolve(env.CODEX_EXECUTABLE.trim())
+        : null,
+      authPathKeys: env.CODEX_HOME?.trim() ? Object.freeze(["CODEX_HOME"]) : Object.freeze([]),
+      approvalPolicy: "untrusted",
+    }),
     demoMode,
     webExtension: Object.freeze({
       sharedSecret,

@@ -1,0 +1,82 @@
+import { ArtifactStore } from "../evidence/artifact-store.js";
+import { LiveDiscussionComposition } from "../orchestration/live-discussion-composition.js";
+import { SqliteStore } from "../persistence/sqlite-store.js";
+import {
+  CodexProcessManager,
+  createCodexAgentSessionAdapter,
+} from "./codex/index.js";
+
+export class LiveDiscussionRuntimeError extends Error {
+  constructor(message, code = "LIVE_DISCUSSION_RUNTIME_ERROR", details = null) {
+    super(message);
+    this.name = "LiveDiscussionRuntimeError";
+    this.code = code;
+    this.details = details;
+  }
+}
+
+/**
+ * Creates the production composition without opening a thread or submitting a
+ * prompt. provisionRun() is the explicit effect boundary.
+ */
+/** @param {{runtimeConfig: any, webSession: any}} input */
+export async function createLiveDiscussionRuntime({ runtimeConfig, webSession }) {
+  if (runtimeConfig?.demoMode === true) {
+    throw new LiveDiscussionRuntimeError("Demo mode cannot create a live discussion runtime.", "DEMO_MODE_FORBIDDEN");
+  }
+  if (!runtimeConfig?.codex?.executablePath) {
+    throw new LiveDiscussionRuntimeError(
+      "CODEX_EXECUTABLE must name an absolute Codex executable before live runtime composition.",
+      "CODEX_EXECUTABLE_NOT_CONFIGURED",
+    );
+  }
+  if (!webSession || typeof webSession.start !== "function") {
+    throw new LiveDiscussionRuntimeError("A ChatGPT Web session adapter is required.", "WEB_ADAPTER_REQUIRED");
+  }
+
+  const store = new SqliteStore(runtimeConfig.persistence.databasePath);
+  const artifactStore = new ArtifactStore(runtimeConfig.persistence.artifactDirectory);
+  let manager;
+  try {
+    manager = await CodexProcessManager.create({
+      executablePath: runtimeConfig.codex.executablePath,
+      workspaceRoot: runtimeConfig.workspace,
+      authPathKeys: runtimeConfig.codex.authPathKeys,
+    });
+  } catch (cause) {
+    store.close();
+    throw new LiveDiscussionRuntimeError(
+      "Codex executable validation failed before app-server startup.",
+      "CODEX_RUNTIME_CONFIGURATION_INVALID",
+      { cause },
+    );
+  }
+
+  const composition = new LiveDiscussionComposition({
+    store,
+    artifactStore,
+    createCodexSession: ({ sessionId, persistThreadBinding }) => createCodexAgentSessionAdapter({
+      manager,
+      workspaceRoot: runtimeConfig.workspace,
+      mode: "DISCUSSION",
+      approvalPolicy: runtimeConfig.codex.approvalPolicy,
+      persistThreadId: persistThreadBinding,
+    }),
+    createWebSession: () => webSession,
+  });
+
+  let closed = false;
+  return Object.freeze({
+    artifactStore,
+    composition,
+    manager,
+    store,
+    async close() {
+      if (closed) return;
+      closed = true;
+      composition.close();
+      await manager.close();
+      store.close();
+    },
+  });
+}
