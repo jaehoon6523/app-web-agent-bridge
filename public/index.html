@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Relay Supervisor</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">DETERMINISTIC CONTROLLER</p>
+        <h1>CODEX ↔ CHATGPT WEB SUPERVISOR</h1>
+      </div>
+      <div class="top-status" aria-live="polite">
+        <span id="dashboardStatus" class="badge neutral">Controller 확인 중</span>
+        <span id="runStatus" class="badge neutral">실행 없음</span>
+        <span id="runVersion" class="badge neutral">version —</span>
+      </div>
+    </header>
+
+    <main>
+      <section id="errorBanner" class="error-banner" role="alert">
+        Controller 상태 API를 확인하는 중입니다. 상태가 확인되기 전에는 명령을 보낼 수 없습니다.
+      </section>
+
+      <section class="control-panel panel" aria-labelledby="runControlsTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">RUN CONTROL</p>
+            <h2 id="runControlsTitle">자동 토론 실행</h2>
+          </div>
+          <p id="runMeta" class="meta">canonical run 없음</p>
+        </div>
+
+        <div class="control-main">
+          <label for="objective">최초 objective</label>
+          <textarea id="objective" rows="4" placeholder="두 에이전트가 검토할 목표를 입력하세요."></textarea>
+        </div>
+
+        <div class="control-options">
+          <label>
+            최대 턴
+            <input id="maxTurns" type="number" min="2" max="50" value="6" />
+          </label>
+          <p class="policy-note">
+            순서는 Controller가 결정합니다. 합의는 양쪽이 같은 proposal hash를 승인했을 때만 성립합니다.
+          </p>
+        </div>
+
+        <div class="buttons" aria-label="Run controls">
+          <button id="startRun" class="primary" disabled>Start</button>
+          <button id="pauseRun" disabled>Pause</button>
+          <button id="resumeRun" disabled>Resume</button>
+          <button id="stopRun" class="danger" disabled>Stop</button>
+          <button id="interruptRun" class="danger" disabled>Interrupt active turn</button>
+          <button id="exportEvidence" disabled>Export evidence</button>
+        </div>
+
+        <form id="steerForm" class="steer-form">
+          <label for="steerActor">Steer target</label>
+          <select id="steerActor">
+            <option value="CODEX_AGENT">CODEX_AGENT</option>
+            <option value="CHATGPT_WEB_AGENT">CHATGPT_WEB_AGENT</option>
+          </select>
+          <label class="grow" for="steerText">사람의 추가 지시</label>
+          <textarea id="steerText" rows="2" placeholder="활성 turn에 전달할 지시" disabled></textarea>
+          <button id="sendSteer" type="submit" disabled>Send steer</button>
+        </form>
+      </section>
+
+      <section class="session-grid" aria-label="Agent sessions">
+        <article class="session panel" data-agent="CODEX_AGENT">
+          <header class="session-header">
+            <div>
+              <div class="session-title-row">
+                <h2>CODEX_AGENT</h2>
+                <span id="codexStatus" class="badge neutral">NOT_AVAILABLE</span>
+              </div>
+              <p class="session-kind">지속되는 Codex app-server thread</p>
+            </div>
+          </header>
+          <dl id="codexSessionFields" class="session-fields"></dl>
+          <div id="codexMessages" class="messages" aria-live="polite">
+            <div class="empty">canonical transcript를 기다리는 중입니다.</div>
+          </div>
+          <div id="codexDraft" class="draft hidden" aria-label="Non-canonical live preview"></div>
+        </article>
+
+        <article class="session panel" data-agent="CHATGPT_WEB_AGENT">
+          <header class="session-header">
+            <div>
+              <div class="session-title-row">
+                <h2>CHATGPT_WEB_AGENT</h2>
+                <span id="chatgptWebStatus" class="badge neutral">NOT_AVAILABLE</span>
+              </div>
+              <p class="session-kind">Chrome Extension에 결박된 실제 ChatGPT conversation</p>
+            </div>
+            <div class="session-actions">
+              <button id="focusWebSession" class="small" disabled>Open/focus tab</button>
+              <button id="rebindWebSession" class="small" disabled>Rebind session</button>
+            </div>
+          </header>
+          <dl id="chatgptWebSessionFields" class="session-fields"></dl>
+          <div id="chatgptWebMessages" class="messages" aria-live="polite">
+            <div class="empty">canonical transcript를 기다리는 중입니다.</div>
+          </div>
+          <div id="chatgptWebDraft" class="draft hidden" aria-label="Non-canonical live preview"></div>
+        </article>
+      </section>
+
+      <section id="deliveryPanel" class="panel data-panel" aria-labelledby="deliveryTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">OUTBOX</p>
+            <h2 id="deliveryTitle">Delivery 상태</h2>
+          </div>
+        </div>
+        <div id="deliveries" class="data-list">
+          <p class="empty-inline">delivery projection 없음</p>
+        </div>
+      </section>
+
+      <section id="approvalPanel" class="panel data-panel" aria-labelledby="approvalTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">HUMAN GATE</p>
+            <h2 id="approvalTitle">승인 및 결정</h2>
+          </div>
+        </div>
+        <div id="approvals" class="data-list">
+          <p class="empty-inline">대기 중인 승인 없음</p>
+        </div>
+      </section>
+
+      <section class="panel timeline-panel" aria-labelledby="timelineTitle">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CONTROLLER FACTS</p>
+            <h2 id="timelineTitle">Controller timeline</h2>
+          </div>
+          <span id="timelineCursor" class="meta">sequence —</span>
+        </div>
+        <div id="controllerTimeline" class="timeline">
+          <p class="empty-inline">canonical event를 기다리는 중입니다.</p>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

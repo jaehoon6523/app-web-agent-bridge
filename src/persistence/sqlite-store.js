@@ -1,0 +1,997 @@
+import { DatabaseSync } from "node:sqlite";
+import { canonicalJson } from "../domain/canonical-json.js";
+import { validateAgentRun, validateRelayMessage } from "../domain/contracts.js";
+import {
+  DeliveryState,
+  initializeSqliteSchema,
+  readSqliteSchemaVersion,
+} from "./schema.js";
+import { canTransitionDelivery } from "./delivery-state.js";
+import {
+  calculateDomainEventHash,
+  domainEventDigestInput,
+  listDomainEventsEntity,
+  verifyEventChainsEntity,
+} from "./event-chain.js";
+import {
+  DeliveryTransitionError,
+  EventChainIntegrityError,
+  OptimisticConcurrencyError,
+  PersistenceError,
+} from "./errors.js";
+import {
+  createAgentSessionEntity,
+  createApprovalEntity,
+  createRecoveryOperationEntity,
+  getAgentPacketEntity,
+  getAgentSessionEntity,
+  getApprovalEntity,
+  getRecoveryOperationEntity,
+  listAgentPacketsEntity,
+  listAgentSessionsEntity,
+  listApprovalsEntity,
+  listRecoveryOperationsEntity,
+  resolveApprovalEntity,
+  resolveRecoveryOperationEntity,
+  saveAgentPacketEntity,
+  upsertAgentSessionEntity,
+} from "./sqlite-entities.js";
+import {
+  rebuildRunProjectionEntity,
+  rebuildRunProjectionsEntity,
+} from "./projection-rebuilder.js";
+import {
+  RunLimitExceededError,
+  createRunLimitsEntity,
+  getRunLimitsEntity,
+  recordConsecutiveActorFailureEntity,
+  recordProtocolRepairEntity,
+  resetConsecutiveActorFailuresEntity,
+} from "./run-limits.js";
+import {
+  appendCompoundRelayEntity,
+  verifyCompoundRelayLinksEntity,
+} from "./compound-relay.js";
+
+const DELIVERY_STATES = new Set(Object.values(DeliveryState));
+
+function persistenceErrorTypes() {
+  return { PersistenceError, OptimisticConcurrencyError, EventChainIntegrityError };
+}
+
+function requireNonEmptyString(value, name) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError(`${name} must be a non-empty string`);
+  }
+  return value;
+}
+
+function requireSafeInteger(value, name, minimum = 0) {
+  if (!Number.isSafeInteger(value) || value < minimum) {
+    throw new TypeError(`${name} must be a safe integer >= ${minimum}`);
+  }
+  return value;
+}
+
+function requireDeliveryState(value, name) {
+  if (!DELIVERY_STATES.has(value)) {
+    throw new TypeError(`${name} must be a DeliveryState`);
+  }
+  return value;
+}
+
+function encodeJson(value) {
+  return canonicalJson(value);
+}
+
+function decodeCanonicalJson(text, context) {
+  if (typeof text !== "string") {
+    throw new EventChainIntegrityError(`${context} is not stored as JSON text`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (cause) {
+    throw new EventChainIntegrityError(`${context} contains invalid JSON`, { cause });
+  }
+  let encoded;
+  try {
+    encoded = canonicalJson(parsed);
+  } catch (cause) {
+    throw new EventChainIntegrityError(`${context} is not canonical JSON data`, { cause });
+  }
+  if (encoded !== text) {
+    throw new EventChainIntegrityError(`${context} is not stored in canonical JSON form`);
+  }
+  return parsed;
+}
+
+function optionalJson(value) {
+  return value === undefined || value === null ? null : encodeJson(value);
+}
+
+function parseOptionalJson(value, context) {
+  return value === null ? null : decodeCanonicalJson(value, context);
+}
+
+function rowChanges(result) {
+  return Number(result.changes);
+}
+
+function normalizeConstructorInput(input) {
+  if (typeof input === "string") return { filename: input };
+  if (input === null || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("SqliteStore requires a filename or options object");
+  }
+  return input;
+}
+
+export class SqliteStore {
+  #database;
+  #closed = false;
+  #transactionDepth = 0;
+
+  constructor(input) {
+    const options = normalizeConstructorInput(input);
+    requireNonEmptyString(options.filename, "filename");
+    this.filename = options.filename;
+    this.#database = new DatabaseSync(options.filename);
+
+    try {
+      this.#database.exec("PRAGMA journal_mode = WAL");
+      initializeSqliteSchema(this.#database);
+      if (options.verifyOnOpen !== false) {
+        this.verifyEventChains();
+        this.verifyCompoundRelayLinks();
+        this.rebuildRunProjections({ compare: true });
+      }
+    } catch (error) {
+      this.#database.close();
+      this.#closed = true;
+      throw error;
+    }
+  }
+
+  get schemaVersion() {
+    this.#assertOpen();
+    return readSqliteSchemaVersion(this.#database);
+  }
+
+  close() {
+    if (this.#closed) return;
+    this.#database.close();
+    this.#closed = true;
+  }
+
+  #assertOpen() {
+    if (this.#closed) throw new PersistenceError("SQLite store is closed", "STORE_CLOSED");
+  }
+
+  #transaction(operation) {
+    this.#assertOpen();
+    if (this.#transactionDepth > 0) return operation();
+    this.#database.exec("BEGIN IMMEDIATE");
+    this.#transactionDepth = 1;
+    try {
+      const result = operation();
+      this.#database.exec("COMMIT");
+      return result;
+    } catch (error) {
+      try {
+        this.#database.exec("ROLLBACK");
+      } catch {
+        // Preserve the operation error; a failed rollback cannot make it successful.
+      }
+      throw error;
+    } finally {
+      this.#transactionDepth = 0;
+    }
+  }
+
+  createRun(run, eventOptions = {}) {
+    this.#assertOpen();
+    validateAgentRun(run);
+    if (eventOptions.runLimits === undefined) {
+      throw new PersistenceError("runLimits must be frozen with run creation", "RUN_LIMITS_REQUIRED");
+    }
+    const eventId = eventOptions.eventId ?? `${run.runId}:created`;
+    const eventType = eventOptions.eventType ?? "RUN_CREATED";
+    const payload = eventOptions.payload ?? run;
+    const createdAt = eventOptions.createdAt ?? run.createdAt;
+    requireNonEmptyString(eventId, "eventId");
+    requireNonEmptyString(eventType, "eventType");
+    requireNonEmptyString(createdAt, "createdAt");
+    if (eventType !== "RUN_CREATED") {
+      throw new PersistenceError(
+        "the initial run event must be RUN_CREATED",
+        "INVALID_INITIAL_EVENT",
+      );
+    }
+    if (encodeJson(payload) !== encodeJson(run)) {
+      throw new PersistenceError(
+        "the RUN_CREATED payload must equal the initial AgentRun",
+        "PROJECTION_PAYLOAD_MISMATCH",
+      );
+    }
+
+    return this.#transaction(() => {
+      const existing = this.#database
+        .prepare("SELECT 1 AS present FROM runs WHERE run_id = ?")
+        .get(run.runId);
+      if (existing) {
+        throw new PersistenceError(`run ${run.runId} already exists`, "RUN_ALREADY_EXISTS");
+      }
+
+      const event = {
+        sequence: 1,
+        eventId,
+        runId: run.runId,
+        eventType,
+        payload: structuredClone(payload),
+        createdAt,
+      };
+      const eventHash = calculateDomainEventHash(null, event);
+      const runJson = encodeJson(run);
+
+      this.#database.prepare(`
+        INSERT INTO runs (
+          run_id, run_json, version, event_count, last_event_hash, created_at, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?, ?)
+      `).run(run.runId, runJson, run.version, eventHash, run.createdAt, run.updatedAt);
+
+      this.#insertEvent(event, null, eventHash);
+
+      this.#database.prepare(`
+        INSERT INTO run_projections (
+          run_id, projection_json, version, last_event_sequence, last_event_hash, updated_at
+        ) VALUES (?, ?, ?, 1, ?, ?)
+      `).run(run.runId, runJson, run.version, eventHash, run.updatedAt);
+
+      createRunLimitsEntity(this.#database, {
+        runId: run.runId,
+        policyHash: run.policyHash,
+        limits: eventOptions.runLimits,
+        createdAt,
+        updatedAt: createdAt,
+      });
+
+      return Object.freeze({ ...event, previousHash: null, eventHash });
+    });
+  }
+
+  getRunLimits(runId) {
+    this.#assertOpen();
+    return getRunLimitsEntity(this.#database, runId);
+  }
+
+  recordProtocolRepair(input) {
+    this.#assertOpen();
+    return recordProtocolRepairEntity(this.#database, input);
+  }
+
+  recordConsecutiveActorFailure(input) {
+    this.#assertOpen();
+    return recordConsecutiveActorFailureEntity(this.#database, input);
+  }
+
+  resetConsecutiveActorFailures(input) {
+    this.#assertOpen();
+    return resetConsecutiveActorFailuresEntity(this.#database, input);
+  }
+
+  getRun(runId) {
+    this.#assertOpen();
+    requireNonEmptyString(runId, "runId");
+    const row = this.#database
+      .prepare("SELECT run_json, version FROM runs WHERE run_id = ?")
+      .get(runId);
+    if (!row) return null;
+    const run = decodeCanonicalJson(row.run_json, `run ${runId}`);
+    try {
+      validateAgentRun(run);
+    } catch (cause) {
+      throw new EventChainIntegrityError(`run ${runId} violates its domain contract`, { cause });
+    }
+    if (run.version !== Number(row.version)) {
+      throw new EventChainIntegrityError(`run ${runId} version metadata does not match its JSON`);
+    }
+    return run;
+  }
+
+  listRuns() {
+    this.#assertOpen();
+    return this.#database.prepare("SELECT run_id FROM runs ORDER BY created_at, run_id")
+      .all().map((row) => this.getRun(row.run_id));
+  }
+
+  getRunProjection(runId) {
+    this.#assertOpen();
+    requireNonEmptyString(runId, "runId");
+    const row = this.#database.prepare(`
+      SELECT projection_json, version, last_event_sequence, last_event_hash
+      FROM run_projections WHERE run_id = ?
+    `).get(runId);
+    if (!row) return null;
+    const projection = decodeCanonicalJson(row.projection_json, `run projection ${runId}`);
+    try {
+      validateAgentRun(projection);
+    } catch (cause) {
+      throw new EventChainIntegrityError(
+        `run projection ${runId} violates its domain contract`,
+        { cause },
+      );
+    }
+    if (projection.version !== Number(row.version)) {
+      throw new EventChainIntegrityError(
+        `run projection ${runId} version metadata does not match its JSON`,
+      );
+    }
+    return {
+      run: projection,
+      lastEventSequence: Number(row.last_event_sequence),
+      lastEventHash: row.last_event_hash,
+    };
+  }
+
+  rebuildRunProjection(runId, options = undefined) {
+    this.#assertOpen();
+    return rebuildRunProjectionEntity(
+      this.#database,
+      runId,
+      options,
+      persistenceErrorTypes(),
+    );
+  }
+
+  rebuildRunProjections(options = undefined) {
+    this.#assertOpen();
+    return rebuildRunProjectionsEntity(
+      this.#database,
+      options,
+      persistenceErrorTypes(),
+    );
+  }
+
+  createAgentSession(input) {
+    this.#assertOpen();
+    return createAgentSessionEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  upsertAgentSession(input) {
+    this.#assertOpen();
+    return upsertAgentSessionEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  updateAgentSession(input) {
+    return this.upsertAgentSession(input);
+  }
+
+  getAgentSession(sessionId) {
+    this.#assertOpen();
+    return getAgentSessionEntity(this.#database, sessionId, persistenceErrorTypes());
+  }
+
+  listAgentSessions(runId) {
+    this.#assertOpen();
+    return listAgentSessionsEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  saveAgentPacket(input) {
+    this.#assertOpen();
+    return saveAgentPacketEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  getAgentPacket(packetId) {
+    this.#assertOpen();
+    return getAgentPacketEntity(this.#database, packetId, persistenceErrorTypes());
+  }
+
+  listAgentPackets(runId) {
+    this.#assertOpen();
+    return listAgentPacketsEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  createApproval(input) {
+    this.#assertOpen();
+    return createApprovalEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  resolveApproval(input) {
+    this.#assertOpen();
+    return resolveApprovalEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  getApproval(approvalId) {
+    this.#assertOpen();
+    return getApprovalEntity(this.#database, approvalId, persistenceErrorTypes());
+  }
+
+  listApprovals(input) {
+    this.#assertOpen();
+    return listApprovalsEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  createRecoveryOperation(input) {
+    this.#assertOpen();
+    return createRecoveryOperationEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  resolveRecoveryOperation(input) {
+    this.#assertOpen();
+    return resolveRecoveryOperationEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  getRecoveryOperation(operationId) {
+    this.#assertOpen();
+    return getRecoveryOperationEntity(this.#database, operationId, persistenceErrorTypes());
+  }
+
+  listRecoveryOperations(input) {
+    this.#assertOpen();
+    return listRecoveryOperationsEntity(this.#database, input, persistenceErrorTypes());
+  }
+
+  appendEventAndUpdateProjection(input) {
+    this.#assertOpen();
+    if (input === null || typeof input !== "object" || Array.isArray(input)) {
+      throw new TypeError("append input must be an object");
+    }
+    const {
+      runId,
+      expectedVersion,
+      eventId,
+      eventType,
+      payload,
+      createdAt,
+      nextRun,
+    } = input;
+    requireNonEmptyString(runId, "runId");
+    requireSafeInteger(expectedVersion, "expectedVersion", 1);
+    requireNonEmptyString(eventId, "eventId");
+    requireNonEmptyString(eventType, "eventType");
+    requireNonEmptyString(createdAt, "createdAt");
+    validateAgentRun(nextRun);
+    if (nextRun.runId !== runId) throw new TypeError("nextRun.runId must match runId");
+    if (nextRun.version !== expectedVersion + 1) {
+      throw new OptimisticConcurrencyError(
+        `next run version ${nextRun.version} must equal expected version + 1`,
+      );
+    }
+    if (
+      payload === null
+      || typeof payload !== "object"
+      || Array.isArray(payload)
+      || !Object.hasOwn(payload, "run")
+      || encodeJson(payload.run) !== encodeJson(nextRun)
+    ) {
+      throw new PersistenceError(
+        "event payload.run must equal nextRun so the projection is replayable",
+        "PROJECTION_PAYLOAD_MISMATCH",
+      );
+    }
+
+    return this.#transaction(() => {
+      const current = this.#database.prepare(`
+        SELECT run_json, version, event_count, last_event_hash FROM runs WHERE run_id = ?
+      `).get(runId);
+      if (!current) throw new PersistenceError(`run ${runId} does not exist`, "RUN_NOT_FOUND");
+      if (Number(current.version) !== expectedVersion) {
+        throw new OptimisticConcurrencyError(
+          `run ${runId} expected version ${expectedVersion}, observed ${current.version}`,
+        );
+      }
+      const currentRun = decodeCanonicalJson(current.run_json, `run ${runId}`);
+      for (const field of [
+        "runId",
+        "mode",
+        "objective",
+        "objectiveHash",
+        "policyHash",
+        "maxTurns",
+        "createdAt",
+      ]) {
+        if (nextRun[field] !== currentRun[field]) {
+          throw new PersistenceError(
+            `AgentRun.${field} is immutable after run creation`,
+            "IMMUTABLE_RUN_METADATA",
+          );
+        }
+      }
+
+      const sequence = Number(current.event_count) + 1;
+      const previousHash = current.last_event_hash;
+      const event = {
+        sequence,
+        eventId,
+        runId,
+        eventType,
+        payload: structuredClone(payload),
+        createdAt,
+      };
+      const eventHash = calculateDomainEventHash(previousHash, event);
+      const nextRunJson = encodeJson(nextRun);
+
+      this.#insertEvent(event, previousHash, eventHash);
+
+      const runUpdate = this.#database.prepare(`
+        UPDATE runs
+        SET run_json = ?, version = ?, event_count = ?, last_event_hash = ?, updated_at = ?
+        WHERE run_id = ? AND version = ? AND event_count = ?
+      `).run(
+        nextRunJson,
+        nextRun.version,
+        sequence,
+        eventHash,
+        nextRun.updatedAt,
+        runId,
+        expectedVersion,
+        sequence - 1,
+      );
+      if (rowChanges(runUpdate) !== 1) {
+        throw new OptimisticConcurrencyError(`run ${runId} changed while appending event`);
+      }
+
+      const projectionUpdate = this.#database.prepare(`
+        UPDATE run_projections
+        SET projection_json = ?, version = ?, last_event_sequence = ?,
+            last_event_hash = ?, updated_at = ?
+        WHERE run_id = ? AND version = ?
+      `).run(
+        nextRunJson,
+        nextRun.version,
+        sequence,
+        eventHash,
+        nextRun.updatedAt,
+        runId,
+        expectedVersion,
+      );
+      if (rowChanges(projectionUpdate) !== 1) {
+        throw new OptimisticConcurrencyError(`projection for run ${runId} changed while appending`);
+      }
+
+      return Object.freeze({ ...event, previousHash, eventHash });
+    });
+  }
+
+  appendEventAndProject(input) {
+    return this.appendEventAndUpdateProjection(input);
+  }
+
+  /**
+   * Atomically persists one already-normalized relay packet, its delivery
+   * outbox row, and the run event/projection that makes that write visible.
+   * The caller still owns the applicable RunPhase transition; this primitive
+   * only prevents a crash from exposing a partial combination of those rows.
+   */
+  appendEventProjectRelayPacketAndDelivery(input) {
+    this.#assertOpen();
+    return this.#transaction(() => appendCompoundRelayEntity(
+      this.#database,
+      input,
+      {
+        appendEvent: (event) => this.appendEventAndUpdateProjection(event),
+        saveRelay: (relay) => this.saveRelayMessageWithDelivery(relay),
+        getRelayMessage: (messageId) => this.getRelayMessage(messageId),
+        getAgentPacket: (packetId) => this.getAgentPacket(packetId),
+      },
+      persistenceErrorTypes(),
+    ));
+  }
+
+  #insertEvent(event, previousHash, eventHash) {
+    this.#database.prepare(`
+      INSERT INTO domain_events (
+        run_id, sequence, event_id, event_type, payload_json,
+        previous_hash, event_hash, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      event.runId,
+      event.sequence,
+      event.eventId,
+      event.eventType,
+      encodeJson(event.payload),
+      previousHash,
+      eventHash,
+      event.createdAt,
+    );
+  }
+
+  listDomainEvents(runId) {
+    this.#assertOpen();
+    return listDomainEventsEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  verifyEventChains(runId = null) {
+    this.#assertOpen();
+    return verifyEventChainsEntity(this.#database, runId, persistenceErrorTypes());
+  }
+
+  verifyCompoundRelayLinks() {
+    this.#assertOpen();
+    return verifyCompoundRelayLinksEntity(this.#database, persistenceErrorTypes());
+  }
+
+  saveRelayMessageWithDelivery(input) {
+    this.#assertOpen();
+    if (input === null || typeof input !== "object" || Array.isArray(input)) {
+      throw new TypeError("relay delivery input must be an object");
+    }
+    const { message, deliveryId, idempotencyKey } = input;
+    validateRelayMessage(message);
+    requireNonEmptyString(deliveryId, "deliveryId");
+    requireNonEmptyString(idempotencyKey, "idempotencyKey");
+    const createdAt = input.createdAt ?? message.createdAt;
+    requireNonEmptyString(createdAt, "createdAt");
+
+    return this.#transaction(() => {
+      const runRow = this.#database.prepare(
+        "SELECT run_json FROM runs WHERE run_id = ?",
+      ).get(message.runId);
+      if (!runRow) {
+        throw new PersistenceError(`run ${message.runId} does not exist`, "RUN_NOT_FOUND");
+      }
+      const run = decodeCanonicalJson(runRow.run_json, `run ${message.runId}`);
+      validateAgentRun(run);
+      if (message.objectiveHash !== run.objectiveHash || message.policyHash !== run.policyHash) {
+        throw new PersistenceError(
+          `relay message ${message.messageId} is not bound to the current run hashes`,
+          "RELAY_RUN_HASH_MISMATCH",
+        );
+      }
+      const sourceSession = this.#database.prepare(`
+        SELECT run_id, actor FROM agent_sessions WHERE session_id = ?
+      `).get(message.sourceSessionId);
+      if (!sourceSession) {
+        throw new PersistenceError(
+          `source session ${message.sourceSessionId} does not exist`,
+          "SOURCE_SESSION_NOT_FOUND",
+        );
+      }
+      if (sourceSession.run_id !== message.runId || sourceSession.actor !== message.fromActor) {
+        throw new PersistenceError(
+          `source session ${message.sourceSessionId} does not own relay message ${message.messageId}`,
+          "SOURCE_SESSION_MISMATCH",
+        );
+      }
+      const latest = this.#database.prepare(`
+        SELECT MAX(sequence) AS sequence FROM relay_messages WHERE run_id = ?
+      `).get(message.runId);
+      const expectedSequence = Number(latest.sequence ?? 0) + 1;
+      if (message.sequence !== expectedSequence) {
+        throw new PersistenceError(
+          `relay message sequence ${message.sequence} must be ${expectedSequence}`,
+          "RELAY_SEQUENCE_MISMATCH",
+        );
+      }
+      if (message.sequence === 1 && message.inReplyTo !== null) {
+        throw new PersistenceError(
+          "the first relay message cannot reply to another message",
+          "REPLY_TARGET_MISMATCH",
+        );
+      }
+      if (message.sequence > 1 && message.inReplyTo === null) {
+        throw new PersistenceError(
+          `relay message ${message.messageId} must identify its reply target`,
+          "REPLY_TARGET_REQUIRED",
+        );
+      }
+      if (message.inReplyTo !== null) {
+        const parent = this.#database.prepare(`
+          SELECT run_id, sequence, from_actor, to_actor
+          FROM relay_messages WHERE message_id = ?
+        `).get(message.inReplyTo);
+        if (!parent) {
+          throw new PersistenceError(
+            `reply target ${message.inReplyTo} does not exist`,
+            "REPLY_TARGET_NOT_FOUND",
+          );
+        }
+        if (parent.run_id !== message.runId || Number(parent.sequence) >= message.sequence) {
+          throw new PersistenceError(
+            `reply target ${message.inReplyTo} is not an earlier message in run ${message.runId}`,
+            "REPLY_TARGET_MISMATCH",
+          );
+        }
+        if (parent.to_actor !== message.fromActor || parent.from_actor !== message.toActor) {
+          throw new PersistenceError(
+            `reply route for ${message.messageId} does not reverse ${message.inReplyTo}`,
+            "REPLY_ROUTE_MISMATCH",
+          );
+        }
+      }
+      this.#database.prepare(`
+        INSERT INTO relay_messages (
+          message_id, run_id, sequence, from_actor, to_actor,
+          content_hash, message_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        message.messageId,
+        message.runId,
+        message.sequence,
+        message.fromActor,
+        message.toActor,
+        message.contentHash,
+        encodeJson(message),
+        message.createdAt,
+      );
+
+      this.#database.prepare(`
+        INSERT INTO delivery_attempts (
+          delivery_id, run_id, message_id, idempotency_key, state,
+          attempt_count, version, provider_receipt_json, error_json,
+          created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 0, 1, NULL, NULL, ?, ?)
+      `).run(
+        deliveryId,
+        message.runId,
+        message.messageId,
+        idempotencyKey,
+        DeliveryState.PENDING,
+        createdAt,
+        createdAt,
+      );
+
+      return this.getDelivery(deliveryId);
+    });
+  }
+
+  getRelayMessage(messageId) {
+    this.#assertOpen();
+    requireNonEmptyString(messageId, "messageId");
+    const row = this.#database
+      .prepare("SELECT * FROM relay_messages WHERE message_id = ?")
+      .get(messageId);
+    if (!row) return null;
+    const message = decodeCanonicalJson(row.message_json, `relay message ${messageId}`);
+    try {
+      validateRelayMessage(message);
+    } catch (cause) {
+      throw new EventChainIntegrityError(
+        `relay message ${messageId} violates its domain contract`,
+        { cause },
+      );
+    }
+    if (
+      message.messageId !== row.message_id
+      || message.runId !== row.run_id
+      || message.sequence !== Number(row.sequence)
+      || message.fromActor !== row.from_actor
+      || message.toActor !== row.to_actor
+      || message.contentHash !== row.content_hash
+      || message.createdAt !== row.created_at
+    ) {
+      throw new EventChainIntegrityError(
+        `relay message ${messageId} metadata does not match its JSON`,
+      );
+    }
+    return message;
+  }
+
+  listRelayMessages(runId) {
+    this.#assertOpen();
+    requireNonEmptyString(runId, "runId");
+    return this.#database
+      .prepare("SELECT message_id FROM relay_messages WHERE run_id = ? ORDER BY sequence")
+      .all(runId)
+      .map((row) => this.getRelayMessage(row.message_id));
+  }
+
+  getDelivery(deliveryId) {
+    this.#assertOpen();
+    requireNonEmptyString(deliveryId, "deliveryId");
+    const row = this.#database
+      .prepare("SELECT * FROM delivery_attempts WHERE delivery_id = ?")
+      .get(deliveryId);
+    return row ? this.#deliveryFromRow(row) : null;
+  }
+
+  listDeliveries(runId) {
+    this.#assertOpen();
+    requireNonEmptyString(runId, "runId");
+    return this.#database.prepare(`
+      SELECT delivery_id FROM delivery_attempts
+      WHERE run_id = ? ORDER BY created_at, delivery_id
+    `).all(runId).map((row) => this.getDelivery(row.delivery_id));
+  }
+
+  #deliveryFromRow(row) {
+    return {
+      deliveryId: row.delivery_id,
+      runId: row.run_id,
+      messageId: row.message_id,
+      idempotencyKey: row.idempotency_key,
+      state: row.state,
+      attemptCount: Number(row.attempt_count),
+      version: Number(row.version),
+      providerReceipt: parseOptionalJson(
+        row.provider_receipt_json,
+        `delivery ${row.delivery_id} provider receipt`,
+      ),
+      error: parseOptionalJson(row.error_json, `delivery ${row.delivery_id} error`),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  listDispatchableDeliveries({ runId = null, limit = 100 } = {}) {
+    this.#assertOpen();
+    if (runId !== null) requireNonEmptyString(runId, "runId");
+    requireSafeInteger(limit, "limit", 1);
+    const rows = runId === null
+      ? this.#database.prepare(`
+          SELECT * FROM delivery_attempts
+          WHERE state = ? ORDER BY created_at, delivery_id LIMIT ?
+        `).all(DeliveryState.PENDING, limit)
+      : this.#database.prepare(`
+          SELECT * FROM delivery_attempts
+          WHERE state = ? AND run_id = ?
+          ORDER BY created_at, delivery_id LIMIT ?
+        `).all(DeliveryState.PENDING, runId, limit);
+    return rows.map((row) => this.#deliveryFromRow(row));
+  }
+
+  /** @param {{runId?: string | null, claimedAt?: string}} [input] */
+  claimNextPendingDelivery({ runId = null, claimedAt } = {}) {
+    this.#assertOpen();
+    if (runId !== null) requireNonEmptyString(runId, "runId");
+    requireNonEmptyString(claimedAt, "claimedAt");
+    return this.#transaction(() => {
+      let row;
+      let frozenLimits;
+      while (true) {
+        row = runId === null
+          ? this.#database.prepare(`
+              SELECT * FROM delivery_attempts
+              WHERE state = ? ORDER BY created_at, delivery_id LIMIT 1
+            `).get(DeliveryState.PENDING)
+          : this.#database.prepare(`
+              SELECT * FROM delivery_attempts
+              WHERE state = ? AND run_id = ?
+              ORDER BY created_at, delivery_id LIMIT 1
+            `).get(DeliveryState.PENDING, runId);
+        if (!row) return null;
+
+        frozenLimits = getRunLimitsEntity(this.#database, row.run_id);
+        if (!frozenLimits) {
+          throw new PersistenceError(
+            `run ${row.run_id} has no frozen RunLimits`,
+            "RUN_LIMITS_NOT_FOUND",
+          );
+        }
+        if (Number(row.attempt_count) < frozenLimits.limits.maxDeliveryAttempts) break;
+        this.#database.prepare(`
+          UPDATE delivery_attempts
+          SET state = ?, version = version + 1, error_json = ?, updated_at = ?
+          WHERE delivery_id = ? AND state = ? AND version = ?
+        `).run(
+          DeliveryState.FAILED,
+          encodeJson({
+            code: "DELIVERY_ATTEMPTS_EXHAUSTED",
+            maxDeliveryAttempts: frozenLimits.limits.maxDeliveryAttempts,
+          }),
+          claimedAt,
+          row.delivery_id,
+          DeliveryState.PENDING,
+          row.version,
+        );
+      }
+
+      const update = this.#database.prepare(`
+        UPDATE delivery_attempts
+        SET state = ?, attempt_count = attempt_count + 1,
+            version = version + 1, updated_at = ?
+        WHERE delivery_id = ? AND state = ? AND version = ?
+      `).run(
+        DeliveryState.DISPATCHING,
+        claimedAt,
+        row.delivery_id,
+        DeliveryState.PENDING,
+        row.version,
+      );
+      if (rowChanges(update) !== 1) {
+        throw new OptimisticConcurrencyError(`delivery ${row.delivery_id} was claimed concurrently`);
+      }
+      return this.getDelivery(row.delivery_id);
+    });
+  }
+
+  transitionDelivery(input) {
+    this.#assertOpen();
+    if (input === null || typeof input !== "object" || Array.isArray(input)) {
+      throw new TypeError("delivery transition input must be an object");
+    }
+    const {
+      deliveryId,
+      expectedState,
+      expectedVersion,
+      nextState,
+      updatedAt,
+    } = input;
+    requireNonEmptyString(deliveryId, "deliveryId");
+    requireDeliveryState(expectedState, "expectedState");
+    requireSafeInteger(expectedVersion, "expectedVersion", 1);
+    requireDeliveryState(nextState, "nextState");
+    requireNonEmptyString(updatedAt, "updatedAt");
+
+    if (!canTransitionDelivery(expectedState, nextState)) {
+      throw new DeliveryTransitionError(
+        `delivery transition ${expectedState} -> ${nextState} is not allowed`,
+      );
+    }
+
+    return this.#transaction(() => {
+      const row = this.#database
+        .prepare("SELECT * FROM delivery_attempts WHERE delivery_id = ?")
+        .get(deliveryId);
+      if (!row) {
+        throw new PersistenceError(`delivery ${deliveryId} does not exist`, "DELIVERY_NOT_FOUND");
+      }
+      if (row.state !== expectedState) {
+        throw new DeliveryTransitionError(
+          `delivery ${deliveryId} expected state ${expectedState}, observed ${row.state}`,
+          "DELIVERY_STATE_CONFLICT",
+        );
+      }
+      if (Number(row.version) !== expectedVersion) {
+        throw new OptimisticConcurrencyError(
+          `delivery ${deliveryId} expected version ${expectedVersion}, observed ${row.version}`,
+        );
+      }
+
+      const isRetryReset = expectedState === DeliveryState.FAILED
+        && nextState === DeliveryState.PENDING;
+      if (isRetryReset) {
+        const frozenLimits = getRunLimitsEntity(this.#database, row.run_id);
+        if (!frozenLimits) {
+          throw new PersistenceError(
+            `run ${row.run_id} has no frozen RunLimits`,
+            "RUN_LIMITS_NOT_FOUND",
+          );
+        }
+        if (Number(row.attempt_count) >= frozenLimits.limits.maxDeliveryAttempts) {
+          throw new RunLimitExceededError(
+            "maxDeliveryAttempts",
+            frozenLimits.limits.maxDeliveryAttempts,
+          );
+        }
+      }
+      const receiptJson = isRetryReset
+        ? null
+        : Object.hasOwn(input, "providerReceipt")
+        ? optionalJson(input.providerReceipt)
+        : row.provider_receipt_json;
+      const errorJson = isRetryReset
+        ? null
+        : Object.hasOwn(input, "error")
+        ? optionalJson(input.error)
+        : row.error_json;
+      const update = this.#database.prepare(`
+        UPDATE delivery_attempts
+        SET state = ?, version = version + 1, provider_receipt_json = ?,
+            error_json = ?, updated_at = ?
+        WHERE delivery_id = ? AND state = ? AND version = ?
+      `).run(
+        nextState,
+        receiptJson,
+        errorJson,
+        updatedAt,
+        deliveryId,
+        expectedState,
+        expectedVersion,
+      );
+      if (rowChanges(update) !== 1) {
+        throw new OptimisticConcurrencyError(`delivery ${deliveryId} changed concurrently`);
+      }
+      return this.getDelivery(deliveryId);
+    });
+  }
+}
+
+export { DeliveryState } from "./schema.js";
+export {
+  DeliveryTransitionError,
+  EventChainIntegrityError,
+  OptimisticConcurrencyError,
+  PersistenceError,
+} from "./errors.js";
+export { calculateDomainEventHash, domainEventDigestInput };

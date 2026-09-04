@@ -1,0 +1,128 @@
+import { parseAgentPacket } from "../../domain/agent-packets.js";
+
+export class WebPacketError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = "WebPacketError";
+    this.code = code;
+  }
+}
+
+function lineStart(text, offset) {
+  return offset === 0 || text[offset - 1] === "\n";
+}
+
+function outsideMarkdownFence(text, offset) {
+  const prefix = text.slice(0, offset);
+  let activeFence = null;
+  for (const line of prefix.split(/\r?\n/u)) {
+    if (activeFence === null) {
+      const opening = line.match(/^ {0,3}(`{3,}|~{3,})/u);
+      if (opening) activeFence = { marker: opening[1][0], length: opening[1].length };
+      continue;
+    }
+    const closing = line.match(/^ {0,3}(`{3,}|~{3,})[\t ]*$/u);
+    if (
+      closing
+      && closing[1][0] === activeFence.marker
+      && closing[1].length >= activeFence.length
+    ) {
+      activeFence = null;
+    }
+  }
+  return activeFence === null;
+}
+
+function assertPacketJsonDepth(value, maxDepth) {
+  if (!Number.isSafeInteger(maxDepth) || maxDepth < 1) {
+    throw new WebPacketError("maxJsonDepth must be a positive safe integer.", "INVALID_PACKET_LIMIT");
+  }
+  const seen = new Set();
+  function visit(current, depth) {
+    if (depth > maxDepth) {
+      throw new WebPacketError(
+        `Controller packet exceeds the maximum JSON depth of ${maxDepth}.`,
+        "CONTROLLER_PACKET_TOO_DEEP",
+      );
+    }
+    if (current === null || typeof current !== "object") return;
+    if (seen.has(current)) {
+      throw new WebPacketError("Controller packet JSON must not be cyclic.", "INVALID_PACKET_JSON");
+    }
+    seen.add(current);
+    try {
+      for (const item of Array.isArray(current) ? current : Object.values(current)) {
+        visit(item, depth + 1);
+      }
+    } finally {
+      seen.delete(current);
+    }
+  }
+  visit(value, 1);
+}
+
+export function parseFinalControllerPacket(rawText, { maxJsonDepth = 20 } = {}) {
+  if (typeof rawText !== "string" || rawText.trim() === "") {
+    throw new WebPacketError("Web response must be a non-empty string.", "EMPTY_WEB_RESPONSE");
+  }
+
+  const closing = "</controller_packet>";
+  const trimmedEnd = rawText.trimEnd();
+  if (!trimmedEnd.endsWith(closing)) {
+    throw new WebPacketError(
+      "Web response does not end with a controller packet.",
+      "CONTROLLER_PACKET_MISSING",
+    );
+  }
+  const closeOffset = trimmedEnd.length - closing.length;
+  if (!lineStart(trimmedEnd, closeOffset) || !outsideMarkdownFence(trimmedEnd, closeOffset)) {
+    throw new WebPacketError(
+      "The final controller packet closing tag must be an unquoted standalone line.",
+      "CONTROLLER_PACKET_AMBIGUOUS",
+    );
+  }
+
+  const opening = "<controller_packet>";
+  let openOffset = trimmedEnd.lastIndexOf(opening, closeOffset - 1);
+  while (
+    openOffset >= 0
+    && (!lineStart(trimmedEnd, openOffset) || !outsideMarkdownFence(trimmedEnd, openOffset))
+  ) {
+    openOffset = trimmedEnd.lastIndexOf(opening, openOffset - 1);
+  }
+  if (openOffset < 0) {
+    throw new WebPacketError(
+      "The final controller packet has no unquoted standalone opening tag.",
+      "CONTROLLER_PACKET_AMBIGUOUS",
+    );
+  }
+  const openingLineEnd = openOffset + opening.length;
+  const afterOpening = trimmedEnd.slice(openingLineEnd, closeOffset);
+  if (!/^\r?\n/u.test(afterOpening)) {
+    throw new WebPacketError(
+      "The controller packet JSON must start on the line after its opening tag.",
+      "CONTROLLER_PACKET_AMBIGUOUS",
+    );
+  }
+
+  const packetText = afterOpening.replace(/^\r?\n/u, "").replace(/\r?\n$/u, "");
+  let parsed;
+  try {
+    parsed = JSON.parse(packetText);
+  } catch (error) {
+    throw new WebPacketError(`Controller packet JSON is invalid: ${error.message}`, "INVALID_PACKET_JSON");
+  }
+  assertPacketJsonDepth(parsed, maxJsonDepth);
+
+  let packet;
+  try {
+    packet = parseAgentPacket(parsed);
+  } catch (error) {
+    const wrapped = new WebPacketError(error.message, error.code || "INVALID_CONTROLLER_PACKET");
+    wrapped.cause = error;
+    throw wrapped;
+  }
+
+  const body = trimmedEnd.slice(0, openOffset).trimEnd();
+  return Object.freeze({ body, packet, packetText });
+}

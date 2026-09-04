@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Codex / ChatGPT Web Agent Bridge",
+  "version": "0.2.0",
+  "description": "Binds an exact ChatGPT conversation to the local two-agent controller.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "tabs"],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "selectors/selector-version.js",
+        "selectors/composer-selectors.js",
+        "selectors/send-button-selectors.js",
+        "selectors/stop-button-selectors.js",
+        "selectors/message-selectors.js",
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Codex / ChatGPT Web Agent Bridge",
+    "default_popup": "popup.html"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*"
+  }
+}

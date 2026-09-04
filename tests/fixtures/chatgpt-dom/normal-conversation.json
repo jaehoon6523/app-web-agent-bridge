@@ -1,0 +1,21 @@
+{
+  "controllerMessageId": "msg-fixture-1",
+  "runId": "run-fixture-1",
+  "expectedConversationUrl": "https://chatgpt.com/c/fixture-1",
+  "observedConversationUrl": "https://chatgpt.com/c/fixture-1",
+  "messages": [
+    {
+      "id": "dom-user-1",
+      "role": "user",
+      "text": "[controller_message_id:msg-fixture-1]\n[run_id:run-fixture-1]\n\nReview.",
+      "index": 1
+    },
+    {
+      "id": "dom-assistant-1",
+      "role": "assistant",
+      "text": "Reviewed.",
+      "index": 2
+    }
+  ],
+  "expectedStatus": "MATCHED"
+}

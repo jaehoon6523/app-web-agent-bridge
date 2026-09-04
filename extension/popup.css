@@ -1,0 +1,38 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+}
+body {
+  margin: 0;
+  width: 360px;
+  background: #111318;
+  color: #f2f4f8;
+}
+main { padding: 16px; }
+header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.badge { border: 1px solid #444b57; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
+.badge.ok { border-color: #3b8d67; color: #7fe1ad; }
+.badge.bad { border-color: #9c4c55; color: #ff9aa7; }
+label { display: block; font-size: 12px; color: #aab2c0; margin-top: 12px; }
+input {
+  box-sizing: border-box;
+  width: 100%;
+  margin-top: 5px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  border: 1px solid #343945;
+  background: #191c23;
+  color: inherit;
+}
+p { min-height: 18px; color: #ff9aa7; font-size: 12px; }
+.actions { display: flex; gap: 8px; }
+button {
+  flex: 1;
+  padding: 9px;
+  border: 0;
+  border-radius: 7px;
+  background: #e7e9ee;
+  color: #15171c;
+  cursor: pointer;
+}
+button.secondary { background: #2c313c; color: #e9ecf2; }

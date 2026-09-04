@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ChatGPT Web Agent Bridge</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <strong>ChatGPT Web Agent Bridge</strong>
+        <span id="status" class="badge">checking</span>
+      </header>
+      <label>
+        Controller WebSocket
+        <input id="controllerUrl" type="text" spellcheck="false" />
+      </label>
+      <label>
+        Shared secret
+        <input id="sharedSecret" type="password" spellcheck="false" autocomplete="off" />
+      </label>
+      <p id="detail"></p>
+      <div class="actions">
+        <button id="save" type="button">Save & reconnect</button>
+        <button id="reconnect" type="button" class="secondary">Reconnect</button>
+      </div>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

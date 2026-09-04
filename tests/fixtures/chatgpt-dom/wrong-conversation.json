@@ -1,0 +1,8 @@
+{
+  "controllerMessageId": "msg-fixture-3",
+  "runId": "run-fixture-3",
+  "expectedConversationUrl": "https://chatgpt.com/c/fixture-3",
+  "observedConversationUrl": "https://chatgpt.com/c/other-conversation",
+  "messages": [],
+  "expectedStatus": "MANUAL_INTERVENTION_DETECTED"
+}

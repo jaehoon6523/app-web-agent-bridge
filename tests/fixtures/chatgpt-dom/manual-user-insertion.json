@@ -1,0 +1,27 @@
+{
+  "controllerMessageId": "msg-fixture-2",
+  "runId": "run-fixture-2",
+  "expectedConversationUrl": "https://chatgpt.com/c/fixture-2",
+  "observedConversationUrl": "https://chatgpt.com/c/fixture-2",
+  "messages": [
+    {
+      "id": "dom-user-2",
+      "role": "user",
+      "text": "[controller_message_id:msg-fixture-2]\n[run_id:run-fixture-2]\n\nReview.",
+      "index": 1
+    },
+    {
+      "id": "manual-user-2",
+      "role": "user",
+      "text": "A person typed this message.",
+      "index": 2
+    },
+    {
+      "id": "dom-assistant-2",
+      "role": "assistant",
+      "text": "This must not be relayed.",
+      "index": 3
+    }
+  ],
+  "expectedStatus": "MANUAL_INTERVENTION_DETECTED"
+}

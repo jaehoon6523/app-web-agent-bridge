@@ -1,0 +1,35 @@
+{
+  "name": "app-web-agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A local controller that relays a Codex app-server session and a visible ChatGPT web session, with a two-pane supervision UI.",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "demo": "DEMO_MODE=true node src/server.js",
+    "demo:win": "set DEMO_MODE=true&& node src/server.js",
+    "test": "node --test --experimental-test-isolation=none",
+    "test:integration": "node --test --experimental-test-isolation=none tests/codex-runtime.new.test.js tests/web-runtime-core.new.test.js tests/web-extension-storage.new.test.js tests/sqlite-outbox.test.js tests/server-cutover.test.js tests/recovery-scan.test.js",
+    "lint": "node scripts/lint.js",
+    "typecheck": "tsc --pretty false",
+    "check": "npm run lint && npm run typecheck && npm test",
+    "projection:rebuild": "node scripts/projection-rebuild.js",
+    "schema:generate": "codex app-server generate-ts --out ./schemas && codex app-server generate-json-schema --out ./schemas"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "dotenv": "^17.2.2",
+    "express": "^5.1.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.4.1",
+    "@types/ws": "^8.18.1",
+    "typescript": "^7.0.2"
+  }
+}
