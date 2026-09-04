@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Codex / ChatGPT Web Agent Bridge",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Binds an exact ChatGPT conversation to the local two-agent controller.",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "tabs"],

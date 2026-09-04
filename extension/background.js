@@ -315,16 +315,16 @@ function requireBindingInput(payload) {
 async function prepareBoundSession(payload) {
   const requested = requireBindingInput(payload);
   const state = await store.read();
-  if (
+  const persistedBindingDiffers = (
     state.lastBoundSessionId !== requested.sessionId
     || state.lastBoundRunId !== requested.runId
     || state.conversationUrl !== requested.conversationUrl
     || state.conversationId !== requested.conversationId
-  ) {
-    await store.update({ bindingStatus: "NEEDS_REBIND" });
+  );
+  if (state.currentDeliveryId !== null && persistedBindingDiffers) {
     throw new ExtensionOperationError(
-      "NEEDS_REBIND",
-      "The requested run and conversation do not match the persisted Web session binding.",
+      "REBIND_DURING_ACTIVE_DELIVERY",
+      "A different Web session cannot replace a persisted binding during an active delivery.",
     );
   }
   const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });

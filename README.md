@@ -180,6 +180,9 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8787/api/runs/start" `
 ```
 
 URL이 결박되지 않거나 확장이 인증되지 않으면 Codex thread를 열지 않고 시작 요청을 거절합니다.
+처음 시작하거나 이전 run의 결박이 남아 있어도, active delivery가 없는 상태에서는 확장이 exact URL과
+conversation ID가 일치하는 탭을 정확히 하나 찾았을 때만 새 run에 결박합니다. 0개면
+`NEEDS_REBIND`, 2개 이상이면 `AMBIGUOUS`로 거절합니다.
 
 ## 보안 및 운영 경계
 
