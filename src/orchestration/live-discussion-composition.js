@@ -100,6 +100,7 @@ export class LiveDiscussionComposition {
   #runService;
   #controller;
   #dispatchers = new Map();
+  #runtimeSessions = new Map();
 
   /** @param {{store: any, artifactStore: any, createCodexSession: (input: any) => any, createWebSession: (input: any) => any, clock?: () => string, idFactory?: () => string}} options */
   constructor({
@@ -145,11 +146,61 @@ export class LiveDiscussionComposition {
     return this.#dispatchers.get(runId) ?? null;
   }
 
+  getRuntimeSessions(runId) {
+    return this.#runtimeSessions.get(runId) ?? null;
+  }
+
+  async restorePendingRun(runId) {
+    if (this.#runtimeSessions.has(runId)) return;
+    const run = this.#store.getRun(runId);
+    const deliveries = this.#store.listDeliveries(runId);
+    if (!run || run.blocker || !deliveries.some((d) => d.state === "PENDING")
+      || deliveries.some((d) => !["PENDING", "RELAYED", "RESPONSE_COMPLETED"].includes(d.state))) {
+      throw new LiveDiscussionCompositionError("Only confirmed unsent pending work can be resumed.", "RECOVERY_REQUIRED");
+    }
+    const records = this.#store.listAgentSessions(runId);
+    const codexRecord = records.find((s) => s.actor === AgentActor.CODEX_AGENT);
+    const webRecord = records.find((s) => s.actor === AgentActor.CHATGPT_WEB_AGENT);
+    if (!codexRecord?.externalSessionId || !webRecord?.externalLocator) {
+      throw new LiveDiscussionCompositionError("Persisted session identities are missing.", "RECOVERY_REQUIRED");
+    }
+    const web = this.#createWebSession({ run, sessionId: webRecord.sessionId });
+    await web.resume({ binding: createInitialWebSessionBinding({
+      runId, sessionId: webRecord.sessionId, conversationUrl: webRecord.externalLocator,
+    }) });
+    runtimeActor(web, AgentActor.CHATGPT_WEB_AGENT);
+    if (web.externalSessionId !== webRecord.externalSessionId) throw new Error("Web conversation changed.");
+    const codex = this.#createCodexSession({ run, sessionId: codexRecord.sessionId,
+      persistThreadBinding: (binding) => this.#persistCodexThreadBinding({ sessionId: codexRecord.sessionId, runId, binding }),
+    });
+    try {
+      await codex.resume({ threadId: codexRecord.externalSessionId });
+      if (codex.activeTurnId || codex.externalSessionId !== codexRecord.externalSessionId) {
+        throw new LiveDiscussionCompositionError("Provider still has an active or different turn.", "RECOVERY_REQUIRED");
+      }
+      this.#markReady({ sessionId: codexRecord.sessionId, externalSessionId: codexRecord.externalSessionId, externalLocator: null });
+      this.#markReady({ sessionId: webRecord.sessionId, externalSessionId: webRecord.externalSessionId, externalLocator: webRecord.externalLocator });
+      const dispatcher = new DiscussionOutboxDispatcher({
+        store: this.#store, controller: this.#controller, artifactStore: this.#artifactStore,
+        sessions: {
+          CODEX_AGENT: { sessionId: codexRecord.sessionId, session: codex },
+          CHATGPT_WEB_AGENT: { sessionId: webRecord.sessionId, session: web,
+            afterDurableResponse: typeof web.acknowledgeDelivery === "function" ? ({ turnId }) => web.acknowledgeDelivery({ turnId }) : undefined },
+        },
+      });
+      this.#dispatchers.set(runId, dispatcher);
+      this.#runtimeSessions.set(runId, { CODEX_AGENT: codex, CHATGPT_WEB_AGENT: web });
+    } catch (error) {
+      await codex.close();
+      throw error;
+    }
+  }
+
   /** @param {{runId?: string, objective: string, policy: any, webConversationUrl: string}} input */
   async provisionRun({ runId, objective, policy, webConversationUrl }) {
     const runInput = { objective, policy };
     if (runId !== undefined) runInput.runId = runId;
-    const run = this.#runService.createRun(runInput);
+    let { run } = this.#runService.prepareRun(runInput);
     const codexSessionId = `session_codex_${this.#idFactory()}`;
     const webSessionId = `session_web_${this.#idFactory()}`;
     const webBinding = createInitialWebSessionBinding({
@@ -157,41 +208,34 @@ export class LiveDiscussionComposition {
       sessionId: webSessionId,
       conversationUrl: webConversationUrl,
     });
-    this.#createSession({
-      sessionId: codexSessionId,
-      runId: run.runId,
-      actor: AgentActor.CODEX_AGENT,
-      provider: SessionProvider.CODEX_APP_SERVER,
-    });
-    this.#createSession({
-      sessionId: webSessionId,
-      runId: run.runId,
-      actor: AgentActor.CHATGPT_WEB_AGENT,
-      provider: SessionProvider.CHATGPT_WEB,
-    });
-
     const web = this.#createWebSession({ run, sessionId: webSessionId });
     const beginWebSession = webBinding?.tabId === null ? web?.resume : web?.start;
     if (typeof beginWebSession !== "function") {
       throw new LiveDiscussionCompositionError("Web runtime cannot start or resume a session.", "WEB_RUNTIME_INVALID");
     }
+    let binding;
     try {
       // First-run URL binding deliberately resumes only an exact existing
       // conversation. The extension rejects zero or multiple matching tabs.
-      const binding = await beginWebSession.call(web, { binding: webBinding });
+      binding = await beginWebSession.call(web, { binding: webBinding });
       runtimeActor(web, AgentActor.CHATGPT_WEB_AGENT);
-      this.#markReady({
-        sessionId: webSessionId,
-        externalSessionId: web.externalSessionId,
-        externalLocator: binding?.conversationUrl ?? null,
-      });
     } catch (cause) {
       throw new LiveDiscussionCompositionError(
         "ChatGPT Web session provisioning did not complete; no discussion delivery was queued.",
         "WEB_SESSION_PROVISIONING_FAILED",
-        { runId: run.runId, sessionId: webSessionId, cause },
+        { cause },
       );
     }
+
+    this.#store.withTransaction(() => {
+      run = this.#runService.createRun({ ...runInput, runId: run.runId });
+      this.#createSession({ sessionId: codexSessionId, runId: run.runId,
+        actor: AgentActor.CODEX_AGENT, provider: SessionProvider.CODEX_APP_SERVER });
+      this.#createSession({ sessionId: webSessionId, runId: run.runId,
+        actor: AgentActor.CHATGPT_WEB_AGENT, provider: SessionProvider.CHATGPT_WEB });
+      this.#markReady({ sessionId: webSessionId, externalSessionId: web.externalSessionId,
+        externalLocator: binding?.conversationUrl ?? null });
+    });
 
     // Do not start a Codex thread until exact Web conversation binding is
     // proven. A missing login, invalid URL, or ambiguous tabs must be a
@@ -230,11 +274,18 @@ export class LiveDiscussionComposition {
       artifactStore: this.#artifactStore,
       sessions: {
         [AgentActor.CODEX_AGENT]: { sessionId: codexSessionId, session: codex },
-        [AgentActor.CHATGPT_WEB_AGENT]: { sessionId: webSessionId, session: web },
+        [AgentActor.CHATGPT_WEB_AGENT]: {
+          sessionId: webSessionId,
+          session: web,
+          afterDurableResponse: typeof web.acknowledgeDelivery === "function"
+            ? ({ turnId }) => web.acknowledgeDelivery({ turnId })
+            : undefined,
+        },
       },
     });
     const started = this.#controller.start({ runId: run.runId, expectedVersion: run.version });
     this.#dispatchers.set(run.runId, dispatcher);
+    this.#runtimeSessions.set(run.runId, { CODEX_AGENT: codex, CHATGPT_WEB_AGENT: web });
     return Object.freeze({ run: started.run, codexSessionId, webSessionId, dispatcher });
   }
 
@@ -250,6 +301,7 @@ export class LiveDiscussionComposition {
   close() {
     for (const dispatcher of this.#dispatchers.values()) dispatcher.close();
     this.#dispatchers.clear();
+    this.#runtimeSessions.clear();
   }
 
   #createSession({ sessionId, runId, actor, provider }) {

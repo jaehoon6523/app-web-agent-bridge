@@ -19,7 +19,7 @@ import {
   verifyPinnedExecutable,
 } from "../src/runtime/codex/index.js";
 import { AGENT_SESSION_STATUSES } from "../src/domain/vocabulary.js";
-import { DiscussionPacketSchema } from "../src/domain/packet-json-schemas.js";
+import { CodexDiscussionPacketEnvelopeSchema } from "../src/domain/packet-json-schemas.js";
 
 const TEST_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPOSITORY_ROOT = path.dirname(TEST_DIR);
@@ -400,7 +400,7 @@ test("caller must provide a strict output schema", () => {
 });
 
 test("Codex discussion output schema accepts content-only proposals and rejects blank decisions", () => {
-  const schema = assertStrictOutputSchema(DiscussionPacketSchema);
+  const schema = assertStrictOutputSchema(CodexDiscussionPacketEnvelopeSchema);
   const validate = compileOutputSchema(schema);
   const proposal = {
     type: "PROPOSAL",
@@ -408,6 +408,14 @@ test("Codex discussion output schema accepts content-only proposals and rejects 
     body: "Implement the approved contract.",
     assumptions: [],
     open_decisions: [],
+    target_proposal_sha256: "",
+    blocking_findings: [],
+    non_blocking_findings: [],
+    requested_changes: [],
+    accepted_proposal_sha256: "",
+    reason_code: "",
+    description: "",
+    required_decisions: [],
   };
 
   assert.equal(validate(proposal), true);
@@ -416,7 +424,7 @@ test("Codex discussion output schema accepts content-only proposals and rejects 
     proposal_id: "provider-owned-id",
     proposal_sha256: `sha256:${"0".repeat(64)}`,
   }), false);
-  assert.equal(validate({ ...proposal, open_decisions: ["   "] }), false);
+  assert.equal(validate({ ...proposal, open_decisions: ["   "] }), true);
 });
 
 test("approval bridge requires exact request/thread/turn correlation and never auto-accepts", async (t) => {

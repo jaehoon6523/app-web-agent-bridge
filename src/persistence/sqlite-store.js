@@ -71,6 +71,8 @@ import { getAgentPacketRejectionByDeliveryEntity, verifyAgentPacketRejectionsEnt
 import { getRunOutcomeEntity, saveRunOutcomeEntity, verifyRunOutcomesEntity } from "./run-outcomes.js";
 import { verifyTurnQueueLinksEntity } from "./turn-queue-links.js";
 import { verifyControlSideRecordLinksEntity } from "./control-side-record-links.js";
+import { deleteRunEntity } from "./run-deletion.js";
+import { listArtifactHashesEntity } from "./artifact-references.js";
 import { validateSubmittedProviderReceipt } from "./delivery-transition-input.js";
 const DELIVERY_STATES = new Set(Object.values(DeliveryState));
 
@@ -346,6 +348,18 @@ export class SqliteStore {
     this.#assertOpen();
     return this.#database.prepare("SELECT run_id FROM runs ORDER BY created_at, run_id")
       .all().map((row) => this.getRun(row.run_id));
+  }
+
+  /** Permanently removes a terminal run and every record owned by it. */
+  deleteRun(runId) {
+    this.#assertOpen();
+    requireNonEmptyString(runId, "runId");
+    return this.#transaction(() => deleteRunEntity(this.#database, runId, PersistenceError));
+  }
+
+  listArtifactHashes(runId = null) {
+    this.#assertOpen();
+    return listArtifactHashesEntity(this.#database, runId);
   }
 
   getRunProjection(runId) {

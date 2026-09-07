@@ -28,6 +28,7 @@ import {
 } from "../src/domain/contracts.js";
 import {
   AGENT_PACKET_JSON_SCHEMAS,
+  CodexDiscussionPacketEnvelopeSchema,
   DiscussionPacketSchema,
   packetJsonSchema,
 } from "../src/domain/packet-json-schemas.js";
@@ -549,6 +550,12 @@ test("Codex output schemas expose only the four closed provider packet contracts
     assert.deepEqual(new Set(schema.required), new Set(Object.keys(schema.properties)));
   }
   assert.equal(DiscussionPacketSchema.oneOf.length, 4);
+  assert.equal(CodexDiscussionPacketEnvelopeSchema.oneOf, undefined);
+  assert.equal(CodexDiscussionPacketEnvelopeSchema.additionalProperties, false);
+  assert.deepEqual(
+    new Set(CodexDiscussionPacketEnvelopeSchema.required),
+    new Set(Object.keys(CodexDiscussionPacketEnvelopeSchema.properties)),
+  );
   assert.deepEqual(Object.keys(AGENT_PACKET_JSON_SCHEMAS.PROPOSAL.properties), [
     "type",
     "summary",

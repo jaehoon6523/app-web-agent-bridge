@@ -18,6 +18,7 @@ import {
   selectExactConversationTab,
 } from "../src/runtime/web/index.js";
 import { RUNTIME_EVENT_TYPES } from "../src/runtime/runtime-events.js";
+import { parseCodeReviewResponse } from "../src/domain/code-review.js";
 
 const SECRET = "test-only-shared-secret-0123456789abcdef";
 const IDENTITY = "extension-test-01";
@@ -86,8 +87,8 @@ function authenticate(transport, socket) {
   assert.equal(transport.authenticated, true);
 }
 
-async function readyAdapter(transport, socket, binding = boundSession()) {
-  const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 500 });
+async function readyAdapter(transport, socket, binding = boundSession(), options = {}) {
+  const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 500, ...options });
   assert.equal(adapter.actor, "CHATGPT_WEB_AGENT");
   assert.equal(adapter.externalSessionId, null);
   const starting = adapter.start({ binding });
@@ -102,6 +103,25 @@ async function readyAdapter(transport, socket, binding = boundSession()) {
   await starting;
   return adapter;
 }
+
+test("Controller-configured review parser accepts evaluation data through the existing Web adapter", async () => {
+  const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });
+  const socket = new FakeSocket();
+  transport.attach(socket);
+  authenticate(transport, socket);
+  const adapter = await readyAdapter(transport, socket, boundSession(), {
+    parseResponse: (raw) => parseCodeReviewResponse(raw, { threshold: 9, evidenceRefs: ["diff-hash"] }),
+  });
+  const report = { score: 8, findings: ["Needs revision"], evidenceRefs: ["diff-hash"], summary: "Review" };
+  try {
+    const handle = await adapter.submitTurn({ turnId: "review-1", controllerMessageId: "review-input", runId: "run-1", text: "Review captured diff" });
+    socket.receive({ type: "web.prompt.result", protocolVersion: 2, requestId: "review-1", payload: {
+      text: controllerResponse("Review", report), confidence: "CONFIRMED_BY_UI_STATE",
+      evidence: { assistantMessageId: "review-message" }, session: boundSession(),
+    } });
+    assert.deepEqual((await handle.completion).packet, report);
+  } finally { await adapter.close(); }
+});
 
 test("one-time HMAC challenges reject invalid values and replay", () => {
   let now = 1_000;

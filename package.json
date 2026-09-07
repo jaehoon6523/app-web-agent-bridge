@@ -13,7 +13,7 @@
     "demo": "DEMO_MODE=true node src/server.js",
     "demo:win": "set DEMO_MODE=true&& node src/server.js",
     "test": "node --test --experimental-test-isolation=none",
-    "test:integration": "node --test --experimental-test-isolation=none tests/codex-runtime.new.test.js tests/web-runtime-core.new.test.js tests/web-extension-storage.new.test.js tests/sqlite-outbox.test.js tests/discussion-dispatcher.test.js tests/discussion-dispatcher-integrity.test.js tests/discussion-protocol-failure.test.js tests/server-cutover.test.js tests/recovery-scan.test.js",
+    "test:integration": "node --test --experimental-test-isolation=none tests/codex-runtime.new.test.js tests/web-runtime-core.new.test.js tests/web-extension-storage.new.test.js tests/sqlite-outbox.test.js tests/discussion-dispatcher.test.js tests/discussion-dispatcher-integrity.test.js tests/discussion-protocol-failure.test.js tests/server-cutover.test.js tests/dashboard-controller.test.js tests/recovery-scan.test.js",
     "lint": "node scripts/lint.js",
     "typecheck": "tsc --pretty false",
     "check": "npm run lint && npm run typecheck && npm test",

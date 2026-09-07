@@ -1,6 +1,9 @@
 import { validateAgentTurnInput } from "../domain/agent-messages.js";
 import { AgentPacketParserStage } from "../domain/agent-packet-rejection.js";
-import { DiscussionPacketSchema } from "../domain/packet-json-schemas.js";
+import {
+  CodexDiscussionPacketEnvelopeSchema,
+  DiscussionPacketSchema,
+} from "../domain/packet-json-schemas.js";
 import {
   AgentActor,
   AgentSessionStatus,
@@ -328,7 +331,9 @@ export class DiscussionOutboxDispatcher {
         controllerMessageId: turnInput.inputId,
         runId,
         text: prompt,
-        outputSchema: DiscussionPacketSchema,
+        outputSchema: turnInput.targetActor === AgentActor.CODEX_AGENT
+          ? CodexDiscussionPacketEnvelopeSchema
+          : DiscussionPacketSchema,
       });
       await tracker.confirmTurn(turnHandle?.turnId);
       const beforeSubmit = currentWriteContext(this.#store, runId, claimed.deliveryId);

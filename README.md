@@ -1,218 +1,177 @@
 # Codex / ChatGPT Web Agent Bridge
 
-이 저장소의 목표는 하나의 로컬 Controller가 서로 분리된 두 세션을 중계하는 것입니다.
+이 프로그램의 목적은 **Codex가 실제 개발 작업을 수행하고, Controller가 Git diff와 작업 증거를 고정해 ChatGPT Web에 검토시키며, 검토 결과에 따른 재작업과 승인된 대상 레포 반영까지 연결하는 것**입니다.
+
+## 목표 동작 — 2026-09-06 사용자 정정 반영
+
+기존 Bridge의 Controller, Dispatcher, Codex Adapter, Web Adapter를 실제 외부 시스템에 연결해 아래 흐름을 완성합니다. 현재 DISCUSSION 구현만으로 프로그램의 목적이나 완료 범위를 한정하지 않습니다.
 
 ```text
-CODEX_AGENT          = persistent Codex app-server thread
-CHATGPT_WEB_AGENT    = Chrome 확장이 결박한 실제 ChatGPT 웹 conversation
-Controller           = 상태·전달·복구·종료 판정의 유일한 writer
+목표·검토 기준 → Controller의 Worker brief
+  → 실제 Codex app-server → 실제 파일 변경
+  → Controller가 Git diff·파일·실행 증거를 Artifact로 캡처·고정
+  → 실제 ChatGPT Web Reviewer → 검토 보고서
+  → Controller의 정책 판단
+      REWORK → 이전 Artifact·지적 사항·반복 번호를 담은 새 brief
+             → 새 Codex Worker 세션 → 변경·캡처·검토 반복
+      PASS   → 사람 또는 별도 승인 단계 → 검토된 변경을 대상 레포에 반영
 ```
 
-`CODEX_AGENT`는 ChatGPT 데스크톱 앱 화면이 아닙니다. 실제 데스크톱 UI 자동화는 MVP 범위에 포함하지 않습니다. `CHATGPT_WEB_AGENT`는 공식 Agent protocol이 아니라 로그인된 `chatgpt.com` DOM을 관찰·조작하므로 UI 변경, 인증 만료, CAPTCHA 및 계정 정책의 영향을 받습니다.
+| 역할 | 책임과 권한 |
+|---|---|
+| Codex Worker | brief를 받아 실제 코드를 작성·수정하고 작업 결과를 제출합니다. Worker는 작업 역할이며 브라우저 Web Worker를 뜻하지 않습니다. |
+| Controller | 요청과 세션·턴을 결합하고, 실제 변경 증거를 캡처·해시로 고정하며, 검토 기준에 따라 PASS/REWORK와 다음 작업을 결정합니다. |
+| ChatGPT Web Reviewer | 목표·고정된 Artifact·검토 기준을 받아 점수, 지적 사항, 근거 참조, 요약을 반환합니다. 승인·merge·다음 행동을 명령하는 주체가 아닙니다. |
+| 사람 또는 별도 승인 단계 | PASS 이후 대상 레포 반영을 승인합니다. 검토 통과와 반영 완료를 구분합니다. |
 
-## 현재 구현 상태
+Codex의 “구현했습니다”라는 텍스트만을 변경 증거로 전달하지 않습니다. Controller가 실제 Git 변경과 필요한 파일·실행 증거를 확보하고 검토 대상에 결합해야 합니다. 검토한 변경과 반영할 변경이 동일한지도 확인해야 합니다.
 
-현재 코드는 Controller+SQLite 기준의 durable discussion core, dispatcher-backed fake runtime
-수직 경로 및 authenticated live-start composition을 명시적으로 분리합니다. 실제 Provider E2E와
-crash/recovery reconciliation은 아직 별도 검증 대상입니다.
+작업 공간은 격리된 Git worktree 방식을 우선 검토합니다. REWORK는 새 Worker 세션에 명시적인 brief와 이전 증거를 전달하는 방식으로 연결합니다. 같은 반복의 장애 복구와 다음 반복의 새 세션 생성을 구분합니다. Worker와 Reviewer는 대화 컨텍스트를 공유하지 않습니다.
 
-- strict domain records, run state machine, four caller-frozen limits
-- SQLite event/projection store, hash chain, transactional relay/outbox
-- persistent Codex thread start/resume/inspect/interrupt와 로컬 JSON Schema 검증
-- Codex executable pinning, child environment allowlist, fail-closed approval bridge
-- HMAC-authenticated extension transport와 exact ChatGPT conversation binding
-- prompt marker, 수동 개입·binding drift·ambiguous completion 거부
-- selector registry, service-worker state 복원, 동시 delivery reservation
-- two-pane Dashboard projection/command model
-- redaction, content-addressed artifacts, loopback/origin auth primitives (production persistence pipeline integration pending)
-- startup preflight, projection rebuild, recovery candidate scan
-- `AgentTurnInput`/`AgentMessage` 분리와 Controller-owned Proposal identity
-- hash-chained submission receipt/session/turn과 response/rejection provenance 검증
-- 제출 직전 session identity/version snapshot 고정과 submit·response-start·response-final race 검증
-- 한 transaction 안의 response/message/packet/proposal/event/outcome/next-outbox 처리
-- 상태별 action matrix, same-actor protocol repair, 동일-hash 양측 consensus
-- Controller+SQLite 5-turn integration과 마지막 ACCEPT 뒤 추가 delivery 억제
-- Agent-owned BLOCKED 사유와 Controller/runtime-owned operational blocker 사유 분리
-- PENDING outbox에서 fake Codex/Web session, runtime event consumer, packet parser를 거치는 5-turn 수직 경로
-- delivery/input/session/turn의 exact correlation과 stale·foreign·duplicate terminal event 거부
-- PENDING 재개와 SUBMITTED 불확실 상태의 자동 재전송 금지
-- runtime approval event를 canonical approval로 승격하지 않는 dispatcher fail-closed 경계
+`master-workflow` 및 사용자가 언급한 Git diff 수신·반영 참고 레포를 대조 대상으로 삼습니다. 해당 경로와 실제 구현은 아직 확인하지 않았으며, 참고 레포의 구현 완료 여부를 이 Bridge의 완료 근거로 간주하지 않습니다.
 
-동일한 normalized proposal이 다시 제출되면 새 canonical proposal을 만들지 않고 기존
-`proposalRefHash`를 재사용합니다. 각 source message의 occurrence는 hash-chained
-`AGENT_RESPONSE_STORED` event가 별도로 보존하고 startup verifier가 그 message와 proposal을
-다시 결박합니다. Protocol repair 권한은 거부된 원래 turn과 source message의 frozen action policy에서
-전체 `allowedPacketTypes`로 재도출하고 `repairPolicyHash`로 결박합니다. Runtime-response evidence의
-`observedCandidatePacketType`은 진단값일 뿐 repair 허용 범위나 다음 action을 선택하지 않습니다.
-생성, 응답 소비와 startup 재검증이 모두 같은 policy를 다시 계산하며 불일치는 fail-closed입니다.
+Reviewer 점수 임계값(예시의 9점), 정확한 보고서 wire schema, worktree 기준점·정리 정책, 최종 반영 명령은 이 문서에서 임의로 확정하지 않습니다. 사용자 설명의 예시 JSON을 현재 구현된 API라고 주장하지 않습니다.
 
-Dispatcher-backed fake runtime vertical은 test harness에서 연결됐습니다. production composition
-factory는 SQLite, artifact store, pinned Codex process manager 및 exact Web adapter를 조립하며,
-`provisionRun()`이 호출되기 전에는 thread나 Web prompt를 시작하지 않습니다. 인증된
-`POST /api/runs/start`는 exact Web conversation binding을 먼저 완료하고, 그 뒤에만 Codex
-thread를 열어 dispatcher를 시작합니다. `/api/state`와 Dashboard WebSocket은 아직 command
-projection이 아니므로 `503`을 반환합니다.
-현재 Health는 다음 값을 따로 반환합니다. 여기서 `coreOrchestrationReady`와
-`fakeVerticalSliceVerified`는 자동 검증 checkpoint이고, 실행 중 production component의
-준비 상태는 아닙니다. 이 naming과 runtime readiness 계산은 별도 composition 변경에서
-정정해야 합니다.
+Agent가 제공한 값이 Controller의 허용 행동이나 repair 권한을 정하지 못하도록 해야 합니다. 2026-09-06 현재 DISCUSSION 경로를 점검한 결과, repair 정책은 저장된 원래 요청과 Controller action policy에서 도출되며 진단 evidence와 위조된 repair 정책을 다루는 기존 테스트를 포함해 20개가 통과했습니다. 지적된 `candidatePacketType → repair authority` 문제는 현재 경로에서 재현되지 않았습니다. 이 결과가 향후 개발 루프의 권한 경계까지 검증한 것은 아닙니다. 근거와 실행 명령은 [TODO.md](TODO.md)에 기록했습니다.
 
-```text
-coreOrchestrationReady=true
-fakeVerticalSliceVerified=true
-codexRuntimeReady=false
-webRuntimeReady=false
-liveSessionBindingReady=false
-liveOrchestrationReady=false
-```
+## 현재 구현 상태와 목표의 차이
 
-Fake dispatcher는 Codex/Web terminal event와 completion을 exact turn에 결박하고, parser가
-검증한 packet만 response 처리기에 전달합니다. Malformed output은 raw provider text를 artifact에
-보존하지 않고 actor, parser stage와 strict framing에서 도출된 observed candidate type만 allowlist evidence로
-저장합니다. Terminal failure/interruption은 completion promise를 기다리지 않고 즉시 fail-closed하며,
-durable response 뒤 callback 실패는 `POST_COMMIT_EFFECT_FAILED`로 이미 commit된 경계와 구분합니다.
-이 검증은 synthetic evidence이며 live Codex/Web adapter 조립을 증명하지 않습니다. Fake Web의
-durable acknowledgement도 test binding callback으로만 검증됐고 production composition에는 아직
-연결되지 않았습니다.
-현재 Controller는 artifact 존재·hash를 검증하지만 이 내부 port를 HTTP/WS command로 노출하지
-않습니다. recovery scan 역시 불확실한 작업을 찾지만 provider reconciliation과 사용자 recovery
-decision 실행기는 아직 composition에 연결되지 않았습니다. `CODEX_EXECUTABLE`을 설정하면
-health의 `liveCompositionConfigured`가 true가 되지만, 이는 executable pinning configuration만
-뜻하며 Provider 연결 또는 Live E2E 성공을 뜻하지 않습니다.
+현재 서버는 Codex app-server 및 확장용 연결 코드를 갖추고 있으며, 실행 상태·입력·응답·제안·합의 결과를 SQLite에 저장합니다. 대시보드 시작 경로는 DISCUSSION만 허용하고, 기존 합의 판정은 동일한 persisted proposal hash에 대한 양쪽 승인입니다. 이것은 위 목표의 점수 기반 개발 검토·재작업·반영 루프와 구분해야 합니다.
 
-Agent `BLOCKED`가 operational fact를 만드는 경로는 차단됐습니다. 다만
-`requestRuntimeApproval()`의 opaque scope를 실제 runtime request/session/turn evidence에
-결박하는 계약과 `SESSION_AUTH` blocker의 trusted creation provenance는 아직 부분 구현입니다.
-Fake dispatcher는 correlated approval event를 승인으로 만들지 않고 중단하지만, 이 두 저장소
-불변조건 자체는 live composition 전에 별도 변경으로 닫아야 합니다.
+Git worktree 생성·diff 캡처·저장된 patch 반영 모듈과 Codex 완료 후 캡처 연결부, 점수 검토 판정, Web Adapter의 Controller 지정 파서 연결부를 추가했습니다. 이 모듈들은 아직 대시보드의 개발 실행·저장 경로에 연결되지 않았습니다. 새 Worker 반복, 실제 ChatGPT 검토를 포함한 2~3회 반복 및 crash/recovery E2E는 미검증입니다.
 
-## 원본 ZIP 판정
+| 추가 구현 | 현재 확인한 범위 |
+|---|---|
+| `src/repository/git-change-workspace.js` | clean target에서 격리 worktree 생성, 임시 index로 새 파일·삭제·바이너리 포함 diff 캡처, Artifact 해시 및 Git tree 검증 후 저장된 patch 반영. 기존 변경·HEAD 변경은 거부하고 submodule 포함 캡처는 미지원으로 거부합니다. commit·push는 하지 않습니다. |
+| `src/runtime/code-change-worker.js` | 기존 CODE_CHANGE Adapter를 worktree에 연결하는 factory와 정확한 thread/turn 완료 후 캡처·Controller 저장 callback을 기다리는 연결부. 저장 실패 뒤 자동 재전송은 거부합니다. 실제 Codex 작업 검증은 아직 하지 않았습니다. |
+| `src/domain/code-review.js` | `score`, `findings`, `evidenceRefs`, `summary`만 허용하는 검토 파서·판정 함수. Controller가 임계값과 허용 증거를 제공하며 Reviewer 권한 필드와 미제공 증거 참조는 거부합니다. |
+| `src/runtime/web/session-adapter.js` | Controller가 생성 시 지정한 응답 파서를 사용 가능. 기본값은 기존 DISCUSSION 파서입니다. 서버의 기본 생성 경로는 아직 개발 검토 파서를 선택하지 않습니다. |
 
-마이그레이션 기준 ZIP은 `app-web-agent-bridge.zip`이며 SHA-256은 다음과 같습니다.
+검증: 모듈 추가 후 전체 자동 테스트 355개 통과. 이후 Web 파서 연결 변경에 대해서는 관련 26개 테스트와 타입 검사를 통과했습니다. 전체 lint는 기존 변경이 있는 `src/persistence/sqlite-store.js`의 1,013줄/1,000줄 제한 초과로 실패합니다. 실제 서버 preflight 조회는 연결 거부(ECONNREFUSED)였으며, 실제 Provider E2E 결과로 대체하지 않습니다.
 
-```text
-e383f9032c7a6be912f5bb0a28023fd24c6625b0281ab0c469653135df7b2e70
-```
+### 다음 연결 계약 제안 — 아직 API에 적용되지 않음
 
-ZIP의 28개 파일은 세션·웹 확장·두 pane UI의 초기 골격으로는 맞습니다. 기존 in-memory orchestrator, JSONL store, query-token gateway, demo Agent를 target implementation으로 그대로 쓰는 것은 맞지 않습니다. 파일별 `KEEP / REWRITE / EXTRACT / DELETE` 근거는 `MIGRATION_PLAN.md`에 있습니다.
+현재 저장 계약은 DISCUSSION 제안·합의를 중심으로 하므로 아래는 새로운 개발 실행 입력·저장·승인 의미의 제안입니다.
 
-## 요구 환경
+- 시작 입력은 기존 `run.start`의 `CODE_CHANGE` 분기에 대상 레포 절대 경로, 검토 기준, 명시적 점수 임계값, 최대 반복 수를 받습니다. 임계값 9를 자동 기본값으로 정하지 않습니다.
+- 각 반복에서 Controller가 run/session/turn, 기준 commit, 후보 tree, diff Artifact hash, 검토 보고서와 정책 판정을 SQLite에 결합해 저장합니다. 재시작 시 이미 제출된 작업을 새 Worker 요청으로 다시 보내지 않습니다.
+- REWORK는 기존 후보 파일 상태를 유지하되 새 Codex 세션과 새 brief로 시작합니다. 새 세션 생성과 같은 턴의 장애 복구를 구분합니다.
+- PASS는 자동 반영이 아니라 반영 대기입니다. 대시보드에서 사용자가 정확한 후보 hash와 기준 commit에 결합된 ‘변경 반영’을 실행하면 저장된 patch를 clean target에 적용합니다. 이 조작은 commit·push·merge를 하지 않습니다.
+- 반영 전후 실패 또는 재시작에서는 실제 target tree를 확인해 미반영·동일 후보 반영·불명확 상태를 구분합니다. 불명확 상태는 자동 재적용하지 않습니다.
 
-- Node.js 22.5 이상
-- Chrome 또는 Edge 116 이상
-- 로그인된 `https://chatgpt.com` 세션
-- 실제 Codex smoke를 할 때만 Codex CLI 로그인 및 별도 실행 승인
+이 제안의 외부 API 필드명과 저장 schema는 아직 추가하지 않았습니다. 사용자에게 보이는 승인 조작과 반영 대기 의미가 확정된 후 기존 Controller·저장소·대시보드에 연결합니다.
 
-## 설치와 로컬 검증
+완료 기준은 실제 Codex 파일 변경 → Controller 증거 고정 → 실제 Web 검토 → REWORK → 새 Worker 수정 → 재검토 PASS → 승인된 변경 반영을 추적 가능한 증거로 확인하는 것입니다. 연결 성공, fixture 통과, 에이전트의 완료 주장만으로 전체 완료를 선언하지 않습니다. 상세 작업 목록은 [TODO.md](TODO.md)를 참고하세요.
+
+아래 실행·API·제어 설명은 **현재 DISCUSSION 구현**에 관한 사용 안내입니다.
+
+## 실행
+
+Node.js 22.5 이상과 Chrome 또는 Edge 116 이상이 필요합니다.
 
 ```powershell
-cd app-web-agent-bridge
 npm ci
+Copy-Item .env.example .env
+```
+
+이미 `.env`가 있다면 덮어쓰지 말고 필요한 설정만 확인하세요.
+
+- `WEB_EXTENSION_SHARED_SECRET`: 확장 프로그램과 동일한 32 UTF-8 바이트 이상의 secret
+- `WEB_EXTENSION_EXPECTED_IDENTITY`: 확장 popup에 표시된 persisted identity
+- `DASHBOARD_TOKEN`: 확장 secret과 별개인 32자 이상의 base64url 토큰
+- `CODEX_EXECUTABLE`: 설치된 실제 Codex 실행 파일의 절대 경로. Windows에서는 `.cmd`가 아닌 `codex.exe`
+- `WORKSPACE`: Codex 세션의 작업 폴더
+- `CONTROLLER_DATA_DIR`: SQLite와 artifact 저장 경로. 기본값은 workspace의 `.agent-controller`
+
+```powershell
+npm start
+```
+
+Windows에서는 `start-live.cmd`를 실행해도 됩니다. 이 스크립트는 프로젝트 폴더를 기준으로 서버를 시작합니다.
+
+## 브라우저 연결과 대시보드
+
+1. `chrome://extensions` 또는 `edge://extensions`에서 개발자 모드를 켜고 이 프로젝트의 `extension/`을 압축 해제된 확장으로 로드합니다.
+2. 확장 popup에 `ws://127.0.0.1:8787/ws/extension`과 shared secret을 저장합니다.
+3. 확장 identity를 `.env`에 설정하고 서버를 재시작합니다.
+4. 로그인된 ChatGPT의 기존 대화를 하나의 탭에서 엽니다.
+5. [대시보드](http://127.0.0.1:8787)에 접속하면 `.env` 설정을 사용해 자동 연결됩니다. `HOST`나 `PORT`를 바꿨다면 해당 주소로 접속하세요. 서버는 같은 출처의 로컬 브라우저 요청에만 별도의 임시 접속 토큰을 발급합니다. `.env`의 토큰은 전송하지 않으며, 임시 토큰은 페이지 메모리에만 유지되고 서버를 재시작하면 만료됩니다. 수동 입력은 ‘직접 연결하기’에 있습니다.
+6. 목표, 정확한 `https://chatgpt.com/c/...` URL, 짝수 최대 턴 수를 입력하고 Start를 누릅니다.
+
+동일한 대화를 표시한 탭이 여러 개면 연결을 거부합니다. 대시보드는 인증된 HTTP로 상태를 주기적으로 갱신하고 명령 결과를 표시합니다.
+토론과 코드 변경 모두 정확한 대화 탭·content script·입력창 준비를 확인한 뒤 실행 기록을 생성합니다. 준비 실패 시 실행이나 worktree를 만들지 않고 입력 화면에 원인과 조치 안내를 표시합니다. 탭 상태를 바로잡은 뒤 같은 입력으로 Start를 다시 누를 수 있습니다. 확장 연결만으로 대화 준비가 완료된 것은 아닙니다.
+실제 Start는 Codex와 ChatGPT에 메시지를 보내므로 계정 사용량이 발생할 수 있습니다.
+
+## 실행 제어
+
+- **Start**: Web 대화를 먼저 확인하고 Codex thread를 시작한 뒤 백그라운드에서 토론을 진행합니다. 미완료 실행이 있으면 새 실행을 거부합니다.
+- **Pause**: 현재 응답은 저장하되 다음 전송을 멈춥니다.
+- **Resume**: 일시정지된 실행을 재개합니다. 서버 재시작 뒤에는 전송되지 않은 PENDING 작업만 기존 thread·conversation으로 재연결할 수 있습니다.
+- **Stop**: CANCELLED 결과와 hash-linked 완료 이벤트를 저장합니다. 알려진 활성 턴에는 interrupt도 요청합니다.
+- **Interrupt active turn**: 활성 턴의 정확한 ID를 확인한 뒤 일시정지하고 중단을 요청합니다. 불확실한 결과는 자동 재전송하지 않습니다.
+- **Send steer**: 활성 Codex 턴에만 추가 지시를 보냅니다. ChatGPT Web은 steering을 지원하지 않습니다.
+- **Open/focus tab / Rebind session**: 활성 전송이 없을 때 같은 Web 대화만 다시 연결합니다.
+- **Export evidence**: 현재 실행의 대화, 이벤트, 전달 상태, 제안과 결과를 민감값 제거 처리를 거쳐 JSON으로 다운로드합니다.
+
+지원되는 명령만 활성화됩니다. 승인·복구 side record를 해결하는 executor와 불확실한 제출의 결과 채택은 아직 연결되지 않았습니다.
+이 경우 상태를 확인한 뒤 운영자가 처리해야 하며, 단순 Retry로 중복 전송하지 않습니다.
+서버 재시작 직전 이미 전송된 작업은 PENDING 작업처럼 재개할 수 없습니다.
+
+## HTTP API
+
+- `GET /api/health`: 서버, Codex 프로세스, Web 연결 준비 상태
+- `GET /api/preflight`: 실행 전 설정과 확장 인증 여부
+- `GET /api/state?runId=...`: Bearer 인증이 필요한 실행 projection. runId 생략 시 최근 실행
+- `POST /api/dashboard/session`: 로컬 주소·Host·Origin·Fetch Metadata 확인 후 브라우저용 임시 토큰 발급
+- `POST /api/commands`: Bearer 인증과 같은 Origin이 필요한 대시보드 명령
+- `POST /api/runs/start`: 기존 HTTP 호출자를 위한 동기 실행 경로. 대시보드와 동일한 실행 잠금 사용
+
+명령 예시:
+
+```json
+{
+  "type": "run.start",
+  "requestId": "unique-command-id",
+  "payload": {
+    "expectedVersion": 0,
+    "mode": "DISCUSSION",
+    "objective": "검토할 목표",
+    "conversationUrl": "https://chatgpt.com/c/conversation-id",
+    "maxTurns": 6
+  }
+}
+```
+
+실행 중 명령은 `runId`와 최신 `expectedVersion`을 포함해야 합니다. 버전이 달라지면 409로 거부합니다.
+동일한 requestId와 내용의 재요청은 서버 프로세스 내 최근 256개 명령 범위에서 기존 결과를 반환합니다.
+서버 재시작 후에는 먼저 저장 상태를 조회하고, 결과가 불확실한 명령을 무조건 재요청하지 마세요.
+대시보드 WebSocket 경로는 사용하지 않습니다. 확장 transport만 WebSocket을 사용합니다.
+
+## 검증
+
+```powershell
 npm run check
 npm run test:integration
 ```
 
-`npm run check`는 lint, typecheck 및 전체 test suite를 실행합니다. 통합 suite는 fake Codex app-server와 DOM fixture를 사용하며 실제 Provider 호출, 비용, credential 또는 live data 전송을 하지 않습니다.
-
-Projection 재생성은 기존 SQLite 파일과 run을 명시해야 합니다.
+`check`는 lint, typecheck와 전체 테스트를 실행합니다. 테스트는 가짜 Codex app-server와 Web 프로토콜/DOM fixture를 사용하며 외부 Provider에 메시지를 보내지 않습니다.
+자동 테스트 성공이 실제 로그인된 ChatGPT 화면의 동작까지 증명하지는 않습니다.
 
 ```powershell
 npm run projection:rebuild -- --database <absolute-db-path> --run-id <run-id>
 ```
 
-## 확장 설정
+Projection 복구는 대상 DB와 실행을 명시해야 합니다. 기존 데이터는 자동 삭제하거나 자동 재전송하지 않습니다.
 
-1. `chrome://extensions`에서 개발자 모드를 켭니다.
-2. 이 저장소의 `extension/`을 압축해제된 확장으로 로드합니다.
-3. popup에 `ws://127.0.0.1:8787/ws/extension`과 최소 32 UTF-8 바이트의 무작위 shared secret을 저장합니다.
-4. popup의 persisted extension identity를 확인합니다.
-5. Controller 실행 시 같은 secret과 exact identity를 전달합니다.
+## 구현 경계
 
-WebSocket URL에는 token, query string 또는 fragment를 넣지 않습니다. 신규 미인증 socket은 이미 인증된 session을 교체할 수 없습니다. 대화 URL/ID가 정확히 맞지 않으면 active/latest tab이나 새 conversation으로 자동 fallback하지 않습니다.
+- 서버는 loopback에서만 실행되며 확장 연결은 HMAC으로 인증합니다.
+- Codex 실행 파일을 검증·고정하고 child environment는 allowlist로 구성합니다.
+- DISCUSSION은 readOnly sandbox를 사용하지만 이 sandbox만으로 shell 실행 자체가 차단된다고 보장할 수 없습니다.
+- 웹 응답 저장 후 확장에 durable acknowledgement를 보내 다음 전송을 허용합니다.
+- 합의는 두 에이전트가 같은 persisted proposal hash를 승인해야 성립합니다.
+- UI 스트리밍 미리보기는 저장된 최종 응답이나 합의 증거가 아닙니다.
+- ChatGPT DOM 변경, 로그인 만료, CAPTCHA와 브라우저 확장 연결은 실제 환경에서 별도 확인이 필요합니다.
+- `DEMO_MODE=true`는 정적 화면·서버 smoke용이며 가짜 대화를 생성하거나 live 실행을 허용하지 않습니다.
 
-## 서버 smoke
-
-현재 서버는 extension transport, 정적 Dashboard, live-composition configuration, split-readiness
-health와 인증된 live run start surface를 제공합니다.
-
-```powershell
-Copy-Item .env.example .env
-$env:DEMO_MODE="true"
-npm start
-```
-
-Health endpoint:
-
-```text
-http://127.0.0.1:8787/api/health
-```
-
-`webConnected`는 HMAC 인증까지 끝난 연결만 뜻하며 `webRuntimeReady` 또는
-`liveOrchestrationReady`를 뜻하지 않습니다. `DEMO_MODE=true`는 정적 UI/server smoke일 뿐
-가짜 Agent 응답이나 합성 성공을 만들지 않습니다.
-
-## 첫 Live run
-
-실제 Codex 또는 ChatGPT Web 호출은 비용·외부 전송을 발생시킬 수 있습니다. 실행 전에 `.env`에
-별도 base64url dashboard token을 추가하고 서버를 재시작합니다. Extension secret과 같은 값을 쓰지 않습니다.
-
-```powershell
-$bytes = [byte[]]::new(32)
-[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-$token = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+', '-').Replace('/', '_')
-# .env의 DASHBOARD_TOKEN= 뒤에 $token 값을 넣는다.
-```
-
-확장이 HMAC 인증을 끝내고 `/api/preflight`의 `readyForProvisioning`이 `true`가 된 뒤,
-다음처럼 정확한 ChatGPT conversation URL로 시작합니다. `Origin`은 서버의 `HOST`/`PORT`와 같아야 합니다.
-
-```powershell
-$headers = @{
-  Authorization = "Bearer <DASHBOARD_TOKEN>"
-  Origin = "http://127.0.0.1:8787"
-}
-$body = @{
-  objective = "서로에게 짧게 인사해."
-  conversationUrl = "https://chatgpt.com/c/<conversation-id>"
-} | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8787/api/runs/start" `
-  -Headers $headers -ContentType "application/json" -Body $body
-```
-
-URL이 결박되지 않거나 확장이 인증되지 않으면 Codex thread를 열지 않고 시작 요청을 거절합니다.
-처음 시작하거나 이전 run의 결박이 남아 있어도, active delivery가 없는 상태에서는 확장이 exact URL과
-conversation ID가 일치하는 탭을 정확히 하나 찾았을 때만 새 run에 결박합니다. 0개면
-`NEEDS_REBIND`, 2개 이상이면 `AMBIGUOUS`로 거절합니다.
-
-## 보안 및 운영 경계
-
-- 서버는 loopback host만 허용합니다.
-- Extension content script host는 `chatgpt.com`으로 제한됩니다.
-- Extension transport는 credential이 든 query string을 거부합니다. 범용 event/receipt persistence 앞의 중앙 redaction·크기 제한·artifact 분리는 아직 production composition에 연결되지 않았습니다.
-- Codex child는 ambient `process.env`를 그대로 상속하지 않습니다.
-- Codex app-server의 `readOnly` sandbox는 파일 쓰기를 막는 경계이지 shell 실행 자체를 끄는 계약으로 검증되지 않았습니다. 따라서 `shellExecution=false`를 요구하는 production `DISCUSSION` composition은 아직 열지 않습니다.
-- 실제 Provider 호출, 비용 발생, credential 사용 및 live repository 외부 전송은 별도 승인 없이는 수행하지 않습니다.
-- pause는 현재 turn을 완료시키고 다음 delivery를 막으며, interrupt와 동일하지 않습니다.
-- 제출 뒤 결과가 불확실한 delivery/turn은 자동 재전송하지 않습니다.
-
-## 검증 범위
-
-현재 자동 검증은 domain, SQLite/outbox, hash-chain 변조 탐지, fake Codex lifecycle, strict
-output validation, durable Controller+SQLite consensus, response fault-injection rollback,
-dispatcher-backed fake Codex/Web 5-turn consensus, restart/reopen 및 exact event correlation,
-extension authentication/binding/race, DOM fixtures, Dashboard model 및 split readiness를 포함합니다.
-
-2026-09-04 fail-closed foundation checkpoint에서 다음을 로컬로 재현했습니다.
-
-```text
-npm run check             336/336 PASS
-npm run test:integration  123/123 PASS
-server smoke              core ready / dashboard state API=503
-```
-
-두 test 실행은 fake Codex app-server와 DOM fixture만 사용했으며 네트워크, 실제 Provider 또는 실제 브라우저를 사용하지 않았습니다. 이 수치는 아래 미구현 범위를 통과했다는 뜻이 아닙니다.
-
-아직 검증하지 않은 것은 실제 Codex + 실제 ChatGPT 웹 자동 왕복, 실제 browser DOM interaction,
-Controller crash 후 live provider reconciliation, CODE_CHANGE mode, Controller-owned commit 및
-exact candidate audit입니다. 이 Live E2E가 없으므로 현재 상태를 "MVP 완료" 또는 "live 통합 완료"로
-부르지 않습니다.
+초기 ZIP과 기존 구조의 마이그레이션 근거는 [MIGRATION_PLAN.md](MIGRATION_PLAN.md)를 참고하세요.

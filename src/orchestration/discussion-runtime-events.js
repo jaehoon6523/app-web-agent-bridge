@@ -328,10 +328,18 @@ export class DiscussionRuntimeEventConsumer {
       "RUNTIME_COMPLETION_TIMEOUT",
     );
     if (terminalEvent.type !== RuntimeEventType.TURN_COMPLETED) {
+      const detailMsg = terminalEvent.payload?.message 
+        || terminalEvent.payload?.error?.message 
+        || terminalEvent.error?.message 
+        || `Runtime turn ended with ${terminalEvent.type}.`;
+      const errorCode = terminalEvent.payload?.code 
+        || terminalEvent.payload?.error?.code 
+        || "RUNTIME_TURN_NOT_COMPLETED";
+      console.error(`\x1b[31m[Turn Failed Event]\x1b[0m ${detailMsg}`);
       throw new DiscussionRuntimeEventError(
-        `Runtime turn ended with ${terminalEvent.type}.`,
-        "RUNTIME_TURN_NOT_COMPLETED",
-        terminalEvent,
+        detailMsg,
+        errorCode,
+        terminalEvent.payload ?? terminalEvent,
       );
     }
     const remainingMs = Math.max(1, deadline - Date.now());

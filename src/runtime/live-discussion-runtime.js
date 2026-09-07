@@ -3,6 +3,7 @@ import path from "node:path";
 import { ArtifactStore } from "../evidence/artifact-store.js";
 import { LiveDiscussionComposition } from "../orchestration/live-discussion-composition.js";
 import { SqliteStore } from "../persistence/sqlite-store.js";
+import { CodeChangeService } from "../orchestration/code-change-service.js";
 import {
   CodexProcessManager,
   createCodexAgentSessionAdapter,
@@ -40,9 +41,10 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession })
   // persistence root must exist before any live run is provisioned.
   fs.mkdirSync(path.dirname(runtimeConfig.persistence.databasePath), { recursive: true });
   const store = new SqliteStore(runtimeConfig.persistence.databasePath);
-  const artifactStore = new ArtifactStore(runtimeConfig.persistence.artifactDirectory);
+  let artifactStore;
   let manager;
   try {
+    artifactStore = new ArtifactStore(runtimeConfig.persistence.artifactDirectory);
     manager = await CodexProcessManager.create({
       executablePath: runtimeConfig.codex.executablePath,
       workspaceRoot: runtimeConfig.workspace,
@@ -71,7 +73,13 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession })
   });
 
   let closed = false;
+  const codeChanges = new CodeChangeService({ filename: runtimeConfig.persistence.databasePath,
+    artifactStore, webSession, codex: {
+      executablePath: runtimeConfig.codex.executablePath, authPathKeys: runtimeConfig.codex.authPathKeys,
+      approvalPolicy: runtimeConfig.codex.approvalPolicy,
+    } });
   return Object.freeze({
+    codeChanges,
     artifactStore,
     composition,
     manager,
@@ -80,8 +88,9 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession })
       if (closed) return;
       closed = true;
       composition.close();
-      await manager.close();
-      store.close();
+      await codeChanges.close();
+      try { await manager.close(); }
+      finally { store.close(); }
     },
   });
 }

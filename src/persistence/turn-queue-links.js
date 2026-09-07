@@ -20,6 +20,7 @@ import {
 import { getAgentPacketRejectionByDeliveryEntity } from "./agent-packet-rejections.js";
 import { DeliveryState } from "./schema.js";
 import { verifyTurnSubmissionLinksEntity } from "./turn-submission-links.js";
+import { getRunOutcomeEntity } from "./run-outcomes.js";
 
 const QUEUE_EVENT_TYPE = "AGENT_TURN_QUEUED";
 const PAYLOAD_KEYS = Object.freeze(["run", "details"]);
@@ -208,8 +209,13 @@ function verifyRunCoverage(database, runId, queuedInputIds, errors) {
   }
 
   if (!TERMINAL_PHASES.has(run.phase)) return;
+  // Cancellation ends the run, not the remote response. Preserve unsatisfied
+  // deliveries as evidence instead of fabricating a completed response.
+  const cancelled = run.phase === RunPhase.CANCELLED
+    && getRunOutcomeEntity(database, runId, errors)?.outcome.type === "CANCELLED";
   for (const delivery of deliveries) {
-    if (!SETTLED_DELIVERY_STATES.has(delivery.state)) {
+    const settled = SETTLED_DELIVERY_STATES.has(delivery.state);
+    if (!settled && !cancelled) {
       integrity(errors, `terminal run ${runId}`, `retains unsettled delivery ${delivery.delivery_id}`);
     }
     const message = getAgentMessageByInputEntity(database, delivery.input_id, errors);
@@ -218,6 +224,7 @@ function verifyRunCoverage(database, runId, queuedInputIds, errors) {
       delivery.delivery_id,
       errors,
     );
+    if (cancelled && !settled && message === null && rejection === null) continue;
     if ((message === null) === (rejection === null)) {
       integrity(
         errors,

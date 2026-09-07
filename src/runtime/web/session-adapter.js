@@ -264,9 +264,9 @@ export class ChatGptWebSessionAdapter {
   #transport;
 
   /**
-   * @param {{transport?: WebExtensionTransport, responseTimeoutMs?: number}} [options]
+   * @param {{transport?: WebExtensionTransport, responseTimeoutMs?: number, parseResponse?: Function}} [options]
    */
-  constructor({ transport, responseTimeoutMs = 300_000 } = {}) {
+  constructor({ transport, responseTimeoutMs = 300_000, parseResponse = parseFinalControllerPacket } = {}) {
     if (!(transport instanceof WebExtensionTransport)) {
       throw new WebProtocolError(
         "ChatGptWebSessionAdapter requires a WebExtensionTransport",
@@ -278,13 +278,21 @@ export class ChatGptWebSessionAdapter {
     }
     this.#transport = transport;
     this.#responseTimeoutMs = responseTimeoutMs;
+    if (typeof parseResponse !== "function") throw new TypeError("Controller response parser is required.");
+    this.#parseResponse = parseResponse;
     transport.on("message", (message) => this.#onMessage(message));
     transport.on("runtimeEvent", (event) => this.#handleTransportRuntimeEvent(event));
     transport.on("diagnostic", (event) => this.#events.emit("diagnostic", event));
   }
 
+  #parseResponse;
+
   get actor() {
     return "CHATGPT_WEB_AGENT";
+  }
+
+  get activeTurnId() {
+    return this.#activeTurnId;
   }
 
   // The durable external identity is the exact ChatGPT conversation, never a
@@ -382,6 +390,7 @@ export class ChatGptWebSessionAdapter {
    *   text?: string,
    *   timeoutMs?: number,
    *   stableMs?: number
+   *   parseResponse?: Function
    * }} [input]
    */
   async submitTurn({
@@ -391,6 +400,7 @@ export class ChatGptWebSessionAdapter {
     text,
     timeoutMs = this.#responseTimeoutMs,
     stableMs,
+    parseResponse = this.#parseResponse,
   } = {}) {
     this.#assertNoAmbiguousTurn();
     if (!this.#ready) {
@@ -435,11 +445,11 @@ export class ChatGptWebSessionAdapter {
     this.#emitRuntimeEvent(this.#runtimeEvent("TURN_STARTED", turnId, {
       controllerMessageId,
     }));
-    const completion = this.#completeTurn(turnId, response);
+    const completion = this.#completeTurn(turnId, response, parseResponse);
     return Object.freeze({ turnId, completion });
   }
 
-  async #completeTurn(turnId, response) {
+  async #completeTurn(turnId, response, parseResponse) {
     try {
       const message = await response;
       if (message.type === "web.prompt.error") throw this.#messageError(message);
@@ -457,11 +467,11 @@ export class ChatGptWebSessionAdapter {
       ) {
         throw new WebProtocolError("Web result is not safe for automatic relay", "AMBIGUOUS_COMPLETION");
       }
-      const parsed = parseFinalControllerPacket(message.payload.text);
+      const parsed = parseResponse(message.payload.text);
       this.#acceptReturnedBinding(message.payload?.session);
       this.#emitRuntimeEvent(this.#runtimeEvent("TURN_COMPLETED", turnId, {
         confidence,
-        packetType: parsed.packet.type,
+        packetType: parsed.packet.type ?? null,
         evidence: message.payload.evidence ?? null,
       }));
       return Object.freeze({

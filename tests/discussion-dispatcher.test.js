@@ -6,7 +6,7 @@ import test from "node:test";
 import { ArtifactStore } from "../src/evidence/artifact-store.js";
 import { sha256Text } from "../src/domain/canonical-json.js";
 import { createAgentSessionRecord } from "../src/domain/contracts.js";
-import { DiscussionPacketSchema } from "../src/domain/packet-json-schemas.js";
+import { CodexDiscussionPacketEnvelopeSchema } from "../src/domain/packet-json-schemas.js";
 import { createDiscussionRunPolicy } from "../src/domain/run-policy.js";
 import {
   AgentActor,
@@ -264,7 +264,7 @@ test("dispatcher resumes the five-turn consensus from a reopened PENDING outbox"
     assert(input, "each runtime submission must name its durable AgentTurnInput");
     assert.equal(sha256Text(submission.input.text), input.promptHash);
     if (submission.actor === AgentActor.CODEX_AGENT) {
-      assert.deepEqual(submission.input.outputSchema, DiscussionPacketSchema);
+      assert.deepEqual(submission.input.outputSchema, CodexDiscussionPacketEnvelopeSchema);
     }
   }
   for (const delivery of reopened.listDeliveries(run.runId)) {

@@ -1,5 +1,7 @@
 # App/Web Agent Bridge migration plan
 
+> 2026-09-06 정정: 이 문서는 과거 ZIP 기준 마이그레이션 계획입니다. 아래의 “current TODO”, persistent session 및 합의 중심 목표를 현재 사용자 요구보다 우선 적용하지 않습니다. 사용자가 정정한 개발 실행·Git diff 캡처·Web 검토·새 Worker 재작업·승인 후 레포 반영 목적은 [README.md](README.md)의 “목표 동작”에 명시했습니다. 아래 세션 정책을 새 Worker 반복의 금지 근거로 사용하지 않으며, 같은 반복의 장애 복구와 다음 반복의 새 세션 생성을 구분해야 합니다. 이 문서가 언급하는 과거 TODO는 이번에 작성한 `TODO.md`와 동일한 문서가 아닙니다.
+
 ## 1. Scope, evidence, and authority boundary
 
 This plan covers the 28 file paths inventoried in the original

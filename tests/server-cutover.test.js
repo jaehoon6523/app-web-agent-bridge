@@ -176,7 +176,16 @@ test("authenticated start provisions the exact Web conversation before dispatchi
       codexExecutablePath: "C:\\safe\\codex.exe",
     }),
     createLiveRuntime: async () => ({
+      store: {
+        listRuns: () => [],
+        getRun: () => ({ phase: "COMPLETE" }),
+        getRunOutcome: () => ({ type: "CONSENSUS" }),
+      },
       composition: {
+        getRuntimeSessions: () => ({}),
+        async dispatchUntilSettled(input) {
+          calls.push({ type: "dispatch", input });
+        },
         async provisionRun(input) {
           calls.push({ type: "provision", input });
           return {
@@ -241,6 +250,6 @@ test("authenticated start provisions the exact Web conversation before dispatchi
   assert.equal(calls[0].type, "provision");
   assert.equal(calls[0].input.webConversationUrl, "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60");
   assert.equal(calls[1].type, "dispatch");
-  assert.deepEqual(calls[1].input, { runId: "run_live_test", maxDispatches: 5 });
+  assert.deepEqual(calls[1].input, { runId: "run_live_test" });
   socket.close();
 });

@@ -7,8 +7,10 @@ import {
   requestPause,
   resumeRun,
   setRunBlocker,
+  transitionRunState,
 } from "../domain/run-state-machine.js";
 import { RunBlockerType, RunPhase } from "../domain/vocabulary.js";
+import { runOutcomeHash } from "../persistence/run-outcomes.js";
 
 export class RunServiceError extends Error {
   constructor(message, code = "RUN_SERVICE_ERROR") {
@@ -78,6 +80,19 @@ export class RunService {
   }
 
   createRun(input) {
+    const { run, frozenLimits } = this.prepareRun(input);
+    this.#store.createRun(run, {
+      eventId: `event_${this.#idFactory()}`,
+      eventType: "RUN_CREATED",
+      payload: run,
+      createdAt: run.createdAt,
+      runLimits: frozenLimits,
+    });
+    return run;
+  }
+
+  // Validate and allocate the run identity without writing a durable record.
+  prepareRun(input) {
     const request = requireCreateRunInput(input);
     const runId = Object.hasOwn(request, "runId")
       ? request.runId
@@ -98,14 +113,7 @@ export class RunService {
       maxTurns: frozenLimits.maxTurns,
       createdAt: at,
     });
-    this.#store.createRun(run, {
-      eventId: `event_${this.#idFactory()}`,
-      eventType: "RUN_CREATED",
-      payload: run,
-      createdAt: at,
-      runLimits: frozenLimits,
-    });
-    return run;
+    return { run, frozenLimits };
   }
 
   getRun(runId) {
@@ -118,6 +126,25 @@ export class RunService {
       expectedVersion,
       updatedAt: at,
     }));
+  }
+
+  stop({ runId, expectedVersion }) {
+    const outcome = { type: "CANCELLED", cancelledBy: "HUMAN" };
+    return this.#store.withTransaction(() => {
+      const next = this.#write(runId, expectedVersion, "RUN_COMPLETED", (current, at) => {
+      if (["RUNTIME_APPROVAL", "RECOVERY_CONFIRMATION"].includes(current.blocker?.type)) {
+        throw new RunServiceError("Resolve the pending approval or recovery operation first.", "RUN_BLOCKER_ALREADY_PRESENT");
+      }
+      return transitionRunState(current, {
+        to: RunPhase.CANCELLED,
+        blocker: null,
+        expectedVersion,
+        updatedAt: at,
+      });
+      }, { outcome, outcomeHash: runOutcomeHash(outcome) });
+      this.#store.saveRunOutcome({ runId, outcome, createdAt: next.updatedAt });
+      return next;
+    });
   }
 
   resume({ runId, expectedVersion }) {

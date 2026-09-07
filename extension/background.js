@@ -333,9 +333,9 @@ async function prepareBoundSession(payload) {
     await store.update({ bindingStatus: matched.status });
     throw new ExtensionOperationError(matched.status, "The exact ChatGPT conversation tab could not be uniquely recovered.");
   }
-  await persistBoundTab(matched.tab, requested);
   if (payload.focus === true) await focusTab(matched.tab);
   await waitForContentScript(matched.tab.id, 30_000, true);
+  await persistBoundTab(matched.tab, requested);
   return getSessionInfo();
 }
 
@@ -354,9 +354,9 @@ async function rebindSession(payload) {
       "The selected tab does not show the requested ChatGPT conversation.",
     );
   }
-  await persistBoundTab(tab, requested);
   if (payload.focus === true) await focusTab(tab);
   await waitForContentScript(tab.id, 30_000, true);
+  await persistBoundTab(tab, requested);
   return getSessionInfo();
 }
 
@@ -587,11 +587,13 @@ async function focusBoundTab() {
 
 async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false) {
   const deadline = Date.now() + timeoutMs;
+  let contentScriptResponded = false;
   while (Date.now() < deadline) {
     try {
       const response = await chrome.tabs.sendMessage(tabId, { type: "agent.ping" });
+      if (response?.ok) contentScriptResponded = true;
       if (response?.ok && (!requireComposer || response.ready)) return response;
-      if (response?.pageStatus && response.pageStatus !== "READY") {
+      if (response?.pageStatus && !["READY", "UI_CONTRACT_CHANGED"].includes(response.pageStatus)) {
         throw new ExtensionOperationError(response.pageStatus, response.message || response.pageStatus);
       }
     } catch (error) {
@@ -600,8 +602,8 @@ async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer =
     await sleep(350);
   }
   throw new ExtensionOperationError(
-    requireComposer ? "UI_CONTRACT_CHANGED" : "CONTENT_SCRIPT_UNAVAILABLE",
-    requireComposer
+    contentScriptResponded && requireComposer ? "UI_CONTRACT_CHANGED" : "CONTENT_SCRIPT_UNAVAILABLE",
+    contentScriptResponded && requireComposer
       ? "ChatGPT composer is unavailable in the bound conversation."
       : "ChatGPT content script is unavailable in the bound conversation.",
   );

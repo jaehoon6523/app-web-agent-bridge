@@ -83,4 +83,18 @@ export class ArtifactStore {
     this.read(sha256);
     return true;
   }
+
+  /** Removes an unreferenced content-addressed artifact. */
+  removeIfUnreferenced(sha256, referenced = new Set()) {
+    if (!/^sha256:[0-9a-f]{64}$/u.test(sha256)) throw new TypeError("sha256 must be a sha256:<64 lowercase hex> digest.");
+    if (referenced.has(sha256)) return false;
+    const artifactPath = path.join(this.rootDirectory, sha256.slice("sha256:".length));
+    try {
+      fs.unlinkSync(artifactPath);
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return false;
+      throw error;
+    }
+  }
 }

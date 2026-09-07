@@ -68,6 +68,26 @@ export const DiscussionPacketSchema = Object.freeze({
   ]),
 });
 
+// The current Codex response-format endpoint rejects oneOf. This envelope is
+// transport-only: every property is required so the provider can enforce a
+// closed object, then Runtime projects the type-specific fields back to the
+// canonical DiscussionPacketSchema and validates them again.
+export const CodexDiscussionPacketEnvelopeSchema = closedObject({
+  type: Object.freeze({ type: "string", enum: Object.freeze(["PROPOSAL", "CRITIQUE", "ACCEPT", "BLOCKED"]) }),
+  summary: Object.freeze({ type: "string" }),
+  body: Object.freeze({ type: "string" }),
+  assumptions: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+  open_decisions: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+  target_proposal_sha256: Object.freeze({ type: "string" }),
+  blocking_findings: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+  non_blocking_findings: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+  requested_changes: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+  accepted_proposal_sha256: Object.freeze({ type: "string" }),
+  reason_code: Object.freeze({ type: "string" }),
+  description: Object.freeze({ type: "string" }),
+  required_decisions: Object.freeze({ type: "array", items: Object.freeze({ type: "string" }) }),
+});
+
 export const AGENT_PACKET_JSON_SCHEMAS = Object.freeze({
   PROPOSAL: ProposalPacketSchema,
   CRITIQUE: CritiquePacketSchema,

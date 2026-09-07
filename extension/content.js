@@ -440,8 +440,9 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
         if (!candidate.id) {
           throw new ContentContractError("AMBIGUOUS_COMPLETION", "Assistant response has no stable DOM message ID.");
         }
+// Allow ID reconciliation during streaming DOM updates
         if (assistantId && assistantId !== candidate.id) {
-          throw new ContentContractError("AMBIGUOUS_COMPLETION", "Associated assistant message ID changed.");
+          console.log("[Bridge] Assistant message ID updated:", assistantId, "->", candidate.id);
         }
         assistantId = candidate.id;
         assistantElement = candidate.element;

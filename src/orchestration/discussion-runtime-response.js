@@ -60,6 +60,37 @@ function validatePacket(packet, rawText, code, { recordablePacketRejection = fal
   }
 }
 
+function projectCodexEnvelope(value, rawText, code, options = {}) {
+  const envelope = requireObject(value, "Codex structured output", rawText);
+  const fields = {
+    PROPOSAL: ["type", "summary", "body", "assumptions", "open_decisions"],
+    CRITIQUE: [
+      "type",
+      "target_proposal_sha256",
+      "blocking_findings",
+      "non_blocking_findings",
+      "requested_changes",
+    ],
+    ACCEPT: ["type", "accepted_proposal_sha256", "blocking_findings"],
+    BLOCKED: ["type", "reason_code", "description", "required_decisions"],
+  };
+  const selected = fields[envelope.type];
+  if (selected === undefined) {
+    throw new DiscussionRuntimeResponseError("Codex output has an unknown packet type.", {
+      code,
+      parserStage: AgentPacketParserStage.SCHEMA_VALIDATION,
+      rawText,
+      recordablePacketRejection: options.recordablePacketRejection,
+    });
+  }
+  return validatePacket(
+    Object.fromEntries(selected.map((key) => [key, envelope[key]])),
+    rawText,
+    code,
+    options,
+  );
+}
+
 function assertTurnId(completion, expectedTurnId, rawText) {
   if (completion.turnId !== expectedTurnId) {
     throw new DiscussionRuntimeResponseError(
@@ -112,7 +143,7 @@ function normalizeCodex(completion, { turnId, externalSessionId }) {
       cause,
     });
   }
-  const parsedPacket = validatePacket(parsedText, rawText, "INVALID_AGENT_PACKET", {
+  const parsedPacket = projectCodexEnvelope(parsedText, rawText, "INVALID_AGENT_PACKET", {
     recordablePacketRejection: true,
   });
   if (!Object.hasOwn(value, "structuredOutput")) {
@@ -125,7 +156,7 @@ function normalizeCodex(completion, { turnId, externalSessionId }) {
       },
     );
   }
-  const structuredPacket = validatePacket(
+  const structuredPacket = projectCodexEnvelope(
     value.structuredOutput,
     rawText,
     "INVALID_CODEX_STRUCTURED_OUTPUT",

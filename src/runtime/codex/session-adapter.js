@@ -1,4 +1,4 @@
-import { EventEmitter } from "node:events";
+﻿import { EventEmitter } from "node:events";
 import path from "node:path";
 import {
   assertStrictOutputSchema,
@@ -737,9 +737,19 @@ export class CodexSessionAdapter {
     }
     if (status === "failed") {
       this.#status = "READY";
-      const detail = turn.error?.message || `Codex turn ${turnId} failed`;
+      const detail = turn.error?.message 
+        || turn.error?.codex_error_info 
+        || `Codex turn ${turnId} failed`;
+      const code = turn.error?.codex_error_info || "CODEX_TURN_FAILED";
       const error = new CodexTurnFailedError(this.#threadId, turnId, detail, turn);
-      this.#emitTerminalEvent(turnId, "failed", { code: error.code, message: error.message });
+
+      console.error(`\x1b[31m[Codex Process Error]\x1b[0m ${detail}`);
+
+      this.#emitTerminalEvent(turnId, "failed", { 
+        code, 
+        message: detail, 
+        rawError: turn.error ?? null 
+      });
       active.interrupt?.confirmation.reject(error);
       active.completion.reject(error);
       return;

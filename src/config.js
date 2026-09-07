@@ -9,8 +9,8 @@ dotenv.config({ quiet: true });
 function integer(env, name, fallback, { min = Number.MIN_SAFE_INTEGER, max = Number.MAX_SAFE_INTEGER } = {}) {
   const raw = env[name];
   if (raw === undefined || raw === "") return fallback;
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isInteger(value) || value < min || value > max) {
+  const value = Number(raw);
+  if (!/^[+-]?\d+$/u.test(raw.trim()) || !Number.isSafeInteger(value) || value < min || value > max) {
     throw new Error(`${name} must be an integer between ${min} and ${max}. Received: ${raw}`);
   }
   return value;
@@ -46,7 +46,7 @@ export function loadConfig({
   env = process.env,
   cwd = process.cwd(),
 } = {}) {
-  const host = env.HOST || "127.0.0.1";
+  const host = (env.HOST || "127.0.0.1").trim().toLowerCase().replace(/^\[|\]$/gu, "");
   if (!isLoopbackHost(host)) {
     throw new Error("HOST must be a loopback address; remote binding is not supported.");
   }
@@ -64,7 +64,7 @@ export function loadConfig({
   return Object.freeze({
     host,
     port,
-    baseUrl: `http://${host}:${port}`,
+    baseUrl: `http://${host.includes(":") ? `[${host}]` : host}:${port}`,
     workspace,
     persistence: Object.freeze({
       databasePath: path.join(dataDirectory, "controller.sqlite"),
@@ -72,7 +72,7 @@ export function loadConfig({
     }),
     codex: Object.freeze({
       executablePath: typeof env.CODEX_EXECUTABLE === "string" && env.CODEX_EXECUTABLE.trim() !== ""
-        ? path.resolve(env.CODEX_EXECUTABLE.trim())
+        ? path.resolve(cwd, env.CODEX_EXECUTABLE.trim())
         : null,
       authPathKeys: env.CODEX_HOME?.trim() ? Object.freeze(["CODEX_HOME"]) : Object.freeze([]),
       approvalPolicy: "untrusted",

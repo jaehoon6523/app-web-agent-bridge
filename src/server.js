@@ -13,13 +13,16 @@ import {
 import { createLiveDiscussionRuntime } from "./runtime/live-discussion-runtime.js";
 import { LocalAuthError, LocalSessionAuthenticator } from "./security/local-auth.js";
 import { nowIso } from "./utils.js";
+import { DashboardController } from "./orchestration/dashboard-controller.js";
+import { redactForEvidence } from "./security/redaction.js";
+import { canonicalJson } from "./domain/canonical-json.js";
 
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
 const publicDir = path.resolve(dirname, "../public");
 const MAX_LOCAL_MESSAGE_BYTES = 1024 * 1024;
 const LIVE_ORCHESTRATION_UNAVAILABLE =
-  "Live run commands are unavailable until the authenticated start/recovery API is enabled.";
+  "Configure DASHBOARD_TOKEN and connect the browser extension to start a live run.";
 
 /** @typedef {ReturnType<typeof loadConfig>} RuntimeConfig */
 
@@ -60,10 +63,32 @@ export function createBridgeServer({
         allowedOrigins: [runtimeConfig.baseUrl],
       })
     : null;
+  // Browser sessions use a separate, process-lifetime token, never the .env secret.
+  const browserSession = LocalSessionAuthenticator.issue({ allowedOrigins: [runtimeConfig.baseUrl] });
+  function verifyDashboardAuthorization(authorization) {
+    try {
+      dashboardAuth.verifyAuthorizationHeader(authorization);
+    } catch (error) {
+      if (!(error instanceof LocalAuthError)) throw error;
+      browserSession.authenticator.verifyAuthorizationHeader(authorization);
+    }
+  }
+
+  function verifyLocalBrowser(req) {
+    const peer = req.socket.remoteAddress;
+    if (!["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(peer)
+        || req.get("host") !== new URL(runtimeConfig.baseUrl).host
+        || req.get("sec-fetch-site") !== "same-origin") {
+      throw new LocalAuthError("Open the dashboard at the configured local server address.", "LOCAL_BROWSER_REQUIRED", 403);
+    }
+    browserSession.authenticator.verifyOrigin(req.get("origin"));
+  }
   let liveRuntime = null;
   let liveRuntimePromise = null;
+  let closing = false;
 
   async function getLiveRuntime() {
+    if (closing) throw new Error("Server is shutting down.");
     if (runtimeConfig.demoMode) {
       throw new Error("Demo mode cannot create a live discussion runtime.");
     }
@@ -116,16 +141,82 @@ export function createBridgeServer({
       return;
     }
     try {
-      dashboardAuth.verifyMutation({
-        authorization: req.get("authorization"),
-        origin: req.get("origin"),
-      });
+      dashboardAuth.verifyOrigin(req.get("origin"));
+      verifyDashboardAuthorization(req.get("authorization"));
       next();
     } catch (error) {
       const status = error instanceof LocalAuthError ? error.statusCode : 401;
       res.status(status).json({ error: error.message });
     }
   }
+
+  const dashboard = new DashboardController({
+    getRuntime: getLiveRuntime,
+    preflight: livePreflight,
+    webSession,
+    transport: extensionTransport,
+  });
+  const commandReceipts = new Map();
+
+  function requireDashboardRead(req, res, next) {
+    if (dashboardAuth === null) {
+      res.status(503).json({ error: "DASHBOARD_TOKEN must be configured." });
+      return;
+    }
+    try {
+      verifyDashboardAuthorization(req.get("authorization"));
+      next();
+    } catch (error) {
+      res.status(error.statusCode || 401).json({ error: error.message });
+    }
+  }
+
+  app.post("/api/dashboard/session", (req, res) => {
+    try {
+      verifyLocalBrowser(req);
+      if (!dashboardAuth) {
+        res.status(503).json({ error: ".env에 DASHBOARD_TOKEN을 설정하고 서버를 다시 시작하세요." });
+        return;
+      }
+      res.json({ token: browserSession.token });
+    } catch (error) {
+      res.status(error.statusCode || 403).json({ error: error.message });
+    }
+  });
+
+  app.post("/api/commands", requireDashboardMutation, async (req, res) => {
+    try {
+      if (!req.body || typeof req.body.type !== "string" || typeof req.body.requestId !== "string") {
+        res.status(400).json({ error: "Command type and requestId are required." });
+        return;
+      }
+      const requestHash = canonicalJson(req.body);
+      let receipt = commandReceipts.get(req.body.requestId);
+      if (receipt && receipt.requestHash !== requestHash) {
+        res.status(409).json({ error: "requestId was already used for a different command." });
+        return;
+      }
+      if (!receipt) {
+        if (commandReceipts.size >= 256) {
+          const completed = [...commandReceipts.entries()].find(([, item]) => item.completed);
+          if (!completed) {
+            res.status(429).json({ error: "Too many commands in progress." });
+            return;
+          }
+          commandReceipts.delete(completed[0]);
+        }
+        receipt = { requestHash, completed: false, result: null };
+        receipt.result = dashboard.execute(req.body).finally(() => { receipt.completed = true; });
+        commandReceipts.set(req.body.requestId, receipt);
+      }
+      const payload = await receipt.result;
+      res.json({ type: "command.result", requestId: req.body.requestId, payload });
+    } catch (error) {
+      res.status(error.code === "RUN_VERSION_CONFLICT" || error.code === "RUN_BUSY" ? 409 : 400)
+        .json({ type: "command.error", requestId: req.body?.requestId,
+          payload: { message: redactForEvidence(error.message), code: error.code || "COMMAND_FAILED" } });
+    }
+  });
 
   function startRequest(body) {
     if (body === null || typeof body !== "object" || Array.isArray(body)) {
@@ -147,18 +238,22 @@ export function createBridgeServer({
     });
   }
 
-  app.get("/api/health", (_req, res) => {
+  app.get("/api/health", async (_req, res) => {
     const preflight = livePreflight();
+    const web = await webSession?.inspect();
+    const codexReady = liveRuntime?.manager?.status === "READY";
+    const webReady = preflight.checks.extensionAuthenticated && web?.sessionReady === true;
+    const bound = webReady && web?.binding?.bindingStatus === "BOUND";
     res.json({
       ok: true,
       at: nowIso(),
       demoMode: runtimeConfig.demoMode,
       coreOrchestrationReady: true,
       fakeVerticalSliceVerified: true,
-      codexRuntimeReady: false,
-      webRuntimeReady: false,
-      liveSessionBindingReady: false,
-      liveOrchestrationReady: false,
+      codexRuntimeReady: codexReady,
+      webRuntimeReady: webReady,
+      liveSessionBindingReady: Boolean(bound),
+      liveOrchestrationReady: Boolean(codexReady && bound),
       webConnected: preflight.checks.extensionAuthenticated,
       liveCompositionConfigured: preflight.checks.codexExecutableConfigured,
     });
@@ -180,30 +275,29 @@ export function createBridgeServer({
       return;
     }
     try {
-      const live = await getLiveRuntime();
-      const provisioned = await live.composition.provisionRun({
-        objective: request.objective,
-        policy: createDiscussionRunPolicy(),
-        webConversationUrl: request.conversationUrl,
-      });
-      const result = await provisioned.dispatcher.runUntilSettled({
-        runId: provisioned.run.runId,
-        maxDispatches: provisioned.run.maxTurns,
-      });
-      res.status(200).json({
-        runId: provisioned.run.runId,
-        status: result.status,
-        outcome: result.outcome,
-      });
+      const started = await dashboard.execute({ type: "run.start", payload: {
+        ...request, expectedVersion: 0, mode: "DISCUSSION",
+        maxTurns: createDiscussionRunPolicy().limits.maxTurns,
+      } });
+      res.status(200).json(await dashboard.waitUntilSettled(started.runId));
     } catch (error) {
       res.status(502).json({
-        error: "Live run did not complete.",
+        error: redactForEvidence(error?.message || "Live run did not complete."),
         code: error?.code || "LIVE_RUN_FAILED",
+        details: null,
       });
     }
   });
-  app.get("/api/state", (_req, res) => {
-    res.status(503).json({ error: LIVE_ORCHESTRATION_UNAVAILABLE });
+  app.get("/api/state", requireDashboardRead, async (req, res) => {
+    try {
+      if (req.query.runId !== undefined && typeof req.query.runId !== "string") {
+        res.status(400).json({ error: "runId must be a string." });
+        return;
+      }
+      res.json(await dashboard.snapshot(req.query.runId || null));
+    } catch (error) {
+      res.status(503).json({ error: redactForEvidence(error.message) });
+    }
   });
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "Unknown API route." });
@@ -275,12 +369,15 @@ export function createBridgeServer({
   async function close() {
     if (closePromise) return closePromise;
     closePromise = (async () => {
+      closing = true;
+      dashboard.close();
       for (const ws of extensionWss.clients) {
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
-          ws.close(1001, "Server shutting down");
+          ws.terminate();
         }
       }
       await webSession?.close();
+      if (liveRuntimePromise) await liveRuntimePromise.catch(() => {});
       await liveRuntime?.close();
       /** @type {Promise<void>} */
       const websocketClose = new Promise((resolve, reject) => {
