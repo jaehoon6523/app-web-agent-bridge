@@ -124,23 +124,19 @@ test("dashboard starts mutation controls disabled until a canonical state arrive
   const html = await readFile(path.join(publicDir, "index.html"), "utf8");
   for (const id of [
     "startRun",
-    "pauseRun",
-    "resumeRun",
     "stopRun",
-    "interruptRun",
     "exportEvidence",
-    "focusWebSession",
-    "rebindWebSession",
+    "applyCode",
   ]) {
     assert.match(html, new RegExp(`id="${id}"[^>]*disabled`));
   }
-  assert.match(html, /상태가 확인되기 전에는 명령을 보낼 수 없습니다/);
+  assert.match(html, /로컬 서버에 연결하고 있습니다/);
+  assert.doesNotMatch(html, /id="(?:pauseRun|resumeRun|reviewThreshold|targetRoot)"/);
 });
 
 test("ambiguous delivery is never wired to the direct retry command", async () => {
   const source = await readFile(path.join(publicDir, "app.js"), "utf8");
-  assert.match(source, /stateName === "FAILED"/u);
-  assert.match(source, /stateName === "AMBIGUOUS"/u);
-  assert.match(source, /automatic retry blocked/u);
+  assert.match(source, /자동 재전송하지 않습니다/u);
+  assert.doesNotMatch(source, /command\("(?:run|delivery)\.retry"/u);
   assert.doesNotMatch(source, /\["FAILED",\s*"AMBIGUOUS"\].*delivery\.retry/su);
 });

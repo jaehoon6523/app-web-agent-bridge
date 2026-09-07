@@ -19,6 +19,7 @@ import {
 } from "../src/runtime/web/index.js";
 import { RUNTIME_EVENT_TYPES } from "../src/runtime/runtime-events.js";
 import { parseCodeReviewResponse } from "../src/domain/code-review.js";
+import { reviewContext, reportFor } from "./helpers/audit-fixtures.js";
 
 const SECRET = "test-only-shared-secret-0123456789abcdef";
 const IDENTITY = "extension-test-01";
@@ -110,9 +111,9 @@ test("Controller-configured review parser accepts evaluation data through the ex
   transport.attach(socket);
   authenticate(transport, socket);
   const adapter = await readyAdapter(transport, socket, boundSession(), {
-    parseResponse: (raw) => parseCodeReviewResponse(raw, { threshold: 9, evidenceRefs: ["diff-hash"] }),
+    parseResponse: (raw) => parseCodeReviewResponse(raw, reviewContext()),
   });
-  const report = { score: 8, findings: ["Needs revision"], evidenceRefs: ["diff-hash"], summary: "Review" };
+  const report = reportFor(reviewContext(), "UNSATISFIED");
   try {
     const handle = await adapter.submitTurn({ turnId: "review-1", controllerMessageId: "review-input", runId: "run-1", text: "Review captured diff" });
     socket.receive({ type: "web.prompt.result", protocolVersion: 2, requestId: "review-1", payload: {

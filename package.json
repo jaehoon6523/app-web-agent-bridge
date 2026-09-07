@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "A local controller that relays a Codex app-server session and a visible ChatGPT web session, with a two-pane supervision UI.",
+  "description": "A local CLI implementation and Web audit controller with candidate-bound evidence, findings, and separate application.",
   "engines": {
     "node": ">=22.5"
   },

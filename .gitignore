@@ -7,3 +7,8 @@ data/*.sqlite-wal
 data/artifacts/
 .DS_Store
 npm-debug.log*
+.agent-controller/
+db_temp/
+/files.txt
+/node_modules.zip
+/src (2).zip

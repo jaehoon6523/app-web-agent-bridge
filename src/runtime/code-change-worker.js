@@ -39,7 +39,7 @@ export function bindCodeChangeCapture({ session, workspace, persistCapture, clos
     inspect: () => session.inspect(),
     interrupt: (input) => session.interrupt(input),
     onEvent: (listener) => session.onEvent(listener),
-    close,
+    close: async () => { unavailable = true; await close(); },
     async submitTurn(input) {
       if (busy || unavailable) throw new Error("Worker is active or requires recovery.");
       busy = true;
@@ -53,7 +53,8 @@ export function bindCodeChangeCapture({ session, workspace, persistCapture, clos
             || result.status !== "completed" || session.externalSessionId !== threadId) {
             throw new Error("Worker completion does not match its submitted thread and turn.");
           }
-          const capture = workspace.capture();
+          if (unavailable) throw new Error("Worker was stopped before capture.");
+          const capture = workspace.capture({ allowUnchanged: true });
           await persistCapture({ threadId, turnId: handle.turnId, capture });
           return Object.freeze({ ...result, capture });
         }).catch((error) => {

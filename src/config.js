@@ -66,6 +66,7 @@ export function loadConfig({
     port,
     baseUrl: `http://${host.includes(":") ? `[${host}]` : host}:${port}`,
     workspace,
+    auditProjectFile: env.AUDIT_PROJECT_FILE?.trim() ? path.resolve(cwd, env.AUDIT_PROJECT_FILE.trim()) : null,
     persistence: Object.freeze({
       databasePath: path.join(dataDirectory, "controller.sqlite"),
       artifactDirectory: path.join(dataDirectory, "artifacts"),

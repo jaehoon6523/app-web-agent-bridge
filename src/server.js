@@ -5,7 +5,7 @@ import process from "node:process";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "./config.js";
-import { createDiscussionRunPolicy } from "./domain/run-policy.js";
+import { readAuditProject } from "./orchestration/audit-project.js";
 import {
   ChatGptWebSessionAdapter,
   WebExtensionTransport,
@@ -47,6 +47,7 @@ export function createBridgeServer({
   if (!runtimeConfig || typeof runtimeConfig !== "object") {
     throw new TypeError("createBridgeServer requires runtimeConfig.");
   }
+  const auditSettings = readAuditProject(runtimeConfig.auditProjectFile);
 
   const extensionTransport = runtimeConfig.demoMode
     ? null
@@ -94,7 +95,7 @@ export function createBridgeServer({
     }
     if (liveRuntime !== null) return liveRuntime;
     if (liveRuntimePromise === null) {
-      liveRuntimePromise = createLiveRuntime({ runtimeConfig, webSession })
+      liveRuntimePromise = createLiveRuntime({ runtimeConfig: { ...runtimeConfig, auditProject: auditSettings.project }, webSession })
         .then((runtime) => {
           liveRuntime = runtime;
           return runtime;
@@ -122,17 +123,25 @@ export function createBridgeServer({
     next();
   });
   function livePreflight() {
+    const audit = auditSettings;
     const checks = {
       demoModeDisabled: runtimeConfig.demoMode === false,
       codexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
       extensionAuthenticated: Boolean(extensionTransport?.authenticated),
       webAdapterAvailable: webSession !== null,
       commandAuthenticationConfigured: dashboardAuth !== null,
+      auditProjectConfigured: audit.project !== null,
     };
     const missing = Object.entries(checks)
       .filter(([, ready]) => !ready)
       .map(([name]) => name);
-    return Object.freeze({ checks, missing, readyForProvisioning: missing.length === 0 });
+    return Object.freeze({ checks, missing, readyForProvisioning: missing.length === 0,
+      readyForDiscussion: missing.filter((key) => key !== "auditProjectConfigured").length === 0,
+      project: audit.project ? { projectId: audit.project.projectId, targetRoot: audit.project.targetRoot,
+        requirementsId: audit.project.requirements.requirementsId, revision: audit.project.requirements.revision,
+        requirements: audit.project.requirements, policy: audit.project.policy,
+        verifications: audit.project.verifications.map(({ verificationId, purpose }) => ({ verificationId, purpose })) } : null,
+      projectError: audit.error });
   }
 
   function requireDashboardMutation(req, res, next) {
@@ -206,7 +215,7 @@ export function createBridgeServer({
           commandReceipts.delete(completed[0]);
         }
         receipt = { requestHash, completed: false, result: null };
-        receipt.result = dashboard.execute(req.body).finally(() => { receipt.completed = true; });
+        receipt.result = dashboard.executeDurable(req.body).finally(() => { receipt.completed = true; });
         commandReceipts.set(req.body.requestId, receipt);
       }
       const payload = await receipt.result;
@@ -248,8 +257,8 @@ export function createBridgeServer({
       ok: true,
       at: nowIso(),
       demoMode: runtimeConfig.demoMode,
-      coreOrchestrationReady: true,
-      fakeVerticalSliceVerified: true,
+      coreOrchestrationReady: liveRuntime !== null,
+      fakeVerticalSliceVerified: null,
       codexRuntimeReady: codexReady,
       webRuntimeReady: webReady,
       liveSessionBindingReady: Boolean(bound),
@@ -275,11 +284,10 @@ export function createBridgeServer({
       return;
     }
     try {
-      const started = await dashboard.execute({ type: "run.start", payload: {
-        ...request, expectedVersion: 0, mode: "DISCUSSION",
-        maxTurns: createDiscussionRunPolicy().limits.maxTurns,
+      const started = await dashboard.executeDurable({ type: "run.start", requestId: req.get("x-request-id"), payload: {
+        ...request, expectedVersion: 0, mode: "CODE_CHANGE",
       } });
-      res.status(200).json(await dashboard.waitUntilSettled(started.runId));
+      res.status(202).json(started);
     } catch (error) {
       res.status(502).json({
         error: redactForEvidence(error?.message || "Live run did not complete."),

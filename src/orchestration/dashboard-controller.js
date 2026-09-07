@@ -2,9 +2,15 @@ import { createDiscussionRunPolicy } from "../domain/run-policy.js";
 import { isTerminalRunPhase } from "../domain/run-state-machine.js";
 import { canonicalConversationUrl } from "../runtime/web/binding.js";
 import { redactForEvidence } from "../security/redaction.js";
+import { sha256CanonicalJson } from "../domain/canonical-json.js";
 
 function reject(message, code = "INVALID_COMMAND") {
   throw Object.assign(new Error(message), { code });
+}
+
+function preserveArtifactReferences(value, hashes) {
+  if (typeof value === "string" && /^sha256:[a-f0-9]{64}$/u.test(value)) hashes.add(value);
+  else if (value && typeof value === "object") for (const child of Object.values(value)) preserveArtifactReferences(child, hashes);
 }
 
 function provisioningErrorMessage(error) {
@@ -33,6 +39,7 @@ export class DashboardController {
   #errors = new Map();
   #closed = false;
   #drafts = new Map();
+  #receipts = new Map();
 
   constructor({ getRuntime, preflight, webSession, transport }) {
     this.#getRuntime = getRuntime;
@@ -58,7 +65,7 @@ export class DashboardController {
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
     const commands = ["state.get", "evidence.export"];
-    if (!this.#starting && !this.#jobs.size && !live.codeChanges?.busy() && !runs.some((r) => !isTerminalRunPhase(r.phase))
+    if (!this.#starting && !this.#jobs.size && !live.codeChanges?.busy() && !store.listRuns().some((r) => !isTerminalRunPhase(r.phase))
       && this.#preflight().readyForProvisioning) commands.push("run.start");
     const sessions = run ? store.listAgentSessions(run.runId) : [];
     const runtimes = run ? live.composition.getRuntimeSessions(run.runId) : null;
@@ -137,11 +144,14 @@ export class DashboardController {
     if (live.codeChanges?.get(payload.runId)) return live.codeChanges.command(type, payload);
     if (type === "run.start") {
       if (this.#starting || this.#jobs.size || live.codeChanges?.busy()) reject("Another run is active.", "RUN_BUSY");
-      if (!this.#preflight().readyForProvisioning) reject("Connect the browser extension before starting.", "PREFLIGHT_INCOMPLETE");
+      const preflight = this.#preflight();
+      if (!(payload.mode === "DISCUSSION" ? preflight.readyForDiscussion ?? preflight.readyForProvisioning : preflight.readyForProvisioning)) reject("Check project configuration and browser extension before starting.", "PREFLIGHT_INCOMPLETE");
       if (live.store.listRuns().some((run) => !isTerminalRunPhase(run.phase))) reject("Stop the unfinished run before starting another.", "RUN_BUSY");
       if (payload.expectedVersion !== 0) reject("New runs require expectedVersion 0.");
-      if (payload.mode === "CODE_CHANGE") {
+      if (payload.mode === "CODE_CHANGE" || payload.mode === undefined) {
         if (!live.codeChanges) reject("Code change runtime is unavailable.");
+        const allowed = new Set(["objective", "conversationUrl", "mode", "expectedVersion"]);
+        if (Object.keys(payload).some((key) => !allowed.has(key))) reject("Project settings must come from server configuration.");
         this.#starting = true;
         try { return await live.codeChanges.start(payload); }
         catch (error) { error.message = provisioningErrorMessage(error); throw error; }
@@ -175,8 +185,7 @@ export class DashboardController {
         live.store.deleteRun(run.runId);
         const remainingArtifacts = live.store.listArtifactHashes();
         for (const codeRun of live.codeChanges?.list() ?? []) {
-          for (const item of codeRun.captures) remainingArtifacts.add(item.capture.artifact.sha256);
-          if (codeRun.capture) remainingArtifacts.add(codeRun.capture.artifact.sha256);
+          preserveArtifactReferences(codeRun, remainingArtifacts);
         }
         for (const hash of runArtifacts) live.artifactStore?.removeIfUnreferenced?.(hash, remainingArtifacts);
         if (this.#drafts.has(run.runId)) this.#drafts.delete(run.runId);
@@ -224,6 +233,31 @@ export class DashboardController {
         return redactForEvidence({ ...(await this.snapshot(run.runId)), proposals: live.store.listProposalArtifacts(run.runId) });
       default: reject(`Unsupported command: ${type}`, "COMMAND_UNAVAILABLE");
     }
+  }
+
+  async executeDurable(command) {
+    if (typeof command.requestId !== "string" || !command.requestId || command.requestId.length > 200) reject("A bounded command requestId is required.");
+    const live = await this.#getRuntime();
+    const store = live.codeChanges?.store;
+    if (!store) reject("Durable command storage is unavailable.");
+    const hash = sha256CanonicalJson(command);
+    const existing = store.receipt(command.requestId);
+    if (existing && existing.request_hash !== hash) reject("requestId was already used for a different command.", "RUN_VERSION_CONFLICT");
+    if (this.#receipts.has(command.requestId)) return this.#receipts.get(command.requestId);
+    if (existing) {
+      if (existing.status !== "COMPLETED") reject("Previous command outcome is uncertain; inspect the run before acting. No automatic resubmission.", "RECOVERY_REQUIRED");
+      const result = JSON.parse(String(existing.result_json));
+      if (result.error) reject(result.error.message, result.error.code);
+      return result.payload;
+    }
+    store.beginCommand(command.requestId, hash);
+    const promise = this.execute(command).then((payload) => {
+      store.finishCommand(command.requestId, { payload: redactForEvidence(payload) }); return payload;
+    }, (error) => {
+      store.finishCommand(command.requestId, { error: { message: redactForEvidence(error.message), code: error.code || "COMMAND_FAILED" } }); throw error;
+    }).finally(() => this.#receipts.delete(command.requestId));
+    this.#receipts.set(command.requestId, promise);
+    return promise;
   }
 
   close() { this.#closed = true; }

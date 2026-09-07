@@ -9,6 +9,7 @@ import { DashboardController } from "../src/orchestration/dashboard-controller.j
 import { LiveDiscussionComposition } from "../src/orchestration/live-discussion-composition.js";
 import { createDiscussionRunPolicy } from "../src/domain/run-policy.js";
 import { SqliteStore } from "../src/persistence/sqlite-store.js";
+import { CodeChangeStore } from "../src/persistence/code-change-store.js";
 import { ArtifactStore } from "../src/evidence/artifact-store.js";
 import { createBridgeServer } from "../src/server.js";
 import { computeWebChallengeHmac } from "../src/runtime/web/auth.js";
@@ -21,6 +22,7 @@ const secret = "extension-integration-secret-0123456789abcdef";
 function fixture(t) {
   const directory = mkdtempSync(join(tmpdir(), "dashboard-controller-"));
   const store = new SqliteStore(join(directory, "controller.sqlite"));
+  const receipts = new CodeChangeStore(join(directory, "controller.sqlite"));
   const artifacts = new ArtifactStore(join(directory, "artifacts"));
   const ledger = new ScriptedDiscussionRuntime([
     { actor: "CODEX_AGENT", packet: proposal },
@@ -43,7 +45,8 @@ function fixture(t) {
     },
   });
   let closed = false;
-  const live = { store, composition, artifactStore: artifacts, async close() { if (closed) return; closed = true; composition.close(); store.close(); } };
+  const live = { store, composition, codeChanges: { store: receipts, list: () => [], busy: () => false, get: () => null }, artifactStore: artifacts,
+    async close() { if (closed) return; closed = true; composition.close(); receipts.close(); store.close(); } };
   t.after(async () => { await live.close(); rmSync(directory, { recursive: true, force: true }); });
   const dashboard = new DashboardController({ getRuntime: async () => live, preflight: () => ({ readyForProvisioning: true }), webSession: null, transport: null });
   t.after(() => dashboard.close());
@@ -61,7 +64,7 @@ async function settled(dashboard, runId) {
 }
 
 test("dashboard runs both actors, exposes durable output, and acknowledges stored Web responses", async (t) => {
-  const { dashboard, store, sessions } = fixture(t);
+  const { dashboard, store, sessions, live } = fixture(t);
   const { runId } = await dashboard.execute({ type: "run.start", payload: { expectedVersion: 0, mode: "DISCUSSION", objective: "Test relay", maxTurns: 2, conversationUrl: "https://chatgpt.com/c/conversation-test" } });
   const state = await settled(dashboard, runId);
   assert.equal(state.run.currentTurn, 2);
@@ -72,10 +75,19 @@ test("dashboard runs both actors, exposes durable output, and acknowledges store
   store.verifyRunOutcomes();
   const evidence = await dashboard.execute({ type: "evidence.export", payload: { runId, expectedVersion: state.run.version } });
   assert.equal(evidence.proposals.length, 1);
+  const sharedHash = live.artifactStore.put("Shared execution evidence").sha256;
+  const originalReferences = store.listArtifactHashes.bind(store);
+  store.listArtifactHashes = (id) => {
+    const hashes = originalReferences(id);
+    if (id === runId) hashes.add(sharedHash);
+    return hashes;
+  };
+  live.codeChanges.list = () => [{ evidence: [{ contentRef: { sha256: sharedHash } }] }];
   const deleted = await dashboard.execute({ type: "run.delete", payload: { runId, expectedVersion: state.run.version } });
   assert.deepEqual(deleted, { runId, deleted: true });
   assert.equal(store.getRun(runId), null);
   assert.equal(store.listRuns().length, 0);
+  assert.equal(live.artifactStore.verify(sharedHash), true, "Deleting discussion history must preserve evidence referenced by an audit run");
   store.verifyEventChains();
 });
 

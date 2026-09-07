@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../domain/canonical-json.js";
+import { decodeCanonicalJson } from "./canonical-record.js";
 import { validateAgentRun } from "../domain/contracts.js";
 import {
   DeliveryState,
@@ -103,28 +104,6 @@ function requireDeliveryState(value, name) {
 
 function encodeJson(value) {
   return canonicalJson(value);
-}
-
-function decodeCanonicalJson(text, context) {
-  if (typeof text !== "string") {
-    throw new EventChainIntegrityError(`${context} is not stored as JSON text`);
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(text);
-  } catch (cause) {
-    throw new EventChainIntegrityError(`${context} contains invalid JSON`, { cause });
-  }
-  let encoded;
-  try {
-    encoded = canonicalJson(parsed);
-  } catch (cause) {
-    throw new EventChainIntegrityError(`${context} is not canonical JSON data`, { cause });
-  }
-  if (encoded !== text) {
-    throw new EventChainIntegrityError(`${context} is not stored in canonical JSON form`);
-  }
-  return parsed;
 }
 
 function optionalJson(value) {

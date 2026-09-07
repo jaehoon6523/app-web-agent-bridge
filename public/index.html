@@ -1,139 +1,28 @@
 <!doctype html>
 <html lang="ko">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex × ChatGPT 토론</title><link rel="stylesheet" href="styles.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI 구현 · 웹 감사</title><link rel="stylesheet" href="styles.css"></head>
 <body>
-<div class="app">
-  <aside class="left" aria-label="토론 목록과 연결">
-    <div class="brand"><div class="brand-title">Codex × ChatGPT 토론</div>
-      <div class="conn-status"><span id="dashboardStatus" class="badge">연결 확인 중</span><span id="extensionStatus" class="badge">확장 확인 중</span></div>
-    </div>
-    <details class="connection-settings"><summary>연결 설정</summary>      <section id="connectionPanel" class="panel step-card" aria-labelledby="connectionTitle">
-        <div class="step-head">
-          <span class="step-chip">1</span>
-          <div class="step-head-text connect-hide-on-collapse">
-            <h2 id="connectionTitle">연결 준비</h2>
-            <p class="field-hint">서버 설정은 자동으로 불러옵니다. 브라우저 확장이 연결되면 토론을 시작할 수 있습니다.</p>
-          </div>
-          <div class="step-head-text connect-collapsed-text">
-            <h2 id="connectionSummary">연결 상태</h2>
-          </div>
-          <button type="button" id="toggleConnectionPanel" class="ghost small">연결 정보 숨기기</button>
-        </div>
-
-        <div class="check-row"><span class="check-icon" id="serverCheck">1</span><div><strong>대시보드 인증</strong><p id="serverCheckText">연결 토큰을 입력하세요.</p></div></div>
-
-        <details class="technical connect-hide-on-collapse"><summary>직접 연결하기</summary>
-        <form id="connectionForm">
-          <label for="dashboardToken">연결 토큰</label>
-          <div class="token-row"><input id="dashboardToken" type="password" autocomplete="off" spellcheck="false" required placeholder="DASHBOARD_TOKEN" /><button id="connectDashboard" type="submit">연결</button></div>
-          <p class="field-hint">자동 연결이 되지 않을 때만 .env의 DASHBOARD_TOKEN을 입력하세요. 토큰은 이 페이지 메모리에만 유지됩니다.</p>
-        </form>
-        </details>
-
-        <div class="check-row"><span class="check-icon" id="webCheck">2</span><div><strong>브라우저 확장</strong><p id="webCheckText">대시보드 인증 후 확인합니다.</p></div></div>
-
-        <details id="extensionHelp" class="help-box connect-hide-on-collapse"><summary>확장 연결 방법</summary>
-          <strong>확장이 연결되지 않는다면</strong>
-          <ol><li>ChatGPT 탭에서 브릿지 확장을 여세요.</li><li>서버 주소와 shared secret을 확인하세요.</li><li>확장 identity가 서버 설정과 같은지 확인하세요.</li></ol>
-          <p>기본 주소: <code>ws://127.0.0.1:8787/ws/extension</code></p>
-        </details>
-        <p id="connectionHint" class="field-hint connect-hide-on-collapse" aria-live="polite"></p>
-      </section>
-
-</details>
-    <h2 class="section-label">토론 목록</h2>
-    <nav id="runList" class="run-list" aria-label="토론 선택"></nav>
-    <select id="runHistory" hidden aria-label="토론 선택"><option value="">최근 실행</option></select>
-    <button id="showSetup" class="new-run-btn" type="button">＋ 새 토론 시작</button>
-    <p id="newRunHint" class="new-run-hint">서버 연결을 확인하고 있습니다.</p>
-  </aside>
-  <main class="center" id="historySection">
-    <header class="center-header">
-      <h1 id="savedObjective" class="obj-title">토론을 시작해 보세요</h1>
-      <div class="obj-meta-row"><span id="runStatus" class="badge">토론 없음</span><span id="turnProgress" class="meta-chip">—</span></div>
-      <p id="recordNotice" class="record-notice"></p>
-    </header>
-    <div id="errorBanner" class="notice" role="status">상태가 확인되기 전에는 명령을 보낼 수 없습니다. 로컬 서버에 자동 연결하고 있습니다…</div>
-    <div class="feed" id="sessionGrid">
-      <div id="conversationFeed" class="conversation-feed" role="log" aria-label="토론 대화"></div>
-      <div id="codexDraft" class="draft hidden" aria-live="polite"></div>
-      <div id="chatgptWebDraft" class="draft chatgpt hidden" aria-live="polite"></div>
-    </div>
-    <div class="composer">        <form id="steerForm" class="steer-form">
-          <input type="hidden" id="steerActor" value="CODEX_AGENT" />
-          <label class="grow" for="steerText">Codex에게 진행 중 지시 보내기<textarea id="steerText" rows="2" disabled placeholder="현재 Codex 응답에 전달할 내용"></textarea></label>
-          <button id="sendSteer" type="submit" disabled>지시 보내기</button>
-        </form>
-        <p class="field-hint">추가 지시는 실행 중인 Codex 턴에서만 사용할 수 있습니다.</p>
-</div>
+<header class="top"><strong>CLI 구현 · 웹 감사</strong><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></header>
+<div class="layout">
+  <aside class="history"><h2>실행 기록</h2><button id="newRun">새 작업</button><p id="newRunReason" class="muted"></p><nav id="runList" aria-label="실행 선택"></nav></aside>
+  <main>
+    <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
+    <section id="startPanel"><p class="eyebrow">구현 → 감사 → 수정 → 재감사</p><h1>무엇을 구현할까요?</h1>
+      <form id="startForm"><label for="objective">작업 목표</label><textarea id="objective" rows="4" required placeholder="필수 기능과 원하는 결과를 적어 주세요."></textarea>
+        <label for="conversationUrl">ChatGPT 대화 URL</label><input id="conversationUrl" type="url" required placeholder="https://chatgpt.com/c/…">
+        <p class="muted">브릿지 확장이 연결된 브라우저에서 이 대화의 탭을 하나만 열어 주세요.</p>
+        <details open><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div></details>
+        <button id="startRun" class="primary" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
+      </form>
+    </section>
+    <section id="runPanel" hidden><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p></div>
+      <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="stopRun" disabled>작업 중단</button><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="exportEvidence" disabled>감사 기록 다운로드</button></div><p id="commandReason" class="muted"></p><p id="commandResult" role="status"></p><p class="muted">일시정지·재개·재시도·실행 중 자유입력은 초기 범위에서 보류되어 있습니다.</p></details>
+      <div class="tabs" role="group" aria-label="기록 종류"><button id="showAudit" aria-pressed="true">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
+      <section id="auditPanel"><h2>요구사항별 판정</h2><div id="assessments"></div><h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>후보·검증 증거</h2><div id="evidenceList"></div><details><summary>고정 기준과 후보 상세</summary><pre id="candidateDetails"></pre></details></section>
+      <section id="logPanel" hidden><div id="eventLog" role="log" aria-label="실제 진행 기록"></div></section>
+    </section>
   </main>
-  <aside class="right" aria-label="진행 제어와 결과">
-    <section class="r-block"><h2 class="r-title">진행 제어</h2>
-      <div class="action-grid">
-        <button id="pauseRun" class="act-btn warn" title="현재 응답 후 다음 전송을 멈춥니다." disabled>일시정지</button>
-        <button id="resumeRun" class="act-btn" disabled>계속하기</button>
-        <button id="interruptRun" class="act-btn" disabled>현재 응답 중단</button>
-        <button id="exportEvidence" class="act-btn" disabled>기록 다운로드</button>
-        <button id="stopRun" class="act-btn danger full" disabled>토론 종료</button>
-      </div>
-      <div id="recoveryNotice" class="recovery-notice hidden" role="status"><p>이전 서버의 토론 기록입니다. 가능한 경우 계속하거나 종료할 수 있습니다.</p><button id="recoveryStopRun" class="act-btn danger" disabled>이 토론 종료</button></div>
-    </section>
-    <section class="r-block"><h2 class="r-title">에이전트 세션</h2>
-      <div class="kv-row"><span>Codex</span><span id="codexStatus" class="badge">기록 없음</span></div>
-      <div class="kv-row"><span>ChatGPT (웹)</span><span id="chatgptWebStatus" class="badge">기록 없음</span></div>
-      <div class="action-grid"><button id="focusWebSession" class="act-btn" disabled>대화 탭 열기</button><button id="rebindWebSession" class="act-btn" disabled>같은 대화 재연결</button></div>
-      <details class="technical"><summary>세션 상세</summary><dl id="codexSessionFields" class="session-fields"></dl><dl id="chatgptWebSessionFields" class="session-fields"></dl><p id="runMeta" class="meta"></p><span id="runVersion" class="meta"></span></details>
-    </section>
-    <section class="r-block"><h2 class="r-title">결과</h2><p id="runOutcome" class="outcome" aria-live="polite">아직 결과가 없습니다.</p><pre id="codeCandidate" hidden></pre><button id="applyCode" hidden>검토한 변경 승인·반영</button></section>
-    <section class="r-block diagnostics">        <section class="data-panel"><h3>전달 기록</h3><div id="deliveries" class="data-list"></div></section>
-        <section class="data-panel"><h3>승인 및 결정</h3><div id="approvals" class="data-list"></div></section>
-        <section class="timeline-panel"><div class="section-heading"><h3>이벤트 기록</h3><span id="timelineCursor" class="meta"></span></div><div id="controllerTimeline" class="timeline"></div></section>
-</section>
-  </aside>
 </div>
-<dialog id="setupView" aria-labelledby="newRunTitle">
-  <button id="showHistory" type="button" class="close-dialog" aria-label="새 토론 입력 닫기">닫기 ×</button>
-        <section id="cleanupPanel" class="panel step-card cleanup-card hidden" aria-labelledby="cleanupTitle">
-        <div class="step-head">
-          <span class="step-chip warn-chip">!</span>
-          <div class="step-head-text">
-            <h2 id="cleanupTitle">아직 끝나지 않은 토론이 있어요</h2>
-            <p class="field-hint">진행 상황을 확인하세요. 새 토론은 기존 토론이 끝난 뒤 시작할 수 있습니다.</p>
-          </div>
-        </div>
-        <div id="cleanupList" class="cleanup-list"></div>
-      </section>
-
-      <section class="panel step-card composer" aria-labelledby="newRunTitle">
-        <div class="step-head">
-          <span class="step-chip">2</span>
-          <div class="step-head-text">
-            <h2 id="newRunTitle">새 토론 시작</h2>
-            <p class="field-hint">아래 두 가지를 입력하면 시작할 수 있습니다.</p>
-          </div>
-        </div>
-        <p id="composerLock" class="composer-lock hidden"></p>
-        <label for="objective">무엇을 함께 검토할까요?</label>
-        <label for="runMode">작업 방식</label><select id="runMode"><option value="DISCUSSION">토론</option><option value="CODE_CHANGE">코드 작성·검토·반영</option></select>
-        <fieldset id="codeChangeInputs" hidden><legend>개발 작업</legend>
-          <label for="targetRoot">대상 Git 레포 절대 경로</label><input id="targetRoot" type="text" autocomplete="off" />
-          <label for="reviewCriteria">검토 기준</label><textarea id="reviewCriteria" rows="3"></textarea>
-          <label for="reviewThreshold">통과 점수 (검토 기준의 점수 척도 사용)</label><input id="reviewThreshold" type="number" step="any" />
-          <label for="maxIterations">최대 작업·검토 반복</label><input id="maxIterations" type="number" min="1" max="100" value="3" />
-          <p>별도 worktree에서 작업합니다. 통과 후 아래 승인 버튼을 눌러야 대상 레포에 반영됩니다. commit·push는 하지 않습니다.</p>
-        </fieldset>
-        <textarea id="objective" rows="5" placeholder="예: 이 서비스의 핵심 기능을 검토하고, 가장 먼저 개선할 세 가지를 합의해줘."></textarea>
-        <label for="conversationUrl">이번 토론에 사용할 ChatGPT 대화</label>
-        <input id="conversationUrl" type="url" placeholder="https://chatgpt.com/c/..." autocomplete="off" aria-describedby="urlHint" />
-          <p id="urlHint" class="field-hint">확장이 연결된 브라우저에서 기존 ChatGPT 대화를 열고 주소를 복사해 붙여넣으세요. 같은 주소의 탭은 하나만 열고, 입력창이 준비될 때까지 기다리세요. 준비 확인에 실패하면 실행을 생성하지 않습니다.</p>
-        <div class="composer-bottom">
-          <div><label for="maxTurns">최대 응답 횟수</label><select id="maxTurns"><option value="2">2회 · 짧게</option><option value="4">4회</option><option value="6" selected>6회 · 기본</option><option value="8">8회</option><option value="12">12회 · 충분히</option><option value="20">20회</option><option value="50">50회</option></select><p class="field-hint">각 에이전트의 응답을 1회로 셉니다.</p></div>
-          <button id="startRun" class="primary" disabled>토론 시작</button>
-        </div>
-        <p id="startReason" class="start-reason" aria-live="polite">먼저 서버에 연결하세요.</p>
-      </section>
-
-</dialog>
-<div id="toast" class="toast hidden" role="status"></div>
+<dialog id="evidenceDialog"><button id="closeEvidence">닫기</button><h2 id="evidenceTitle">증거 원문</h2><pre id="evidenceContent"></pre><p id="evidenceRange" class="muted"></p><button id="nextEvidence">다음 구간</button></dialog>
 <script type="module" src="app.js"></script>
 </body></html>

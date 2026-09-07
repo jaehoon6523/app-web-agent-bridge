@@ -50,6 +50,11 @@ function tree(root, baseCommit) {
 }
 
 export class GitChangeWorkspace {
+  static preflight(targetRoot) {
+    const root = repositoryRoot(targetRoot);
+    requireClean(root);
+    return { targetRoot: root, baseCommit: head(root) };
+  }
   static targetApplicationState({ capture, targetRoot, artifactStore }) {
     const root = repositoryRoot(targetRoot);
     artifactStore.verify(capture.artifact.sha256);
@@ -87,19 +92,16 @@ export class GitChangeWorkspace {
   }
 
   cleanup() {
-    if (!this.targetRoot && !fs.existsSync(this.root)) return;
-    try {
-      if (this.targetRoot) git(this.targetRoot, ["worktree", "remove", "--force", this.root]);
-      else fs.rmSync(this.root, { recursive: true, force: true });
-    } catch {
-      fs.rmSync(this.root, { recursive: true, force: true });
-      if (this.targetRoot) {
-        try { git(this.targetRoot, ["worktree", "prune"]); } catch { /* best effort */ }
-      }
-    }
+    if (!fs.existsSync(this.root)) return;
+    if (!this.targetRoot || this.root === this.targetRoot) throw new Error("Cleanup requires a separate registered worktree.");
+    const relative = path.relative(this.targetRoot, this.root);
+    if (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) throw new Error("Cleanup target is inside the target repository.");
+    const registered = git(this.targetRoot, ["worktree", "list", "--porcelain"]).toString("utf8");
+    if (!registered.split("\n").some((line) => line.startsWith("worktree ") && path.resolve(line.slice(9)) === this.root)) throw new Error("Unregistered cleanup target.");
+    git(this.targetRoot, ["worktree", "remove", "--force", this.root]);
   }
 
-  capture() {
+  capture({ allowUnchanged = false } = {}) {
     if (head(this.root) !== this.baseCommit) throw new Error("Worker changed the base commit.");
     if (git(this.root, ["ls-files", "--stage"]).toString("utf8").split("\n")
       .some((entry) => entry.startsWith("160000 "))) {
@@ -108,12 +110,55 @@ export class GitChangeWorkspace {
     const candidateTree = tree(this.root, this.baseCommit);
     const patch = git(this.root, ["diff", "--binary", "--full-index", "--no-ext-diff",
       "--no-textconv", "--no-renames", this.baseCommit, candidateTree, "--"]);
-    if (!patch.length) throw new Error("Worker produced no Git changes.");
+    if (!patch.length && !allowUnchanged) throw new Error("Worker produced no Git changes.");
     if (head(this.root) !== this.baseCommit || tree(this.root, this.baseCommit) !== candidateTree) {
       throw new Error("Workspace changed during capture.");
     }
     const artifact = this.artifactStore.put(patch);
-    return Object.freeze({ baseCommit: this.baseCommit, candidateTree, artifact });
+    const changedFiles = git(this.root, ["diff", "--name-only", "-z", this.baseCommit, candidateTree, "--"]).toString("utf8").split("\0").filter(Boolean);
+    const files = this.snapshotFiles(candidateTree);
+    return Object.freeze({ baseCommit: this.baseCommit, candidateTree, artifact, changedFiles, files, unchanged: !patch.length });
+  }
+
+  snapshotFiles(candidateTree) {
+    const entries = git(this.root, ["ls-tree", "-r", "-z", candidateTree]).toString("utf8").split("\0").filter(Boolean).map((line) => {
+      const tab = line.indexOf("\t"), [mode, type, oid] = line.slice(0, tab).split(" ");
+      return { path: line.slice(tab + 1), mode, type, oid };
+    }).filter((entry) => entry.type === "blob");
+    const data = git(this.root, ["cat-file", "--batch"], { input: entries.map((e) => e.oid).join("\n") + "\n" });
+    let offset = 0;
+    return entries.map((entry) => {
+      const newline = data.indexOf(10, offset), header = data.subarray(offset, newline).toString("utf8").split(" ");
+      const size = Number(header[2]);
+      if (header[0] !== entry.oid || header[1] !== "blob" || !Number.isSafeInteger(size) || size < 0) throw new Error("Candidate blob snapshot failed.");
+      const content = data.subarray(newline + 1, newline + 1 + size);
+      if (content.length !== size) throw new Error("Candidate blob snapshot was truncated.");
+      offset = newline + 1 + size + 1;
+      return { path: entry.path, mode: entry.mode, contentRef: this.artifactStore.put(content) };
+    });
+  }
+
+  assertCandidate(capture) {
+    if (head(this.root) !== capture.baseCommit || tree(this.root, capture.baseCommit) !== capture.candidateTree) throw new Error("Candidate changed during verification.");
+    this.artifactStore.verify(capture.artifact.sha256);
+  }
+
+  readCode(capture, filename) {
+    if (typeof filename !== "string" || !filename || filename.includes("\\") || filename.includes("\0")
+      || filename.startsWith("/") || filename.includes(":") || filename.split("/").some((p) => !p || p === "." || p === ".." || p.toLowerCase() === ".git")) throw new Error("Code path must stay inside the candidate repository.");
+    if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(capture.candidateTree)) throw new Error("Invalid candidate tree.");
+    if (capture.files) {
+      const file = capture.files.find((entry) => entry.path === filename && ["100644", "100755"].includes(entry.mode));
+      if (!file) throw new Error("Only regular captured files can be queried; missing, symlink and submodule paths are unavailable.");
+      const content = this.artifactStore.read(file.contentRef.sha256);
+      if (content.includes(0)) throw new Error("Binary code is unavailable as text.");
+      return content.toString("utf8");
+    }
+    const entry = git(this.root, ["ls-tree", "-z", capture.candidateTree, "--", filename]).toString("utf8");
+    if (!/^100(?:644|755) blob /u.test(entry) || entry.split("\0").filter(Boolean).length !== 1) throw new Error("Only regular captured files can be queried; missing, symlink and submodule paths are unavailable.");
+    const content = git(this.root, ["show", `${capture.candidateTree}:${filename}`]);
+    if (content.includes(0)) throw new Error("Binary code is unavailable as text.");
+    return content.toString("utf8");
   }
 
   // Call only after the Controller has bound human approval to this capture.
@@ -131,6 +176,9 @@ export class GitChangeWorkspace {
     const expected = git(root, ["diff", "--binary", "--full-index", "--no-ext-diff",
       "--no-textconv", "--no-renames", capture.baseCommit, capture.candidateTree, "--"]);
     if (!patch.equals(expected)) throw new Error("Artifact differs from the captured Git tree.");
+    if (!patch.length && capture.unchanged && capture.candidateTree === git(root, ["rev-parse", `${capture.baseCommit}^{tree}`]).toString("utf8").trim()) {
+      return Object.freeze({ baseCommit: capture.baseCommit, tree: capture.candidateTree, artifactHash: capture.artifact.sha256, unchanged: true });
+    }
     git(root, ["apply", "--check", "--index", "--binary", "-"], { input: patch });
     if (head(root) !== capture.baseCommit) throw new Error("Target HEAD changed before application.");
     requireClean(root);

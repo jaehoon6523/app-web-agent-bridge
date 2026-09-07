@@ -5,12 +5,17 @@ import { WebSocket } from "ws";
 import { loadConfig } from "../src/config.js";
 import { computeWebChallengeHmac } from "../src/runtime/web/auth.js";
 import { createBridgeServer } from "../src/server.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { CodeChangeStore } from "../src/persistence/code-change-store.js";
+import { project } from "./helpers/audit-fixtures.js";
 
 const SHARED_SECRET = "integration-shared-secret-0123456789abcdef";
 const EXTENSION_IDENTITY = "extension-integration";
 const DASHBOARD_TOKEN = "dashboard-token-0123456789abcdef-dashboard-token";
 
-function runtimeConfig({ demoMode = false, dashboardToken = null, codexExecutablePath = null } = {}) {
+function runtimeConfig({ demoMode = false, dashboardToken = null, codexExecutablePath = null, auditProjectFile = null } = {}) {
   return {
     host: "127.0.0.1",
     port: 0,
@@ -18,6 +23,7 @@ function runtimeConfig({ demoMode = false, dashboardToken = null, codexExecutabl
     workspace: process.cwd(),
     logDir: process.cwd(),
     demoMode,
+    auditProjectFile,
     dashboard: { token: dashboardToken },
     codex: { executablePath: codexExecutablePath },
     webExtension: {
@@ -140,8 +146,8 @@ test("server rejects token URLs and authenticates the exact extension identity b
     liveSessionBindingReady: health.liveSessionBindingReady,
     liveOrchestrationReady: health.liveOrchestrationReady,
   }, {
-    coreOrchestrationReady: true,
-    fakeVerticalSliceVerified: true,
+    coreOrchestrationReady: false,
+    fakeVerticalSliceVerified: null,
     codexRuntimeReady: false,
     webRuntimeReady: false,
     liveSessionBindingReady: false,
@@ -170,12 +176,19 @@ test("demo mode is transport-free and does not accept extension or dashboard upg
 
 test("authenticated start provisions the exact Web conversation before dispatching", async (t) => {
   const calls = [];
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-server-audit-"));
+  const auditProjectFile = path.join(directory, "project.json");
+  fs.writeFileSync(auditProjectFile, JSON.stringify(project(directory)));
+  const receipts = new CodeChangeStore(path.join(directory, "receipts.sqlite"));
   const bridge = createBridgeServer({
     runtimeConfig: runtimeConfig({
       dashboardToken: DASHBOARD_TOKEN,
       codexExecutablePath: "C:\\safe\\codex.exe",
+      auditProjectFile,
     }),
     createLiveRuntime: async () => ({
+      codeChanges: { store: receipts, get: () => null, busy: () => false,
+        async start(input) { calls.push({ type: "code.start", input }); return { runId: "run_live_test", status: "ACCEPTED" }; } },
       store: {
         listRuns: () => [],
         getRun: () => ({ phase: "COMPLETE" }),
@@ -206,6 +219,7 @@ test("authenticated start provisions the exact Web conversation before dispatchi
   t.after(async () => {
     for (const client of bridge.extensionWss.clients) client.terminate();
     await bridge.close();
+    receipts.close(); fs.rmSync(directory, { recursive: true, force: true });
   });
   const { port } = bridge.server.address();
   const baseHttp = `http://127.0.0.1:${port}`;
@@ -234,22 +248,21 @@ test("authenticated start provisions the exact Web conversation before dispatchi
       authorization: `Bearer ${DASHBOARD_TOKEN}`,
       origin: "http://127.0.0.1:0",
       "content-type": "application/json",
+      "x-request-id": "test-start-once",
     },
     body: JSON.stringify({
       objective: "서로에게 짧게 인사해.",
       conversationUrl: "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60",
     }),
   });
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), {
     runId: "run_live_test",
-    status: "COMPLETE",
-    outcome: { type: "CONSENSUS" },
+    status: "ACCEPTED",
   });
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].type, "provision");
-  assert.equal(calls[0].input.webConversationUrl, "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60");
-  assert.equal(calls[1].type, "dispatch");
-  assert.deepEqual(calls[1].input, { runId: "run_live_test" });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].type, "code.start");
+  assert.equal(calls[0].input.mode, "CODE_CHANGE");
+  assert.equal(calls[0].input.conversationUrl, "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60");
   socket.close();
 });
