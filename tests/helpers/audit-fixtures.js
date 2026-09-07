@@ -7,7 +7,7 @@ import { CodeChangeService } from "../../src/orchestration/code-change-service.j
 import { DashboardController } from "../../src/orchestration/dashboard-controller.js";
 import { requirementsRef } from "../../src/domain/audit-contract.js";
 
-export const requirements = { requirementsId:"fixture-requirements", revision:"1", sourceRoles:[{ source:"test", role:"required behavior" }], unresolvedQuestions:[],
+export const requirements = { requirementsId:"fixture-requirements", revision:"1", authority:"REQUIREMENTS_JSON", sourceRoles:[{ source:"test", role:"REFERENCE", content:"Fixture source: file.txt contains revision 2" }], unresolvedQuestions:[],
   items:[{ requirementId:"R1", statement:"The file has the required contents", acceptanceCriteria:"file.txt contains revision 2", required:true,
     verificationMethod:{ kinds:["PATCH"], description:"Inspect the captured patch" }, sourceRefs:["test"] }] };
 export const policy = { maxIterations:3, maxEvidenceRounds:3, maxFormatRepairs:2, totalTimeoutMs:60000, turnTimeoutMs:5000 };

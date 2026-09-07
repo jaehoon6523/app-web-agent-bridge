@@ -50,6 +50,11 @@ function tree(root, baseCommit) {
 }
 
 export class GitChangeWorkspace {
+  static inspectTarget(targetRoot) {
+    const root = repositoryRoot(targetRoot);
+    return { targetRoot: root, head: head(root), status: git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).toString("utf8"),
+      observedAt: new Date().toISOString() };
+  }
   static preflight(targetRoot) {
     const root = repositoryRoot(targetRoot);
     requireClean(root);

@@ -16,7 +16,7 @@ export function validateVerifications(items) {
     if (!Array.isArray(item.args) || item.args.some((a) => typeof a !== "string" || a.includes("\0"))) throw new TypeError("Verification args must be literal strings.");
     if (!Number.isSafeInteger(item.timeoutMs) || item.timeoutMs < 1 || item.timeoutMs > 2_147_483_647) throw new TypeError("Explicit verification timeout within the timer range required.");
     if (typeof item.cwd !== "string" || path.isAbsolute(item.cwd) || item.cwd.split(/[\\/]/u).includes("..")) throw new TypeError("Verification cwd must be inside the candidate.");
-    if (!Array.isArray(item.resultFiles) || item.resultFiles.some((p) => typeof p !== "string" || path.isAbsolute(p) || p.split(/[\\/]/u).includes(".."))) throw new TypeError("Result files must be within verification cwd.");
+    if (!Array.isArray(item.resultFiles) || new Set(item.resultFiles).size !== item.resultFiles.length || item.resultFiles.some((p) => typeof p !== "string" || !p || p.includes("\\") || p.includes(":") || p.includes("\0") || path.isAbsolute(p) || p.split("/").some((part) => !part || part === "." || part === ".."))) throw new TypeError("Result files must be unique relative paths inside BRIDGE_RESULT_DIR.");
   }
   return structuredClone(items);
 }
@@ -42,8 +42,10 @@ function within(root, filename) {
 // Registered commands are trusted project configuration, never Web-supplied shell text.
 // This process boundary restricts dispatch, cwd and inherited environment; it is not an OS sandbox.
 export async function executeVerification({ workspace, capture, candidateId, verification, artifactStore, signal }) {
-  const startedAt = new Date().toISOString();
-  const record = { verificationId: verification.verificationId, executable: verification.executable, args: verification.args,
+  const startedAt = new Date().toISOString(), executionId = `execution_${randomUUID()}`;
+  const resultRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-verification-"));
+  const resultRootIdentity = fs.statSync(resultRoot);
+  const record = { executionId, resultDirectory: resultRoot, verificationId: verification.verificationId, executable: verification.executable, args: verification.args,
     environmentId: verification.environmentId, environment: { platform: process.platform, release: os.release(), node: process.version },
     candidateId, cwd: path.resolve(workspace.root, verification.cwd), startedAt, finishedAt: null,
     exitCode: null, signal: null, timedOut: false, aborted: false, stdout: "", stderr: "", outputTruncated: false,
@@ -52,6 +54,8 @@ export async function executeVerification({ workspace, capture, candidateId, ver
     workspace.assertCandidate(capture);
     record.cwd = within(workspace.root, record.cwd);
     const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG", "PATHEXT"].includes(key.toUpperCase())));
+    environment.BRIDGE_RESULT_DIR = resultRoot;
+    environment.BRIDGE_EXECUTION_ID = executionId;
     await new Promise((resolve) => {
       if (signal?.aborted) { record.aborted = true; record.terminationConfirmed = true; resolve(null); return; }
       const child = spawn(verification.executable, verification.args, { cwd: record.cwd, env: environment, windowsHide: true, shell: false });
@@ -74,17 +78,29 @@ export async function executeVerification({ workspace, capture, candidateId, ver
     catch (error) { record.error = error.message; }
     for (const filename of verification.resultFiles) {
       try {
-        const absolute = within(record.cwd, path.resolve(record.cwd, filename));
+        const currentRoot = fs.lstatSync(resultRoot);
+        if (!currentRoot.isDirectory() || currentRoot.isSymbolicLink() || currentRoot.ino !== resultRootIdentity.ino || currentRoot.dev !== resultRootIdentity.dev) throw new Error("Result directory identity changed.");
+        const absolute = within(resultRoot, path.resolve(resultRoot, filename));
+        let component = resultRoot;
+        for (const part of filename.split("/")) {
+          component = path.join(component, part);
+          if (fs.lstatSync(component).isSymbolicLink()) throw new Error("Result symlinks are not accepted.");
+        }
+        if (fs.statSync(absolute).nlink !== 1) throw new Error("Result hard links are not accepted.");
         if (!fs.statSync(absolute).isFile() || fs.statSync(absolute).size > 8 * 1024 * 1024) throw new Error("Result is not a file or exceeds 8 MiB.");
         const content = fs.readFileSync(absolute);
         if (content.includes(0)) throw new Error("Binary result requires a separately approved artifact collector.");
-        record.resultFiles.push({ path: filename, evidence: evidenceRecord(artifactStore, candidateId, "ARTIFACT", content.toString("utf8"), { verificationId: verification.verificationId }) });
+        record.resultFiles.push({ path: filename, evidence: evidenceRecord(artifactStore, candidateId, "ARTIFACT", content.toString("utf8"), { verificationId: verification.verificationId, executionId, path: filename }) });
       } catch (error) { record.resultFiles.push({ path: filename, error: error.message }); }
     }
   } catch (error) { record.error = error.message; }
+  finally {
+    try { fs.rmSync(resultRoot, { recursive: true, force: true }); }
+    catch (error) { record.error = record.error ?? `Result cleanup failed: ${error.message}`; }
+  }
   record.finishedAt = new Date().toISOString();
   const evidence = evidenceRecord(artifactStore, candidateId, "EXECUTION", record, {
-    verificationId: verification.verificationId, exitCode: record.exitCode, timedOut: record.timedOut,
+    executionId, verificationId: verification.verificationId, exitCode: record.exitCode, timedOut: record.timedOut,
     aborted: record.aborted, error: record.error, candidateUnchanged: record.candidateUnchanged, terminationConfirmed: record.terminationConfirmed,
   });
   evidence.valid = record.candidateUnchanged;

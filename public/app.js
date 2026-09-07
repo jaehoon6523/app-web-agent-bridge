@@ -1,11 +1,11 @@
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false, pending = false, showStart = true;
 let sequence = 0, lastConfirmed = null, evidencePage = null;
-let renderedRecords = "", lastCommandError = "";
+let renderedRecords = "", lastCommandError = "", recoveryRunId = null;
 const openFindings = new Set();
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
 const labels = { CREATED:"접수됨", PROVISIONING:"연결 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"후보 캡처 중", VERIFYING:"검증 중", REVIEW_RUNNING:"웹 감사 중", REPORT_REPAIR:"감사 응답 보완 중", EVIDENCE_SUPPLEMENT:"같은 후보 증거 보완 중", REWORK:"수정 대기", HOLD:"판단 보류", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"과거 실행 종료" };
-const reasons = { ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
+const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상태를 확인하고 실행을 폐기했습니다. 감사 기록과 작업 사본은 보존됩니다.", ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
 function text(id, value) { $(id).textContent = value ?? ""; }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
@@ -49,7 +49,11 @@ function renderAudit() {
     const row = node("article", "", "record");
     row.append(node("strong", `${req.requirementId} · ${req.required ? "필수" : "선택"} · ${a?.verdict ?? "아직 판정 없음"}`), node("p", req.statement), node("p", a?.reason ?? req.acceptanceCriteria));
     if (a?.missingInformation) row.append(node("p", `부족한 정보: ${a.missingInformation}`, "muted"));
-    evidenceLinks(row, a?.evidenceRefs); assessments.append(row);
+    evidenceLinks(row, a?.evidenceRefs);
+    for (const suggestion of run?.reviews?.at(-1)?.report?.suggestions ?? []) {
+      if (suggestion.requirementId === req.requirementId) row.append(node("p", `선택 개선 제안: ${suggestion.description}`, "muted"));
+    }
+    assessments.append(row);
   }
   if (!assessments.children.length) assessments.append(node("p", "요구사항별 감사 기록이 없습니다. 과거 점수 기반 통과는 현재 기준 충족을 뜻하지 않습니다.", "muted"));
   for (const f of snapshot?.findings ?? []) {
@@ -68,7 +72,7 @@ function renderAudit() {
     row.append(node("strong", `${e.kind} · ${e.producer}${e.valid === false ? " · 후보 증거로 무효" : ""}`), node("p", `${e.candidateId} · ${time(e.createdAt)}`, "muted"), node("p", JSON.stringify(e.result)));
     evidenceLinks(row, [e.evidenceId]); evidence.append(row);
   }
-  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, candidate:run?.candidate, missingInformation:run?.missingInformation, application:run?.application }, null, 2));
+  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, candidate:run?.candidate, missingInformation:run?.missingInformation, application:run?.application, recovery:run?.recovery }, null, 2));
 }
 function renderLog() {
   const log = $("eventLog"); log.replaceChildren();
@@ -104,6 +108,12 @@ function render() {
     : !caps.has("run.start") ? "미종료 런이 있거나 시작 조건이 준비되지 않았습니다." : !$('objective').value.trim() ? "작업 목표를 입력하세요."
       : !/^https:\/\/chatgpt\.com\/c\/[^/?#\s]+$/u.test($("conversationUrl").value.trim()) ? "기존 ChatGPT 대화 URL을 입력하세요." : "";
   $("startRun").disabled = Boolean(reason); text("startReason", lastCommandError || reason || "접수 후 같은 런에서 준비·구현·감사 진행과 실패 이유를 확인할 수 있습니다.");
+  if (recoveryRunId !== run?.runId) {
+    recoveryRunId = run?.runId;
+    $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryReason").value = "";
+  }
+  $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
+  $("abandonRun").disabled = pending || !caps.has("run.abandon") || !$("recoveryExternal").checked || !$("recoveryTarget").checked || !$("recoveryReason").value.trim();
   if (!run) return;
   text("runObjective", run.objective); text("runContext", `${run.projectRef?.projectId ?? "과거 런"} · 구현 ${run.iteration ?? 0}회 · ${run.activeActor ?? "대기"}`);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = ["HOLD", "INCONCLUSIVE", "RECOVERY_REQUIRED"].includes(run.phase) ? "warn" : run.phase === "FAILED" ? "error" : "";
@@ -142,6 +152,10 @@ async function openEvidence(id, startLine = 1) {
 $("startForm").addEventListener("submit", (e) => { e.preventDefault(); if (!$("startRun").disabled) command("run.start", { mode:"CODE_CHANGE", objective:$("objective").value.trim(), conversationUrl:$("conversationUrl").value.trim() }, true); });
 $("objective").addEventListener("input", render); $("conversationUrl").addEventListener("input", render);
 $("newRun").addEventListener("click", () => { showStart = true; render(); });
+for (const id of ["recoveryExternal", "recoveryTarget", "recoveryReason"]) $(id).addEventListener("input", render);
+$("abandonRun").addEventListener("click", () => {
+  if (!$("abandonRun").disabled) command("run.abandon", { externalTerminationConfirmed:$("recoveryExternal").checked, targetInspected:$("recoveryTarget").checked, reason:$("recoveryReason").value.trim() });
+});
 $("stopRun").addEventListener("click", () => command("run.stop"));
 $("applyCode").addEventListener("click", () => { const r = snapshot.run; command("code.apply", { candidateId:r.candidate.candidateId, reviewId:r.reviews.at(-1).reviewId, artifactHash:r.capture.artifact.sha256, baseCommit:r.baseCommit }); });
 $("exportEvidence").addEventListener("click", async () => { const result = await command("evidence.export"); if (!result) return; const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)], { type:"application/json" })); const a = node("a", ""); a.href = url; a.download = `${result.runId ?? "audit"}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });

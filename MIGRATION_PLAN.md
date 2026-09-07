@@ -266,3 +266,11 @@ cases, strict packet rejection, selector ambiguity, pause/interrupt behavior,
 all four limits, `INCONCLUSIVE`, and browser interaction for both dashboard
 panes. File existence, HTTP 2xx, a screenshot, or the old unit tests alone are
 insufficient.
+
+## Audit contract v3
+
+- RequirementsSet에 명시적 `authority: REQUIREMENTS_JSON`, REFERENCE 원문, 등록된 sourceRefs를 요구한다. 원문 내용도 revision/hash에 포함된다.
+- EXECUTION/ARTIFACT 요구사항에는 `verificationMethod.checks`를 명시한다. 기존 성공 기록을 이용해 자동 생성하지 않는다.
+- 검증 결과 파일은 매 실행 새 `BRIDGE_RESULT_DIR`에 기록하도록 검증 명령을 수정한다. 기존 cwd 결과는 수집하지 않는다.
+- 미완료 schemaVersion 1/2 런은 복구 필요로 보존하며 승인 승계하지 않는다. 외부 작업·대상 확인 후 run.abandon으로 폐기하고 새 런을 시작한다.
+- 운영 확인은 OPERATOR_ATTESTATION으로 저장하며 자동 종료 검증으로 표시하지 않는다.

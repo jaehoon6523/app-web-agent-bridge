@@ -52,3 +52,14 @@ test("VAL-18: rerenders preserve actual event times and disconnected UI retains 
   assert.equal(h.get("runStatus").textContent,"판단 보류");assert.equal(h.get("stopRun").disabled,true);
   assert.match(h.get("connectionNotice").textContent,/마지막 확인/);assert.equal(h.get("eventLog").textContent,log);
 });
+test("recovery UI requires confirmation and sends the selected run and operator reason",async()=>{
+  const h=await harness();h.setState(async()=>({...state("a","RECOVERY_REQUIRED"),commandCapabilities:["run.abandon"]}));
+  h.get("runList").children[1].click();await h.settle();
+  assert.equal(h.get("abandonRun").disabled,true);
+  h.get("recoveryExternal").checked=true;h.get("recoveryTarget").checked=true;h.get("recoveryReason").value="Stopped CLI and web; inspected target";
+  h.get("recoveryReason").events.input();assert.equal(h.get("abandonRun").disabled,false);
+  h.get("abandonRun").click();await h.settle();
+  const posted=JSON.parse(h.requests.find(r=>r.url==="/api/commands").options.body);
+  assert.equal(posted.type,"run.abandon");assert.equal(posted.payload.runId,"a");assert.equal(posted.payload.expectedVersion,3);
+  assert.equal(posted.payload.externalTerminationConfirmed,true);assert.equal(posted.payload.targetInspected,true);assert.match(posted.payload.reason,/Stopped CLI/);
+});

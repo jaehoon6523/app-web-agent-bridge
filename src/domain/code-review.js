@@ -23,6 +23,29 @@ function references(refs, context, requireSome = true) {
     return evidence;
   });
 }
+function verifyRequiredExecutions(requirement, evidence, context) {
+  const checks = requirement.verificationMethod.checks ?? [];
+  if (requirement.verificationMethod.kinds.some((k) => ["EXECUTION", "ARTIFACT"].includes(k)) && !checks.length) {
+    throw new TypeError("SATISFIED requires explicit verification execution checks.");
+  }
+  for (const check of checks) {
+    const latest = context.evidence.filter((e) => e.candidateId === context.candidateId && e.kind === "EXECUTION"
+      && e.result?.verificationId === check.verificationId).at(-1);
+    const r = latest?.result;
+    if (!latest || !evidence.includes(latest) || latest.producer !== "CONTROLLER" || latest.valid !== true
+      || !r.executionId || r.exitCode !== check.expectedExitCode || r.timedOut !== false || r.aborted !== false
+      || r.error !== null || r.candidateUnchanged !== true || r.terminationConfirmed !== true) {
+      throw new TypeError(`SATISFIED lacks a successful latest verification execution: ${check.verificationId}`);
+    }
+    for (const filename of check.requiredResultFiles) {
+      if (!evidence.some((e) => e.kind === "ARTIFACT" && e.producer === "CONTROLLER" && e.valid === true
+        && e.executionEvidenceId === latest.evidenceId && e.result?.executionId === r.executionId
+        && e.result?.verificationId === check.verificationId && e.result?.path === filename)) {
+        throw new TypeError(`SATISFIED lacks the required verification result: ${filename}`);
+      }
+    }
+  }
+}
 export function validateAuditResponse(response, context) {
   const shared = ["type", "runId", "requestId", "candidateId", "requirementsRef"];
   if (response?.type === "EVIDENCE_REQUEST") {
@@ -36,7 +59,7 @@ export function validateAuditResponse(response, context) {
     }
     return response;
   }
-  exactObject(response, [...shared, "assessments", "findingDecisions", "newFindings", "summary"], ["score"]);
+  exactObject(response, [...shared, "assessments", "findingDecisions", "newFindings", "summary"], ["score", "suggestions"]);
   if (response.type !== "REVIEW_REPORT") throw new TypeError("Expected REVIEW_REPORT or EVIDENCE_REQUEST.");
   bound(response, context); nonempty(response.summary, "summary");
   if (response.score !== undefined && !Number.isFinite(response.score)) throw new TypeError("Optional score must be finite.");
@@ -53,6 +76,7 @@ export function validateAuditResponse(response, context) {
     if (assessment.verdict === "SATISFIED" && req.verificationMethod.kinds.some((kind) => !evidence.some((e) => e.kind === kind && e.producer !== "AGENT"))) {
       throw new TypeError("SATISFIED lacks the required verification evidence kinds.");
     }
+    if (assessment.verdict === "SATISFIED") verifyRequiredExecutions(req, evidence, context);
   }
   uniqueItems(response.findingDecisions, "findingId", "finding decisions");
   for (const decision of response.findingDecisions) {
@@ -67,6 +91,14 @@ export function validateAuditResponse(response, context) {
     if (!requirements.some((r) => r.requirementId === finding.requirementId) || typeof finding.required !== "boolean") throw new TypeError("Invalid finding requirement.");
     nonempty(finding.problem, "finding problem"); nonempty(finding.resolutionCriteria, "resolution criteria");
     references(finding.evidenceRefs, context);
+  }
+  if (response.suggestions !== undefined) {
+    if (!Array.isArray(response.suggestions)) throw new TypeError("suggestions must be an array.");
+    for (const suggestion of response.suggestions) {
+      exactObject(suggestion, ["requirementId", "description", "evidenceRefs"]);
+      if (!requirements.some((r) => r.requirementId === suggestion.requirementId)) throw new TypeError("Unknown suggestion requirement.");
+      nonempty(suggestion.description, "suggestion description"); references(suggestion.evidenceRefs, context);
+    }
   }
   return response;
 }
@@ -86,6 +118,11 @@ export function evaluateCodeReview(report, context) {
     findings.push({ ...structuredClone(item), findingId: `finding_${randomUUID()}`, runId: context.runId,
       detectedCandidateId: context.candidateId, status: "OPEN", verifiedCandidateId: null,
       history: [{ status: "OPEN", candidateId: context.candidateId, reviewId, at, reason: item.problem }] });
+  }
+  // Findings describe acceptance violations. Optional improvements belong in suggestions.
+  // A reviewer cannot downgrade a required requirement's violation, including historical records.
+  for (const finding of findings) {
+    finding.required = finding.required || context.requirements.items.some((r) => r.requirementId === finding.requirementId && r.required);
   }
   const required = report.assessments.filter((a) => context.requirements.items.find((r) => r.requirementId === a.requirementId).required);
   const unresolved = findings.some((f) => f.required && ["OPEN", "FIX_SUBMITTED"].includes(f.status));

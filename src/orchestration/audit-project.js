@@ -7,8 +7,13 @@ export function validateAuditProject(value) {
   exactObject(value, ["projectId", "targetRoot", "requirements", "policy", "verifications"]);
   nonempty(value.projectId, "projectId");
   if (!path.isAbsolute(value.targetRoot)) throw new TypeError("Project targetRoot must be absolute.");
+  const requirements = validateRequirements(value.requirements), verifications = validateVerifications(value.verifications);
+  for (const requirement of requirements.items) for (const check of requirement.verificationMethod.checks ?? []) {
+    const registered = verifications.find((v) => v.verificationId === check.verificationId);
+    if (!registered || check.requiredResultFiles.some((f) => !registered.resultFiles.includes(f))) throw new TypeError("Requirement verification or result file is not registered.");
+  }
   return { projectId: value.projectId, targetRoot: fs.realpathSync(value.targetRoot),
-    requirements: validateRequirements(value.requirements), policy: validateAuditPolicy(value.policy), verifications: validateVerifications(value.verifications) };
+    requirements, policy: validateAuditPolicy(value.policy), verifications };
 }
 export function readAuditProject(filename) {
   if (!filename) return { project: null, error: "AUDIT_PROJECT_FILE을 설정하고 대상 저장소·요구사항·검증·한도를 지정하세요." };

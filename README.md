@@ -42,7 +42,8 @@ Copy-Item .env.example .env
   "requirements": {
     "requirementsId": "my-project-requirements",
     "revision": "1",
-    "sourceRoles": [{"source": "approved-spec.md", "role": "acceptance"}],
+    "authority": "REQUIREMENTS_JSON",
+    "sourceRoles": [{"source": "approved-spec.md", "role": "REFERENCE", "content": "참고 문서 원문을 여기에 고정합니다. 수용 조건은 아래 items에 명시합니다."}],
     "unresolvedQuestions": [],
     "items": [{
       "requirementId": "APP-01",
@@ -51,7 +52,8 @@ Copy-Item .env.example .env
       "required": true,
       "verificationMethod": {
         "kinds": ["CODE_SNAPSHOT", "EXECUTION"],
-        "description": "해당 코드와 실제 사용자 동작 검사 결과를 함께 확인"
+        "description": "해당 코드와 실제 사용자 동작 검사 결과를 함께 확인",
+        "checks": [{"verificationId": "project-tests", "expectedExitCode": 0, "requiredResultFiles": []}]
       },
       "sourceRefs": ["approved-spec.md"]
     }]
@@ -76,9 +78,11 @@ Copy-Item .env.example .env
 }
 ```
 
-`verificationMethod.kinds`는 `CODE_SNAPSHOT`, `PATCH`, `EXECUTION`, `ARTIFACT` 중 필요한 종류를 지정합니다. `AGENT_CLAIM`은 충족 증거를 대신하지 않습니다. 요구사항 내용이 바뀌면 새 revision을 사용합니다. 동일 ID·revision으로 다른 내용을 시작하면 거절합니다. 이전 런의 감사가 새 revision을 승인하지 않습니다.
+`verificationMethod.kinds`는 `CODE_SNAPSHOT`, `PATCH`, `EXECUTION`, `ARTIFACT` 중 필요한 종류를 지정합니다. `AGENT_CLAIM`은 충족 증거를 대신하지 않습니다. `EXECUTION` 또는 `ARTIFACT`를 요구하면 `checks`에 등록된 검증 ID·기대 종료 코드·필수 결과 파일을 지정해야 합니다. `ARTIFACT`에는 최소 하나의 필수 결과 파일이 필요합니다. `SATISFIED`는 각 검증의 **해당 후보에서 가장 최근 실행**과 그 실행에 속한 파일을 참조해야 하며, 기대 종료 코드 일치 외에도 시간 초과·중단·오류 없음과 후보 불변·종료 확인이 필요합니다. 실패 출력은 불충족 분석 자료로 보존합니다. 검증 성공만으로 기능 충족을 자동 선언하지는 않습니다.
 
-등록 검증은 실행 파일과 리터럴 인자 배열을 사용하며 셸 문자열을 해석하지 않습니다. 웹은 `verificationId`만 요청할 수 있습니다. `.cmd`·`.bat`·`.ps1` 래퍼는 직접 실행하지 않습니다. 검증 도구가 결과 파일을 만들면 `resultFiles`에 작업 위치 기준 상대 경로를 등록합니다.
+`authority: "REQUIREMENTS_JSON"`은 `items`의 수용 조건이 최종 기준임을 명시합니다. 참고 문서는 `sourceRoles`의 `REFERENCE` 원문으로 고정하며 파일 경로를 실행 중 다시 읽어 기준으로 사용하지 않습니다. 모든 `sourceRefs`는 등록된 원문을 가리켜야 합니다. 참고 문서에만 있는 필수 조건은 운영자가 시작 전에 `items`로 옮겨야 하며 충돌·미정 사항은 `unresolvedQuestions`에 기록합니다. 원문도 요구사항 해시에 포함됩니다. 요구사항 내용이 바뀌면 새 revision을 사용합니다. 동일 ID·revision으로 다른 내용을 시작하면 거절합니다. 이전 런의 감사가 새 revision을 승인하지 않습니다.
+
+등록 검증은 실행 파일과 리터럴 인자 배열을 사용하며 셸 문자열을 해석하지 않습니다. 웹은 `verificationId`만 요청할 수 있습니다. `.cmd`·`.bat`·`.ps1` 래퍼는 직접 실행하지 않습니다. 검증 도구가 결과 파일을 만들면 `resultFiles`에 `BRIDGE_RESULT_DIR` 기준 상대 경로를 등록합니다. 검증 프로그램은 컨트롤러가 매 실행 새로 만든 이 디렉터리에 결과를 기록해야 합니다. 작업 사본에 남은 파일은 수집하지 않습니다. `BRIDGE_EXECUTION_ID`도 환경 변수로 전달합니다. 심볼릭 링크·하드 링크 결과는 거절하고, 수집 후 임시 디렉터리는 정리합니다.
 
 허용 검증은 **신뢰하는 프로젝트 운영 설정**입니다. 자식 프로세스의 작업 위치와 환경 변수 전달을 제한하지만, 호스트에서 실행하는 검증 명령 자체를 OS 샌드박스로 격리하는 구현은 아닙니다. Codex에는 `workspaceWrite`와 작업 worktree, 네트워크 비허용 정책을 전달합니다. 설치된 app-server 계약의 제한된 읽기 경로 지원과 실제 OS 권한 효과는 별도 검증 대상입니다. Git worktree를 권한 격리의 증거로 간주하지 않습니다.
 
@@ -97,7 +101,7 @@ npm start
 - `UNDETERMINED`: 부족한 정보와 이유를 보존합니다.
 - 필수 불충족·미해결 지적은 `REWORK`, 필수 판단 불가·새 후보에서 해결 지적의 재검증 미완료는 `HOLD`, 나머지 필수 통과 조건을 충족할 때만 `PASS`입니다.
 
-지적 ID는 컨트롤러가 발급합니다. `OPEN → FIX_SUBMITTED`는 CLI의 수정 제출이고 해결이 아닙니다. 웹이 현재 후보 근거와 해결 조건을 확인해야 `RESOLVED`가 됩니다. 보고서에서 빠진 지적은 유지합니다. `WITHDRAWN`은 근거 있는 철회입니다.
+지적 ID는 컨트롤러가 발급합니다. `OPEN → FIX_SUBMITTED`는 CLI의 수정 제출이고 해결이 아닙니다. 웹이 현재 후보 근거와 해결 조건을 확인해야 `RESOLVED`가 됩니다. 보고서에서 빠진 지적은 유지합니다. `WITHDRAWN`은 근거 있는 철회입니다. `newFindings`는 수용 조건 위반이며 필수 요구사항의 위반은 웹의 `required:false`와 무관하게 컨트롤러가 필수 지적으로 유지합니다. 수용 조건 밖의 선택 개선안은 `suggestions` 배열(`requirementId`, `description`, `evidenceRefs`)로 별도 기록합니다.
 
 캡처에는 기준 commit·후보 tree·patch hash·변경 파일·전체 blob 원문을 저장합니다. Git 객체가 나중에 정리돼도 이미 캡처한 코드 원문은 콘텐츠 주소 아티팩트에서 조회할 수 있습니다. 추가 코드 조회는 정규 파일만 허용하며 경로 탈출·symlink·submodule·바이너리 텍스트 조회를 거부합니다.
 
@@ -111,7 +115,11 @@ npm start
 
 중단을 접수하면 후속 배정을 차단합니다. 외부 종료 확인이 부족하면 `RECOVERY_REQUIRED`와 중단 불확실 이유를 남깁니다. 늦은 응답은 새 구현·통과·적용을 시작할 수 없습니다. 런 한도와 외부 턴 시간 초과도 성공으로 바뀌지 않습니다.
 
+`RECOVERY_REQUIRED`에서 로컬 작업이 정리된 뒤 콘솔의 **복구 확인 후 실행 폐기**를 사용할 수 있습니다. 운영자가 CLI·검증 프로세스·ChatGPT 생성 종료와 대상 변경 상태를 직접 확인하고 사유를 입력하면 `run.abandon`이 `CANCELLED`로 종료합니다. 확인 내용은 자동 검증으로 가장하지 않고 `OPERATOR_ATTESTATION`과 현재 대상 HEAD·Git 상태로 보존합니다. 런·후보·작업 사본은 삭제하지 않고 적용 권한도 부여하지 않습니다. 로컬 작업이 남으면 폐기를 거절합니다. 서버가 멈췄다면 먼저 외부 작업을 종료하고 재시작한 뒤 확인하세요. 이후 새 실행도 clean target 사전 검사를 통과해야 합니다.
+
 감사 통과 후보의 적용은 candidateId·reviewId·patch hash·baseCommit·상태 버전이 모두 맞아야 합니다. clean target에 저장된 patch를 적용하고 실제 tree를 비교합니다. 적용은 commit·push·배포를 수행하지 않습니다. 적용 중 재시작하면 대상이 기준인지 승인 후보인지 그 외인지 판별하고 자동 재적용하지 않습니다. worktree는 감사 기록·복구 확인을 위해 보존합니다.
+
+현재 런 계약은 schemaVersion 3입니다. 이전 schemaVersion 1·2의 승인도 새 증거·기준 계약의 승인으로 승계하지 않습니다. 미완료 이전 런은 복구 필요로 남기고, 확인 후 폐기하고 새 설정으로 새 런을 시작해야 합니다. 이미 종료된 기록은 역사로 보존합니다. 기존 프로젝트 설정에는 `authority`, 참고 문서 원문, 필요한 `checks`를 명시적으로 추가해야 하며 자동으로 채워 승인하지 않습니다.
 
 과거 스키마의 점수 기반 PASS는 새 기준의 PASS로 마이그레이션하지 않습니다. 진행 중이거나 적용 대기였던 과거 기록은 복구 필요로 두고, 원래 캡처·리뷰는 보존합니다.
 
@@ -123,10 +131,10 @@ npm start
 | `GET /api/preflight` | 시작 조건과 고정 프로젝트 설정 요약 |
 | `POST /api/dashboard/session` | 동일 출처 로컬 브라우저의 임시 인증 |
 | `GET /api/state?runId=...` | 인증된 진행·판정·지적·증거·과거 기록 조회 |
-| `POST /api/commands` | `{type, requestId, payload}` 명령. CODE_CHANGE는 `run.start`, `run.stop`, `code.apply`, `evidence.get`, `evidence.export` |
+| `POST /api/commands` | `{type, requestId, payload}` 명령. CODE_CHANGE는 `run.start`, `run.stop`, `run.abandon`, `code.apply`, `evidence.get`, `evidence.export` |
 | `POST /api/runs/start` | 목표·URL로 접수. `X-Request-ID` 필수, `202`와 런 ID 반환 |
 
-명령은 Bearer 인증과 같은 Origin이 필요합니다. `run.start`의 payload는 `{mode:"CODE_CHANGE", expectedVersion:0, objective, conversationUrl}`입니다. 그 외 명령은 `runId`, `expectedVersion`을 포함합니다. 적용에는 `candidateId`, `reviewId`, `artifactHash`, `baseCommit`을 추가합니다.
+명령은 Bearer 인증과 같은 Origin이 필요합니다. `run.start`의 payload는 `{mode:"CODE_CHANGE", expectedVersion:0, objective, conversationUrl}`입니다. 그 외 명령은 `runId`, `expectedVersion`을 포함합니다. `run.abandon`에는 `externalTerminationConfirmed:true`, `targetInspected:true`, 비어 있지 않은 `reason`을 추가합니다. 적용에는 `candidateId`, `reviewId`, `artifactHash`, `baseCommit`을 추가합니다.
 
 ## 검증
 
