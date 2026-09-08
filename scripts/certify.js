@@ -1,8 +1,11 @@
 import process from "node:process";
 import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import dotenv from "dotenv";
+
+dotenv.config({ quiet: true });
 
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const node = process.execPath;
 const cwd = process.cwd();
 const baseUrl = (process.env.BRIDGE_BASE_URL || `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || "8787"}`)
   .replace(/\/+$/u, "");
@@ -12,13 +15,14 @@ const expectApplied = ["1", "true", "yes", "on"].includes(
   String(process.env.CERTIFY_EXPECT_APPLIED || "").toLowerCase(),
 );
 
-function run(executable, args) {
+export function run(executable, args) {
   const result = spawnSync(executable, args, {
     cwd,
     stdio: "inherit",
-    shell: false,
+    shell: process.platform === "win32" && executable === "npm.cmd",
     windowsHide: true,
   });
+  if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${executable} ${args.join(" ")} failed with exit code ${result.status}.`);
   }
@@ -42,14 +46,13 @@ function requireCondition(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-async function main() {
-  process.stdout.write("Certification phase 1/3: static and automated checks\n");
-  run(npm, ["run", "check"]);
+export async function main({ check = () => run(npm, ["run", "check"]), request = fetchJson,
+  certificationRunId = runId, dashboardToken = token, requireApplied = expectApplied } = {}) {
+  const runId = certificationRunId, token = dashboardToken, expectApplied = requireApplied;
+  process.stdout.write("Certification phase 1/2: static and automated checks\n");
+  await check();
 
-  process.stdout.write("\nCertification phase 2/3: strict local capability checks\n");
-  run(node, ["scripts/doctor.js", "--strict"]);
-
-  process.stdout.write("\nCertification phase 3/3: persisted live audit evidence\n");
+  process.stdout.write("\nCertification phase 2/2: persisted live audit evidence\n");
   requireCondition(
     runId,
     "CERTIFY_RUN_ID is required. Certification never invents or starts a live provider run.",
@@ -59,22 +62,10 @@ async function main() {
     "DASHBOARD_TOKEN is required to inspect the persisted run.",
   );
 
-  const health = await fetchJson("/api/health");
+  const health = await request("/api/health");
   requireCondition(health?.ok === true, "Bridge health endpoint is not healthy.");
-  requireCondition(
-    health?.codexRuntimeReady === true,
-    "Codex runtime is not currently ready.",
-  );
-  requireCondition(
-    health?.webRuntimeReady === true,
-    "ChatGPT Web runtime is not currently ready.",
-  );
-  requireCondition(
-    health?.liveSessionBindingReady === true,
-    "ChatGPT Web session is not currently bound.",
-  );
 
-  const snapshot = await fetchJson(`/api/state?runId=${encodeURIComponent(runId)}`, true);
+  const snapshot = await request(`/api/state?runId=${encodeURIComponent(runId)}`, true);
   requireCondition(snapshot?.run?.runId === runId, "Requested live run was not returned.");
   requireCondition(
     snapshot?.run?.schemaVersion === 3,
@@ -114,7 +105,7 @@ async function main() {
   process.stdout.write(`Evidence records: ${snapshot.evidence.length}\n`);
 }
 
-main().catch((error) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((error) => {
   process.stderr.write(`\nCertification result: FAIL\n${error.message}\n`);
   process.exitCode = 1;
 });

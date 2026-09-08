@@ -1,6 +1,29 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { normalizeWorkerCompletion, validateWorkerAdapter } from "../src/runtime/workers/contract.js";
+import { createGenericJsonlWorker } from "../src/runtime/workers/generic-jsonl-worker.js";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+
+test("missing worker executable rejects creation without crashing the controller", async () => {
+  await assert.rejects(createGenericJsonlWorker({
+    provider: "qwen", executablePath: path.join(process.cwd(), `missing-worker-${randomUUID()}.exe`),
+    workspaceRoot: process.cwd(),
+  }), { code: "ENOENT" });
+});
+
+test("worker exit rejects its pending turn and prevents subsequent submissions", async () => {
+  const worker = await createGenericJsonlWorker({
+    provider: "qwen", executablePath: process.execPath, workspaceRoot: process.cwd(),
+    args: ["-e", "process.stdin.once('data', () => process.exit(7))"],
+  });
+  try {
+    await worker.start();
+    const handle = await worker.submitTurn({ text: "test", outputSchema: {} });
+    await assert.rejects(handle.completion, /exited code=7/u);
+    await assert.rejects(worker.submitTurn({ text: "retry", outputSchema: {} }), /closed/u);
+  } finally { await worker.close(); }
+});
 
 test("worker adapter contract accepts provider-neutral workers", () => {
   const worker = {

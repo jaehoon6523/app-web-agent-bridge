@@ -29,7 +29,7 @@ function service(stateRoot) {
   });
 }
 
-test("reconcile is read-only for recovery-required run", () => {
+test("reconcile is read-only for recovery-required run", async () => {
   const root = repository();
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-reconcile-state-"));
   const svc = service(stateRoot);
@@ -48,13 +48,13 @@ test("reconcile is read-only for recovery-required run", () => {
     assert.deepEqual(after, before);
     assert.ok(report.allowedActions.includes("run.abandon"));
   } finally {
-    void svc.close();
+    await svc.close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(stateRoot, { recursive: true, force: true });
   }
 });
 
-test("missing worktree is orphaned", () => {
+test("missing worktree is orphaned", async () => {
   const root = repository();
   const stateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-reconcile-state-"));
   const svc = service(stateRoot);
@@ -66,7 +66,7 @@ test("missing worktree is orphaned", () => {
     });
     assert.equal(report.classification, "ORPHANED");
   } finally {
-    void svc.close();
+    await svc.close();
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(stateRoot, { recursive: true, force: true });
   }
