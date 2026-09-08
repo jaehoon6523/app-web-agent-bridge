@@ -122,13 +122,14 @@ if (process.env.CODEX_EXECUTABLE?.trim()) {
 }
 checks.push(entry("codex.executable", codexResult.ok ? "PASS" : "FAIL", codexResult.detail));
 
-const auditProject = process.env.AUDIT_PROJECT_FILE?.trim()
+const managedProject = path.resolve(cwd, process.env.WORKSPACE || ".", process.env.CONTROLLER_DATA_DIR || ".agent-controller", "audit-project.json");
+const auditProject = fileExists(managedProject) ? managedProject : process.env.AUDIT_PROJECT_FILE?.trim()
   ? path.resolve(cwd, process.env.AUDIT_PROJECT_FILE.trim())
   : null;
 checks.push(entry(
   "audit.project",
   auditProject && fileExists(auditProject) ? "PASS" : "FAIL",
-  auditProject ? `Audit project: ${auditProject}` : "AUDIT_PROJECT_FILE is not configured.",
+  auditProject ? `Audit project: ${auditProject}` : "Save Project settings in the dashboard or configure AUDIT_PROJECT_FILE.",
 ));
 
 for (const name of [

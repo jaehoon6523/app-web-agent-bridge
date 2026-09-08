@@ -5,7 +5,8 @@ import process from "node:process";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "./config.js";
-import { readAuditProject } from "./orchestration/audit-project.js";
+import { AuditProjectSettings } from "./orchestration/audit-project-settings.js";
+import { isTerminalRunPhase } from "./domain/run-state-machine.js";
 import {
   ChatGptWebSessionAdapter,
   WebExtensionTransport,
@@ -47,7 +48,12 @@ export function createBridgeServer({
   if (!runtimeConfig || typeof runtimeConfig !== "object") {
     throw new TypeError("createBridgeServer requires runtimeConfig.");
   }
-  const auditSettings = readAuditProject(runtimeConfig.auditProjectFile);
+  const projectSettings = new AuditProjectSettings({
+    filename: path.join(runtimeConfig.persistence?.databasePath
+      ? path.dirname(runtimeConfig.persistence.databasePath) : path.join(runtimeConfig.workspace || process.cwd(), ".agent-controller"), "audit-project.json"),
+    fallbackFile: runtimeConfig.auditProjectFile,
+  });
+  let auditSettings = projectSettings.snapshot();
 
   const extensionTransport = runtimeConfig.demoMode
     ? null
@@ -190,6 +196,27 @@ export function createBridgeServer({
       res.json({ token: browserSession.token });
     } catch (error) {
       res.status(error.statusCode || 403).json({ error: error.message });
+    }
+  });
+
+  app.get("/api/project", requireDashboardRead, (_req, res) => {
+    res.json({ ...projectSettings.snapshot(), defaults: { targetRoot: runtimeConfig.workspace || process.cwd(), executable: process.execPath } });
+  });
+  app.put("/api/project", requireDashboardMutation, async (req, res) => {
+    try {
+      const live = await getLiveRuntime();
+      if (dashboard.isDispatching() || live.codeChanges?.busy()
+        || live.store.listRuns().some((run) => !isTerminalRunPhase(run.phase))) {
+        res.status(409).json({ error: "미종료 작업을 중단한 뒤 프로젝트 설정을 저장하세요." });
+        return;
+      }
+      const saved = projectSettings.save(req.body?.project, req.body?.expectedVersion);
+      auditSettings = saved;
+      if (live.codeChanges) live.codeChanges.project = structuredClone(saved.project);
+      res.json(saved);
+    } catch (error) {
+      res.status(error.code === "PROJECT_VERSION_CONFLICT" ? 409 : 400)
+        .json({ error: redactForEvidence(error.message) });
     }
   });
 

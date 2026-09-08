@@ -4,19 +4,52 @@
 <body>
 <header class="top"><strong>CLI 구현 · 웹 감사</strong><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></header>
 <div class="layout">
-  <aside class="history"><h2>실행 기록</h2><button id="newRun">새 작업</button><p id="newRunReason" class="muted"></p><nav id="runList" aria-label="실행 선택"></nav></aside>
+  <aside class="history"><h2>실행 기록</h2><button id="newRun">새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>미종료 작업 확인 · 중단</button><nav id="runList" aria-label="실행 선택"></nav></aside>
   <main>
     <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
+    <section id="projectPanel" hidden aria-labelledby="projectHeading">
+      <h2 id="projectHeading">프로젝트 설정</h2><p>대상 저장소와 통과 기준을 지정하세요. 저장한 설정은 다음 작업부터 사용됩니다.</p>
+      <form id="projectForm" novalidate>
+        <label><input id="projectAdvanced" type="checkbox"> 전체 설정 편집 (JSON)</label>
+        <div id="projectBasic">
+          <label for="projectName">프로젝트 이름</label><input id="projectName" placeholder="예: chat-system">
+          <label for="projectRoot">대상 Git 저장소 절대 경로</label><input id="projectRoot" placeholder="예: C:/work/chat-system">
+          <p class="muted">첫 커밋이 있는 Git 저장소를 지정하세요. 실제 작업 시작 전에는 저장소의 변경 사항을 정리해야 합니다.</p>
+          <label for="projectRevision">기준 버전</label><input id="projectRevision" value="1">
+          <h2>필수 요구사항과 통과 기준</h2><div id="projectRequirements"></div><button id="addProjectRequirement" type="button">요구사항 추가</button>
+          <h2>검증 방법</h2><label><input id="projectCodeOnly" type="checkbox"> 명령 실행 없이 코드 검토만 수행</label>
+          <p class="muted">코드 검토만 선택하면 실제 실행 결과는 검증하지 않습니다.</p>
+          <div id="projectExecution">
+            <label for="projectExecutable">검증 프로그램 절대 경로</label><input id="projectExecutable" placeholder="예: C:/Program Files/nodejs/node.exe">
+            <label for="projectArgs">실행 인수 (한 줄에 하나씩, 따옴표 없이 입력)</label><textarea id="projectArgs" rows="3" placeholder="--test"></textarea>
+            <p class="muted">Node 테스트는 node.exe와 --test 인수를 지정하세요. npm.cmd·배치 파일·셸 스크립트는 직접 실행할 수 없습니다.</p>
+            <label for="projectCwd">검증 실행 위치 (저장소 기준 상대 경로)</label><input id="projectCwd" value=".">
+            <label for="projectVerificationSeconds">검증 제한 시간 (초)</label><input id="projectVerificationSeconds" type="number" min="1" value="120">
+          </div>
+          <h2>실행 한도</h2><div class="settings-grid">
+            <label>최대 구현 횟수<input id="projectIterations" type="number" min="1" value="3"></label>
+            <label>최대 증거 보완 횟수<input id="projectEvidenceRounds" type="number" min="0" value="3"></label>
+            <label>최대 응답 형식 보완 횟수<input id="projectFormatRepairs" type="number" min="0" value="2"></label>
+            <label>전체 제한 시간 (분)<input id="projectTotalMinutes" type="number" min="1" value="30"></label>
+            <label>각 응답 제한 시간 (분)<input id="projectTurnMinutes" type="number" min="1" value="10"></label>
+          </div>
+        </div>
+        <div id="projectAdvancedFields" hidden><label for="projectJson">전체 프로젝트 설정</label><textarea id="projectJson" rows="18" spellcheck="false"></textarea><p class="muted">기존의 검증 연결·참고 문서·결과 파일 설정을 그대로 편집합니다. 요구사항을 변경하면 revision도 올려 주세요.</p></div>
+        <div class="actions"><button id="saveProject" type="submit" class="primary">설정 저장</button><button id="closeProject" type="button">작업 화면으로</button><button id="reloadProject" type="button">저장된 설정 다시 불러오기</button></div>
+        <p id="projectStatus" role="status"></p>
+      </form>
+    </section>
     <section id="startPanel"><p class="eyebrow">구현 → 감사 → 수정 → 재감사</p><h1>무엇을 구현할까요?</h1>
       <form id="startForm"><label for="objective">작업 목표</label><textarea id="objective" rows="4" required placeholder="필수 기능과 원하는 결과를 적어 주세요."></textarea>
         <label for="conversationUrl">ChatGPT 대화 URL</label><input id="conversationUrl" type="url" required placeholder="https://chatgpt.com/c/…">
         <p class="muted">브릿지 확장이 연결된 브라우저에서 이 대화의 탭을 하나만 열어 주세요.</p>
-        <details open><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div></details>
+        <details open><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div><button id="editProject" type="button">프로젝트 설정</button></details>
         <button id="startRun" class="primary" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
       </form>
     </section>
     <section id="runPanel" hidden><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p></div>
-      <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="stopRun" disabled>작업 중단</button><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="exportEvidence" disabled>감사 기록 다운로드</button></div><p id="commandReason" class="muted"></p><p id="commandResult" role="status"></p><p class="muted">일시정지·재개·재시도·실행 중 자유입력은 초기 범위에서 보류되어 있습니다.</p></details>
+      <div class="actions"><button id="stopRun" disabled>작업 중단</button></div><p id="stopReason" class="muted"></p><p id="commandResult" role="status"></p>
+      <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="exportEvidence" disabled>감사 기록 다운로드</button></div><p id="commandReason" class="muted"></p><p class="muted">일시정지·재개·재시도·실행 중 자유입력은 초기 범위에서 보류되어 있습니다.</p></details>
       <section id="recoveryPanel" hidden><h2>복구 확인 후 실행 폐기</h2><p>CLI 프로세스·검증 작업과 ChatGPT 생성을 직접 종료하고 대상 저장소의 변경을 확인하세요. 기록과 작업 사본은 보존되며, 이 실행은 재개하거나 적용할 수 없게 됩니다.</p>
         <label><input id="recoveryExternal" type="checkbox"> 외부 작업이 모두 종료된 것을 확인했습니다.</label>
         <label><input id="recoveryTarget" type="checkbox"> 대상 저장소의 변경 상태를 확인했습니다.</label>

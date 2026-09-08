@@ -48,6 +48,8 @@ export class DashboardController {
     this.#transport = transport;
   }
 
+  isDispatching() { return this.#starting || this.#jobs.size > 0; }
+
   async snapshot(runId = null) {
     const live = await this.#getRuntime();
     const store = live.store;
