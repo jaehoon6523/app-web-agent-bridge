@@ -32,6 +32,26 @@ function requiredString(env, name) {
   return value.trim();
 }
 
+function jsonStringArray(env, name, fallback = []) {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === "") return Object.freeze([...fallback]);
+  let value;
+  try { value = JSON.parse(raw); }
+  catch { throw new Error(`${name} must be a JSON string array.`); }
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${name} must be a JSON string array.`);
+  }
+  return Object.freeze([...value]);
+}
+
+function workerProvider(env) {
+  const value = (env.CODE_WORKER_PROVIDER || "codex").trim().toLowerCase();
+  if (!["codex", "deepseek", "claude", "qwen", "gemini"].includes(value)) {
+    throw new Error("CODE_WORKER_PROVIDER must be codex, deepseek, claude, qwen, or gemini.");
+  }
+  return value;
+}
+
 function optionalStrongToken(env, name) {
   const value = env[name];
   if (value === undefined || value.trim() === "") return null;
@@ -77,6 +97,14 @@ export function loadConfig({
         : null,
       authPathKeys: env.CODEX_HOME?.trim() ? Object.freeze(["CODEX_HOME"]) : Object.freeze([]),
       approvalPolicy: "untrusted",
+    }),
+    codeWorker: Object.freeze({
+      provider: workerProvider(env),
+      model: env.CODE_WORKER_MODEL?.trim() || null,
+      executablePath: env.CODE_WORKER_EXECUTABLE?.trim()
+        ? path.resolve(cwd, env.CODE_WORKER_EXECUTABLE.trim())
+        : null,
+      args: jsonStringArray(env, "CODE_WORKER_ARGS"),
     }),
     dashboard: Object.freeze({
       token: optionalStrongToken(env, "DASHBOARD_TOKEN"),

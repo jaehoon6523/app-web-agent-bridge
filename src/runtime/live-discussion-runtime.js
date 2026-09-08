@@ -66,7 +66,7 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession })
     artifactStore, webSession, project: runtimeConfig.auditProject ?? readAuditProject(runtimeConfig.auditProjectFile).project, codex: {
       executablePath: runtimeConfig.codex?.executablePath, authPathKeys: runtimeConfig.codex?.authPathKeys,
       approvalPolicy: runtimeConfig.codex?.approvalPolicy,
-    } });
+    }, workerConfig: runtimeConfig.codeWorker });
   return Object.freeze({
     codeChanges,
     artifactStore,
