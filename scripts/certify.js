@@ -1,7 +1,6 @@
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 const node = process.execPath;
 const cwd = process.cwd();
 const baseUrl = (process.env.BRIDGE_BASE_URL || `http://${process.env.HOST || "127.0.0.1"}:${process.env.PORT || "8787"}`)
@@ -12,15 +11,18 @@ const expectApplied = ["1", "true", "yes", "on"].includes(
   String(process.env.CERTIFY_EXPECT_APPLIED || "").toLowerCase(),
 );
 
-function run(executable, args) {
-  const result = spawnSync(executable, args, {
+function runNodeScript(script, args = []) {
+  const result = spawnSync(node, [script, ...args], {
     cwd,
     stdio: "inherit",
     shell: false,
     windowsHide: true,
   });
+  if (result.error) {
+    throw new Error(`${node} ${script} failed to start: ${result.error.message}`, { cause: result.error });
+  }
   if (result.status !== 0) {
-    throw new Error(`${executable} ${args.join(" ")} failed with exit code ${result.status}.`);
+    throw new Error(`${node} ${script} ${args.join(" ")} failed with exit code ${result.status}.`);
   }
 }
 
@@ -44,10 +46,10 @@ function requireCondition(condition, message) {
 
 async function main() {
   process.stdout.write("Certification phase 1/3: static and automated checks\n");
-  run(npm, ["run", "check"]);
+  runNodeScript("node_modules/npm/bin/npm-cli.js", ["run", "check"]);
 
   process.stdout.write("\nCertification phase 2/3: strict local capability checks\n");
-  run(node, ["scripts/doctor.js", "--strict"]);
+  runNodeScript("scripts/doctor.js", ["--strict"]);
 
   process.stdout.write("\nCertification phase 3/3: persisted live audit evidence\n");
   requireCondition(
@@ -61,10 +63,18 @@ async function main() {
 
   const health = await fetchJson("/api/health");
   requireCondition(health?.ok === true, "Bridge health endpoint is not healthy.");
-  requireCondition(
-    health?.codexRuntimeReady === true,
-    "Codex runtime is not currently ready.",
-  );
+  const provider = process.env.CODE_WORKER_PROVIDER?.trim().toLowerCase() || "codex";
+  if (provider === "codex") {
+    requireCondition(
+      health?.codexRuntimeReady === true,
+      "Codex runtime is not currently ready.",
+    );
+  } else {
+    requireCondition(
+      health?.liveCompositionConfigured === true,
+      `Code worker provider ${provider} is not configured for live execution.`,
+    );
+  }
   requireCondition(
     health?.webRuntimeReady === true,
     "ChatGPT Web runtime is not currently ready.",
