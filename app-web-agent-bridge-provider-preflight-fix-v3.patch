@@ -1,0 +1,38 @@
+diff --git a/src/server.js b/src/server.js
+--- a/src/server.js
++++ b/src/server.js
+@@ -130,9 +130,12 @@
+   });
+   function livePreflight() {
+     const audit = auditSettings;
++    const workerExecutableConfigured = runtimeConfig.codeWorker?.provider === "codex"
++      ? runtimeConfig.codex?.executablePath != null
++      : runtimeConfig.codeWorker?.executablePath != null;
+     const checks = {
+       demoModeDisabled: runtimeConfig.demoMode === false,
+-      codexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
++      workerExecutableConfigured,
+       extensionAuthenticated: Boolean(extensionTransport?.authenticated),
+       webAdapterAvailable: webSession !== null,
+       commandAuthenticationConfigured: dashboardAuth !== null,
+diff --git a/src/runtime/workers/generic-jsonl-worker.js b/src/runtime/workers/generic-jsonl-worker.js
+--- a/src/runtime/workers/generic-jsonl-worker.js
++++ b/src/runtime/workers/generic-jsonl-worker.js
+@@ -83,17 +83,6 @@
+     }
+   });
+ 
+-  processHandle.on("error", (error) => {
+-    closed = true;
+-    const wrapped = new Error(
+-      `${provider} worker failed to start or communicate: ${error?.message || "unknown child-process error"}`,
+-      { cause: error },
+-    );
+-    for (const waiter of pending.values()) waiter.reject(wrapped);
+-    pending.clear();
+-    try { lines.close(); } catch {}
+-  });
+-
+   processHandle.on("exit", (code, signal) => {
+     const error = new Error(`${provider} worker exited code=${code} signal=${signal ?? "none"}${stderr ? `: ${stderr}` : ""}`);
+     fail(error);

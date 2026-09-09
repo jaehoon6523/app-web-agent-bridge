@@ -83,17 +83,6 @@ export async function createGenericJsonlWorker({
     }
   });
 
-  processHandle.on("error", (error) => {
-    closed = true;
-    const wrapped = new Error(
-      `${provider} worker failed to start or communicate: ${error?.message || "unknown child-process error"}`,
-      { cause: error },
-    );
-    for (const waiter of pending.values()) waiter.reject(wrapped);
-    pending.clear();
-    try { lines.close(); } catch {}
-  });
-
   processHandle.on("exit", (code, signal) => {
     const error = new Error(`${provider} worker exited code=${code} signal=${signal ?? "none"}${stderr ? `: ${stderr}` : ""}`);
     fail(error);

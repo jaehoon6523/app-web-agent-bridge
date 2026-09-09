@@ -130,24 +130,43 @@ export function createBridgeServer({
   });
   function livePreflight() {
     const audit = auditSettings;
+    const provider = runtimeConfig.codeWorker?.provider ?? "codex";
+    const codeWorkerExecutableConfigured = provider === "codex"
+      ? runtimeConfig.codex?.executablePath != null
+      : runtimeConfig.codeWorker?.executablePath != null;
     const checks = {
       demoModeDisabled: runtimeConfig.demoMode === false,
-      codexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
+      codeWorkerExecutableConfigured,
+      discussionCodexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
       extensionAuthenticated: Boolean(extensionTransport?.authenticated),
       webAdapterAvailable: webSession !== null,
       commandAuthenticationConfigured: dashboardAuth !== null,
       auditProjectConfigured: audit.project !== null,
     };
-    const missing = Object.entries(checks)
-      .filter(([, ready]) => !ready)
-      .map(([name]) => name);
-    return Object.freeze({ checks, missing, readyForProvisioning: missing.length === 0,
-      readyForDiscussion: missing.filter((key) => key !== "auditProjectConfigured").length === 0,
-      project: audit.project ? { projectId: audit.project.projectId, targetRoot: audit.project.targetRoot,
-        requirementsId: audit.project.requirements.requirementsId, revision: audit.project.requirements.revision,
-        requirements: audit.project.requirements, policy: audit.project.policy,
-        verifications: audit.project.verifications.map(({ verificationId, purpose }) => ({ verificationId, purpose })) } : null,
-      projectError: audit.error });
+    const commonKeys = ["demoModeDisabled", "extensionAuthenticated", "webAdapterAvailable", "commandAuthenticationConfigured"];
+    const codeChangeKeys = [...commonKeys, "codeWorkerExecutableConfigured", "auditProjectConfigured"];
+    const discussionKeys = [...commonKeys, "discussionCodexExecutableConfigured"];
+    const missingFor = (keys) => keys.filter((key) => !checks[key]);
+    const missing = missingFor(codeChangeKeys);
+    const discussionMissing = missingFor(discussionKeys);
+    return Object.freeze({
+      checks,
+      missing,
+      discussionMissing,
+      readyForProvisioning: missing.length === 0,
+      readyForDiscussion: discussionMissing.length === 0,
+      workerProvider: provider,
+      project: audit.project ? {
+        projectId: audit.project.projectId,
+        targetRoot: audit.project.targetRoot,
+        requirementsId: audit.project.requirements.requirementsId,
+        revision: audit.project.requirements.revision,
+        requirements: audit.project.requirements,
+        policy: audit.project.policy,
+        verifications: audit.project.verifications.map(({ verificationId, purpose }) => ({ verificationId, purpose })),
+      } : null,
+      projectError: audit.error,
+    });
   }
 
   function requireDashboardMutation(req, res, next) {
@@ -280,6 +299,7 @@ export function createBridgeServer({
     const codexReady = liveRuntime?.manager?.status === "READY";
     const webReady = preflight.checks.extensionAuthenticated && web?.sessionReady === true;
     const bound = webReady && web?.binding?.bindingStatus === "BOUND";
+    const discussionRuntimeReady = Boolean(codexReady && bound);
     res.json({
       ok: true,
       at: nowIso(),
@@ -287,11 +307,15 @@ export function createBridgeServer({
       coreOrchestrationReady: liveRuntime !== null,
       fakeVerticalSliceVerified: null,
       codexRuntimeReady: codexReady,
+      codeWorkerProvider: preflight.workerProvider,
+      codeWorkerConfigured: preflight.checks.codeWorkerExecutableConfigured,
+      codeChangeProvisioningReady: preflight.readyForProvisioning,
       webRuntimeReady: webReady,
       liveSessionBindingReady: Boolean(bound),
-      liveOrchestrationReady: Boolean(codexReady && bound),
+      discussionRuntimeReady,
+      liveOrchestrationReady: discussionRuntimeReady,
       webConnected: preflight.checks.extensionAuthenticated,
-      liveCompositionConfigured: preflight.checks.codexExecutableConfigured,
+      liveCompositionConfigured: preflight.checks.discussionCodexExecutableConfigured,
     });
   });
   app.get("/api/preflight", (_req, res) => {

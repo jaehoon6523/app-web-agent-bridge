@@ -43,8 +43,8 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession })
   } catch (cause) {
     store.close();
     throw new LiveDiscussionRuntimeError(
-      "Codex executable validation failed before app-server startup.",
-      "CODEX_RUNTIME_CONFIGURATION_INVALID",
+      "Artifact store initialization failed before runtime startup.",
+      "ARTIFACT_STORE_INITIALIZATION_FAILED",
       { cause },
     );
   }

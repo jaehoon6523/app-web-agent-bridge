@@ -212,7 +212,7 @@ export class CodeChangeService {
       this.update(runId, { stage: "VERIFYING", candidate, capture, candidates: [...run.candidates, candidate], findings,
         evidence: [...run.evidence, evidenceRecord(this.artifactStore, candidateId, "PATCH", patch, { unchanged: capture.unchanged }),
           evidenceRecord(this.artifactStore, candidateId, "AGENT_CLAIM", report, {}, "AGENT")],
-        messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: "CODEX_AGENT", content: completed.text, createdAt: new Date().toISOString() }] });
+        messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: (completed.provider || this.workerConfig.provider) === "codex" ? "CODEX_AGENT" : "CODE_WORKER", workerProvider: completed.provider || this.workerConfig.provider, content: completed.text, createdAt: new Date().toISOString() }] });
       for (const verification of run.verifications) await performVerification(this, runId, workspace, verification);
       await auditCandidate(this, runId, workspace);
       if (this.get(runId).stage !== "REWORK") return;
