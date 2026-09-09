@@ -9,6 +9,47 @@ const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상�
 function text(id, value) { $(id).textContent = value ?? ""; }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
+function workerIdentity(run) {
+  const worker = run?.worker ?? {};
+  const provider = worker.provider ?? "codex";
+  const model = worker.model ?? null;
+  return model ? `${provider} / ${model}` : provider;
+}
+function externalEventRecords(run) {
+  if (!run) return [];
+  const workerTurns = (run.workerTurns ?? []).map((turn) => ({
+    at: turn.finishedAt ?? turn.startedAt,
+    title: `WORKER_TURN_${String(turn.status ?? "UNKNOWN").toUpperCase()}`,
+    content: JSON.stringify({
+      provider: turn.provider ?? run.worker?.provider ?? null,
+      model: turn.model ?? run.worker?.model ?? null,
+      sessionId: turn.sessionId ?? null,
+      turnId: turn.turnId ?? null,
+      startedAt: turn.startedAt ?? null,
+      finishedAt: turn.finishedAt ?? null,
+      durationMs: turn.durationMs ?? null,
+      usage: turn.usage ?? null,
+      inputRef: turn.inputRef ?? null,
+      outputRef: turn.outputRef ?? null,
+      metadata: turn.metadata ?? null,
+    }),
+  }));
+  const reviews = (run.reviews ?? []).map((review) => ({
+    at: review.createdAt ?? review.finishedAt ?? review.reviewedAt ?? run.updatedAt,
+    title: "REVIEW_RESULT",
+    content: JSON.stringify({
+      reviewId: review.reviewId ?? null,
+      candidateId: review.candidateId ?? null,
+      decision: review.decision ?? review.report?.decision ?? null,
+      requestId: review.requestId ?? null,
+      requirementsRef: review.requirementsRef ?? null,
+    }),
+  }));
+  const verifications = (snapshot?.evidence ?? []).filter((e) => ["EXECUTION", "ARTIFACT"].includes(e.kind)).map((e) => ({
+    at: e.createdAt, title:`VERIFICATION_${e.kind}`, content:JSON.stringify({ evidenceId:e.evidenceId, candidateId:e.candidateId, producer:e.producer, valid:e.valid, result:e.result }),
+  }));
+  return [...workerTurns, ...reviews, ...verifications];
+}
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
   const body = await response.json();
@@ -72,12 +113,13 @@ function renderAudit() {
     row.append(node("strong", `${e.kind} · ${e.producer}${e.valid === false ? " · 후보 증거로 무효" : ""}`), node("p", `${e.candidateId} · ${time(e.createdAt)}`, "muted"), node("p", JSON.stringify(e.result)));
     evidenceLinks(row, [e.evidenceId]); evidence.append(row);
   }
-  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, candidate:run?.candidate, missingInformation:run?.missingInformation, application:run?.application, recovery:run?.recovery }, null, 2));
+  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, worker:run?.worker, workerTurns:run?.workerTurns, candidate:run?.candidate, latestReview:run?.reviews?.at(-1), missingInformation:run?.missingInformation, application:run?.application, recovery:run?.recovery }, null, 2));
 }
 function renderLog() {
   const log = $("eventLog"); log.replaceChildren();
   const records = [...(snapshot?.events ?? []).map((e) => ({ at:e.createdAt, title:e.type, content:JSON.stringify(e.payload) })),
-    ...(snapshot?.messages ?? []).map((m) => ({ at:m.createdAt, title:m.fromActor ?? "CONTROLLER", content:m.content }))].sort((a,b) => String(a.at).localeCompare(String(b.at)));
+    ...(snapshot?.messages ?? []).map((m) => ({ at:m.createdAt, title:m.fromActor ?? "CONTROLLER", content:m.content })),
+    ...externalEventRecords(snapshot?.run)].sort((a,b) => String(a.at).localeCompare(String(b.at)));
   for (const record of records) {
     const row = node("article", "", "record"); row.append(node("time", time(record.at)), node("p", record.title), node("pre", record.content)); log.append(row);
   }
@@ -86,7 +128,8 @@ function renderLog() {
 function render() {
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
   text("serverSignal", connected ? "서버 · 연결됨" : "서버 · 확인 필요"); $("serverSignal").className = connected ? "ok" : "";
-  text("cliSignal", connected ? preflight?.checks?.codexExecutableConfigured ? "CLI · 경로 설정됨" : "CLI · 설정 필요" : "CLI · 확인 전");
+  const workerName = run ? workerIdentity(run) : "worker";
+  text("cliSignal", connected ? run ? `Worker · ${workerName}` : preflight?.checks?.codexExecutableConfigured ? "Worker · 설정됨" : "Worker · 설정 필요" : "Worker · 확인 전");
   text("webSignal", connected ? preflight?.checks?.extensionAuthenticated ? "웹 · 확장 인증됨" : "웹 · 연결 대기" : "웹 · 확인 전");
   text("refreshSignal", `런 · ${connected ? "갱신됨" : "마지막 확인"} ${time(lastConfirmed)}`);
   const busy = snapshot?.runs?.some((r) => !terminal.has(r.phase));
@@ -115,7 +158,7 @@ function render() {
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
   $("abandonRun").disabled = pending || !caps.has("run.abandon") || !$("recoveryExternal").checked || !$("recoveryTarget").checked || !$("recoveryReason").value.trim();
   if (!run) return;
-  text("runObjective", run.objective); text("runContext", `${run.projectRef?.projectId ?? "과거 런"} · 구현 ${run.iteration ?? 0}회 · ${run.activeActor ?? "대기"}`);
+  text("runObjective", run.objective); text("runContext", `${run.projectRef?.projectId ?? "과거 런"} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${run.activeActor ?? "대기"}`);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = ["HOLD", "INCONCLUSIVE", "RECOVERY_REQUIRED"].includes(run.phase) ? "warn" : run.phase === "FAILED" ? "error" : "";
   text("runReason", reasons[run.terminationReason] ?? run.error ?? (run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
