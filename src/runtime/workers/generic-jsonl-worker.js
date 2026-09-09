@@ -144,6 +144,7 @@ export async function createGenericJsonlWorker({
       if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
       closed = true;
       try { lines.close(); } catch {}
+      /** @type {Promise<void>} */
       const exited = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           cleanup();

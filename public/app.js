@@ -12,6 +12,15 @@ const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상�
 function text(id, value) { $(id).textContent = value ?? ""; }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
+function actionState(id, disabled, disabledReason = "", enabledReason = "") {
+  const element = $(id);
+  element.disabled = Boolean(disabled);
+  const reason = element.disabled ? disabledReason : enabledReason;
+  element.title = reason;
+  if (reason) element.setAttribute("aria-description", reason);
+  else element.removeAttribute("aria-description");
+  return reason;
+}
 function workerIdentity(run) {
   const worker = run?.worker ?? {};
   const provider = worker.provider ?? "codex";
@@ -160,6 +169,9 @@ async function openProjectSettings() {
       && equal(project.verifications, basic.verifications);
     $("projectAdvanced").checked = Boolean(project && !compatible);
     $("projectAdvanced").disabled = Boolean(project && !compatible);
+    $("projectAdvanced").title = project && !compatible
+      ? "가져온 고급 설정의 검증·참조 연결을 잃지 않도록 전체 JSON 편집 모드로 고정했습니다."
+      : "";
     $("projectJson").value = project ? JSON.stringify(project, null, 2) : "";
     projectMode(); $("saveProject").disabled = false;
     text("projectStatus", project ? "설정을 변경한 뒤 저장하세요. 요구사항 변경 시 기준 버전도 올려 주세요." : saved.error || "");
@@ -168,7 +180,10 @@ async function openProjectSettings() {
 function evidenceLinks(container, refs) {
   const links = node("div", "", "links");
   for (const id of refs ?? []) {
-    const button = node("button", `근거 ${id.slice(-8)}`); button.disabled = !connected || pending;
+    const button = node("button", `근거 ${id.slice(-8)}`);
+    button.disabled = !connected || pending;
+    button.title = !connected ? "서버 연결을 복구하면 근거를 열 수 있습니다."
+      : pending ? "현재 요청 처리가 끝나면 근거를 열 수 있습니다." : "근거 원문을 엽니다.";
     button.addEventListener("click", () => openEvidence(id)); links.append(button);
   }
   container.append(links);
@@ -228,15 +243,21 @@ function render() {
   text("refreshSignal", `런 · ${connected ? "갱신됨" : "마지막 확인"} ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
-  $("editProject").disabled = pending || !connected;
-  $("newRun").disabled = pending || busy;
-  text("newRunReason", pending
+  actionState("editProject", pending || !connected,
+    !connected ? "서버 연결을 복구하면 프로젝트 설정을 열 수 있습니다." : "현재 요청 처리가 끝나면 프로젝트 설정을 열 수 있습니다.",
+    "대상 저장소·요구사항·검증 기준을 변경합니다.");
+  const newRunReason = pending
     ? "현재 요청을 처리 중이라 새 작업을 만들 수 없습니다. 처리가 끝난 뒤 다시 시도하세요."
     : busy
       ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않아 새 작업을 만들 수 없습니다. 아래 버튼으로 실행 중 작업을 연 뒤 ‘작업 중단’을 누르세요.`
-      : "새 작업을 만들 수 있습니다. 과거 기록은 그대로 보존됩니다.");
+      : "새 작업을 만들 수 있습니다. 과거 기록은 그대로 보존됩니다.";
+  actionState("newRun", pending || busy, newRunReason, newRunReason);
+  text("newRunReason", newRunReason);
   $("showUnfinishedRun").hidden = !busy;
-  $("showUnfinishedRun").disabled = pending || !connected;
+  actionState("showUnfinishedRun", pending || !connected,
+    !connected ? "서버 연결을 복구하면 실행 중 작업을 열 수 있습니다."
+      : "현재 요청 처리가 끝나면 실행 중 작업을 열 수 있습니다.",
+    "실행 중 작업을 연 뒤 ‘작업 중단’ 또는 필요한 복구 절차를 진행하세요.");
   text("showUnfinishedRun", busy ? "실행 중 작업 열기 · 중단하기" : "미종료 작업 확인 · 중단");
   const list = $("runList"); list.replaceChildren();
   for (const r of [...snapshot?.runs ?? []].reverse()) {
@@ -277,15 +298,21 @@ function render() {
     $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryReason").value = "";
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
-  $("abandonRun").disabled = pending || !caps.has("run.abandon") || !$("recoveryExternal").checked || !$("recoveryTarget").checked || !$("recoveryReason").value.trim();
   if (run?.phase === "RECOVERY_REQUIRED") {
     const recoverySteps = [];
     if (!$("recoveryExternal").checked) recoverySteps.push("외부 작업 종료 확인");
     if (!$("recoveryTarget").checked) recoverySteps.push("대상 저장소 상태 확인");
     if (!$("recoveryReason").value.trim()) recoverySteps.push("확인 내용과 폐기 사유 입력");
-    $("abandonRun").title = recoverySteps.length
-      ? `비활성 이유: ${recoverySteps.join(", ")}. 항목을 완료하면 실행을 폐기할 수 있습니다.`
-      : "확인 기록 후 실행을 폐기할 수 있습니다.";
+    const abandonBlocked = pending || !caps.has("run.abandon") || recoverySteps.length > 0;
+    const abandonReason = pending ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
+      : !connected ? "서버 연결을 복구해야 실행을 폐기할 수 있습니다."
+      : !caps.has("run.abandon") ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
+      : recoverySteps.length ? `다음 항목을 완료하세요: ${recoverySteps.join(", ")}.`
+      : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
+    actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
+  } else {
+    $("abandonRun").disabled = true;
+    $("abandonRun").title = "";
   }
   if (!run) return;
   text("runObjective", run.objective); text("runContext", run.requirements
@@ -294,19 +321,29 @@ function render() {
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = ["HOLD", "INCONCLUSIVE", "RECOVERY_REQUIRED"].includes(run.phase) ? "warn" : run.phase === "FAILED" ? "error" : "";
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
-  $("stopRun").disabled = pending || !caps.has("run.stop"); $("applyCode").disabled = pending || !caps.has("code.apply"); $("exportEvidence").disabled = pending || !caps.has("evidence.export");
-  text("stopReason", pending ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
+  const stopReason = pending ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
     : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
     : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."
     : run.phase === "RECOVERY_REQUIRED" ? "자동 중단 여부를 확정할 수 없습니다. 아래 복구 확인 3개 항목을 완료한 뒤 ‘확인 기록 후 실행 폐기’를 누르세요."
     : caps.has("run.stop") ? "현재 작업을 중단할 수 있습니다. ‘작업 중단’을 누르면 후속 구현·감사를 멈추고 기록은 보존합니다."
     : run.phase === "APPLYING" ? "코드를 적용 중이라 지금은 중단할 수 없습니다. 적용 결과가 확정된 뒤 다음 행동을 선택하세요."
-    : "현재 단계에서는 중단 명령이 비활성입니다. 상태가 바뀌는지 확인하고, 복구 필요 상태가 되면 복구 확인 절차를 진행하세요.");
-  text("commandReason", pending ? "현재 명령 결과를 확인 중이라 적용할 수 없습니다. 처리가 끝난 뒤 다시 확인하세요."
-    : !connected ? "서버 연결이 끊겨 적용할 수 없습니다. 서버 연결을 복구하세요."
-    : caps.has("code.apply") ? "감사 통과 후보가 준비됐습니다. ‘감사 통과 후보 적용’을 누르면 대상 저장소에 반영합니다."
-    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 적용 명령이 아직 활성화되지 않았습니다. 실행 상태를 새로 확인한 뒤에도 같으면 복구 상태를 확인하세요."
-    : "아직 적용할 수 없습니다. 구현 → 검증 → 웹 감사가 PASS되어 ‘감사 통과·적용 대기’ 상태가 되어야 합니다.");
+    : "현재 단계에서는 중단 명령이 비활성입니다. 상태가 바뀌는지 확인하고, 복구 필요 상태가 되면 복구 확인 절차를 진행하세요.";
+  actionState("stopRun", pending || !caps.has("run.stop"), stopReason, stopReason);
+  text("stopReason", stopReason);
+
+  const applyReason = pending ? "현재 명령 처리가 끝나야 후보를 적용할 수 있습니다."
+    : !connected ? "서버 연결을 복구해야 후보를 적용할 수 있습니다."
+    : caps.has("code.apply") ? "감사 통과 후보가 준비됐습니다. 대상 저장소에 반영할 수 있습니다."
+    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 적용 capability가 없습니다. 상태를 다시 확인하고 복구·오류 기록을 확인하세요."
+    : "구현 → 검증 → 웹 감사가 PASS되어 ‘감사 통과·적용 대기’ 상태가 되어야 적용할 수 있습니다.";
+  actionState("applyCode", pending || !caps.has("code.apply"), applyReason, applyReason);
+
+  const exportReason = pending ? "현재 명령 처리가 끝나야 감사 기록을 다운로드할 수 있습니다."
+    : !connected ? "서버 연결을 복구해야 감사 기록을 다운로드할 수 있습니다."
+    : !caps.has("evidence.export") ? "현재 런에는 내보낼 수 있는 감사 기록 capability가 없습니다. 실행 기록과 상태를 먼저 확인하세요."
+    : "현재까지 보존된 감사 기록을 JSON으로 다운로드할 수 있습니다.";
+  actionState("exportEvidence", pending || !caps.has("evidence.export"), exportReason, exportReason);
+  text("commandReason", `적용: ${applyReason} · 감사 기록: ${exportReason}`);
   const signature = `${run.runId}/${run.version}/${connected}/${pending}`;
   if (renderedRecords !== signature) { renderedRecords = signature; renderAudit(); renderLog(); }
 }
@@ -332,7 +369,9 @@ async function openEvidence(id, startLine = 1) {
   evidencePage = { id, next:result.endLine + 1, target };
   text("evidenceTitle", `${result.kind} · ${id}`); text("evidenceContent", result.content);
   text("evidenceRange", `${result.startLine}–${result.endLine} / ${result.totalLines}줄${result.omittedAfter ? " · 다음 구간 있음" : ""}`);
-  $("nextEvidence").disabled = !result.omittedAfter;
+  actionState("nextEvidence", !result.omittedAfter,
+    "이 근거의 마지막 구간입니다. 더 불러올 내용이 없습니다.",
+    "다음 근거 구간을 불러옵니다.");
   if (!$("evidenceDialog").open) $("evidenceDialog").showModal();
 }
 $("startForm").addEventListener("submit", (e) => { e.preventDefault(); if (!$("startRun").disabled) command("run.start", { mode:"CODE_CHANGE", objective:$("objective").value.trim(), conversationUrl:$("conversationUrl").value.trim() }, true); });
