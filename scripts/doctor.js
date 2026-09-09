@@ -121,6 +121,18 @@ if (process.env.CODEX_EXECUTABLE?.trim()) {
   };
 }
 checks.push(entry("codex.executable", codexResult.ok ? "PASS" : "FAIL", codexResult.detail));
+checks.push(entry(
+  "provider.codex.authentication",
+  "NOT_RUN",
+  "Authentication was not probed by doctor; executable availability is not authentication proof.",
+  false,
+));
+checks.push(entry(
+  "provider.codex.turn",
+  "NOT_RUN",
+  "No Codex turn was started by doctor; a real turn requires an explicit live certification run.",
+  false,
+));
 
 const managedProject = path.resolve(cwd, process.env.WORKSPACE || ".", process.env.CONTROLLER_DATA_DIR || ".agent-controller", "audit-project.json");
 const auditProject = fileExists(managedProject) ? managedProject : process.env.AUDIT_PROJECT_FILE?.trim()
@@ -151,13 +163,22 @@ checks.push(entry(
   `Controller data directory: ${dataDirectory}`,
 ));
 
+let health = null;
 try {
-  const health = await fetchJson(`${baseUrl}/api/health`);
+  health = await fetchJson(`${baseUrl}/api/health`);
   checks.push(entry(
     "server.health",
     health?.ok === true ? "PASS" : "FAIL",
     `Server reachable at ${baseUrl}; liveOrchestrationReady=${Boolean(health?.liveOrchestrationReady)}`,
     strict,
+  ));
+  checks.push(entry(
+    "provider.web.connection",
+    health?.webConnected === true ? "PASS" : "FAIL",
+    health?.webConnected === true
+      ? "Authenticated Web extension connection is reported by the running server."
+      : "Running server does not report an authenticated Web extension connection.",
+    false,
   ));
 } catch (error) {
   checks.push(entry(
@@ -166,7 +187,27 @@ try {
     `Server not reachable at ${baseUrl}: ${error.message}`,
     strict,
   ));
+  checks.push(entry(
+    "provider.web.connection",
+    "NOT_RUN",
+    "Web connection could not be probed because the server is unreachable.",
+    false,
+  ));
 }
+checks.push(entry(
+  "provider.web.authentication",
+  health?.webConnected === true ? "PASS" : (health === null ? "NOT_RUN" : "FAIL"),
+  health?.webConnected === true
+    ? "Server health reports the extension as authenticated."
+    : "Authentication is not established according to server health.",
+  false,
+));
+checks.push(entry(
+  "provider.web.turn",
+  "NOT_RUN",
+  "No Web turn was started by doctor; a real turn requires an explicit live certification run.",
+  false,
+));
 
 try {
   const preflight = await fetchJson(`${baseUrl}/api/preflight`);
