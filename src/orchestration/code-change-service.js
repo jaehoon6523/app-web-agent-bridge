@@ -344,7 +344,9 @@ export class CodeChangeService {
   snapshot(runId, preflight) {
     const record = this.get(runId);
     return redactForEvidence({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
-      activeActor: record.stage === "WORKER_RUNNING" ? "CODEX_AGENT" : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage) ? "CHATGPT_WEB_AGENT" : null },
+      activeActor: record.stage === "WORKER_RUNNING"
+        ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
+        : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage) ? "CHATGPT_WEB_AGENT" : null },
       sessions: [], messages: record.messages, deliveries: [], approvals: record.application ? [record.application] : [], events: record.events ?? [],
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },

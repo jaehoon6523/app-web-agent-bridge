@@ -3,7 +3,7 @@ let token = "", snapshot = null, selected = "", connected = false, pending = fal
 let sequence = 0, lastConfirmed = null, evidencePage = null;
 let renderedRecords = "", lastCommandError = "", recoveryRunId = null;
 let projectVersion = null, requirementEditors = [];
-const missingLabels = { auditProjectConfigured: "프로젝트 설정", codexExecutableConfigured: "CLI 실행 경로",
+const missingLabels = { auditProjectConfigured: "프로젝트 설정", codeWorkerExecutableConfigured: "코드 Worker 실행 경로",
   extensionAuthenticated: "브라우저 확장 연결", webAdapterAvailable: "웹 연결", commandAuthenticationConfigured: "서버 인증 설정", demoModeDisabled: "실제 실행 모드" };
 const openFindings = new Set();
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
@@ -223,15 +223,21 @@ function render() {
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
   text("serverSignal", connected ? "서버 · 연결됨" : "서버 · 확인 필요"); $("serverSignal").className = connected ? "ok" : "";
   const workerName = run ? workerIdentity(run) : "worker";
-  text("cliSignal", connected ? run ? `Worker · ${workerName}` : preflight?.checks?.codexExecutableConfigured ? "Worker · 설정됨" : "Worker · 설정 필요" : "Worker · 확인 전");
+  text("cliSignal", connected ? run ? `Worker · ${workerName}` : preflight?.checks?.codeWorkerExecutableConfigured ? "Worker · 설정됨" : "Worker · 설정 필요" : "Worker · 확인 전");
   text("webSignal", connected ? preflight?.checks?.extensionAuthenticated ? "웹 · 확장 인증됨" : "웹 · 연결 대기" : "웹 · 확인 전");
   text("refreshSignal", `런 · ${connected ? "갱신됨" : "마지막 확인"} ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
   $("editProject").disabled = pending || !connected;
-  $("newRun").disabled = pending || busy; text("newRunReason", busy ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않았습니다. 아래 버튼에서 확인하고 중단할 수 있습니다.` : "과거 기록은 언제든 선택할 수 있습니다.");
+  $("newRun").disabled = pending || busy;
+  text("newRunReason", pending
+    ? "현재 요청을 처리 중이라 새 작업을 만들 수 없습니다. 처리가 끝난 뒤 다시 시도하세요."
+    : busy
+      ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않아 새 작업을 만들 수 없습니다. 아래 버튼으로 실행 중 작업을 연 뒤 ‘작업 중단’을 누르세요.`
+      : "새 작업을 만들 수 있습니다. 과거 기록은 그대로 보존됩니다.");
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = pending || !connected;
+  text("showUnfinishedRun", busy ? "실행 중 작업 열기 · 중단하기" : "미종료 작업 확인 · 중단");
   const list = $("runList"); list.replaceChildren();
   for (const r of [...snapshot?.runs ?? []].reverse()) {
     const button = node("button", r.objective, `run-item${!showStart && r.runId === run?.runId ? " active" : ""}`);
@@ -246,8 +252,24 @@ function render() {
     projectContainer.append(node("p", `${project.projectId} · ${project.targetRoot}`), node("p", `기준 ${project.requirementsId} / ${project.revision}`));
     for (const req of project.requirements.items) projectContainer.append(node("p", `${req.requirementId} · ${req.statement}`, "muted"));
   } else projectContainer.append(node("p", preflight?.projectError ?? "프로젝트 설정 확인 전", "muted"));
-  const reason = pending ? "요청 처리 중입니다." : !connected ? "서버 연결을 확인하세요." : !preflight?.readyForProvisioning ? preflight?.projectError || `시작 전 준비가 필요합니다: ${(preflight?.missing ?? []).map((key) => missingLabels[key] || key).join(", ")}`
-    : !caps.has("run.start") ? "미종료 런이 있거나 시작 조건이 준비되지 않았습니다." : !$('objective').value.trim() ? "작업 목표를 입력하세요."
+  const missingAction = {
+    auditProjectConfigured: "‘프로젝트 설정’을 열어 대상 저장소와 요구사항을 저장하세요.",
+    codeWorkerExecutableConfigured: "선택한 Worker 실행 경로를 설정한 뒤 서버를 다시 시작하세요.",
+    extensionAuthenticated: "브라우저 확장 popup에서 서버 주소와 secret을 확인하고 확장을 연결하세요.",
+    webAdapterAvailable: "지정한 ChatGPT 대화 탭을 하나만 열고 브릿지 확장이 탭을 인식하게 하세요.",
+    commandAuthenticationConfigured: "DASHBOARD_TOKEN을 설정한 뒤 서버를 다시 시작하세요.",
+    demoModeDisabled: "DEMO_MODE=false로 설정한 뒤 서버를 다시 시작하세요.",
+  };
+  const missingKeys = preflight?.missing ?? [];
+  const reason = pending ? "현재 요청을 처리 중입니다. 완료된 뒤 다시 시도하세요."
+    : !connected ? "로컬 서버에 연결되지 않았습니다. 서버 실행 상태를 확인한 뒤 다시 연결하세요."
+    : !preflight?.readyForProvisioning
+      ? preflight?.projectError || `시작할 수 없습니다: ${missingKeys.map((key) => missingLabels[key] || key).join(", ")}. ${missingKeys.map((key) => missingAction[key]).filter(Boolean).join(" ")}`
+    : !caps.has("run.start")
+      ? busy
+        ? "실행 중인 작업이 있어 새 작업을 시작할 수 없습니다. 왼쪽 ‘실행 중 작업 열기 · 중단하기’로 이동해 먼저 중단하세요."
+        : "현재 상태에서는 새 작업을 시작할 수 없습니다. 실행 기록에서 미종료 또는 복구 필요 작업을 확인하세요."
+    : !$('objective').value.trim() ? "작업 목표를 입력하세요."
       : !/^https:\/\/chatgpt\.com\/c\/[^/?#\s]+$/u.test($("conversationUrl").value.trim()) ? "기존 ChatGPT 대화 URL을 입력하세요." : "";
   $("startRun").disabled = Boolean(reason); text("startReason", lastCommandError || reason || "접수 후 같은 런에서 준비·구현·감사 진행과 실패 이유를 확인할 수 있습니다.");
   if (recoveryRunId !== run?.runId) {
@@ -256,6 +278,15 @@ function render() {
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
   $("abandonRun").disabled = pending || !caps.has("run.abandon") || !$("recoveryExternal").checked || !$("recoveryTarget").checked || !$("recoveryReason").value.trim();
+  if (run?.phase === "RECOVERY_REQUIRED") {
+    const recoverySteps = [];
+    if (!$("recoveryExternal").checked) recoverySteps.push("외부 작업 종료 확인");
+    if (!$("recoveryTarget").checked) recoverySteps.push("대상 저장소 상태 확인");
+    if (!$("recoveryReason").value.trim()) recoverySteps.push("확인 내용과 폐기 사유 입력");
+    $("abandonRun").title = recoverySteps.length
+      ? `비활성 이유: ${recoverySteps.join(", ")}. 항목을 완료하면 실행을 폐기할 수 있습니다.`
+      : "확인 기록 후 실행을 폐기할 수 있습니다.";
+  }
   if (!run) return;
   text("runObjective", run.objective); text("runContext", run.requirements
     ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${run.activeActor ?? "대기"}`
@@ -264,13 +295,18 @@ function render() {
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
   $("stopRun").disabled = pending || !caps.has("run.stop"); $("applyCode").disabled = pending || !caps.has("code.apply"); $("exportEvidence").disabled = pending || !caps.has("evidence.export");
-  text("stopReason", pending ? "요청을 처리하고 있습니다." : !connected ? "서버에 다시 연결되면 중단할 수 있습니다."
-    : terminal.has(run.phase) ? "이미 종료된 작업입니다. 다른 미종료 작업이 있다면 왼쪽 안내에서 선택하세요."
-    : run.phase === "RECOVERY_REQUIRED" ? "외부 작업의 종료를 확인한 뒤 아래 ‘복구 확인 후 실행 폐기’를 진행하세요."
-    : caps.has("run.stop") ? "이 작업의 후속 실행을 중단합니다. 실행 기록은 보존됩니다."
-    : run.phase === "APPLYING" ? "변경 사항을 적용 중입니다. 적용 결과가 확인될 때까지 기다려 주세요."
-    : "현재 상태에서는 중단할 수 없습니다. 연결과 실행 상태를 확인하세요.");
-  text("commandReason", pending ? "명령 결과를 확인하고 있습니다." : !connected ? "연결이 끊겨 명령을 보낼 수 없습니다." : !caps.has("code.apply") ? "적용은 유효한 감사 통과 후보가 준비된 경우에만 가능합니다. 종료된 작업은 다시 중단할 수 없습니다." : "후보와 기준 버전을 확인한 뒤 적용할 수 있습니다.");
+  text("stopReason", pending ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
+    : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
+    : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."
+    : run.phase === "RECOVERY_REQUIRED" ? "자동 중단 여부를 확정할 수 없습니다. 아래 복구 확인 3개 항목을 완료한 뒤 ‘확인 기록 후 실행 폐기’를 누르세요."
+    : caps.has("run.stop") ? "현재 작업을 중단할 수 있습니다. ‘작업 중단’을 누르면 후속 구현·감사를 멈추고 기록은 보존합니다."
+    : run.phase === "APPLYING" ? "코드를 적용 중이라 지금은 중단할 수 없습니다. 적용 결과가 확정된 뒤 다음 행동을 선택하세요."
+    : "현재 단계에서는 중단 명령이 비활성입니다. 상태가 바뀌는지 확인하고, 복구 필요 상태가 되면 복구 확인 절차를 진행하세요.");
+  text("commandReason", pending ? "현재 명령 결과를 확인 중이라 적용할 수 없습니다. 처리가 끝난 뒤 다시 확인하세요."
+    : !connected ? "서버 연결이 끊겨 적용할 수 없습니다. 서버 연결을 복구하세요."
+    : caps.has("code.apply") ? "감사 통과 후보가 준비됐습니다. ‘감사 통과 후보 적용’을 누르면 대상 저장소에 반영합니다."
+    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 적용 명령이 아직 활성화되지 않았습니다. 실행 상태를 새로 확인한 뒤에도 같으면 복구 상태를 확인하세요."
+    : "아직 적용할 수 없습니다. 구현 → 검증 → 웹 감사가 PASS되어 ‘감사 통과·적용 대기’ 상태가 되어야 합니다.");
   const signature = `${run.runId}/${run.version}/${connected}/${pending}`;
   if (renderedRecords !== signature) { renderedRecords = signature; renderAudit(); renderLog(); }
 }
