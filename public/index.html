@@ -2,7 +2,23 @@
 <html lang="ko">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI 구현 · 웹 감사</title><link rel="stylesheet" href="styles.css"></head>
 <body>
-<header class="top"><strong>CLI 구현 · 웹 감사</strong><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></header>
+<header class="top"><strong>CLI 구현 · 웹 감사</strong>
+  <div id="statusShell" class="status-shell">
+    <div class="signals" role="group" aria-label="브릿지 상태">
+      <button id="serverSignal" class="signal-dot is-idle" type="button" aria-label="서버 상태 확인 전" aria-controls="statusDetail" aria-expanded="false"></button>
+      <button id="cliSignal" class="signal-dot is-idle" type="button" aria-label="Worker 상태 확인 전" aria-controls="statusDetail" aria-expanded="false"></button>
+      <button id="webSignal" class="signal-dot is-idle" type="button" aria-label="웹 연결 상태 확인 전" aria-controls="statusDetail" aria-expanded="false"></button>
+      <button id="refreshSignal" class="signal-dot is-idle" type="button" aria-label="실행 상태 확인 전" aria-controls="statusDetail" aria-expanded="false"></button>
+    </div>
+    <section id="statusDetail" class="status-detail" aria-live="polite" aria-hidden="true">
+      <div class="status-detail-inner">
+        <div class="status-detail-heading"><span id="statusDetailKicker">STATUS</span><strong id="statusDetailTitle">상태 점에 마우스를 올려 확인하세요.</strong></div>
+        <p id="statusDetailBody"></p>
+        <p id="statusDetailAction" class="status-action"></p>
+      </div>
+    </section>
+  </div>
+</header>
 <div class="layout">
   <aside class="history"><h2>실행 기록</h2><button id="newRun">새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>미종료 작업 확인 · 중단</button><nav id="runList" aria-label="실행 선택"></nav></aside>
   <main>

@@ -21,6 +21,42 @@ function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   else element.removeAttribute("aria-description");
   return reason;
 }
+const signalDetails = new Map();
+let pinnedSignal = null;
+function setSignal(id, tone, label, title, body, action) {
+  const element = $(id);
+  const previous = element.__signalTone;
+  element.__signalTone = tone;
+  element.className = `signal-dot is-${tone}`;
+  element.setAttribute("aria-label", `${label}: ${title}`);
+  signalDetails.set(id, { label, title, body, action });
+  if (previous && previous !== tone && element.classList?.add) {
+    element.classList.add("status-changed");
+    setTimeout(() => element.classList?.remove("status-changed"), 800);
+  }
+  const hovered = typeof element.matches === "function" && element.matches(":hover");
+  if (pinnedSignal === id || hovered || element === document.activeElement) showSignalDetail(id);
+}
+function showSignalDetail(id, pin = false) {
+  const detail = signalDetails.get(id);
+  if (!detail) return;
+  if (pin) pinnedSignal = pinnedSignal === id ? null : id;
+  for (const signalId of ["serverSignal", "cliSignal", "webSignal", "refreshSignal"]) {
+    $(signalId).setAttribute("aria-expanded", String((pinnedSignal ?? id) === signalId));
+  }
+  text("statusDetailKicker", detail.label.toUpperCase());
+  text("statusDetailTitle", detail.title);
+  text("statusDetailBody", detail.body);
+  text("statusDetailAction", detail.action);
+  $("statusDetail").setAttribute("data-open", "true");
+  $("statusDetail").setAttribute("aria-hidden", "false");
+}
+function hideSignalDetail() {
+  if (pinnedSignal) return;
+  $("statusDetail").setAttribute("data-open", "false");
+  $("statusDetail").setAttribute("aria-hidden", "true");
+  for (const id of ["serverSignal", "cliSignal", "webSignal", "refreshSignal"]) $(id).setAttribute("aria-expanded", "false");
+}
 function workerIdentity(run) {
   const worker = run?.worker ?? {};
   const provider = worker.provider ?? "codex";
@@ -236,11 +272,41 @@ function renderLog() {
 }
 function render() {
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
-  text("serverSignal", connected ? "서버 · 연결됨" : "서버 · 확인 필요"); $("serverSignal").className = connected ? "ok" : "";
-  const workerName = run ? workerIdentity(run) : "worker";
-  text("cliSignal", connected ? run ? `Worker · ${workerName}` : preflight?.checks?.codeWorkerExecutableConfigured ? "Worker · 설정됨" : "Worker · 설정 필요" : "Worker · 확인 전");
-  text("webSignal", connected ? preflight?.checks?.extensionAuthenticated ? "웹 · 확장 인증됨" : "웹 · 연결 대기" : "웹 · 확인 전");
-  text("refreshSignal", `런 · ${connected ? "갱신됨" : "마지막 확인"} ${time(lastConfirmed)}`);
+  const serverReady = connected && preflight?.checks?.commandAuthenticationConfigured;
+  setSignal("serverSignal", !connected ? "error" : serverReady ? "ok" : "warn", "Server",
+    !connected ? "로컬 서버에 연결할 수 없습니다." : serverReady ? "로컬 서버와 명령 인증이 준비됐습니다." : "서버는 연결됐지만 명령 인증 설정이 필요합니다.",
+    !connected ? `마지막 정상 확인: ${time(lastConfirmed)}` : `현재 주소의 상태 응답을 수신했습니다. 마지막 확인: ${time(lastConfirmed)}`,
+    !connected ? "npm.cmd run dev로 서버를 실행하고 http://127.0.0.1:8787 연결을 확인하세요."
+      : serverReady ? "추가 조치가 필요하지 않습니다." : "DASHBOARD_TOKEN을 32바이트 이상 안전한 값으로 설정한 뒤 서버를 다시 시작하세요.");
+
+  const workerName = run ? workerIdentity(run) : preflight?.workerProvider ?? "worker";
+  const workerConfigured = Boolean(preflight?.checks?.codeWorkerExecutableConfigured);
+  setSignal("cliSignal", !connected ? "idle" : workerConfigured ? "ok" : "warn", "Worker",
+    !connected ? "서버 연결 전이라 Worker 상태를 확인할 수 없습니다." : workerConfigured ? `${workerName} Worker가 준비됐습니다.` : "코드 Worker 실행 경로가 설정되지 않았습니다.",
+    run ? `현재 런 Worker: ${workerName}` : `선택된 provider: ${workerName}`,
+    !connected ? "먼저 Server 점의 안내에 따라 로컬 서버 연결을 복구하세요."
+      : workerConfigured ? "작업을 시작하면 이 Worker 한 개가 구현을 담당합니다." : "CODE_WORKER_PROVIDER와 해당 실행 경로를 설정한 뒤 서버를 다시 시작하세요.");
+
+  const webAuthenticated = Boolean(preflight?.checks?.extensionAuthenticated);
+  setSignal("webSignal", !connected ? "idle" : webAuthenticated ? "ok" : "warn", "Web",
+    !connected ? "서버 연결 전이라 브라우저 확장 상태를 확인할 수 없습니다." : webAuthenticated ? "브라우저 확장이 인증되어 있습니다." : "브라우저 확장 인증을 기다리고 있습니다.",
+    webAuthenticated ? "감사용 ChatGPT 탭과 브릿지 통신을 사용할 수 있습니다." : "서버는 살아 있지만 확장이 아직 인증되지 않았습니다.",
+    !connected ? "먼저 Server 점의 안내에 따라 로컬 서버 연결을 복구하세요."
+      : webAuthenticated ? "감사할 ChatGPT 대화 탭을 하나만 열어 두세요." : "확장 popup에서 서버 주소, WEB_EXTENSION_SHARED_SECRET, WEB_EXTENSION_EXPECTED_IDENTITY를 확인하고 감사할 ChatGPT 대화 탭을 하나만 여세요.");
+
+  const runTone = !connected ? "idle"
+    : !run ? "idle"
+      : ["RECOVERY_REQUIRED", "FAILED"].includes(run.phase) ? "error"
+        : ["HOLD", "INCONCLUSIVE", "AWAITING_APPLY"].includes(run.phase) ? "warn"
+          : terminal.has(run.phase) ? "ok" : "info";
+  setSignal("refreshSignal", runTone, "Run",
+    !connected ? "실행 상태를 확인할 수 없습니다." : !run ? "현재 선택된 실행이 없습니다." : `${labels[run.phase] ?? run.phase}`,
+    !run ? `마지막 상태 확인: ${time(lastConfirmed)}` : `‘${run.objective}’ · 상태 발생 ${time(run.updatedAt)}`,
+    !connected ? "서버 연결을 복구하면 실행 상태가 다시 갱신됩니다."
+      : !run ? "새 작업에서 목표와 ChatGPT 대화 URL을 입력하세요."
+        : run.phase === "RECOVERY_REQUIRED" ? "실행 화면의 복구 확인 절차를 완료하세요."
+          : run.phase === "AWAITING_APPLY" ? "감사 통과 후보를 확인한 뒤 적용 여부를 결정하세요."
+            : terminal.has(run.phase) ? "필요하면 새 작업을 시작하세요." : "현재 단계는 자동 진행됩니다. 실행 화면에서 상세 기록을 확인할 수 있습니다.");
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
   actionState("editProject", pending || !connected,
@@ -424,5 +490,21 @@ $("exportEvidence").addEventListener("click", async () => { const result = await
 for (const [id, audit] of [["showAudit",true],["showLog",false]]) $(id).addEventListener("click", () => { $("auditPanel").hidden = !audit; $("logPanel").hidden = audit; $("showAudit").setAttribute("aria-pressed", String(audit)); $("showLog").setAttribute("aria-pressed", String(!audit)); });
 $("closeEvidence").addEventListener("click", () => $("evidenceDialog").close());
 $("nextEvidence").addEventListener("click", () => { if (evidencePage?.target === snapshot?.run?.runId) openEvidence(evidencePage.id, evidencePage.next); });
+for (const id of ["serverSignal", "cliSignal", "webSignal", "refreshSignal"]) {
+  const signal = $(id);
+  signal.addEventListener("pointerenter", () => showSignalDetail(id));
+  signal.addEventListener("focus", () => showSignalDetail(id));
+  signal.addEventListener("click", () => showSignalDetail(id, true));
+}
+$("statusShell").addEventListener("pointerleave", hideSignalDetail);
+$("statusShell").addEventListener("focusout", (event) => {
+  const shell = $("statusShell");
+  if (typeof shell.contains !== "function" || !shell.contains(event.relatedTarget)) hideSignalDetail();
+});
+document.addEventListener?.("keydown", (event) => {
+  if (event.key !== "Escape" || !pinnedSignal) return;
+  pinnedSignal = null;
+  hideSignalDetail();
+});
 async function poll() { await refresh(); setTimeout(poll, 2500); }
 poll();
