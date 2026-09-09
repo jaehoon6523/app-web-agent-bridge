@@ -38,6 +38,20 @@ export async function createGenericJsonlWorker({
   let closed = false;
   let sessionId = null;
 
+  function fail(error) {
+    closed = true;
+    for (const waiter of pending.values()) waiter.reject(error);
+    pending.clear();
+  }
+  const spawned = new Promise((resolve, reject) => {
+    processHandle.once("spawn", resolve);
+    processHandle.on("error", (error) => {
+      fail(error);
+      reject(error);
+    });
+  });
+  processHandle.stdin.on("error", fail);
+
   processHandle.stderr.setEncoding("utf8");
   processHandle.stderr.on("data", (chunk) => {
     stderr = `${stderr}${chunk}`.slice(-1024 * 1024);
@@ -81,10 +95,8 @@ export async function createGenericJsonlWorker({
   });
 
   processHandle.on("exit", (code, signal) => {
-    closed = true;
     const error = new Error(`${provider} worker exited code=${code} signal=${signal ?? "none"}${stderr ? `: ${stderr}` : ""}`);
-    for (const waiter of pending.values()) waiter.reject(error);
-    pending.clear();
+    fail(error);
   });
 
   const adapter = {
@@ -123,11 +135,12 @@ export async function createGenericJsonlWorker({
       return { provider, model, sessionId, closed, pid: processHandle.pid };
     },
     async close() {
-      if (closed) return;
+      if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
       closed = true;
       lines.close();
       processHandle.kill();
     },
   };
+  await spawned;
   return validateWorkerAdapter(adapter);
 }

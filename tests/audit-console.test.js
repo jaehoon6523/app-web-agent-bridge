@@ -63,3 +63,34 @@ test("recovery UI requires confirmation and sends the selected run and operator 
   assert.equal(posted.type,"run.abandon");assert.equal(posted.payload.runId,"a");assert.equal(posted.payload.expectedVersion,3);
   assert.equal(posted.payload.externalTerminationConfirmed,true);assert.equal(posted.payload.targetInspected,true);assert.match(posted.payload.reason,/Stopped CLI/);
 });
+
+test("unfinished shortcut opens the blocking run from a cancelled history record before stopping", async () => {
+  const h = await harness();
+  h.setState(async (url) => {
+    const active = url.includes("runId=b");
+    return { ...state(active ? "b" : "a", active ? "CREATED" : "CANCELLED"),
+      runs: [{ runId: "a", phase: "CANCELLED", objective: "Old task" },
+        { runId: "b", phase: "CREATED", objective: "Blocking task" }],
+      commandCapabilities: active ? ["run.stop"] : [],
+    };
+  });
+  h.get("runList").children[1].click(); await h.settle();
+  assert.equal(h.get("stopRun").disabled, true);
+  assert.equal(h.get("newRun").disabled, true);
+  assert.match(h.get("newRunReason").textContent, /Blocking task/u);
+  assert.equal(h.get("showUnfinishedRun").hidden, false);
+  h.get("showUnfinishedRun").click(); await h.settle();
+  assert.equal(h.get("runObjective").textContent, "Objective b");
+  assert.equal(h.get("stopRun").disabled, false);
+  h.get("stopRun").click(); await h.settle();
+  const posted = JSON.parse(h.requests.find((r) => r.url === "/api/commands").options.body);
+  assert.equal(posted.type, "run.stop");
+  assert.equal(posted.payload.runId, "b");
+  assert.equal(posted.payload.expectedVersion, 3);
+  h.setState(async () => ({ ...state("b", "CANCELLED"),
+    runs: [{ runId: "b", phase: "CANCELLED", objective: "Blocking task" }], commandCapabilities: [],
+  }));
+  h.timers.shift()(); await h.settle();
+  assert.equal(h.get("newRun").disabled, false);
+  assert.equal(h.get("showUnfinishedRun").hidden, true);
+});

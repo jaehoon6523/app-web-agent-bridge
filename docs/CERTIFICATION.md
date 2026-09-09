@@ -23,13 +23,17 @@ npm run certify
 Certification requires:
 
 - `npm run check`;
-- strict doctor checks;
-- live Codex/Web readiness;
+- a healthy bridge server and authenticated access to the persisted run;
 - schemaVersion 3;
 - auditResult PASS;
 - persisted assessments and evidence;
 - no unresolved required finding;
 - `AWAITING_APPLY` or `APPLIED`.
+
+Certification reads persisted audit evidence; it does not require providers to still be
+running or the browser extension to still be connected. Run `npm run doctor -- --strict`
+separately to check readiness for a new live run. Doctor failure does not invalidate a
+previously completed audit. Configuration is loaded from `.env` as well as the environment.
 
 This does not claim OS sandboxing, child-process termination, browser behavior, or provider
 behavior unless the selected RequirementsSet and persisted evidence actually prove them.

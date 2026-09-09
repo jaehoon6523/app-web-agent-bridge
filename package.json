@@ -13,6 +13,7 @@
     "demo": "DEMO_MODE=true node src/server.js",
     "demo:win": "set DEMO_MODE=true&& node src/server.js",
     "test": "node --test --experimental-test-isolation=none",
+    "test:ui": "node scripts/ui-scenarios.mjs",
     "test:integration": "node --test --experimental-test-isolation=none tests/codex-runtime.new.test.js tests/web-runtime-core.new.test.js tests/web-extension-storage.new.test.js tests/sqlite-outbox.test.js tests/discussion-dispatcher.test.js tests/discussion-dispatcher-integrity.test.js tests/discussion-protocol-failure.test.js tests/server-cutover.test.js tests/dashboard-controller.test.js tests/recovery-scan.test.js",
     "lint": "node scripts/lint.js",
     "doctor": "node scripts/doctor.js",
@@ -32,6 +33,7 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.4.1",
     "@types/ws": "^8.18.1",
+    "playwright-core": "1.63.0",
     "typescript": "^7.0.2"
   }
 }
