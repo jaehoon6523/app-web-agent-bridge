@@ -30,6 +30,32 @@ try {
  await page.goto(config.baseUrl); await page.locator('#editProject').waitFor({state:'visible'});
  await page.waitForFunction(()=>!document.getElementById('editProject').disabled);
  await screenshot('01-first-use');
+ // The health disclosure controls remain usable with a keyboard and outside clicks.
+ await page.click('#apiHealth'); await page.keyboard.press('Escape');
+ assert.equal(await page.locator('#apiHealthDetail').isVisible(),false);
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>document.activeElement===el),true);
+ await page.click('#channelHealth'); await page.locator('.top strong').click();
+ assert.equal(await page.locator('#channelHealthDetail').isVisible(),false);
+ // QA-149: Space toggles native disclosure controls without submitting anything.
+ await page.locator('#engineHealth').focus(); await page.keyboard.press('Space');
+ assert.equal(await page.locator('#engineHealthDetail').isVisible(),true);
+ // QA-147: Desktop disclosure stays below its trigger and within the viewport.
+ const desktopDetail=await page.locator('#engineHealthDetail').boundingBox();
+ const desktopTrigger=await page.locator('#engineHealth').boundingBox();
+ assert.ok(desktopDetail.y>=desktopTrigger.y+desktopTrigger.height);
+ assert.ok(desktopDetail.x>=0 && desktopDetail.x+desktopDetail.width<=1280);
+ await page.keyboard.press('Space');assert.equal(await page.locator('#engineHealthDetail').isVisible(),false);
+ // QA-150: No duplicate IDs can redirect a status update to another element.
+ assert.equal(await page.evaluate(()=>{const ids=[...document.querySelectorAll('[id]')].map(el=>el.id);return ids.length===new Set(ids).size;}),true);
+ // Verify real fetch cancellation, not only a simulated thrown timeout error.
+ const held=[]; const holdState=route=>{held.push(route);};
+ await page.route('**/api/state*',holdState);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('시간이 초과'),null,{timeout:20000});
+ assert.equal(await page.locator('.system-health summary').evaluateAll(es=>es.every(el=>el.classList.contains('unknown'))),true);
+ assert.equal(await page.locator('#startRun').isDisabled(),true);
+ await page.unroute('**/api/state*',holdState);
+ for(const route of held) await route.abort().catch(()=>{});
+ await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('ok'));
  await page.click('#editProject'); await page.waitForFunction(()=>!document.getElementById('saveProject').disabled);
  await page.check('#projectAdvanced');assert.equal(await page.locator('#projectJson').isVisible(),true);
  await page.uncheck('#projectAdvanced');
@@ -92,6 +118,11 @@ try {
  await page.fill('#conversationUrl','https://chatgpt.com/c/ui-scenario');await page.click('#startRun');
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='구현·수정 중');
  assert.equal(commands.at(-1).type,'run.start'); await screenshot('08-started');
+ // QA-146: Respect reduced-motion preferences for the active-run pulse.
+ await page.emulateMedia({reducedMotion:'reduce'});
+ assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'none');
+ await page.emulateMedia({reducedMotion:'no-preference'});
+ assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'status-pulse');
  offline=true;await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('연결을 확인'));
  assert.equal(await page.locator('#stopRun').isDisabled(),true);await screenshot('09-disconnected');
  offline=false;await page.waitForFunction(()=>!document.getElementById('stopRun').disabled);await page.click('#stopRun');
@@ -104,6 +135,10 @@ try {
  assert.equal(commands.at(-1).payload.candidateId,'candidate-qa');assert.equal(commands.at(-1).payload.reviewId,'review-qa');
  await screenshot('11-applied');
  await page.setViewportSize({width:390,height:844});await page.click('#newRun');await screenshot('08-mobile');
+ // QA-148: The longer engine explanation fits the mobile viewport.
+ await page.click('#engineHealth');const mobileDetail=await page.locator('#engineHealthDetail').boundingBox();
+ assert.ok(mobileDetail.x>=0 && mobileDetail.x+mobileDetail.width<=390);
+ await page.keyboard.press('Escape');
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
  await page.click('#editProject');await page.waitForFunction(()=>!document.getElementById('saveProject').disabled);
  await screenshot('14-mobile-settings');assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);

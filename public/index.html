@@ -2,10 +2,16 @@
 <html lang="ko">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI 구현 · 웹 감사</title><link rel="stylesheet" href="styles.css"></head>
 <body>
-<header class="top"><strong>CLI 구현 · 웹 감사</strong><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></header>
+<header class="top"><strong>CLI 구현 · 웹 감사</strong><div id="systemHealth" class="signals system-health" aria-label="시스템 상태">
+  <details name="system-health"><summary id="apiHealth" class="health">api</summary><p id="apiHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
+  <details name="system-health"><summary id="sessionHealth" class="health">session</summary><p id="sessionHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
+  <details name="system-health"><summary id="engineHealth" class="health">engine</summary><p id="engineHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
+  <details name="system-health"><summary id="channelHealth" class="health">channel</summary><p id="channelHealthDetail">확인 전</p></details>
+</div></header>
 <div class="layout">
   <aside class="history"><h2>실행 기록</h2><button id="newRun">새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>미종료 작업 확인 · 중단</button><nav id="runList" aria-label="실행 선택"></nav></aside>
   <main>
+    <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
     <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
       <h2 id="projectHeading">프로젝트 설정</h2><p>대상 저장소와 통과 기준을 지정하세요. 저장한 설정은 다음 작업부터 사용됩니다.</p>

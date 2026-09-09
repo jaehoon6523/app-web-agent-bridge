@@ -1,7 +1,7 @@
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false, pending = false, showStart = true;
 let sequence = 0, lastConfirmed = null, evidencePage = null;
-let renderedRecords = "", lastCommandError = "", recoveryRunId = null;
+let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
 let projectVersion = null, requirementEditors = [];
 const missingLabels = { auditProjectConfigured: "프로젝트 설정", codexExecutableConfigured: "CLI 실행 경로",
   extensionAuthenticated: "브라우저 확장 연결", webAdapterAvailable: "웹 연결", commandAuthenticationConfigured: "서버 인증 설정", demoModeDisabled: "실제 실행 모드" };
@@ -13,17 +13,32 @@ function text(id, value) { $(id).textContent = value ?? ""; }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
 async function request(url, options = {}) {
-  const response = await fetch(url, { ...options, cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
-  const body = await response.json();
-  if (!response.ok) throw Object.assign(new Error(body.payload?.message || body.error || `요청 실패 (${response.status})`), { status: response.status });
-  return body;
+  try {
+    const response = await fetch(url, { ...options, signal:AbortSignal.timeout(url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
+    let body;
+    try { body = await response.json(); }
+    catch (error) {
+      if (error.name === "TimeoutError" || error.name === "AbortError") throw error;
+      throw Object.assign(new Error(`서버 응답을 해석할 수 없습니다 (${response.status}).`), { status:response.status });
+    }
+    if (!response.ok) throw Object.assign(new Error(body?.payload?.message || body?.error || `요청 실패 (${response.status})`), { status: response.status });
+    return body;
+  } catch (error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") throw new Error("서버 응답 시간이 초과됐습니다. 처리 결과를 다시 확인하세요.");
+    throw error;
+  }
 }
 async function refresh() {
   const current = ++sequence, target = selected;
   try {
-    if (!token) token = (await request("/api/dashboard/session", { method:"POST", body:"{}" })).token;
+    if (!token) {
+      const session = await request("/api/dashboard/session", { method:"POST", body:"{}" });
+      if (typeof session?.token !== "string" || !session.token.trim()) throw new Error("대시보드 인증 응답에 토큰이 없습니다.");
+      token = session.token;
+    }
     const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : ""}`);
     if (current !== sequence || target !== selected) return;
+    if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw new Error("서버 상태 응답 형식을 확인하세요.");
     snapshot = result; connected = true; lastConfirmed = new Date().toISOString();
     text("connectionNotice", "");
   } catch (error) {
@@ -35,6 +50,34 @@ async function refresh() {
   render();
 }
 function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
+function health(id, name, state, detail) {
+  const el = $(id);
+  el.className = `health ${state}`;
+  el.textContent = name;
+  el.setAttribute("aria-label", `${name}: ${detail}`);
+  text(`${id}Detail`, detail);
+}
+function closeHealthDetails(restoreFocus = false) {
+  for (const id of ["apiHealth", "sessionHealth", "engineHealth", "channelHealth"]) {
+    const summary = $(id), details = summary.parentElement;
+    if (details?.open) { details.open = false; if (restoreFocus) summary.focus(); }
+  }
+}
+document.addEventListener("click", (event) => {
+  if (!$("systemHealth").contains(event.target)) closeHealthDetails();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("systemHealth").contains(event.target)) {
+    closeHealthDetails(true); event.preventDefault();
+  }
+});
+function runAppearance(phase) {
+  if (phase === "FAILED") return "error";
+  if (["HOLD", "INCONCLUSIVE", "RECOVERY_REQUIRED", "STOPPING"].includes(phase)) return "warn";
+  if (["APPLIED", "COMPLETE", "AWAITING_APPLY"].includes(phase)) return "ok";
+  if (["WORKER_RUNNING", "CANDIDATE_CAPTURE", "VERIFYING", "REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK", "APPLYING"].includes(phase)) return connected ? "ok running" : "unknown";
+  return "unknown";
+}
 function addRequirementEditor(statement = "", criteria = "") {
   const row = node("div", "", "requirement-editor");
   const title = node("textarea", ""), acceptance = node("textarea", "");
@@ -179,6 +222,15 @@ function renderLog() {
 }
 function render() {
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
+  const readiness = JSON.stringify([connected, preflight, [...caps], snapshot?.runs]);
+  if (readiness !== readinessSignature) { lastCommandError = ""; readinessSignature = readiness; }
+  const checks = preflight?.checks;
+  health("apiHealth", "api", connected ? "ok" : "unknown", connected ? "응답 정상" : "응답 확인 필요");
+  health("sessionHealth", "session", connected && token ? "ok" : "unknown", connected && token ? "대시보드 인증됨" : "인증 확인 필요");
+  health("engineHealth", "engine", !connected || typeof checks?.codexExecutableConfigured !== "boolean" ? "unknown" : "warn",
+    !connected || typeof checks?.codexExecutableConfigured !== "boolean" ? "확인 전" : checks.codexExecutableConfigured ? "경로 설정됨 · 실제 실행 상태는 확인 전" : "경로 설정 필요");
+  health("channelHealth", "channel", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
+    !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "확장 인증됨" : "확장 연결 대기");
   text("serverSignal", connected ? "서버 · 연결됨" : "서버 · 확인 필요"); $("serverSignal").className = connected ? "ok" : "";
   text("cliSignal", connected ? preflight?.checks?.codexExecutableConfigured ? "CLI · 경로 설정됨" : "CLI · 설정 필요" : "CLI · 확인 전");
   text("webSignal", connected ? preflight?.checks?.extensionAuthenticated ? "웹 · 확장 인증됨" : "웹 · 연결 대기" : "웹 · 확인 전");
@@ -192,7 +244,7 @@ function render() {
   const list = $("runList"); list.replaceChildren();
   for (const r of [...snapshot?.runs ?? []].reverse()) {
     const button = node("button", r.objective, `run-item${!showStart && r.runId === run?.runId ? " active" : ""}`);
-    button.append(node("small", labels[r.phase] ?? r.phase));
+    button.append(node("small", labels[r.phase] ?? r.phase, `health ${runAppearance(r.phase)}`));
     button.addEventListener("click", () => { selected = r.runId; showStart = false; $("projectPanel").hidden = true; snapshot = null; text("commandResult", ""); render(); refresh(); }); list.append(button);
   }
   const editingProject = !$("projectPanel").hidden;
@@ -202,8 +254,8 @@ function render() {
   if (project) {
     projectContainer.append(node("p", `${project.projectId} · ${project.targetRoot}`), node("p", `기준 ${project.requirementsId} / ${project.revision}`));
     for (const req of project.requirements.items) projectContainer.append(node("p", `${req.requirementId} · ${req.statement}`, "muted"));
-  } else projectContainer.append(node("p", preflight?.projectError ?? "프로젝트 설정 확인 전", "muted"));
-  const reason = pending ? "요청 처리 중입니다." : !connected ? "서버 연결을 확인하세요." : !preflight?.readyForProvisioning ? preflight?.projectError || `시작 전 준비가 필요합니다: ${(preflight?.missing ?? []).map((key) => missingLabels[key] || key).join(", ")}`
+  } else projectContainer.append(node("p", connected ? "사용할 프로젝트가 아직 준비되지 않았습니다." : "연결 후 프로젝트 설정을 확인합니다.", "muted"));
+  const reason = pending ? "요청 처리 중입니다." : !connected ? "서버 연결을 확인하세요." : !preflight?.readyForProvisioning ? `시작 전 준비가 필요합니다: ${(preflight?.missing ?? []).map((key) => missingLabels[key] || key).join(", ") || "준비 상태 확인"}.${preflight?.projectError ? ` ${preflight.projectError}` : ""}`
     : !caps.has("run.start") ? "미종료 런이 있거나 시작 조건이 준비되지 않았습니다." : !$('objective').value.trim() ? "작업 목표를 입력하세요."
       : !/^https:\/\/chatgpt\.com\/c\/[^/?#\s]+$/u.test($("conversationUrl").value.trim()) ? "기존 ChatGPT 대화 URL을 입력하세요." : "";
   $("startRun").disabled = Boolean(reason); text("startReason", lastCommandError || reason || "접수 후 같은 런에서 준비·구현·감사 진행과 실패 이유를 확인할 수 있습니다.");
@@ -217,7 +269,7 @@ function render() {
   text("runObjective", run.objective); text("runContext", run.requirements
     ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · ${run.activeActor ?? "대기"}`
     : `이전 대화 작업 · ${run.activeActor ?? "대기"}`);
-  text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = ["HOLD", "INCONCLUSIVE", "RECOVERY_REQUIRED"].includes(run.phase) ? "warn" : run.phase === "FAILED" ? "error" : "";
+  text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
   $("stopRun").disabled = pending || !caps.has("run.stop"); $("applyCode").disabled = pending || !caps.has("code.apply"); $("exportEvidence").disabled = pending || !caps.has("evidence.export");
@@ -228,7 +280,7 @@ function render() {
     : run.phase === "APPLYING" ? "변경 사항을 적용 중입니다. 적용 결과가 확인될 때까지 기다려 주세요."
     : "현재 상태에서는 중단할 수 없습니다. 연결과 실행 상태를 확인하세요.");
   text("commandReason", pending ? "명령 결과를 확인하고 있습니다." : !connected ? "연결이 끊겨 명령을 보낼 수 없습니다." : !caps.has("code.apply") ? "적용은 유효한 감사 통과 후보가 준비된 경우에만 가능합니다. 종료된 작업은 다시 중단할 수 없습니다." : "후보와 기준 버전을 확인한 뒤 적용할 수 있습니다.");
-  const signature = `${run.runId}/${run.version}/${connected}/${pending}`;
+  const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, pending]);
   if (renderedRecords !== signature) { renderedRecords = signature; renderAudit(); renderLog(); }
 }
 async function command(type, payload = {}, start = false) {
@@ -257,7 +309,7 @@ async function openEvidence(id, startLine = 1) {
   if (!$("evidenceDialog").open) $("evidenceDialog").showModal();
 }
 $("startForm").addEventListener("submit", (e) => { e.preventDefault(); if (!$("startRun").disabled) command("run.start", { mode:"CODE_CHANGE", objective:$("objective").value.trim(), conversationUrl:$("conversationUrl").value.trim() }, true); });
-$("objective").addEventListener("input", render); $("conversationUrl").addEventListener("input", render);
+for (const id of ["objective", "conversationUrl"]) $(id).addEventListener("input", () => { lastCommandError = ""; render(); });
 $("editProject").addEventListener("click", openProjectSettings);
 $("closeProject").addEventListener("click", () => {
   if (!pending) { $("projectPanel").hidden = true; render(); $("startPanel").scrollIntoView?.({ block: "start" }); }
