@@ -103,6 +103,21 @@ test("generic worker close waits for process exit", async () => {
   assert.equal(inspected.closed, true);
 });
 
+test("generic worker close is idempotent after external process exit", async () => {
+  const worker = await createGenericJsonlWorker({
+    provider: "qwen",
+    executablePath: process.execPath,
+    workspaceRoot: process.cwd(),
+    args: ["-e", "setInterval(() => {}, 1000)"],
+  });
+  await worker.start();
+  const inspected = await worker.inspect();
+  process.kill(inspected.pid, "SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await worker.close();
+  await worker.close();
+});
+
 test("generic worker fails after repeated malformed protocol output", async () => {
   const worker = await createGenericJsonlWorker({
     provider: "qwen",

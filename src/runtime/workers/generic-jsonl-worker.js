@@ -144,6 +144,8 @@ export async function createGenericJsonlWorker({
       if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
       closed = true;
       try { lines.close(); } catch {}
+      /** @type {() => void} */
+      let cleanupExitWait = () => {};
       /** @type {Promise<void>} */
       const exited = new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
@@ -158,9 +160,12 @@ export async function createGenericJsonlWorker({
           clearTimeout(timer);
           processHandle.off("exit", onExit);
         };
+        cleanupExitWait = cleanup;
         processHandle.once("exit", onExit);
       });
       if (!processHandle.kill()) {
+        cleanupExitWait();
+        if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
         throw new Error(`${provider} worker termination request was not accepted.`);
       }
       await exited;
