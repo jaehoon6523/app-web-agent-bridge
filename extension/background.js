@@ -247,6 +247,30 @@ async function handleControllerMessage(raw) {
     case "web.delivery.ack":
       await handleDeliveryAcknowledgement(message);
       break;
+    case "web.delivery.recover":
+      await handleDeliveryRecovery(message);
+      break;
+    case "web.delivery.inspect":
+      send({ type: "web.delivery.inspected", requestId: message.requestId, payload: await deliveryDetails(await store.read()) });
+      break;
+    case "web.delivery.stop":
+      await handleDeliveryStop(message);
+      break;
+    case "web.delivery.focus":
+      try {
+        const state = await store.read();
+        if (state.tabId === null || state.lastBoundSessionId !== message.payload?.sessionId
+          || state.conversationUrl !== message.payload?.conversationUrl) {
+          throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "이전 대화 탭이 변경됐습니다. 상태를 다시 확인하세요.");
+        }
+        const tab = await chrome.tabs.get(state.tabId);
+        if (canonicalChatGptUrl(tab.url) !== state.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "기존 탭이 다른 대화로 이동했습니다.");
+        await focusTab(tab);
+        send({ type: "web.delivery.focused", requestId: message.requestId, payload: {} });
+      } catch (error) {
+        send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
+      }
+      break;
     case "web.session.focus":
       await handleFocus(message);
       break;
@@ -269,6 +293,7 @@ async function handlePrepare(message, explicitRebind) {
     if (error?.code === "SESSION_AUTH_REQUIRED") {
       await store.update({ bindingStatus: "AUTH_REQUIRED" });
     }
+    if (error?.code === "WEB_SESSION_BUSY") error.details = await deliveryDetails(await store.read());
     send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
   }
 }
@@ -280,6 +305,83 @@ async function handleDeliveryAcknowledgement(message) {
     broadcastPopupState();
   } catch (error) {
     send({ type: "web.prompt.error", requestId: message.requestId, payload: errorPayload(error) });
+  }
+}
+
+async function deliveryDetails(state) {
+  let page = null;
+  if (state.tabId !== null) {
+    page = await chrome.tabs.sendMessage(state.tabId, { type: "agent.ping" }).catch(() => null);
+  }
+  return {
+    currentDeliveryId: state.currentDeliveryId,
+    sessionId: state.lastBoundSessionId, runId: state.lastBoundRunId,
+    conversationUrl: state.conversationUrl, conversationId: state.conversationId, tabId: state.tabId,
+    bindingStatus: state.bindingStatus, extensionBusy: turnGate.active,
+    pageReachable: page?.ok === true, pageStatus: page?.pageStatus ?? null,
+    pageBusy: typeof page?.busy === "boolean" ? page.busy : null,
+    generating: typeof page?.generating === "boolean" ? page.generating : null,
+    observedConversationUrl: page?.url ?? null,
+    title: page?.title ?? null, activeRequestId: page?.activeRequestId ?? null,
+    lastObservedUserMessageId: state.lastObservedUserMessageId,
+    lastObservedAssistantMessageId: state.lastObservedAssistantMessageId,
+  };
+}
+
+async function handleDeliveryStop(message) {
+  try {
+    const state = await store.read(), expected = message.payload || {};
+    if (!state.currentDeliveryId || expected.currentDeliveryId !== state.currentDeliveryId
+      || expected.runId !== state.lastBoundRunId || expected.sessionId !== state.lastBoundSessionId
+      || expected.conversationUrl !== state.conversationUrl) {
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "종료 대상 전송이 변경됐습니다. 상태를 다시 확인하세요.");
+    }
+    let details = await deliveryDetails(state);
+    if (details.activeRequestId !== state.currentDeliveryId || details.observedConversationUrl !== state.conversationUrl) {
+      throw new ExtensionOperationError("DELIVERY_STOP_UNAVAILABLE", "해당 전송의 생성 작업을 식별할 수 없습니다. 대화 탭에서 생성 상태를 확인하세요.", details);
+    }
+    const stopped = await chrome.tabs.sendMessage(state.tabId, { type: "agent.cancel", requestId: state.currentDeliveryId });
+    if (!stopped?.ok || !stopped.cancelled) throw new ExtensionOperationError("INTERRUPT_NOT_CONFIRMED", "생성 종료 요청이 확인되지 않았습니다.", details);
+    const deadline = Date.now() + 5000;
+    do {
+      details = await deliveryDetails(await store.read());
+      if (details.currentDeliveryId !== state.currentDeliveryId || details.sessionId !== state.lastBoundSessionId) {
+        throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "종료 확인 중 전송 대상이 변경됐습니다.", details);
+      }
+      if (details.pageReachable && details.pageBusy === false && details.generating === false && !details.extensionBusy
+        && details.observedConversationUrl === state.conversationUrl) {
+        send({ type: "web.delivery.stopped", requestId: message.requestId, payload: details }); return;
+      }
+      await sleep(150);
+    } while (Date.now() < deadline);
+    throw new ExtensionOperationError("INTERRUPT_NOT_CONFIRMED", "종료를 요청했지만 생성 종료는 아직 확인되지 않았습니다. 상태를 다시 확인하세요.", details);
+  } catch (error) {
+    send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
+  }
+}
+
+async function handleDeliveryRecovery(message) {
+  let reservation;
+  try {
+    reservation = turnGate.reserve(message.requestId);
+    const state = await store.read(), expected = message.payload || {};
+    if (!state.currentDeliveryId || expected.currentDeliveryId !== state.currentDeliveryId
+      || expected.runId !== state.lastBoundRunId || expected.sessionId !== state.lastBoundSessionId
+      || expected.conversationUrl !== state.conversationUrl) {
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "복구 대상 전송이 변경됐습니다. 준비를 다시 요청하세요.");
+    }
+    const details = await deliveryDetails(state);
+    if (!details.pageReachable || details.pageBusy !== false || details.generating !== false
+      || details.pageStatus !== "READY" || details.observedConversationUrl !== state.conversationUrl) {
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 대화의 생성 종료를 확인하지 못했습니다. 해당 대화 탭을 확인하세요.", details);
+    }
+    await store.clearDelivery(state.currentDeliveryId);
+    send({ type: "web.delivery.recovered", requestId: message.requestId, payload: { ...details, extensionBusy: false } });
+  } catch (error) {
+    send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
+  } finally {
+    if (reservation) turnGate.release(reservation);
+    broadcastPopupState();
   }
 }
 
@@ -325,6 +427,7 @@ async function prepareBoundSession(payload) {
     throw new ExtensionOperationError(
       "REBIND_DURING_ACTIVE_DELIVERY",
       "A different Web session cannot replace a persisted binding during an active delivery.",
+      await deliveryDetails(state),
     );
   }
   const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
@@ -420,6 +523,7 @@ async function requireExactBoundTab(expectedTurn = null) {
 
 async function handlePrompt(message) {
   let reservation;
+  let deliveryReserved = false, contentDispatchStarted = false;
   try {
     // This synchronous reservation deliberately happens before the first await.
     reservation = turnGate.reserve(message.requestId);
@@ -458,6 +562,7 @@ async function handlePrompt(message) {
     }
 
     const reservedState = await store.reserveDelivery(message.requestId);
+    deliveryReserved = true;
     const frozenTurn = captureTurnBinding(reservedState, {
       requestId: message.requestId,
       controllerMessageId: payload.controllerMessageId,
@@ -471,6 +576,7 @@ async function handlePrompt(message) {
       runId: payload.runId,
       text: payload.text,
     });
+    contentDispatchStarted = true;
     const result = await chrome.tabs.sendMessage(tab.id, {
       type: "agent.prompt",
       requestId: message.requestId,
@@ -510,6 +616,7 @@ async function handlePrompt(message) {
       },
     });
   } catch (error) {
+    if (deliveryReserved && !contentDispatchStarted) await store.clearDelivery(message.requestId);
     lastError = error.message;
     if (error.code === "SESSION_AUTH_REQUIRED") {
       await store.update({ bindingStatus: "AUTH_REQUIRED" });

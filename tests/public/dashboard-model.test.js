@@ -11,10 +11,10 @@ import {
   normalizeDashboardState,
   selectMessagesForActor,
   sessionFieldRows,
-} from "../public/dashboard-model.js";
+} from "../../public/dashboard-model.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
-const publicDir = path.resolve(dirname, "../public");
+const publicDir = path.resolve(dirname, "../../public");
 
 test("dashboard uses only canonical actor names and removes legacy completion controls", async () => {
   const sources = await Promise.all([

@@ -24,7 +24,7 @@
 
 색상은 bg `#0F1319`, panel `#161B24`, live `#4FD8A0`, warn `#E8A33D`, error `#E5484D`, info `#5B8DEF`입니다. Inter/UI와 IBM Plex Mono/데이터 폰트 스택을 사용하며 설치되지 않은 환경에서는 시스템 대체 폰트를 사용합니다. 외부 폰트 다운로드는 없습니다. 헤어라인 테두리와 760px 반응형 배치를 사용합니다.
 
-`tests/audit-console.test.js`는 UI 스크립트의 런 전환 경합·중단 대상·연결 끊김·시각 보존을 DOM 대역으로 검사합니다. `tests/project-settings.test.js`는 실제 API의 인증·저장·버전 충돌·실행 중 변경 거부·재시작 복원을 검사합니다. `scripts/ui-scenarios.mjs`는 Chrome/Edge에서 초기 설정, 저장과 재조회, 미종료 기록, 시작·중단·복구, 연결 복구, 증거 조회와 적용, 모바일 배치를 실행하고 스크린샷을 남깁니다. 설정은 실제 API를 사용하고 외부 제공자 실행은 테스트 데이터로 대체합니다.
+`tests/public/audit-console.test.js`는 UI 스크립트의 런 전환 경합·중단 대상·연결 끊김·시각 보존을 DOM 대역으로 검사합니다. `tests/project-settings.test.js`는 실제 API의 인증·저장·버전 충돌·실행 중 변경 거부·재시작 복원을 검사합니다. `scripts/ui-scenarios.mjs`는 Chrome/Edge에서 초기 설정, 저장과 재조회, 미종료 기록, 시작·중단·복구, 연결 복구, 증거 조회와 적용, 모바일 배치를 실행하고 스크린샷을 남깁니다. 설정은 실제 API를 사용하고 외부 제공자 실행은 테스트 데이터로 대체합니다.
 
 ## 복구 확인 후 폐기
 

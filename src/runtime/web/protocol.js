@@ -56,6 +56,14 @@ export const WebProtocolMessageType = enumObject([
   "web.prompt.cancelled",
   "web.cancel",
   "web.delivery.ack",
+  "web.delivery.inspect",
+  "web.delivery.inspected",
+  "web.delivery.focus",
+  "web.delivery.focused",
+  "web.delivery.stop",
+  "web.delivery.stopped",
+  "web.delivery.recover",
+  "web.delivery.recovered",
   "web.manual-intervention",
 ]);
 

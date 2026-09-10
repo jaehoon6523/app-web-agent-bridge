@@ -34,7 +34,7 @@
 - `tests/code-change-service.test.js`: VAL-01·04·07·10·12~14·16, 임시 Git + SQLite + 모의 에이전트.
 - `tests/code-change-e2e.test.js`: 실제 Node 검증 실행 실패·후보 변조·중단/늦은 응답·무변경 보류·비동기 접수. 이름의 e2e는 실제 제공자 연동을 뜻하지 않음.
 - `tests/audit-boundaries.test.js`: 범위 밖 요청·연결 유실·한도·적용 중 재시작·기준 이동·원문 보존·과거 PASS·CLI 미설정 상태의 기록 조회.
-- `tests/audit-console.test.js`: VAL-17~18, 실제 UI 스크립트와 DOM/네트워크 대역.
+- `tests/public/audit-console.test.js`: VAL-17~18, 실제 UI 스크립트와 DOM/네트워크 대역.
 - `tests/server-cutover.test.js`, `tests/dashboard-controller.test.js`: 인증·동일 출처·CODE_CHANGE 접수·영속 명령·기존 DISCUSSION 회귀.
 - 2026-09-08 `npm run check`: 린트·타입 검사 통과, 자동 테스트 380개 통과, 실패·skip 0. 이후 공유 아티팩트 참조 보존 변경에 대해 `tests/dashboard-controller.test.js` 6개 재검사 통과. 실제 제공자·브라우저 검증 결과가 아니다.
 

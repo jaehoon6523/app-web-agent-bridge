@@ -156,7 +156,7 @@ npm start
 
 ```powershell
 npm run check
-node --test --experimental-test-isolation=none tests/audit-boundaries.test.js tests/audit-console.test.js
+node --test --experimental-test-isolation=none tests/audit-boundaries.test.js tests/public/audit-console.test.js
 ```
 
-자동 검사는 임시 실제 Git 저장소·실제 Node 검증 명령·SQLite와 모의 CLI/Web 응답을 사용합니다. `audit-console.test.js`는 배포 UI 스크립트를 DOM/네트워크 대역으로 검사하며 실제 브라우저 검사와 구분합니다. 실제 웹 감사자가 누락을 찾아내는지, 설치된 확장·로그인·OS 권한을 포함한 전체 흐름은 별도 실연동 검증이 필요합니다.
+자동 검사는 임시 실제 Git 저장소·실제 Node 검증 명령·SQLite와 모의 CLI/Web 응답을 사용합니다. `tests/public/audit-console.test.js`는 배포 UI 스크립트를 DOM/네트워크 대역으로 검사하며 실제 브라우저 검사와 구분합니다. 실제 웹 감사자가 누락을 찾아내는지, 설치된 확장·로그인·OS 권한을 포함한 전체 흐름은 별도 실연동 검증이 필요합니다.

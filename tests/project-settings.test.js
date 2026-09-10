@@ -30,6 +30,14 @@ test("project settings authenticate, validate, persist, update readiness and rej
   });
   assert.equal((await fetch(`${base}/api/project`)).status, 401);
   const initial = await get(); assert.equal(initial.project, null);
+  const automatic = path.join(root, "automatic"); fs.mkdirSync(automatic);
+  fs.writeFileSync(path.join(automatic, "app.js"), "export const ready = true;\n");
+  assert.equal((await fetch(`${base}/api/project/prepare`, { method: "POST", headers: { "content-type": "application/json", origin: config.baseUrl }, body: JSON.stringify({ targetRoot: automatic }) })).status, 401);
+  assert.equal(fs.existsSync(path.join(automatic, ".git")), false);
+  const preparedResponse = await fetch(`${base}/api/project/prepare`, { method: "POST", headers, body: JSON.stringify({ targetRoot: automatic }) });
+  assert.equal(preparedResponse.status, 200, await preparedResponse.clone().text());
+  assert.equal((await preparedResponse.json()).createdInitialCommit, true);
+  assert.equal((await fetch(`${base}/api/project/folder`, { method: "POST", headers: { "content-type": "application/json", origin: config.baseUrl }, body: "{}" })).status, 401);
   const candidate = project(target);
   assert.equal((await save(candidate, initial.version, { "content-type": "application/json", origin: config.baseUrl })).status, 401);
   assert.equal((await save(candidate, initial.version, { ...headers, origin: "http://untrusted.invalid" })).status, 403);

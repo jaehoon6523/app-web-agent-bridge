@@ -50,6 +50,51 @@ function tree(root, baseCommit) {
 }
 
 export class GitChangeWorkspace {
+  static prepareTarget(targetRoot) {
+    if (typeof targetRoot !== "string" || !path.isAbsolute(targetRoot)) throw new Error("프로젝트 폴더를 선택하세요.");
+    const root = fs.realpathSync(targetRoot);
+    if (!fs.statSync(root).isDirectory() || path.parse(root).root === root) throw new Error("드라이브 전체가 아닌 프로젝트 폴더를 선택하세요.");
+    if (!fs.existsSync(path.join(root, ".git"))) {
+      for (let parent = path.dirname(root); ; parent = path.dirname(parent)) {
+        if (fs.existsSync(path.join(parent, ".git"))) {
+          const relative = path.relative(parent, root).split(path.sep).join("/");
+          if (git(parent, ["ls-files", "-z", "--", `:(literal)${relative}/`]).length) {
+            throw new Error(`상위 Git 저장소가 관리하는 폴더입니다. 프로젝트 루트를 선택하세요: ${parent}`);
+          }
+          break;
+        }
+        if (parent === path.dirname(parent)) break;
+      }
+      git(root, ["init", "--quiet"]);
+    }
+    repositoryRoot(root);
+    let existingHead;
+    try { existingHead = head(root); } catch {
+      if (git(root, ["rev-list", "--all", "--count"]).toString("utf8").trim() !== "0") {
+        throw new Error("기존 Git 이력이 있습니다. 작업할 브랜치를 선택한 뒤 다시 준비하세요.");
+      }
+    }
+    if (existingHead) {
+      const status = GitChangeWorkspace.inspectTarget(root);
+      if (status.status) throw new Error("기존 저장소에 저장되지 않은 변경이 있습니다. 변경 내용을 커밋한 뒤 다시 준비하세요. 파일은 변경하지 않았습니다.");
+      return { targetRoot: root, createdInitialCommit: false, baseCommit: existingHead };
+    }
+    // Keep local credentials and generated dependencies out of the initial snapshot.
+    const excludePath = path.resolve(root, git(root, ["rev-parse", "--git-path", "info/exclude"]).toString("utf8").trim());
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    const exclusions = "\n# Bridge local preparation\n.env\n.env.*\n!.env.example\n!.env.sample\n*.pem\n*.key\nnode_modules/\n.venv/\nvenv/\n.agent-controller/\n.bridge-worktrees/\n";
+    if (!fs.existsSync(excludePath) || !fs.readFileSync(excludePath, "utf8").includes("# Bridge local preparation")) fs.appendFileSync(excludePath, exclusions);
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-initial-index-"));
+    try {
+      const env = { GIT_INDEX_FILE: path.join(temporary, "index") };
+      git(root, ["read-tree", "--empty"], { env });
+      git(root, ["add", "--all", "--", "."], { env });
+      git(root, ["-c", "user.name=Local Project Bridge", "-c", "user.email=bridge@localhost",
+        "-c", "commit.gpgsign=false", "-c", "core.hooksPath=", "commit", "--allow-empty", "--quiet", "-m", "Initial project snapshot"], { env });
+      git(root, ["read-tree", "HEAD"]);
+    } finally { fs.rmSync(temporary, { recursive: true }); }
+    return { targetRoot: root, createdInitialCommit: true, baseCommit: head(root) };
+  }
   static inspectTarget(targetRoot) {
     const root = repositoryRoot(targetRoot);
     return { targetRoot: root, head: head(root), status: git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).toString("utf8"),

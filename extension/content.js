@@ -598,6 +598,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       conversationId: conversationIdFromUrl(location.href),
       title: document.title,
       ready: page.status === "READY" && page.composerPresent,
+      busy: currentJob !== null,
+      activeRequestId: currentJob?.requestId ?? null,
+      generating: Boolean(firstVisible("stopButton")),
       pageStatus: page.status,
       selectorVersion: registry?.version ?? null,
     });

@@ -1,15 +1,44 @@
 export const ACTORS = Object.freeze(["CODEX_AGENT", "CHATGPT_WEB_AGENT"]);
 
 const DELIVERY_STATES = new Set([
+  "RESERVED",
   "PENDING",
   "DISPATCHING",
   "SUBMITTED",
   "RESPONSE_STARTED",
   "RESPONSE_COMPLETED",
+  "ACKNOWLEDGED",
   "RELAYED",
   "FAILED",
   "AMBIGUOUS",
+  "RECOVERY_REQUIRED",
 ]);
+
+const WORKFLOW_STAGES = new Set(["START", "PREPARE", "WORK", "RESULT"]);
+const WORKFLOW_STATES = Object.freeze({
+  START: new Set(["START_IDLE", "VALIDATING"]),
+  PREPARE: new Set(["INITIALIZING", "WAITING_WEB_RESPONSE", "DISCUSSING", "AGREEMENT_READY", "APPROVING", "WEB_BLOCKED", "RECOVERY_REQUIRED", "FAILED"]),
+  WORK: new Set(["RUN_CREATED", "PROVISIONING", "WORKER_RUNNING", "VERIFYING", "REVIEW_RUNNING", "REWORK", "APPLYING"]),
+  RESULT: new Set(["AWAITING_APPLY", "APPLIED", "HOLD", "RECOVERY_REQUIRED", "CANCELLED", "INCONCLUSIVE", "FAILED"]),
+});
+function normalizeWorkflow(value) {
+  const workflow = optionalObject(value, "workflow") ?? { stage: "START", state: "START_IDLE" };
+  if (!WORKFLOW_STAGES.has(workflow.stage)) throw new TypeError("workflow.stage is invalid.");
+  if (!WORKFLOW_STATES[workflow.stage].has(workflow.state)) throw new TypeError("workflow.state is invalid for workflow.stage.");
+  for (const kind of workflow.stage === "PREPARE" ? ["preparation"] : ["WORK", "RESULT"].includes(workflow.stage) ? ["run"] : []) {
+    if (typeof workflow[kind + "Id"] !== "string" || !workflow[kind + "Id"]) throw new TypeError("workflow." + kind + "Id is required.");
+    if (!Number.isSafeInteger(workflow[kind + "Version"]) || workflow[kind + "Version"] < 1) throw new TypeError("workflow." + kind + "Version is required.");
+  }
+  return Object.freeze({
+    ...workflow,
+    stage: workflow.stage,
+    state: workflow.state,
+    preparationId: workflow.preparationId ?? null,
+    preparationVersion: workflow.preparationVersion ?? null,
+    runId: workflow.runId ?? null,
+    runVersion: workflow.runVersion ?? null,
+  });
+}
 
 function optionalArray(value, name) {
   if (value == null) return [];
@@ -61,6 +90,9 @@ export function normalizeDashboardState(value) {
   if (value == null) {
     return Object.freeze({
       run: null,
+      preparation: null,
+      preflight: null,
+      workflow: normalizeWorkflow(null),
       sessions: new Map(),
       messages: [],
       deliveries: [],
@@ -73,7 +105,26 @@ export function normalizeDashboardState(value) {
     throw new TypeError("Dashboard state must be an object.");
   }
   const capabilities = optionalArray(value.commandCapabilities, "commandCapabilities");
+  const workflow = normalizeWorkflow(value.workflow);
+  const preparation = optionalObject(value.preparation, "preparation");
+  if (preparation && workflow.preparationId && (preparation.preparationId !== workflow.preparationId || preparation.version !== workflow.preparationVersion)) {
+    throw new TypeError("preparation identity/version does not match workflow.");
+  }
+  let sequence = 0;
+  const turnIds = new Set();
+  for (const turn of optionalArray(preparation?.discussion, "preparation.discussion")) {
+    if (turn.preparationId !== preparation.preparationId || !turn.turnId || turnIds.has(turn.turnId)
+      || !Number.isSafeInteger(turn.sequence) || turn.sequence <= sequence
+      || !["USER", "WEB_DESIGNER"].includes(turn.actor) || typeof turn.content !== "string"
+      || (turn.actor === "WEB_DESIGNER" && !turn.deliveryId)) {
+      throw new TypeError("preparation.discussion contains an invalid DiscussionTurn.");
+    }
+    sequence = turn.sequence; turnIds.add(turn.turnId);
+  }
   return Object.freeze({
+    workflow,
+    preparation,
+    preflight: optionalObject(value.preflight, "preflight"),
     run: normalizeRun(value.run),
     sessions: normalizeSessions(value.sessions),
     messages: optionalArray(value.messages, "messages"),

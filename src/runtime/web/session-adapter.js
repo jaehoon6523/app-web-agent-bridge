@@ -549,6 +549,53 @@ export class ChatGptWebSessionAdapter {
     this.#transport.send({ type: "web.delivery.ack", requestId: turnId });
   }
 
+  async recoverDelivery(expected) {
+    if (this.#activeTurnId !== null || this.#sessionOperation !== null || this.#pending.size > 0) {
+      throw new WebProtocolError("A Web session operation is already active", "WEB_SESSION_BUSY");
+    }
+    if (this.#ambiguousTurnId !== null && this.#ambiguousTurnId !== expected?.currentDeliveryId) this.#assertNoAmbiguousTurn();
+    this.#sessionOperation = "RECOVER";
+    try {
+      const message = await this.#request({ type: "web.delivery.recover", payload: expected },
+        new Set(["web.delivery.recovered", "web.session.error"]), 15_000);
+      if (message.type === "web.session.error") throw this.#messageError(message);
+      if (message.payload?.currentDeliveryId !== expected?.currentDeliveryId
+        || message.payload?.sessionId !== expected?.sessionId || message.payload?.runId !== expected?.runId
+        || message.payload?.conversationUrl !== expected?.conversationUrl) {
+        throw new WebProtocolError("Recovery response identifies a different delivery", "DELIVERY_RECOVERY_MISMATCH");
+      }
+      this.#ambiguousTurnId = null;
+      this.#ready = false;
+      return message.payload;
+    } finally { this.#sessionOperation = null; }
+  }
+
+  async inspectDelivery() {
+    const message = await this.#request({ type: "web.delivery.inspect" },
+      new Set(["web.delivery.inspected", "web.session.error"]), 10_000);
+    if (message.type === "web.session.error") throw this.#messageError(message);
+    return message.payload;
+  }
+
+  async focusDelivery(expected) {
+    const message = await this.#request({ type: "web.delivery.focus", payload: expected },
+      new Set(["web.delivery.focused", "web.session.error"]), 10_000);
+    if (message.type === "web.session.error") throw this.#messageError(message);
+  }
+
+  async stopDelivery(expected) {
+    const message = await this.#request({ type: "web.delivery.stop", payload: expected },
+      new Set(["web.delivery.stopped", "web.session.error"]), 10_000);
+    if (message.type === "web.session.error") throw this.#messageError(message);
+    const details = message.payload;
+    if (details?.currentDeliveryId !== expected?.currentDeliveryId || details?.sessionId !== expected?.sessionId
+      || details?.runId !== expected?.runId || details?.observedConversationUrl !== expected?.conversationUrl
+      || details?.pageBusy !== false || details?.generating !== false || details?.extensionBusy !== false) {
+      throw new WebProtocolError("종료 응답에서 해당 전송의 생성 종료를 확인하지 못했습니다.", "INTERRUPT_NOT_CONFIRMED", details);
+    }
+    return message.payload;
+  }
+
   async close() {
     this.#ready = false;
     for (const entry of this.#pending.values()) {
