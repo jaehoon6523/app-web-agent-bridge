@@ -325,6 +325,7 @@ async function deliveryDetails(state) {
     title: page?.title ?? null, activeRequestId: page?.activeRequestId ?? null,
     lastObservedUserMessageId: state.lastObservedUserMessageId,
     lastObservedAssistantMessageId: state.lastObservedAssistantMessageId,
+    completedDelivery: state.completedDelivery?.turnId === state.currentDeliveryId ? state.completedDelivery : null,
   };
 }
 
@@ -605,6 +606,10 @@ async function handlePrompt(message) {
     });
     const session = await getSessionInfo(frozenTurn);
     assertTurnSessionBinding(frozenTurn, session);
+    await store.update({ completedDelivery: {
+      turnId: message.requestId, binding: session, rawText: result.text,
+      confidence: result.confidence, evidence: result.evidence,
+    } });
     send({
       type: "web.prompt.result",
       requestId: message.requestId,

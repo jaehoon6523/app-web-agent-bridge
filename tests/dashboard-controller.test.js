@@ -115,7 +115,7 @@ test("an unfinished run blocks another start and invalid URL has no persisted ef
   assert.equal(store.listRuns().length, 1);
 });
 
-test("HTTP dashboard requires bearer authentication and same-origin mutation, then runs asynchronously", async (t) => {
+test("HTTP dashboard enforces authentication and forbids direct run.start approval bypass", async (t) => {
   const { live, store } = fixture(t);
   const bridge = createBridgeServer({ runtimeConfig: {
     host: "127.0.0.1", port: 0, baseUrl: "http://127.0.0.1:0", demoMode: false,
@@ -135,18 +135,11 @@ test("HTTP dashboard requires bearer authentication and same-origin mutation, th
   ws.send(JSON.stringify({ type: "extension.auth.response", protocolVersion: challenge.protocolVersion, challengeId: challenge.challengeId, extensionIdentity: "test-extension", hmacSha256: computeWebChallengeHmac(challenge.nonce, secret) }));
   await once(ws, "message");
   const response = await fetch(`${base}/api/commands`, { method: "POST", headers, body: JSON.stringify({ type: "run.start", requestId: "start-1", payload: { expectedVersion: 0, mode: "DISCUSSION", objective: "HTTP test", maxTurns: 2, conversationUrl: "https://chatgpt.com/c/conversation-test" } }) });
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 400);
   const result = await response.json();
-  assert.equal(result.type, "command.result");
-  for (let i = 0; i < 100 && store.getRun(result.payload.runId).phase !== "COMPLETE"; i++) await new Promise((resolve) => setTimeout(resolve, 10));
-  const snapshot = await (await fetch(`${base}/api/state`, { headers })).json();
-  assert.equal(snapshot.run.phase, "COMPLETE");
-  const replay = await fetch(`${base}/api/commands`, { method: "POST", headers, body: JSON.stringify({ type: "run.start", requestId: "start-1", payload: { expectedVersion: 0, mode: "DISCUSSION", objective: "HTTP test", maxTurns: 2, conversationUrl: "https://chatgpt.com/c/conversation-test" } }) });
-  assert.equal(replay.status, 200);
-  assert.deepEqual(await replay.json(), result);
-  assert.equal(store.listRuns().length, 1);
-  const conflict = await fetch(`${base}/api/commands`, { method: "POST", headers, body: JSON.stringify({ type: "run.pause", requestId: "start-1", payload: {} }) });
-  assert.equal(conflict.status, 409);
+  assert.equal(result.type, "command.error");
+  assert.match(result.payload.message, /준비 합의 승인/);
+  assert.equal(store.listRuns().length, 0);
   ws.terminate();
 });
 

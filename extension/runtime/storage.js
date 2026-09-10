@@ -9,6 +9,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   tabId: null,
   windowId: null,
   currentDeliveryId: null,
+  completedDelivery: null,
   lastObservedUserMessageId: null,
   lastObservedAssistantMessageId: null,
   bindingStatus: "NEEDS_REBIND",
@@ -48,6 +49,8 @@ export function normalizeExtensionState(value = {}) {
     tabId: nullableInteger(value.tabId),
     windowId: nullableInteger(value.windowId),
     currentDeliveryId: nullableString(value.currentDeliveryId),
+    completedDelivery: value.completedDelivery && typeof value.completedDelivery === "object"
+      ? structuredClone(value.completedDelivery) : null,
     lastObservedUserMessageId: nullableString(value.lastObservedUserMessageId),
     lastObservedAssistantMessageId: nullableString(value.lastObservedAssistantMessageId),
     bindingStatus: BINDING_STATUSES.has(value.bindingStatus)
@@ -121,7 +124,7 @@ export function createExtensionStateStore(storageArea) {
             { currentDeliveryId: current.currentDeliveryId },
           );
         }
-        const next = normalizeExtensionState({ ...current, currentDeliveryId: deliveryId });
+        const next = normalizeExtensionState({ ...current, currentDeliveryId: deliveryId, completedDelivery: null });
         await storageArea.set(next);
         return next;
       });

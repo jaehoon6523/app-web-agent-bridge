@@ -7,6 +7,7 @@ let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readiness
 let agreement = null, preparation = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
+let requestedView = "";
 const unknownRequests = new Map();
 
 const openFindings = new Set();
@@ -90,12 +91,13 @@ async function refresh() {
       if (typeof session?.token !== "string" || !session.token.trim()) throw new Error("대시보드 인증 응답에 토큰이 없습니다.");
       token = session.token;
     }
-    const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : ""}`);
+    const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
     if (current !== sequence || target !== selected) return;
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw new Error("서버 상태 응답 형식을 확인하세요.");
     if (!result.workflow) throw new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다.");
     const canonical = normalizeDashboardState(result);
     snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null; connected = true;
+    if (workflow.stage === "PREPARE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     text("connectionNotice", "");
     for (const [operation, requestId] of unknownRequests) {
@@ -463,7 +465,7 @@ $("chooseFolder").addEventListener("click", async () => {
   } catch (error) { text("folderStatus", error.message); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
-$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selected = ""; refresh(); } });
+$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selected = ""; requestedView = "start"; refresh(); } });
 $("showUnfinishedRun").addEventListener("click", () => {
   const unfinished = snapshot?.runs?.find((run) => !terminal.has(run.phase));
   if (unfinished) { selected = unfinished.runId; refresh(); }

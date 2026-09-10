@@ -39,7 +39,7 @@ async function dashboard(state, mutate = async () => ({})) {
       return { ok: true, json: async () => body };
     },
   });
-  vm.runInContext(source.replace(/^import .*;\n/, "").replace(/\npoll\(\);\s*$/, ""), context);
+  vm.runInContext(source.replace(/^import .*;\r?\n/, "").replace(/\r?\npoll\(\);\s*$/, ""), context);
   await vm.runInContext("refresh()", context);
   return { elements, calls, context, run: (code) => vm.runInContext(code, context) };
 }
@@ -101,3 +101,23 @@ test("approval is a single mutation carrying the canonical version", async () =>
     { url: "/api/preparations/p1/approve", body: { requestId: "request-1", expectedVersion: 3 } },
   ]);
 });
+
+for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"],
+  ["RESULT", "HOLD"], ["RESULT", "AWAITING_APPLY"]]) {
+  test(`fresh UI restores ${stage}/${state} using only the server snapshot`, async () => {
+    const run = stage === "START" ? null : { runId: "r1", version: 7, phase: state, objective: "테스트 작업" };
+    const snapshot = { workflow: { stage, state, runId: run?.runId ?? null, runVersion: run?.version ?? null },
+      preparation: null, run, runs: run ? [run] : [], preflight: {}, commandCapabilities: [] };
+    // Each load has a new VM and no retained selection, draft or local storage.
+    for (let load = 0; load < 2; load++) {
+      const ui = await dashboard(snapshot);
+      assert.equal(ui.elements.get("connectionNotice").textContent, "");
+      assert.equal(ui.elements.get("startPanel").hidden, stage !== "START");
+      assert.equal(ui.elements.get("projectPanel").hidden, true);
+      assert.equal(ui.elements.get("runPanel").hidden, stage === "START");
+      const step = { START: "stepStart", WORK: "stepWork", RESULT: "stepResult" }[stage];
+      assert.equal(ui.elements.get(step).attributes["aria-current"], "step");
+      assert.deepEqual(ui.calls.map((call) => call.url), ["/api/dashboard/session", "/api/state"]);
+    }
+  });
+}

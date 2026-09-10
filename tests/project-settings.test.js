@@ -8,7 +8,7 @@ import { createBridgeServer } from "../src/server.js";
 import { loadConfig } from "../src/config.js";
 import { project } from "./helpers/audit-fixtures.js";
 
-test("project settings authenticate, validate, persist, update readiness and reject stale or busy edits", async (t) => {
+test("legacy project mutations authenticate and reject approval bypass without changing files", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-project-settings-"));
   const target = path.join(root, "target"); fs.mkdirSync(target);
   const git = (...args) => execFileSync("git", ["-C", target, ...args], { stdio: "ignore", windowsHide: true });
@@ -35,30 +35,14 @@ test("project settings authenticate, validate, persist, update readiness and rej
   assert.equal((await fetch(`${base}/api/project/prepare`, { method: "POST", headers: { "content-type": "application/json", origin: config.baseUrl }, body: JSON.stringify({ targetRoot: automatic }) })).status, 401);
   assert.equal(fs.existsSync(path.join(automatic, ".git")), false);
   const preparedResponse = await fetch(`${base}/api/project/prepare`, { method: "POST", headers, body: JSON.stringify({ targetRoot: automatic }) });
-  assert.equal(preparedResponse.status, 200, await preparedResponse.clone().text());
-  assert.equal((await preparedResponse.json()).createdInitialCommit, true);
+  assert.equal(preparedResponse.status, 410);
+  assert.equal(fs.existsSync(path.join(automatic, ".git")), false);
   assert.equal((await fetch(`${base}/api/project/folder`, { method: "POST", headers: { "content-type": "application/json", origin: config.baseUrl }, body: "{}" })).status, 401);
   const candidate = project(target);
   assert.equal((await save(candidate, initial.version, { "content-type": "application/json", origin: config.baseUrl })).status, 401);
   assert.equal((await save(candidate, initial.version, { ...headers, origin: "http://untrusted.invalid" })).status, 403);
-  const invalid = { ...candidate, targetRoot: root };
-  assert.equal((await save(invalid, initial.version)).status, 400);
-  assert.equal((await get()).version, initial.version);
-  const response = await save(candidate, initial.version); assert.equal(response.status, 200, await response.clone().text());
-  const saved = await response.json();
-  const live = await bridge.getLiveRuntime();
-  assert.deepEqual(live.codeChanges.project, saved.project);
-  const preflight = await (await fetch(`${base}/api/preflight`)).json();
-  assert.equal(preflight.checks.auditProjectConfigured, true);
-  assert.equal((await save(candidate, initial.version)).status, 409);
-  const changed = structuredClone(candidate); changed.requirements.items[0].statement = "Changed requirement";
-  assert.equal((await save(changed, saved.version)).status, 400);
-  changed.requirements.revision = "2";
-  live.codeChanges.jobs.set("test-busy", Promise.resolve());
-  assert.equal((await save(changed, saved.version)).status, 409);
-  live.codeChanges.jobs.delete("test-busy");
-  assert.equal((await save(changed, saved.version)).status, 200);
+  assert.equal((await save(candidate, initial.version)).status, 410);
+  assert.deepEqual(await get(), initial);
   await bridge.close(); bridge = createBridgeServer({ runtimeConfig: config }); await listen();
-  assert.equal((await get()).project.requirements.revision, "2");
-  assert.equal((await (await fetch(`${base}/api/preflight`)).json()).checks.auditProjectConfigured, true);
+  assert.deepEqual(await get(), initial);
 });

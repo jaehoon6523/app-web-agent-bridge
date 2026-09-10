@@ -174,7 +174,7 @@ test("demo mode is transport-free and does not accept extension or dashboard upg
   assert.equal(await rejectedStatus(`ws://127.0.0.1:${port}/ws/dashboard`), 503);
 });
 
-test("authenticated start provisions the exact Web conversation before dispatching", async (t) => {
+test("legacy authenticated start cannot bypass preparation approval", async (t) => {
   const calls = [];
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-server-audit-"));
   const auditProjectFile = path.join(directory, "project.json");
@@ -255,14 +255,8 @@ test("authenticated start provisions the exact Web conversation before dispatchi
       conversationUrl: "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60",
     }),
   });
-  assert.equal(response.status, 202);
-  assert.deepEqual(await response.json(), {
-    runId: "run_live_test",
-    status: "ACCEPTED",
-  });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].type, "code.start");
-  assert.equal(calls[0].input.mode, "CODE_CHANGE");
-  assert.equal(calls[0].input.conversationUrl, "https://chatgpt.com/c/6a9b4c95-f564-83e8-8e92-ab11d6ef2f60");
+  assert.equal(response.status, 410);
+  assert.equal((await response.json()).code, "PREPARATION_API_REQUIRED");
+  assert.equal(calls.length, 0);
   socket.close();
 });

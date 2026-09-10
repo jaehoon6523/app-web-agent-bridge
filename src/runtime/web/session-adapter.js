@@ -577,6 +577,18 @@ export class ChatGptWebSessionAdapter {
     return message.payload;
   }
 
+  async confirmDeliveryAcknowledgement({ turnId, sessionId, runId, conversationUrl }) {
+    if (this.#activeTurnId !== null || (this.#ambiguousTurnId !== null && this.#ambiguousTurnId !== turnId)) {
+      throw new WebProtocolError("A different Web turn is active.", "DELIVERY_RECOVERY_MISMATCH");
+    }
+    const observed = await this.inspectDelivery();
+    if (observed.currentDeliveryId !== null || observed.sessionId !== sessionId
+      || observed.runId !== runId || observed.conversationUrl !== conversationUrl) {
+      throw new WebProtocolError("Acknowledgement identity is not confirmed.", "DELIVERY_RECOVERY_MISMATCH");
+    }
+    this.#ambiguousTurnId = null;
+  }
+
   async focusDelivery(expected) {
     const message = await this.#request({ type: "web.delivery.focus", payload: expected },
       new Set(["web.delivery.focused", "web.session.error"]), 10_000);

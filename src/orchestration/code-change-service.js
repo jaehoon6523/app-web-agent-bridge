@@ -78,7 +78,16 @@ export class CodeChangeService {
       if (!terminal.has(run.stage) && run.stage !== "HOLD") this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: "Server restarted during execution. No automatic resubmission or patch application." });
     }
   }
-  async start(input) {
+  async startPrepared(input, preparation) {
+    if (preparation.agreement.status !== "APPROVED" || !preparation.reservedRunId) throw new Error("An approved preparation is required.");
+    const existing = this.get(preparation.reservedRunId);
+    if (existing) {
+      if (existing.preparationId !== preparation.preparationId) throw new Error("Preparation/run identity mismatch.");
+      return { runId: existing.runId, status: "ACCEPTED" };
+    }
+    return this.start(input, preparation);
+  }
+  async start(input, preparation = null) {
     if (this.closed || this.busy()) throw new Error("Another code change is unfinished.");
     nonempty(input.objective, "objective");
     // Project settings are supplied by the server, never selected by a browser command.
@@ -89,8 +98,9 @@ export class CodeChangeService {
     const conversationUrl = canonicalConversationUrl(input.conversationUrl), conversationId = extractConversationId(conversationUrl);
     if (!conversationUrl || !conversationId) throw new TypeError("An exact ChatGPT conversation is required.");
     const target = GitChangeWorkspace.preflight(project.targetRoot);
-    const runId = `code_${randomUUID()}`, createdAt = new Date().toISOString();
-    this.store.save({ schemaVersion: 3, runId, mode: "CODE_CHANGE", stage: "CREATED", objective: input.objective.trim(),
+    const runId = preparation?.reservedRunId ?? `code_${randomUUID()}`, createdAt = new Date().toISOString();
+    this.store.save({ schemaVersion: 3, runId, mode: "CODE_CHANGE", stage: "CREATED", objective: input.objective,
+      preparationId: preparation?.preparationId ?? null, preparationSnapshot: preparation,
       projectRef: { projectId: project.projectId, targetRoot: target.targetRoot }, ...target,
       workspaceRoot: null, requirements: project.requirements, requirementsRef: ref,
       requirementsChange: earlier.at(-1)?.requirementsRef && earlier.at(-1).requirementsRef.hash !== ref.hash

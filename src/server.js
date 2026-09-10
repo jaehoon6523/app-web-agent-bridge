@@ -1,4 +1,4 @@
-import { RequirementsPlanner } from "./orchestration/requirements-planner.js";
+import { PreparationService } from "./orchestration/preparation-service.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
@@ -194,10 +194,46 @@ export function createBridgeServer({
     transport: extensionTransport,
   });
   const commandReceipts = new Map();
-  const planner = new RequirementsPlanner(webSession, { canRecoverRun: (runId) => {
-    const run = liveRuntime?.store.listRuns().find((item) => item.runId === runId);
-    return Boolean(run && isTerminalRunPhase(run.phase));
-  } });
+  let preparationService = null;
+  function preparations() {
+    if (preparationService) return preparationService;
+    preparationService = new PreparationService({
+      filename: path.join(path.dirname(projectSettings.filename), "preparations.sqlite"),
+      web: webSession,
+      available: () => Boolean(extensionTransport?.authenticated),
+      assertStart: async () => {
+        const live = await getLiveRuntime();
+        if (dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) {
+          throw Object.assign(new Error("진행 중인 작업을 먼저 종료하세요."), { code: "RUN_BUSY" });
+        }
+      },
+      findRun: async (id) => (await getLiveRuntime()).codeChanges?.get(id) ?? null,
+      approve: async (context) => {
+        const live = await getLiveRuntime();
+        if (!live.codeChanges || !livePreflight().readyForDiscussion) throw new Error("CLI와 웹 연결 상태를 확인하세요.");
+        const repository = GitChangeWorkspace.prepareTarget(context.targetRoot);
+        const projectId = context.preparationId;
+        const project = {
+          projectId, targetRoot: context.targetRoot,
+          requirements: { requirementsId: projectId + "-requirements", revision: String(context.version),
+            authority: "REQUIREMENTS_JSON", sourceRoles: [], unresolvedQuestions: [],
+            items: context.agreement.requirements.map((item, index) => ({
+              requirementId: "R" + (index + 1), statement: item.statement, acceptanceCriteria: item.acceptanceCriteria,
+              required: true, sourceRefs: [],
+              verificationMethod: { kinds: ["CODE_SNAPSHOT"], description: "코드 스냅샷 검토 (실행 검증 없음)" },
+            })) },
+          policy: { maxIterations: 3, maxEvidenceRounds: 3, maxFormatRepairs: 2, totalTimeoutMs: 1800000, turnTimeoutMs: 600000 },
+          verifications: [],
+        };
+        auditSettings = projectSettings.save(project, projectSettings.snapshot().version);
+        live.codeChanges.project = structuredClone(auditSettings.project);
+        const result = await live.codeChanges.startPrepared({ objective: context.objective, conversationUrl: context.conversationUrl }, context);
+        return { ...result, repository };
+      },
+    });
+    return preparationService;
+  }
+
 
   function requireDashboardRead(req, res, next) {
     if (dashboardAuth === null) {
@@ -229,79 +265,41 @@ export function createBridgeServer({
     try { res.json(await chooseProjectFolder()); }
     catch (error) { res.status(400).json({ error: redactForEvidence(error.message) }); }
   });
-  app.post("/api/project/prepare", requireDashboardMutation, async (req, res) => {
-    try {
-      const live = await getLiveRuntime();
-      if (planner.busy || dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) throw new Error("진행 중인 작업을 종료한 뒤 준비하세요.");
-      res.json(GitChangeWorkspace.prepareTarget(req.body?.targetRoot));
-    } catch (error) { res.status(400).json({ error: redactForEvidence(error.message) }); }
-  });
-  function proposalSnapshot() {
-    const draft = structuredClone(planner.current);
-    if (draft?.errorDetails) {
-      const run = liveRuntime?.store.listRuns().find((item) => item.runId === draft.errorDetails.runId);
-      draft.errorDetails.runObjective = run?.objective ?? null;
-      draft.errorDetails.runPhase = run?.phase ?? null;
-    }
-    return draft;
+  for (const legacy of ["/api/project/prepare", "/api/project/proposal", "/api/project/proposal/session"]) {
+    app.all(legacy, requireDashboardMutation, (_req, res) => res.status(410).json({
+      code: "PREPARATION_API_REQUIRED", message: "Use the canonical preparation API.",
+    }));
   }
-  app.get("/api/project/proposal", requireDashboardRead, (_req, res) => res.json(proposalSnapshot()));
-  app.post("/api/project/proposal/session", requireDashboardMutation, async (req, res) => {
+  const preparationRoute = (type) => async (req, res) => {
     try {
-      const { draftId, action } = req.body || {};
-      if (!planner.current || draftId !== planner.current.draftId || planner.busy) throw new Error("준비 요청이 변경됐거나 진행 중입니다. 상태를 다시 확인하세요.");
-      if (!["inspect", "focus", "stop", "recover"].includes(action)) throw new Error("지원하지 않는 세션 작업입니다.");
-      const live = await getLiveRuntime();
-      if (dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) throw new Error("진행 중인 실행을 먼저 중단하세요.");
-      if (action === "inspect") planner.current.errorDetails = await webSession.inspectDelivery();
-      else {
-        const expected = planner.current.errorDetails;
-        if (!expected?.sessionId || (action !== "focus" && !expected.currentDeliveryId)) throw new Error("이전 전송 상태를 먼저 확인하세요.");
-        if (action === "focus") await webSession.focusDelivery(expected);
-        else if (action === "stop") planner.current.errorDetails = await webSession.stopDelivery(expected);
-        else {
-          planner.current.recoveredDelivery = await webSession.recoverDelivery(expected);
-          planner.current.errorDetails = { ...expected, currentDeliveryId: null };
-        }
+      const input = { ...req.body, ...(req.params.id ? { preparationId: req.params.id } : {}) };
+      const command = type === "web" ? input.command : type;
+      if (typeof command !== "string" || (type === "web" && !["web.inspect", "web.focus", "web.stop", "web.reconcile"].includes(command))) {
+        throw Object.assign(new Error("Invalid Web command."), { code: "INVALID_COMMAND" });
       }
-      res.json(proposalSnapshot());
+      const result = await preparations().execute(command, input);
+      res.status(type === "preparation.start" || type === "preparation.reply" ? 202 : 200).json(result);
     } catch (error) {
-      res.status(409).json({ error: redactForEvidence(error.message), code: error.code ?? null, details: error.details ?? null });
+      res.status(error.code === "INVALID_INPUT" || error.code === "INVALID_COMMAND" ? 400 : 409).json({
+        code: error.code ?? "PREPARATION_FAILED", message: redactForEvidence(error.message),
+        retryable: false, workflowStage: preparationService?.current?.stage ?? "START",
+        preparationId: preparationService?.current?.preparationId ?? null,
+        runId: preparationService?.current?.resultingRunId ?? null, details: error.details ?? null,
+      });
     }
-  });
-  app.post("/api/project/proposal", requireDashboardMutation, async (req, res) => {
-    try {
-      const live = await getLiveRuntime();
-      if (planner.busy || dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) throw new Error("진행 중인 작업을 종료한 뒤 제안을 요청하세요.");
-      if (!extensionTransport?.authenticated) throw new Error("브라우저 확장을 연결하고 ChatGPT 대화 탭을 열어 주세요.");
-      res.json(planner.start(req.body));
-    } catch (error) { res.status(400).json({ error: redactForEvidence(error.message) }); }
-  });
+  };
+  app.post("/api/preparations", requireDashboardMutation, preparationRoute("preparation.start"));
+  app.post("/api/preparations/web", requireDashboardMutation, preparationRoute("web"));
+  for (const action of ["reply", "approve", "cancel"]) {
+    app.post("/api/preparations/:id/" + action, requireDashboardMutation, preparationRoute("preparation." + action));
+  }
 
   app.get("/api/project", requireDashboardRead, (_req, res) => {
     res.json({ ...projectSettings.snapshot(), defaults: { targetRoot: runtimeConfig.workspace || process.cwd(), executable: process.execPath } });
   });
-  app.put("/api/project", requireDashboardMutation, async (req, res) => {
-    try {
-      const live = await getLiveRuntime();
-      if (planner.busy || dashboard.isDispatching() || live.codeChanges?.busy()
-        || live.store.listRuns().some((run) => !isTerminalRunPhase(run.phase))) {
-        res.status(409).json({ error: "미종료 작업을 중단한 뒤 프로젝트 설정을 저장하세요." });
-        return;
-      }
-      if (req.body?.draftId && (planner.current?.draftId !== req.body.draftId
-        || planner.current.status !== "READY" || planner.current.proposal.questions.length)) {
-        throw new Error("최신 웹 제안을 확인하고 남은 질문에 답한 뒤 승인하세요.");
-      }
-      const saved = projectSettings.save(req.body?.project, req.body?.expectedVersion);
-      auditSettings = saved;
-      if (live.codeChanges) live.codeChanges.project = structuredClone(saved.project);
-      res.json(saved);
-    } catch (error) {
-      res.status(error.code === "PROJECT_VERSION_CONFLICT" ? 409 : 400)
-        .json({ error: redactForEvidence(error.message) });
-    }
-  });
+  app.put("/api/project", requireDashboardMutation, (_req, res) => res.status(410).json({
+    code: "PREPARATION_API_REQUIRED", message: "Project settings are saved by preparation approval.",
+  }));
 
   app.post("/api/commands", requireDashboardMutation, async (req, res) => {
     try {
@@ -309,7 +307,7 @@ export function createBridgeServer({
         res.status(400).json({ error: "Command type and requestId are required." });
         return;
       }
-      if (planner.busy && req.body.type === "run.start") throw new Error("웹 제안이 완료된 뒤 시작하세요.");
+      if (req.body.type === "run.start") throw new Error("작업 시작은 준비 합의 승인으로만 가능합니다.");
       const requestHash = canonicalJson(req.body);
       let receipt = commandReceipts.get(req.body.requestId);
       if (receipt && receipt.requestHash !== requestHash) {
@@ -337,26 +335,6 @@ export function createBridgeServer({
           payload: { message: redactForEvidence(error.message), code: error.code || "COMMAND_FAILED" } });
     }
   });
-
-  function startRequest(body) {
-    if (body === null || typeof body !== "object" || Array.isArray(body)) {
-      throw new TypeError("Start request must be an object.");
-    }
-    const allowed = new Set(["objective", "conversationUrl"]);
-    for (const key of Object.keys(body)) {
-      if (!allowed.has(key)) throw new TypeError(`Unsupported start field ${JSON.stringify(key)}.`);
-    }
-    if (typeof body.objective !== "string" || body.objective.trim() === "") {
-      throw new TypeError("objective must be a non-empty string.");
-    }
-    if (typeof body.conversationUrl !== "string" || body.conversationUrl.trim() === "") {
-      throw new TypeError("conversationUrl must be a non-empty string.");
-    }
-    return Object.freeze({
-      objective: body.objective.trim(),
-      conversationUrl: body.conversationUrl.trim(),
-    });
-  }
 
   app.get("/api/health", async (_req, res) => {
     const preflight = livePreflight();
@@ -386,40 +364,27 @@ export function createBridgeServer({
   app.get("/api/preflight", (_req, res) => {
     res.json(livePreflight());
   });
-  app.post("/api/runs/start", requireDashboardMutation, async (req, res) => {
-    if (planner.busy) { res.status(409).json({ error: "웹 제안이 완료된 뒤 시작하세요." }); return; }
-    const preflight = livePreflight();
-    if (!preflight.readyForProvisioning) {
-      res.status(409).json({ error: "Live run preflight is incomplete.", preflight });
-      return;
-    }
-    let request;
-    try {
-      request = startRequest(req.body);
-    } catch (error) {
-      res.status(400).json({ error: error.message });
-      return;
-    }
-    try {
-      const started = await dashboard.executeDurable({ type: "run.start", requestId: req.get("x-request-id"), payload: {
-        ...request, expectedVersion: 0, mode: "CODE_CHANGE",
-      } });
-      res.status(202).json(started);
-    } catch (error) {
-      res.status(502).json({
-        error: redactForEvidence(error?.message || "Live run did not complete."),
-        code: error?.code || "LIVE_RUN_FAILED",
-        details: null,
-      });
-    }
-  });
+  app.post("/api/runs/start", requireDashboardMutation, (_req, res) => res.status(410).json({
+    code: "PREPARATION_API_REQUIRED", message: "Start a run by approving a preparation.",
+  }));
   app.get("/api/state", requireDashboardRead, async (req, res) => {
     try {
       if (req.query.runId !== undefined && typeof req.query.runId !== "string") {
         res.status(400).json({ error: "runId must be a string." });
         return;
       }
-      res.json(await dashboard.snapshot(req.query.runId || null));
+      const service = preparations();
+      const snapshot = await service.project(await dashboard.snapshot(req.query.runId || null),
+        { runId: req.query.runId || null, start: req.query.view === "start" });
+      if (typeof req.query.requestId === "string") {
+        snapshot.requestResult = service.receipt(req.query.requestId);
+        if (snapshot.requestResult.status === "NOT_FOUND") {
+          const live = await getLiveRuntime();
+          const receipt = live.codeChanges?.store?.receipt(req.query.requestId);
+          if (receipt) snapshot.requestResult = { requestId: req.query.requestId, status: receipt.status === "COMPLETED" ? "COMPLETED" : "PROCESSING" };
+        }
+      }
+      res.json(snapshot);
     } catch (error) {
       res.status(503).json({ error: redactForEvidence(error.message) });
     }
@@ -496,6 +461,7 @@ export function createBridgeServer({
     closePromise = (async () => {
       closing = true;
       dashboard.close();
+      preparationService?.close();
       for (const ws of extensionWss.clients) {
         if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
           ws.terminate();
