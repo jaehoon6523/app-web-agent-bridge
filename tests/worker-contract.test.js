@@ -56,3 +56,84 @@ test("completion persists provider model session usage and text", () => {
   assert.equal(result.sessionId, "session_1");
   assert.deepEqual(result.usage, { inputTokens: 10, outputTokens: 5 });
 });
+
+
+test("generic worker does not inherit controller secrets", async () => {
+  const previous = process.env.DASHBOARD_TOKEN;
+  process.env.DASHBOARD_TOKEN = "super-secret-controller-token";
+  const worker = await createGenericJsonlWorker({
+    provider: "qwen",
+    executablePath: process.execPath,
+    workspaceRoot: process.cwd(),
+    args: ["-e", `
+      process.stdin.on("data", (buf) => {
+        const msg = JSON.parse(String(buf));
+        process.stdout.write(JSON.stringify({
+          type: "completion",
+          turnId: msg.turnId,
+          sessionId: msg.sessionId,
+          status: "completed",
+          text: JSON.stringify({ secret: process.env.DASHBOARD_TOKEN ?? null })
+        }) + "\\n");
+      });
+    `],
+  });
+  try {
+    await worker.start();
+    const handle = await worker.submitTurn({ text: "x", outputSchema: {} });
+    const result = await handle.completion;
+    assert.equal(JSON.parse(result.text).secret, null);
+  } finally {
+    await worker.close();
+    if (previous === undefined) delete process.env.DASHBOARD_TOKEN;
+    else process.env.DASHBOARD_TOKEN = previous;
+  }
+});
+
+test("generic worker close waits for process exit", async () => {
+  const worker = await createGenericJsonlWorker({
+    provider: "qwen",
+    executablePath: process.execPath,
+    workspaceRoot: process.cwd(),
+    args: ["-e", "setInterval(() => {}, 1000)"],
+  });
+  await worker.start();
+  await worker.close();
+  const inspected = await worker.inspect();
+  assert.equal(inspected.closed, true);
+});
+
+test("generic worker close is idempotent after external process exit", async () => {
+  const worker = await createGenericJsonlWorker({
+    provider: "qwen",
+    executablePath: process.execPath,
+    workspaceRoot: process.cwd(),
+    args: ["-e", "setInterval(() => {}, 1000)"],
+  });
+  await worker.start();
+  const inspected = await worker.inspect();
+  process.kill(inspected.pid, "SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await worker.close();
+  await worker.close();
+});
+
+test("generic worker fails after repeated malformed protocol output", async () => {
+  const worker = await createGenericJsonlWorker({
+    provider: "qwen",
+    executablePath: process.execPath,
+    workspaceRoot: process.cwd(),
+    args: ["-e", `
+      process.stdin.on("data", () => {
+        for (let i = 0; i < 5; i++) process.stdout.write("not-json\\n");
+      });
+    `],
+  });
+  try {
+    await worker.start();
+    const handle = await worker.submitTurn({ text: "x", outputSchema: {} });
+    await assert.rejects(handle.completion, /malformed protocol/u);
+  } finally {
+    await worker.close().catch(() => {});
+  }
+});

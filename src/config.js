@@ -44,6 +44,14 @@ function jsonStringArray(env, name, fallback = []) {
   return Object.freeze([...value]);
 }
 
+function executableReference(cwd, value) {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+  return /[\\/]/u.test(trimmed) || path.isAbsolute(trimmed)
+    ? path.resolve(cwd, trimmed)
+    : trimmed;
+}
+
 function workerProvider(env) {
   const value = (env.CODE_WORKER_PROVIDER || "codex").trim().toLowerCase();
   if (!["codex", "deepseek", "claude", "qwen", "gemini"].includes(value)) {
@@ -101,9 +109,7 @@ export function loadConfig({
     codeWorker: Object.freeze({
       provider: workerProvider(env),
       model: env.CODE_WORKER_MODEL?.trim() || null,
-      executablePath: env.CODE_WORKER_EXECUTABLE?.trim()
-        ? path.resolve(cwd, env.CODE_WORKER_EXECUTABLE.trim())
-        : null,
+      executablePath: executableReference(cwd, env.CODE_WORKER_EXECUTABLE),
       args: jsonStringArray(env, "CODE_WORKER_ARGS"),
     }),
     dashboard: Object.freeze({

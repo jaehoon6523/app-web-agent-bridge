@@ -212,7 +212,7 @@ export class CodeChangeService {
       this.update(runId, { stage: "VERIFYING", candidate, capture, candidates: [...run.candidates, candidate], findings,
         evidence: [...run.evidence, evidenceRecord(this.artifactStore, candidateId, "PATCH", patch, { unchanged: capture.unchanged }),
           evidenceRecord(this.artifactStore, candidateId, "AGENT_CLAIM", report, {}, "AGENT")],
-        messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: "CODEX_AGENT", content: completed.text, createdAt: new Date().toISOString() }] });
+        messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: (completed.provider || this.workerConfig.provider) === "codex" ? "CODEX_AGENT" : "CODE_WORKER", workerProvider: completed.provider || this.workerConfig.provider, content: completed.text, createdAt: new Date().toISOString() }] });
       for (const verification of run.verifications) await performVerification(this, runId, workspace, verification);
       await auditCandidate(this, runId, workspace);
       if (this.get(runId).stage !== "REWORK") return;
@@ -344,7 +344,9 @@ export class CodeChangeService {
   snapshot(runId, preflight) {
     const record = this.get(runId);
     return redactForEvidence({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
-      activeActor: record.stage === "WORKER_RUNNING" ? "CODEX_AGENT" : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage) ? "CHATGPT_WEB_AGENT" : null },
+      activeActor: record.stage === "WORKER_RUNNING"
+        ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
+        : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage) ? "CHATGPT_WEB_AGENT" : null },
       sessions: [], messages: record.messages, deliveries: [], approvals: record.application ? [record.application] : [], events: record.events ?? [],
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },

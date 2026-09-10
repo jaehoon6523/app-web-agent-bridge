@@ -121,6 +121,24 @@ if (process.env.CODEX_EXECUTABLE?.trim()) {
   };
 }
 checks.push(entry("codex.executable", codexResult.ok ? "PASS" : "FAIL", codexResult.detail));
+checks.push(entry(
+  "provider.codex.authentication",
+  "NOT_RUN",
+  "Authentication was not probed by doctor; executable availability is not authentication proof.",
+  false,
+));
+checks.push(entry(
+  "provider.codex.turn",
+  "NOT_RUN",
+  "No Codex turn was started by doctor; a real turn requires an explicit live certification run.",
+  false,
+));
+checks.push(entry(
+  "provider.codex.process",
+  "NOT_RUN",
+  "Codex process readiness is not probed by standalone doctor; use a running server health check.",
+  false,
+));
 
 const managedProject = path.resolve(cwd, process.env.WORKSPACE || ".", process.env.CONTROLLER_DATA_DIR || ".agent-controller", "audit-project.json");
 const auditProject = fileExists(managedProject) ? managedProject : process.env.AUDIT_PROJECT_FILE?.trim()
@@ -151,13 +169,38 @@ checks.push(entry(
   `Controller data directory: ${dataDirectory}`,
 ));
 
+let health = null;
 try {
-  const health = await fetchJson(`${baseUrl}/api/health`);
+  health = await fetchJson(`${baseUrl}/api/health`);
   checks.push(entry(
     "server.health",
     health?.ok === true ? "PASS" : "FAIL",
     `Server reachable at ${baseUrl}; liveOrchestrationReady=${Boolean(health?.liveOrchestrationReady)}`,
     strict,
+  ));
+  checks.push(entry(
+    "provider.codex.process",
+    health?.codexRuntimeReady === true ? "PASS" : "FAIL",
+    health?.codexRuntimeReady === true
+      ? "Running server reports the Codex runtime as ready."
+      : "Running server does not report the Codex runtime as ready.",
+    false,
+  ));
+  checks.push(entry(
+    "provider.web.connection",
+    health?.webRuntimeReady === true ? "PASS" : "FAIL",
+    health?.webRuntimeReady === true
+      ? "Running server reports the Web runtime as ready."
+      : "Running server does not report the Web runtime as ready.",
+    false,
+  ));
+  checks.push(entry(
+    "provider.web.binding",
+    health?.liveSessionBindingReady === true ? "PASS" : "FAIL",
+    health?.liveSessionBindingReady === true
+      ? "Running server reports an exact live session binding."
+      : "Running server does not report an exact live session binding.",
+    false,
   ));
 } catch (error) {
   checks.push(entry(
@@ -166,7 +209,39 @@ try {
     `Server not reachable at ${baseUrl}: ${error.message}`,
     strict,
   ));
+  checks.push(entry(
+    "provider.web.connection",
+    "NOT_RUN",
+    "Web connection could not be probed because the server is unreachable.",
+    false,
+  ));
+  checks.push(entry(
+    "provider.codex.process",
+    "NOT_RUN",
+    "Codex process readiness could not be probed because the server is unreachable.",
+    false,
+  ));
+  checks.push(entry(
+    "provider.web.binding",
+    "NOT_RUN",
+    "Web session binding could not be probed because the server is unreachable.",
+    false,
+  ));
 }
+checks.push(entry(
+  "provider.web.authentication",
+  health?.webConnected === true ? "PASS" : (health === null ? "NOT_RUN" : "FAIL"),
+  health?.webConnected === true
+    ? "Server health reports the extension as authenticated."
+    : "Authentication is not established according to server health.",
+  false,
+));
+checks.push(entry(
+  "provider.web.turn",
+  "NOT_RUN",
+  "No Web turn was started by doctor; a real turn requires an explicit live certification run.",
+  false,
+));
 
 try {
   const preflight = await fetchJson(`${baseUrl}/api/preflight`);

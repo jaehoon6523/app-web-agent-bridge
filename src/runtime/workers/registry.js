@@ -26,6 +26,7 @@ export async function createRegisteredCodeWorker({
   });
   return Object.freeze({
     ...worker,
+    get externalSessionId() { return worker.externalSessionId; },
     async submitTurn(input) {
       const started = await worker.start();
       await persistThreadId(started.sessionId);

@@ -20,13 +20,23 @@ export async function createGenericJsonlWorker({
     throw new TypeError("Worker args must be literal strings.");
   }
 
+  const inheritedEnvKeys = [
+    "PATH", "Path", "PATHEXT", "SystemRoot", "WINDIR", "COMSPEC",
+    "TEMP", "TMP", "HOME", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
+    "LANG", "LC_ALL", "TERM",
+  ];
+  const workerEnv = Object.fromEntries(
+    inheritedEnvKeys
+      .filter((key) => typeof process.env[key] === "string")
+      .map((key) => [key, process.env[key]]),
+  );
   const processHandle = spawn(executablePath, args, {
     cwd: workspaceRoot,
     shell: false,
     windowsHide: true,
     stdio: ["pipe", "pipe", "pipe"],
     env: {
-      ...process.env,
+      ...workerEnv,
       BRIDGE_WORKER_PROVIDER: provider,
       BRIDGE_WORKER_MODEL: model || "",
       BRIDGE_WORKSPACE_ROOT: workspaceRoot,
@@ -37,6 +47,7 @@ export async function createGenericJsonlWorker({
   let stderr = "";
   let closed = false;
   let sessionId = null;
+  let malformedProtocolLines = 0;
 
   function fail(error) {
     closed = true;
@@ -60,7 +71,13 @@ export async function createGenericJsonlWorker({
   lines.on("line", (line) => {
     let message;
     try { message = JSON.parse(line); }
-    catch { return; }
+    catch {
+      malformedProtocolLines += 1;
+      if (malformedProtocolLines >= 5) {
+        fail(new Error(`${provider} worker emitted too many malformed protocol lines.`));
+      }
+      return;
+    }
     const turnId = message?.turnId;
     const waiter = pending.get(turnId);
     if (!waiter) return;
@@ -121,13 +138,37 @@ export async function createGenericJsonlWorker({
       return { interrupted: true, turnId };
     },
     async inspect() {
-      return { provider, model, sessionId, closed, pid: processHandle.pid };
+      return { provider, model, sessionId, closed, pid: processHandle.pid, malformedProtocolLines };
     },
     async close() {
       if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
       closed = true;
-      lines.close();
-      processHandle.kill();
+      try { lines.close(); } catch {}
+      /** @type {() => void} */
+      let cleanupExitWait = () => {};
+      /** @type {Promise<void>} */
+      const exited = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error(`${provider} worker did not exit after termination request.`));
+        }, 5000);
+        const onExit = () => {
+          cleanup();
+          resolve();
+        };
+        const cleanup = () => {
+          clearTimeout(timer);
+          processHandle.off("exit", onExit);
+        };
+        cleanupExitWait = cleanup;
+        processHandle.once("exit", onExit);
+      });
+      if (!processHandle.kill()) {
+        cleanupExitWait();
+        if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
+        throw new Error(`${provider} worker termination request was not accepted.`);
+      }
+      await exited;
     },
   };
   await spawned;

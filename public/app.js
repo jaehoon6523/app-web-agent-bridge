@@ -16,6 +16,56 @@ const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상�
 function text(id, value) { $(id).textContent = value ?? ""; }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
+function actionState(id, disabled, disabledReason = "", enabledReason = "") {
+  const element = $(id);
+  element.disabled = Boolean(disabled);
+  const reason = element.disabled ? disabledReason : enabledReason;
+  element.title = reason;
+  if (reason) element.setAttribute("aria-description", reason);
+  else element.removeAttribute("aria-description");
+  return reason;
+}
+function workerIdentity(run) {
+  const worker = run?.worker ?? {};
+  const provider = worker.provider ?? "codex";
+  const model = worker.model ?? null;
+  return model ? `${provider} / ${model}` : provider;
+}
+function externalEventRecords(run) {
+  if (!run) return [];
+  const workerTurns = (run.workerTurns ?? []).map((turn) => ({
+    at: turn.finishedAt ?? turn.startedAt,
+    title: `WORKER_TURN_${String(turn.status ?? "UNKNOWN").toUpperCase()}`,
+    content: JSON.stringify({
+      provider: turn.provider ?? run.worker?.provider ?? null,
+      model: turn.model ?? run.worker?.model ?? null,
+      sessionId: turn.sessionId ?? null,
+      turnId: turn.turnId ?? null,
+      startedAt: turn.startedAt ?? null,
+      finishedAt: turn.finishedAt ?? null,
+      durationMs: turn.durationMs ?? null,
+      usage: turn.usage ?? null,
+      inputRef: turn.inputRef ?? null,
+      outputRef: turn.outputRef ?? null,
+      metadata: turn.metadata ?? null,
+    }),
+  }));
+  const reviews = (run.reviews ?? []).map((review) => ({
+    at: review.createdAt ?? review.finishedAt ?? review.reviewedAt ?? run.updatedAt,
+    title: "REVIEW_RESULT",
+    content: JSON.stringify({
+      reviewId: review.reviewId ?? null,
+      candidateId: review.candidateId ?? null,
+      decision: review.decision ?? review.report?.decision ?? null,
+      requestId: review.requestId ?? null,
+      requirementsRef: review.requirementsRef ?? null,
+    }),
+  }));
+  const verifications = (snapshot?.evidence ?? []).filter((e) => ["EXECUTION", "ARTIFACT"].includes(e.kind)).map((e) => ({
+    at: e.createdAt, title:`VERIFICATION_${e.kind}`, content:JSON.stringify({ evidenceId:e.evidenceId, candidateId:e.candidateId, producer:e.producer, valid:e.valid, result:e.result }),
+  }));
+  return [...workerTurns, ...reviews, ...verifications];
+}
 async function request(url, options = {}) {
   try {
     const response = await fetch(url, { ...options, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
@@ -98,7 +148,10 @@ function runAppearance(phase) {
 function evidenceLinks(container, refs) {
   const links = node("div", "", "links");
   for (const id of refs ?? []) {
-    const button = node("button", `근거 ${id.slice(-8)}`); button.disabled = !connected || (operations.runCommand !== "IDLE");
+    const button = node("button", `근거 ${id.slice(-8)}`);
+    button.disabled = !connected || (operations.runCommand !== "IDLE");
+    button.title = !connected ? "서버 연결을 복구하면 근거를 열 수 있습니다."
+      : (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나면 근거를 열 수 있습니다." : "근거 원문을 엽니다.";
     button.addEventListener("click", () => openEvidence(id)); links.append(button);
   }
   container.append(links);
@@ -137,12 +190,13 @@ function renderAudit() {
     row.append(node("strong", `${e.kind} · ${e.producer}${e.valid === false ? " · 후보 증거로 무효" : ""}`), node("p", `${e.candidateId} · ${time(e.createdAt)}`, "muted"), node("p", JSON.stringify(e.result)));
     evidenceLinks(row, [e.evidenceId]); evidence.append(row);
   }
-  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, candidate:run?.candidate, missingInformation:run?.missingInformation, application:run?.application, recovery:run?.recovery }, null, 2));
+  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, worker:run?.worker, workerTurns:run?.workerTurns, candidate:run?.candidate, latestReview:run?.reviews?.at(-1), missingInformation:run?.missingInformation, application:run?.application, recovery:run?.recovery }, null, 2));
 }
 function renderLog() {
   const log = $("eventLog"); log.replaceChildren();
   const records = [...(snapshot?.events ?? []).map((e) => ({ at:e.createdAt, title:e.type, content:JSON.stringify(e.payload) })),
-    ...(snapshot?.messages ?? []).map((m) => ({ at:m.createdAt, title:m.fromActor ?? "CONTROLLER", content:m.content }))].sort((a,b) => String(a.at).localeCompare(String(b.at)));
+    ...(snapshot?.messages ?? []).map((m) => ({ at:m.createdAt, title:m.fromActor ?? "CONTROLLER", content:m.content })),
+    ...externalEventRecords(snapshot?.run)].sort((a,b) => String(a.at).localeCompare(String(b.at)));
   for (const record of records) {
     const row = node("article", "", "record"); row.append(node("time", time(record.at)), node("p", record.title), node("pre", record.content)); log.append(row);
   }
@@ -165,12 +219,12 @@ function render() {
   const checks = preflight?.checks;
   health("apiHealth", "api", connected ? "ok" : "unknown", connected ? "응답 정상" : "응답 확인 필요");
   health("sessionHealth", "session", connected && token ? "ok" : "unknown", connected && token ? "대시보드 인증됨" : "인증 확인 필요");
-  health("engineHealth", "engine", !connected || typeof checks?.codexExecutableConfigured !== "boolean" ? "unknown" : "warn",
-    !connected || typeof checks?.codexExecutableConfigured !== "boolean" ? "확인 전" : checks.codexExecutableConfigured ? "경로 설정됨 · 실제 실행 상태는 확인 전" : "경로 설정 필요");
+  health("engineHealth", "engine", !connected || typeof checks?.codeWorkerExecutableConfigured !== "boolean" ? "unknown" : "warn",
+    !connected || typeof checks?.codeWorkerExecutableConfigured !== "boolean" ? "확인 전" : checks.codeWorkerExecutableConfigured ? "경로 설정됨 · 실제 실행 상태는 확인 전" : "경로 설정 필요");
   health("channelHealth", "channel", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
     !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "확장 인증됨" : "확장 연결 대기");
   text("serverSignal", connected ? "서버 · 연결됨" : "서버 · 확인 필요"); $("serverSignal").className = connected ? "ok" : "";
-  text("cliSignal", connected ? preflight?.checks?.codexExecutableConfigured ? "CLI · 경로 설정됨" : "CLI · 설정 필요" : "CLI · 확인 전");
+  text("cliSignal", connected ? preflight?.checks?.codeWorkerExecutableConfigured ? "CLI · 경로 설정됨" : "CLI · 설정 필요" : "CLI · 확인 전");
   text("webSignal", connected ? preflight?.checks?.extensionAuthenticated ? "웹 · 확장 인증됨" : "웹 · 연결 대기" : "웹 · 확인 전");
   text("refreshSignal", `런 · ${connected ? "갱신됨" : "마지막 확인"} ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
@@ -209,25 +263,55 @@ function render() {
     $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryReason").value = "";
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
-  $("abandonRun").disabled = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || !$("recoveryExternal").checked || !$("recoveryTarget").checked || !$("recoveryReason").value.trim();
+  if (run?.phase === "RECOVERY_REQUIRED") {
+    const recoverySteps = [];
+    if (!$("recoveryExternal").checked) recoverySteps.push("외부 작업 종료 확인");
+    if (!$("recoveryTarget").checked) recoverySteps.push("대상 저장소 상태 확인");
+    if (!$("recoveryReason").value.trim()) recoverySteps.push("확인 내용과 폐기 사유 입력");
+    const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || recoverySteps.length > 0;
+    const abandonReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
+      : !connected ? "서버 연결을 복구해야 실행을 폐기할 수 있습니다."
+      : !caps.has("run.abandon") ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
+      : recoverySteps.length ? `다음 항목을 완료하세요: ${recoverySteps.join(", ")}.`
+      : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
+    actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
+  } else {
+    $("abandonRun").disabled = true;
+    $("abandonRun").title = "";
+  }
   for (const [id, capability] of [["stopRun", "run.stop"], ["applyCode", "code.apply"], ["exportEvidence", "evidence.export"]]) {
     $(id).disabled = !run || operations.runCommand !== "IDLE" || !caps.has(capability);
   }
   if (!run) return;
   text("runObjective", run.objective); text("runContext", run.requirements
-    ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · ${run.activeActor ?? "대기"}`
-    : `이전 대화 작업 · ${run.activeActor ?? "대기"}`);
+    ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${run.activeActor ?? "대기"}`
+    : `이전 대화 작업 · Worker ${workerIdentity(run)} · ${run.activeActor ?? "대기"}`);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
-  $("stopRun").disabled = (operations.runCommand !== "IDLE") || !caps.has("run.stop"); $("applyCode").disabled = (operations.runCommand !== "IDLE") || !caps.has("code.apply"); $("exportEvidence").disabled = (operations.runCommand !== "IDLE") || !caps.has("evidence.export");
-  text("stopReason", (operations.runCommand !== "IDLE") ? "요청을 처리하고 있습니다." : !connected ? "서버에 다시 연결되면 중단할 수 있습니다."
-    : terminal.has(run.phase) ? "이미 종료된 작업입니다. 다른 미종료 작업이 있다면 왼쪽 안내에서 선택하세요."
-    : run.phase === "RECOVERY_REQUIRED" ? "외부 작업의 종료를 확인한 뒤 아래 ‘복구 확인 후 실행 폐기’를 진행하세요."
-    : caps.has("run.stop") ? "이 작업의 후속 실행을 중단합니다. 실행 기록은 보존됩니다."
-    : run.phase === "APPLYING" ? "변경 사항을 적용 중입니다. 적용 결과가 확인될 때까지 기다려 주세요."
-    : "현재 상태에서는 중단할 수 없습니다. 연결과 실행 상태를 확인하세요.");
-  text("commandReason", (operations.runCommand !== "IDLE") ? "명령 결과를 확인하고 있습니다." : !connected ? "연결이 끊겨 명령을 보낼 수 없습니다." : !caps.has("code.apply") ? "적용은 유효한 감사 통과 후보가 준비된 경우에만 가능합니다. 종료된 작업은 다시 중단할 수 없습니다." : "후보와 기준 버전을 확인한 뒤 적용할 수 있습니다.");
+  const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
+    : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
+    : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."
+    : run.phase === "RECOVERY_REQUIRED" ? "자동 중단 여부를 확정할 수 없습니다. 아래 복구 확인 3개 항목을 완료한 뒤 ‘확인 기록 후 실행 폐기’를 누르세요."
+    : caps.has("run.stop") ? "현재 작업을 중단할 수 있습니다. ‘작업 중단’을 누르면 후속 구현·감사를 멈추고 기록은 보존합니다."
+    : run.phase === "APPLYING" ? "코드를 적용 중이라 지금은 중단할 수 없습니다. 적용 결과가 확정된 뒤 다음 행동을 선택하세요."
+    : "현재 단계에서는 중단 명령이 비활성입니다. 상태가 바뀌는지 확인하고, 복구 필요 상태가 되면 복구 확인 절차를 진행하세요.";
+  actionState("stopRun", (operations.runCommand !== "IDLE") || !caps.has("run.stop"), stopReason, stopReason);
+  text("stopReason", stopReason);
+
+  const applyReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 후보를 적용할 수 있습니다."
+    : !connected ? "서버 연결을 복구해야 후보를 적용할 수 있습니다."
+    : caps.has("code.apply") ? "감사 통과 후보가 준비됐습니다. 대상 저장소에 반영할 수 있습니다."
+    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 적용 capability가 없습니다. 상태를 다시 확인하고 복구·오류 기록을 확인하세요."
+    : "구현 → 검증 → 웹 감사가 PASS되어 ‘감사 통과·적용 대기’ 상태가 되어야 적용할 수 있습니다.";
+  actionState("applyCode", (operations.runCommand !== "IDLE") || !caps.has("code.apply"), applyReason, applyReason);
+
+  const exportReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 감사 기록을 다운로드할 수 있습니다."
+    : !connected ? "서버 연결을 복구해야 감사 기록을 다운로드할 수 있습니다."
+    : !caps.has("evidence.export") ? "현재 런에는 내보낼 수 있는 감사 기록 capability가 없습니다. 실행 기록과 상태를 먼저 확인하세요."
+    : "현재까지 보존된 감사 기록을 JSON으로 다운로드할 수 있습니다.";
+  actionState("exportEvidence", (operations.runCommand !== "IDLE") || !caps.has("evidence.export"), exportReason, exportReason);
+  text("commandReason", `적용: ${applyReason} · 감사 기록: ${exportReason}`);
   const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
   if (renderedRecords !== signature) { renderedRecords = signature; renderAudit(); renderLog(); }
 }
@@ -253,7 +337,9 @@ async function openEvidence(id, startLine = 1) {
   evidencePage = { id, next:result.endLine + 1, target };
   text("evidenceTitle", `${result.kind} · ${id}`); text("evidenceContent", result.content);
   text("evidenceRange", `${result.startLine}–${result.endLine} / ${result.totalLines}줄${result.omittedAfter ? " · 다음 구간 있음" : ""}`);
-  $("nextEvidence").disabled = !result.omittedAfter;
+  actionState("nextEvidence", !result.omittedAfter,
+    "이 근거의 마지막 구간입니다. 더 불러올 내용이 없습니다.",
+    "다음 근거 구간을 불러옵니다.");
   if (!$("evidenceDialog").open) $("evidenceDialog").showModal();
 }
 
