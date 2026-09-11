@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import http from "node:http";
 import test from "node:test";
 import { WebSocket } from "ws";
 import { loadConfig } from "../src/config.js";
@@ -15,7 +16,13 @@ const SHARED_SECRET = "integration-shared-secret-0123456789abcdef";
 const EXTENSION_IDENTITY = "extension-integration";
 const DASHBOARD_TOKEN = "dashboard-token-0123456789abcdef-dashboard-token";
 
-function runtimeConfig({ demoMode = false, dashboardToken = null, codexExecutablePath = null, auditProjectFile = null } = {}) {
+function runtimeConfig({
+  demoMode = false,
+  dashboardToken = null,
+  codexExecutablePath = null,
+  auditProjectFile = null,
+  extensionEnabled = !demoMode,
+} = {}) {
   return {
     host: "127.0.0.1",
     port: 0,
@@ -27,8 +34,9 @@ function runtimeConfig({ demoMode = false, dashboardToken = null, codexExecutabl
     dashboard: { token: dashboardToken },
     codex: { executablePath: codexExecutablePath },
     webExtension: {
-      sharedSecret: demoMode ? null : SHARED_SECRET,
-      expectedExtensionIdentity: demoMode ? null : EXTENSION_IDENTITY,
+      enabled: extensionEnabled,
+      sharedSecret: extensionEnabled ? SHARED_SECRET : null,
+      expectedExtensionIdentity: extensionEnabled ? EXTENSION_IDENTITY : null,
     },
     relay: { webResponseTimeoutMs: 500 },
   };
@@ -49,18 +57,55 @@ async function rejectedStatus(url) {
   });
 }
 
-test("live auth configuration is required and EXTENSION_TOKEN is not a fallback", () => {
+async function requestLocalBrowserSession(port) {
+  return new Promise((resolve, reject) => {
+    const request = http.request({
+      hostname: "127.0.0.1",
+      port,
+      path: "/api/dashboard/session",
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:0",
+        origin: "http://127.0.0.1:0",
+        "sec-fetch-site": "same-origin",
+        "content-length": "0",
+      },
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        resolve({ status: response.statusCode, body: JSON.parse(body) });
+      });
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
+test("optional integration configuration is feature-gated and EXTENSION_TOKEN is not a fallback", () => {
   assert.throws(
     () => loadConfig({ env: { HOST: "0.0.0.0", DEMO_MODE: "true" } }),
     /loopback address/u,
   );
-  assert.throws(
-    () => loadConfig({ env: { EXTENSION_TOKEN: "legacy-token" } }),
-    /WEB_EXTENSION_SHARED_SECRET is required/,
-  );
+
+  const minimal = loadConfig({ env: { EXTENSION_TOKEN: "legacy-token" } });
+  assert.deepEqual(minimal.webExtension, {
+    enabled: false,
+    sharedSecret: null,
+    expectedExtensionIdentity: null,
+  });
+  assert.equal(minimal.dashboard.token, null);
+  assert.equal(minimal.codex.executablePath, null);
+  assert.equal(Object.hasOwn(minimal, "extensionToken"), false);
+
   assert.throws(
     () => loadConfig({ env: { WEB_EXTENSION_SHARED_SECRET: SHARED_SECRET } }),
-    /WEB_EXTENSION_EXPECTED_IDENTITY is required/,
+    /must be configured together/u,
+  );
+  assert.throws(
+    () => loadConfig({ env: { WEB_EXTENSION_EXPECTED_IDENTITY: EXTENSION_IDENTITY } }),
+    /must be configured together/u,
   );
   assert.throws(
     () => loadConfig({
@@ -79,16 +124,16 @@ test("live auth configuration is required and EXTENSION_TOKEN is not a fallback"
       WEB_EXTENSION_EXPECTED_IDENTITY: ` ${EXTENSION_IDENTITY} `,
     },
     cwd: process.cwd(),
-    platform: process.platform,
   });
   assert.deepEqual(loaded.webExtension, {
+    enabled: true,
     sharedSecret: SHARED_SECRET,
     expectedExtensionIdentity: EXTENSION_IDENTITY,
   });
-  assert.equal(Object.hasOwn(loaded, "extensionToken"), false);
 
   const demo = loadConfig({ env: { DEMO_MODE: "true", EXTENSION_TOKEN: "ignored" } });
   assert.deepEqual(demo.webExtension, {
+    enabled: false,
     sharedSecret: null,
     expectedExtensionIdentity: null,
   });
@@ -109,7 +154,7 @@ test("server rejects token URLs and authenticates the exact extension identity b
 
   assert.equal(await rejectedStatus(`${baseWs}/ws/extension?token=legacy`), 400);
   assert.equal(await rejectedStatus(`${baseWs}/ws/dashboard`), 503);
-  assert.equal((await fetch(`${baseHttp}/api/state`)).status, 503);
+  assert.equal((await fetch(`${baseHttp}/api/state`)).status, 401);
   assert.equal((await fetch(`${baseHttp}/api/nope`)).status, 404);
   assert.equal((await fetch(`${baseHttp}/runs`, { method: "POST" })).status, 503);
   assert.equal((await fetch(`${baseHttp}/approvals/pending`, { method: "POST" })).status, 503);
@@ -172,6 +217,54 @@ test("demo mode is transport-free and does not accept extension or dashboard upg
   const { port } = bridge.server.address();
   assert.equal(await rejectedStatus(`ws://127.0.0.1:${port}/ws/extension`), 409);
   assert.equal(await rejectedStatus(`ws://127.0.0.1:${port}/ws/dashboard`), 503);
+});
+
+test("server boots without optional live credentials and local browser session remains usable", async (t) => {
+  const bridge = createBridgeServer({
+    runtimeConfig: runtimeConfig({
+      dashboardToken: null,
+      extensionEnabled: false,
+      codexExecutablePath: null,
+    }),
+  });
+  await bridge.listen();
+  t.after(async () => {
+    await bridge.close();
+  });
+
+  assert.equal(bridge.extensionTransport, null);
+  assert.equal(bridge.webSession, null);
+
+  const { port } = bridge.server.address();
+  const baseHttp = `http://127.0.0.1:${port}`;
+
+  const preflight = await (await fetch(`${baseHttp}/api/preflight`)).json();
+  assert.equal(preflight.checks.commandAuthenticationConfigured, true);
+  assert.equal(preflight.checks.staticDashboardTokenConfigured, false);
+  assert.equal(preflight.checks.extensionConfigured, false);
+  assert.equal(preflight.readyForProvisioning, false);
+
+  assert.equal(await rejectedStatus(`ws://127.0.0.1:${port}/ws/extension`), 503);
+
+  const session = await requestLocalBrowserSession(port);
+  assert.equal(session.status, 200);
+  assert.equal(typeof session.body.token, "string");
+  assert.ok(session.body.token.length >= 32);
+  assert.equal(session.body.staticTokenConfigured, false);
+
+  const projectResponse = await fetch(`${baseHttp}/api/project`, {
+    headers: { authorization: `Bearer ${session.body.token}` },
+  });
+  assert.equal(projectResponse.status, 200);
+
+  const legacyStart = await fetch(`${baseHttp}/api/runs/start`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${session.body.token}`,
+      origin: "http://127.0.0.1:0",
+    },
+  });
+  assert.equal(legacyStart.status, 410);
 });
 
 test("legacy authenticated start cannot bypass preparation approval", async (t) => {

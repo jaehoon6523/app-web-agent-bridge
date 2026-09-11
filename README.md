@@ -18,20 +18,31 @@ Node.js는 `package.json`의 engines 조건을 사용합니다. 이 환경에서
 
 ```powershell
 npm ci
-Copy-Item .env.example .env
+npm start
 ```
 
-이미 `.env`가 있으면 덮어쓰지 말고 필요한 설정만 추가하세요.
+`.env`는 서버 부팅의 필수 조건이 아닙니다. 특정 연동을 사용할 때만 `.env.example`에서 필요한 값을 설정하세요. 반대로 값을 명시했는데 형식이나 조합이 잘못된 경우에는 시작 시점에 거부합니다.
 
-| 설정 | 의미 |
-|---|---|
-| `WEB_EXTENSION_SHARED_SECRET` | 확장과 일치하는 32 UTF-8 바이트 이상의 secret |
-| `WEB_EXTENSION_EXPECTED_IDENTITY` | 확장 popup에 표시된 identity |
-| `DASHBOARD_TOKEN` | 확장 secret과 별개인 base64url 로컬 명령 토큰 |
-| `CODEX_EXECUTABLE` | 실제 Codex 실행 파일 절대 경로. Windows는 `.cmd`가 아닌 `.exe` |
-| `WORKSPACE` | 컨트롤러의 기본 작업 경로 |
-| `CONTROLLER_DATA_DIR` | SQLite·아티팩트 경로, 기본 `.agent-controller` |
-| `AUDIT_PROJECT_FILE` | 기존 프로젝트 JSON을 불러올 때 사용하는 선택 설정. 콘솔에서 저장한 설정이 우선 |
+| 설정 | 필수 범위 | 의미 |
+|---|---|---|
+| `HOST` | 기본값 있음 | loopback bind 주소. 기본 `127.0.0.1`; 원격 bind는 지원하지 않음 |
+| `PORT` | 기본값 있음 | HTTP/WebSocket 포트. 기본 `8787` |
+| `WORKSPACE` | 기본값 있음 | 컨트롤러 기본 작업 경로. 기본 `.` |
+| `CONTROLLER_DATA_DIR` | 기본값 있음 | SQLite·아티팩트 경로. 기본 `.agent-controller` |
+| `DEMO_MODE` | 기본값 있음 | `true`이면 static/smoke 전용이며 live runtime은 비활성화 |
+| `WEB_EXTENSION_SHARED_SECRET` | Web 연동 시 identity와 함께 필수 | 확장과 일치하는 32 UTF-8 바이트 이상의 secret |
+| `WEB_EXTENSION_EXPECTED_IDENTITY` | Web 연동 시 secret과 함께 필수 | 확장 popup에 표시된 identity |
+| `DASHBOARD_TOKEN` | 선택 | headless CLI/API 자동화용 stable token. 브라우저 콘솔은 임시 session token을 자동 발급받음 |
+| `AUDIT_PROJECT_FILE` | 선택 | 기존 프로젝트 JSON. 콘솔에서 저장한 설정이 우선 |
+| `CODEX_EXECUTABLE` | 실제 Codex 기능 사용 시 필수 | Codex 실행 파일 경로. 미설정이면 해당 기능만 not-ready |
+| `CODEX_HOME` | 선택 | Codex 인증/home 경로를 runtime에 전달 |
+| `CODE_WORKER_PROVIDER` | 기본값 있음 | `codex` 기본; `deepseek`, `claude`, `qwen`, `gemini` 지원 |
+| `CODE_WORKER_MODEL` | 선택 | 구현 worker 모델 라벨 |
+| `CODE_WORKER_EXECUTABLE` | non-Codex worker 사용 시 필수 | JSONL-compatible provider CLI/shim |
+| `CODE_WORKER_ARGS` | 선택 | worker 실행 인자 JSON 배열 |
+| `WEB_RESPONSE_TIMEOUT_MS` | 기본값 있음 | Web turn timeout. 기본 `300000` ms |
+
+도구 전용 환경변수는 서버 부팅 조건과 별개입니다. `BRIDGE_BASE_URL`, `CERTIFY_RUN_ID`, `CERTIFY_EXPECT_APPLIED`는 certification에 사용하고, `UI_BROWSER_CHANNEL`, `UI_BROWSER_EXECUTABLE`은 UI QA에서 사용합니다. `BRIDGE_RESULT_DIR`, `BRIDGE_EXECUTION_ID`는 검증 프로세스에 컨트롤러가 주입하므로 운영자가 고정 설정하지 않습니다.
 
 **처음 사용하는 경우:** 콘솔에서 `프로젝트 설정`을 열고 Git 저장소 절대 경로, 필수 요구사항과 통과 기준, 검증 프로그램과 인수, 실행 한도를 입력한 뒤 저장하세요. 검증 명령은 저장 시 실행되지 않습니다. 코드 검토만 수행할 수도 있으며, 이 경우 실제 동작 검증을 했다고 간주하지 않습니다.
 

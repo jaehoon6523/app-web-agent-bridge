@@ -10,8 +10,13 @@ PowerShell:
 ```powershell
 $env:CERTIFY_RUN_ID = "code_..."
 $env:BRIDGE_BASE_URL = "http://127.0.0.1:8787"
+$env:DASHBOARD_TOKEN = "<static token configured for CLI/API access>"
 npm run certify
 ```
+
+`DASHBOARD_TOKEN` is required for this headless certification CLI because it cannot
+obtain the same-origin browser session token. It is not required to start the server
+or to use the local dashboard in a browser.
 
 To require application:
 

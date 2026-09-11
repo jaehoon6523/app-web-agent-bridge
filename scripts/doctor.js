@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import dotenv from "dotenv";
+import { loadConfig } from "../src/config.js";
 
 dotenv.config({ quiet: true });
 
@@ -78,6 +79,23 @@ async function fetchJson(url, options = {}) {
 }
 
 const checks = [];
+
+let runtimeConfig = null;
+try {
+  runtimeConfig = loadConfig({ env: process.env, cwd });
+  checks.push(entry(
+    "config.runtime",
+    "PASS",
+    "Server environment configuration is valid. Optional integrations may still be disabled.",
+  ));
+} catch (error) {
+  checks.push(entry(
+    "config.runtime",
+    "FAIL",
+    `Invalid server environment configuration: ${error.message}`,
+  ));
+}
+
 const nodeVersion = parseVersion(process.versions.node);
 checks.push(entry(
   "node.version",
@@ -111,16 +129,15 @@ let codexResult;
 if (process.env.CODEX_EXECUTABLE?.trim()) {
   const configured = path.resolve(cwd, process.env.CODEX_EXECUTABLE.trim());
   codexResult = fileExists(configured)
-    ? { ok: true, detail: `Configured executable exists: ${configured}` }
-    : { ok: false, detail: `Configured executable not found: ${configured}` };
+    ? { status: "PASS", detail: `Configured executable exists: ${configured}` }
+    : { status: "FAIL", detail: `Configured CODEX_EXECUTABLE does not exist: ${configured}` };
 } else {
-  const detected = command(process.platform === "win32" ? "codex.cmd" : "codex", ["--version"]);
   codexResult = {
-    ok: detected.ok,
-    detail: detected.ok ? `Detected on PATH: ${detected.stdout}` : "CODEX_EXECUTABLE is unset and codex was not found on PATH.",
+    status: "WARN",
+    detail: "CODEX_EXECUTABLE is unset; the server can boot, but live Codex composition is unavailable.",
   };
 }
-checks.push(entry("codex.executable", codexResult.ok ? "PASS" : "FAIL", codexResult.detail));
+checks.push(entry("codex.executable", codexResult.status, codexResult.detail, true));
 checks.push(entry(
   "provider.codex.authentication",
   "NOT_RUN",
@@ -141,26 +158,64 @@ checks.push(entry(
 ));
 
 const managedProject = path.resolve(cwd, process.env.WORKSPACE || ".", process.env.CONTROLLER_DATA_DIR || ".agent-controller", "audit-project.json");
-const auditProject = fileExists(managedProject) ? managedProject : process.env.AUDIT_PROJECT_FILE?.trim()
+const configuredAuditProject = process.env.AUDIT_PROJECT_FILE?.trim()
   ? path.resolve(cwd, process.env.AUDIT_PROJECT_FILE.trim())
   : null;
+const auditProject = fileExists(managedProject) ? managedProject : configuredAuditProject;
 checks.push(entry(
   "audit.project",
-  auditProject && fileExists(auditProject) ? "PASS" : "FAIL",
-  auditProject ? `Audit project: ${auditProject}` : "Save Project settings in the dashboard or configure AUDIT_PROJECT_FILE.",
+  auditProject && fileExists(auditProject)
+    ? "PASS"
+    : (configuredAuditProject ? "FAIL" : "WARN"),
+  auditProject
+    ? (fileExists(auditProject)
+      ? `Audit project: ${auditProject}`
+      : `Configured AUDIT_PROJECT_FILE does not exist: ${auditProject}`)
+    : "No audit project is configured yet; the server can boot and the project can be created from the dashboard.",
+  true,
 ));
 
-for (const name of [
-  "DASHBOARD_TOKEN",
-  "WEB_EXTENSION_SHARED_SECRET",
-  "WEB_EXTENSION_EXPECTED_IDENTITY",
-]) {
+const dashboardTokenConfigured = Boolean(process.env.DASHBOARD_TOKEN?.trim());
+checks.push(entry(
+  "config.dashboard_token",
+  "PASS",
+  dashboardTokenConfigured
+    ? "DASHBOARD_TOKEN is configured for explicit local API/automation clients."
+    : "DASHBOARD_TOKEN is optional; the same-origin dashboard uses a process-lifetime browser-session token.",
+  false,
+));
+
+const extensionSecretConfigured = Boolean(process.env.WEB_EXTENSION_SHARED_SECRET?.trim());
+const extensionIdentityConfigured = Boolean(process.env.WEB_EXTENSION_EXPECTED_IDENTITY?.trim());
+if (extensionSecretConfigured !== extensionIdentityConfigured) {
   checks.push(entry(
-    `config.${name.toLowerCase()}`,
-    process.env[name]?.trim() ? "PASS" : "FAIL",
-    process.env[name]?.trim() ? `${name} is configured.` : `${name} is not configured.`,
+    "config.web_extension",
+    "FAIL",
+    "WEB_EXTENSION_SHARED_SECRET and WEB_EXTENSION_EXPECTED_IDENTITY must be configured together.",
+  ));
+} else {
+  checks.push(entry(
+    "config.web_extension",
+    extensionSecretConfigured ? "PASS" : "WARN",
+    extensionSecretConfigured
+      ? "Web Extension HMAC configuration is present."
+      : "Web Extension configuration is absent; the server can boot, but live Web runs are unavailable.",
+    true,
   ));
 }
+
+const workerProvider = runtimeConfig?.codeWorker?.provider || process.env.CODE_WORKER_PROVIDER || "codex";
+const workerExecutable = runtimeConfig?.codeWorker?.executablePath || null;
+checks.push(entry(
+  "code-worker.configuration",
+  workerProvider === "codex" || workerExecutable ? "PASS" : "WARN",
+  workerProvider === "codex"
+    ? "CODE_WORKER_PROVIDER=codex; the Codex executable readiness is reported separately."
+    : (workerExecutable
+      ? `${workerProvider} worker executable: ${workerExecutable}`
+      : `${workerProvider} requires CODE_WORKER_EXECUTABLE before code-change runs can start.`),
+  true,
+));
 
 const dataDirectory = path.resolve(cwd, process.env.CONTROLLER_DATA_DIR || ".agent-controller");
 checks.push(entry(
@@ -180,27 +235,27 @@ try {
   ));
   checks.push(entry(
     "provider.codex.process",
-    health?.codexRuntimeReady === true ? "PASS" : "FAIL",
+    health?.codexRuntimeReady === true ? "PASS" : "WARN",
     health?.codexRuntimeReady === true
       ? "Running server reports the Codex runtime as ready."
       : "Running server does not report the Codex runtime as ready.",
-    false,
+    true,
   ));
   checks.push(entry(
     "provider.web.connection",
-    health?.webRuntimeReady === true ? "PASS" : "FAIL",
+    health?.webRuntimeReady === true ? "PASS" : "WARN",
     health?.webRuntimeReady === true
       ? "Running server reports the Web runtime as ready."
       : "Running server does not report the Web runtime as ready.",
-    false,
+    true,
   ));
   checks.push(entry(
     "provider.web.binding",
-    health?.liveSessionBindingReady === true ? "PASS" : "FAIL",
+    health?.liveSessionBindingReady === true ? "PASS" : "WARN",
     health?.liveSessionBindingReady === true
       ? "Running server reports an exact live session binding."
       : "Running server does not report an exact live session binding.",
-    false,
+    true,
   ));
 } catch (error) {
   checks.push(entry(
@@ -230,11 +285,11 @@ try {
 }
 checks.push(entry(
   "provider.web.authentication",
-  health?.webConnected === true ? "PASS" : (health === null ? "NOT_RUN" : "FAIL"),
+  health?.webConnected === true ? "PASS" : (health === null ? "NOT_RUN" : "WARN"),
   health?.webConnected === true
     ? "Server health reports the extension as authenticated."
     : "Authentication is not established according to server health.",
-  false,
+  true,
 ));
 checks.push(entry(
   "provider.web.turn",

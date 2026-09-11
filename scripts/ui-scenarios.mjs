@@ -18,7 +18,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-browser-qa-'));
 const target = path.join(root, 'target'); fs.mkdirSync(target);
 const git=(...args)=>execFileSync('git',['-C',target,...args],{stdio:'ignore',windowsHide:true});
 git('init'); git('-c','user.name=QA','-c','user.email=qa@example.invalid','commit','--allow-empty','-m','initial');
-const config = loadConfig({cwd:root,env:{PORT:String(port),DASHBOARD_TOKEN:'browser-qa-token-0123456789abcdef0123456789',WEB_EXTENSION_SHARED_SECRET:'browser-qa-secret-0123456789abcdef0123456',WEB_EXTENSION_EXPECTED_IDENTITY:'qa-extension',CODEX_EXECUTABLE:process.execPath}});
+const config = loadConfig({cwd:root,env:{PORT:String(port),CODEX_EXECUTABLE:process.execPath}});
 const bridge=createBridgeServer({runtimeConfig:config}); await bridge.listen();
 const browser=await chromium.launch({ ...(process.env.UI_BROWSER_EXECUTABLE
   ? { executablePath: process.env.UI_BROWSER_EXECUTABLE } : { channel: process.env.UI_BROWSER_CHANNEL || 'chrome' }), headless:true })

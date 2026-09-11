@@ -26,7 +26,7 @@ const dirname = path.dirname(filename);
 const publicDir = path.resolve(dirname, "../public");
 const MAX_LOCAL_MESSAGE_BYTES = 1024 * 1024;
 const LIVE_ORCHESTRATION_UNAVAILABLE =
-  "Configure DASHBOARD_TOKEN and connect the browser extension to start a live run.";
+  "Connect the browser extension and configure the required providers to start a live run.";
 
 /** @typedef {ReturnType<typeof loadConfig>} RuntimeConfig */
 
@@ -76,14 +76,23 @@ export function createBridgeServer({
       })
     : null;
   // Browser sessions use a separate, process-lifetime token, never the .env secret.
+  // DASHBOARD_TOKEN is optional and only adds a stable credential for explicit
+  // local API/automation clients.
   const browserSession = LocalSessionAuthenticator.issue({ allowedOrigins: [runtimeConfig.baseUrl] });
   function verifyDashboardAuthorization(authorization) {
-    try {
-      dashboardAuth.verifyAuthorizationHeader(authorization);
-    } catch (error) {
-      if (!(error instanceof LocalAuthError)) throw error;
-      browserSession.authenticator.verifyAuthorizationHeader(authorization);
+    if (dashboardAuth !== null) {
+      try {
+        dashboardAuth.verifyAuthorizationHeader(authorization);
+        return;
+      } catch (error) {
+        if (!(error instanceof LocalAuthError)) throw error;
+      }
     }
+    browserSession.authenticator.verifyAuthorizationHeader(authorization);
+  }
+
+  function verifyDashboardOrigin(origin) {
+    browserSession.authenticator.verifyOrigin(origin);
   }
 
   function verifyLocalBrowser(req) {
@@ -149,7 +158,8 @@ export function createBridgeServer({
       extensionConfigured,
       extensionAuthenticated: Boolean(extensionTransport?.authenticated),
       webAdapterAvailable: webSession !== null,
-      commandAuthenticationConfigured: dashboardAuth !== null,
+      commandAuthenticationConfigured: true,
+      staticDashboardTokenConfigured: dashboardAuth !== null,
       auditProjectConfigured: audit.project !== null,
     };
     const commonKeys = ["demoModeDisabled", "extensionAuthenticated", "webAdapterAvailable", "commandAuthenticationConfigured"];
@@ -179,12 +189,8 @@ export function createBridgeServer({
   }
 
   function requireDashboardMutation(req, res, next) {
-    if (dashboardAuth === null) {
-      res.status(503).json({ error: "DASHBOARD_TOKEN must be configured before live run commands." });
-      return;
-    }
     try {
-      dashboardAuth.verifyOrigin(req.get("origin"));
+      verifyDashboardOrigin(req.get("origin"));
       verifyDashboardAuthorization(req.get("authorization"));
       next();
     } catch (error) {
@@ -242,10 +248,6 @@ export function createBridgeServer({
 
 
   function requireDashboardRead(req, res, next) {
-    if (dashboardAuth === null) {
-      res.status(503).json({ error: "DASHBOARD_TOKEN must be configured." });
-      return;
-    }
     try {
       verifyDashboardAuthorization(req.get("authorization"));
       next();
@@ -257,11 +259,10 @@ export function createBridgeServer({
   app.post("/api/dashboard/session", (req, res) => {
     try {
       verifyLocalBrowser(req);
-      if (!dashboardAuth) {
-        res.status(503).json({ error: ".env에 DASHBOARD_TOKEN을 설정하고 서버를 다시 시작하세요." });
-        return;
-      }
-      res.json({ token: browserSession.token });
+      res.json({
+        token: browserSession.token,
+        staticTokenConfigured: dashboardAuth !== null,
+      });
     } catch (error) {
       res.status(error.statusCode || 403).json({ error: error.message });
     }

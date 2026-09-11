@@ -87,7 +87,7 @@ export async function main({
 
   requireCondition(
     token,
-    "DASHBOARD_TOKEN is required to inspect the persisted run.",
+    "DASHBOARD_TOKEN is required by the headless certification CLI to inspect authenticated persisted state. It is not required for server startup or the same-origin browser dashboard.",
   );
 
   const health = await request("/api/health");
