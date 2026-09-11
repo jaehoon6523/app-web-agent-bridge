@@ -492,6 +492,9 @@ export class ChatGptWebSessionAdapter {
         turnId,
         {
           code: error?.code || "WEB_EXTENSION_ERROR",
+          message: typeof error?.message === "string" && error.message.length > 0
+            ? error.message
+            : "Web turn failed.",
           ambiguous,
           recoveryRequired: ambiguous,
         },
