@@ -58,15 +58,17 @@ export function createBridgeServer({
   });
   let auditSettings = projectSettings.snapshot();
 
-  const extensionTransport = runtimeConfig.demoMode
-    ? null
-    : new WebExtensionTransport(runtimeConfig.webExtension);
-  const webSession = runtimeConfig.demoMode
-    ? null
-    : new ChatGptWebSessionAdapter({
+  const extensionConfigured = runtimeConfig.demoMode === false
+    && runtimeConfig.webExtension?.enabled === true;
+  const extensionTransport = extensionConfigured
+    ? new WebExtensionTransport(runtimeConfig.webExtension)
+    : null;
+  const webSession = extensionTransport
+    ? new ChatGptWebSessionAdapter({
         transport: extensionTransport,
         responseTimeoutMs: runtimeConfig.relay.webResponseTimeoutMs,
-      });
+      })
+    : null;
   const dashboardAuth = runtimeConfig.dashboard?.token
     ? new LocalSessionAuthenticator({
         token: runtimeConfig.dashboard.token,
@@ -101,6 +103,9 @@ export function createBridgeServer({
     if (closing) throw new Error("Server is shutting down.");
     if (runtimeConfig.demoMode) {
       throw new Error("Demo mode cannot create a live discussion runtime.");
+    }
+    if (!webSession) {
+      throw new Error("Web extension integration is not configured.");
     }
     if (liveRuntime !== null) return liveRuntime;
     if (liveRuntimePromise === null) {
@@ -141,6 +146,7 @@ export function createBridgeServer({
       demoModeDisabled: runtimeConfig.demoMode === false,
       codeWorkerExecutableConfigured,
       discussionCodexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
+      extensionConfigured,
       extensionAuthenticated: Boolean(extensionTransport?.authenticated),
       webAdapterAvailable: webSession !== null,
       commandAuthenticationConfigured: dashboardAuth !== null,
@@ -442,6 +448,14 @@ export function createBridgeServer({
         );
         return;
       }
+      if (!extensionTransport) {
+        writeUpgradeRejection(
+          socket,
+          "503 Service Unavailable",
+          "Web extension integration is not configured.",
+        );
+        return;
+      }
       extensionWss.handleUpgrade(req, socket, head, (ws) => {
         extensionWss.emit("connection", ws, req);
       });
@@ -452,7 +466,7 @@ export function createBridgeServer({
   });
 
   extensionWss.on("connection", (ws) => {
-    extensionTransport.attach(ws);
+    extensionTransport?.attach(ws);
   });
 
   let closePromise = null;

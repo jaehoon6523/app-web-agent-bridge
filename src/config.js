@@ -82,12 +82,22 @@ export function loadConfig({
   const workspace = path.resolve(cwd, env.WORKSPACE || ".");
   const dataDirectory = path.resolve(workspace, env.CONTROLLER_DATA_DIR || ".agent-controller");
   const demoMode = boolean(env, "DEMO_MODE", false);
-  const sharedSecret = demoMode
-    ? (env.WEB_EXTENSION_SHARED_SECRET?.trim() || null)
-    : requireStrongSharedSecret(
-      requiredString(env, "WEB_EXTENSION_SHARED_SECRET"),
-      "WEB_EXTENSION_SHARED_SECRET",
+  const configuredSharedSecret = env.WEB_EXTENSION_SHARED_SECRET?.trim() || null;
+  const configuredExtensionIdentity = env.WEB_EXTENSION_EXPECTED_IDENTITY?.trim() || null;
+  if (
+    !demoMode
+    && Boolean(configuredSharedSecret) !== Boolean(configuredExtensionIdentity)
+  ) {
+    throw new Error(
+      "WEB_EXTENSION_SHARED_SECRET and WEB_EXTENSION_EXPECTED_IDENTITY must be configured together.",
     );
+  }
+  const extensionEnabled = !demoMode
+    && configuredSharedSecret !== null
+    && configuredExtensionIdentity !== null;
+  const sharedSecret = extensionEnabled
+    ? requireStrongSharedSecret(configuredSharedSecret, "WEB_EXTENSION_SHARED_SECRET")
+    : (demoMode ? configuredSharedSecret : null);
 
   return Object.freeze({
     host,
@@ -117,10 +127,11 @@ export function loadConfig({
     }),
     demoMode,
     webExtension: Object.freeze({
+      enabled: extensionEnabled,
       sharedSecret,
       expectedExtensionIdentity: demoMode
-        ? (env.WEB_EXTENSION_EXPECTED_IDENTITY?.trim() || null)
-        : requiredString(env, "WEB_EXTENSION_EXPECTED_IDENTITY"),
+        ? configuredExtensionIdentity
+        : (extensionEnabled ? configuredExtensionIdentity : null),
     }),
     relay: Object.freeze({
       webResponseTimeoutMs: integer(env, "WEB_RESPONSE_TIMEOUT_MS", 300_000, { min: 10_000 }),

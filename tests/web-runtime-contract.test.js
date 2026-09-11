@@ -134,6 +134,7 @@ test("1-1 Given 정상 환경변수, When loadConfig, Then Web 설정이 초기�
   });
 
   assert.equal(config.baseUrl, "http://127.0.0.1:8787");
+  assert.equal(config.webExtension.enabled, true);
   assert.equal(config.webExtension.sharedSecret, SHARED_SECRET);
   assert.equal(config.webExtension.expectedExtensionIdentity, EXTENSION_IDENTITY);
   assert.equal(
@@ -142,17 +143,31 @@ test("1-1 Given 정상 환경변수, When loadConfig, Then Web 설정이 초기�
   );
 });
 
-test("1-2 Given 필수 환경변수 누락, When loadConfig, Then 누락 이름이 포함된 오류가 발생한다", () => {
-  assert.throws(
-    () => loadConfig({ cwd: path.resolve("workspace", "project"), env: {} }),
-    /WEB_EXTENSION_SHARED_SECRET is required outside demo mode/,
-  );
+test("1-2 Given Extension 환경변수 없음, When loadConfig, Then 서버 설정은 생성되고 Web 연동만 비활성화된다", () => {
+  const config = loadConfig({
+    cwd: path.resolve("workspace", "project"),
+    env: {},
+  });
+
+  assert.equal(config.webExtension.enabled, false);
+  assert.equal(config.webExtension.sharedSecret, null);
+  assert.equal(config.webExtension.expectedExtensionIdentity, null);
+});
+
+test("1-2b Given Extension 환경변수 일부만 존재, When loadConfig, Then 설정 오류가 발생한다", () => {
   assert.throws(
     () => loadConfig({
       cwd: path.resolve("workspace", "project"),
       env: { WEB_EXTENSION_SHARED_SECRET: SHARED_SECRET },
     }),
-    /WEB_EXTENSION_EXPECTED_IDENTITY is required outside demo mode/,
+    /WEB_EXTENSION_SHARED_SECRET and WEB_EXTENSION_EXPECTED_IDENTITY must be configured together/,
+  );
+  assert.throws(
+    () => loadConfig({
+      cwd: path.resolve("workspace", "project"),
+      env: { WEB_EXTENSION_EXPECTED_IDENTITY: EXTENSION_IDENTITY },
+    }),
+    /WEB_EXTENSION_SHARED_SECRET and WEB_EXTENSION_EXPECTED_IDENTITY must be configured together/,
   );
 });
 
