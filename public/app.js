@@ -476,6 +476,9 @@ function renderPreparation() {
       recovery.append(node("p", "내용 해석: 인지됨 · 기존 Git diff 분석 요구사항과 응답 검증 문제의 불일치를 인식하고 범위 전환을 질문함", "recovery-guidance ok"));
       recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${(packet.questions ?? []).length}개`, "diagnostic-row health ok"));
       recovery.append(node("p", "요구사항 상태: 범위 전환 확인 필요 · 아직 구현 범위로 확정하지 않음", "diagnostic-row health warn"));
+    } else if (packet) {
+      recovery.append(node("p", `내용 해석: packet은 확인됨 · ${packet.type ?? "알 수 없는 유형"}`, "diagnostic-row health warn"));
+      recovery.append(node("p", "packet 양식: 현재 준비 단계에서 기대한 REQUIREMENTS_PROPOSAL이 아님", "diagnostic-row health error"));
     } else if (activeDelivery.response && !packet) {
       recovery.append(node("p", "내용 해석: 확인 불가 · 응답 packet을 해석하지 못함", "recovery-guidance error"));
       recovery.append(node("p", "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
