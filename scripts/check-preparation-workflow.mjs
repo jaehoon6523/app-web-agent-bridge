@@ -21,7 +21,8 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   let connected = false, phase = 'START_IDLE';
   const prep = { preparationId: 'p1', version: 4, lifecycle: 'ACTIVE', objective: '화면 검증', targetRoot: 'C:/test',
-    state: 'WAITING_WEB_RESPONSE', discussion: [{ actor: 'USER', content: '화면 검증' }],
+    state: 'WAITING_WEB_RESPONSE',
+    discussion: [{ preparationId: 'p1', turnId: 't1', sequence: 1, actor: 'USER', content: '화면 검증' }],
     agreement: { status: 'DISCUSSING', summary: '', unresolvedQuestions: [], requirements: [] },
     webSession: { sessionId: 's1', conversationId: 'c1', conversationUrl: 'https://chatgpt.com/c/c1', activeDeliveryId: 'd1' },
     deliveries: [{ deliveryId: 'd1', state: 'SUBMITTED' }] };
@@ -74,7 +75,7 @@ try {
   await page.screenshot({ path: path.join(output, 'recovery-mobile.png'), fullPage: true });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
   phase = 'DISCUSSING'; prep.error = null;
-  prep.discussion.push({ actor: 'WEB_DESIGNER', content: 'どの機能ですか？' });
+  prep.discussion.push({ preparationId: 'p1', turnId: 't2', sequence: 2, actor: 'WEB_DESIGNER', deliveryId: 'd1', content: 'どの機能ですか？' });
   prep.agreement.summary = '어떤 기능을 원하시나요?';
   await page.locator('#projectPanel').waitFor();
   assert.equal(await page.locator('#startPanel').isVisible(), false);

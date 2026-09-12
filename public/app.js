@@ -393,7 +393,7 @@ function renderInitialRequest() {
     : preparation?.error?.message ?? "전송 상태를 확인한 뒤 계속할 수 있습니다.");
   for (const id of ["objective", "startRoot", "conversationUrl"]) {
     $(id).readOnly = initial;
-    if (initial) $(id).value = id === "objective" ? preparation.objective : id === "startRoot" ? preparation.targetRoot : preparation.conversationUrl;
+    if (initial) $(id).value = id === "objective" ? preparation.objective : id === "startRoot" ? preparation.targetRoot : (preparation.webSession?.conversationUrl ?? preparation.conversationUrl);
   }
   $("cancelInitialPreparation").hidden = !initial;
   $("cancelInitialPreparation").disabled = !capabilities().has("preparation.cancel");
