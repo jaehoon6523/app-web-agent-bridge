@@ -334,6 +334,14 @@ export class PreparationService {
       && observed.runId === context.preparationId;
     const exactDelivery = exactConversation && typeof session.activeDeliveryId === "string"
       && observed.currentDeliveryId === session.activeDeliveryId;
+    // A server restart can leave the binding marked RECOVERY_REQUIRED even
+    // after the extension has reconnected to the exact session. Binding health
+    // is separate from delivery validation: keep the preparation/delivery
+    // recovery state until the response is validated, but restore the session
+    // connection state once its identity is proven again.
+    if (exactConversation && session.bindingState === "RECOVERY_REQUIRED") {
+      session.bindingState = "BOUND";
+    }
     context.diagnostics = { ...observed, exactConversation,
       canFocus: exactConversation, canStop: exactDelivery && observed.generating === true && observed.activeRequestId === session.activeDeliveryId,
       canRecover: exactDelivery && observed.generating === false && observed.pageBusy === false && observed.extensionBusy === false };
