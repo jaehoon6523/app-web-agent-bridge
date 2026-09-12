@@ -59,7 +59,25 @@ export class PreparationService {
     this.db.prepare("INSERT INTO preparation_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json=excluded.json").run(canonicalJson(this.data));
   }
   touch(context) { context.version++; context.updatedAt = stamp(); this.save(); }
-  snapshot() { return structuredClone(this.current); }
+  snapshot() {
+    const context = this.current;
+    let changed = false;
+    for (const delivery of context?.deliveries ?? []) {
+      const response = delivery.response;
+      if (!response?.rawText || (response.packet && response.packet.type !== "PLANNING_RESPONSE")) continue;
+      try {
+        const envelope = parseFinalControllerPacketJsonEnvelope(response.rawText);
+        response.packet = envelope.parsed;
+        response.packetText = envelope.packetText;
+        changed = true;
+      } catch {
+        // Keep the original response and let the existing validation state
+        // explain that its packet could not be parsed.
+      }
+    }
+    if (changed) this.save();
+    return structuredClone(context);
+  }
   receipt(requestId) {
     const receipt = this.data.receipts[requestId];
     return { requestId, status: receipt?.status ?? "NOT_FOUND" };
