@@ -137,11 +137,11 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.equal((await state("?runId=" + run.runId)).workflow.runId, run.runId);
   service.update(run.runId, { stage: "HOLD" });
   current = await state();
-  assert.equal(current.workflow.stage, "RESULT"); assert.equal(current.workflow.state, "HOLD");
+  assert.equal(current.workflow.stage, "WORK"); assert.equal(current.workflow.state, "HOLD");
   assert.equal(current.preparation.resultingRunId, current.workflow.runId);
   assert.equal(current.preparation.agreement.status, "APPROVED");
   await restart(); current = await state();
-  assert.equal(current.workflow.stage, "RESULT");
+  assert.equal(current.workflow.stage, "WORK");
   assert.equal(current.workflow.runId, run.runId);
   assert.deepEqual(await (await post(approveUrl, input)).json(), run);
   assert.equal((await state("?requestId=approve")).requestResult.status, "COMPLETED");

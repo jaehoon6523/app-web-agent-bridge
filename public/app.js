@@ -246,6 +246,9 @@ function render() {
   const resultStage = workflow.stage === "RESULT";
   const step = { START: "stepStart", PREPARE: "stepPrepare", WORK: "stepWork", RESULT: "stepResult" }[workflow.stage];
   for (const id of ["stepStart", "stepPrepare", "stepWork", "stepResult"]) $(id).setAttribute("aria-current", id === step ? "step" : "false");
+  // HOLD keeps its run inside the WORK stage (still in progress, not a final result), but it means a human
+  // decision is needed, so the step nav gets a small badge to make that state noticeable at a glance.
+  $("stepWorkBadge").hidden = !(workflow.stage === "WORK" && workflow.state === "HOLD");
   text("runStageHeading", resultStage ? "결과" : "작업");
   $("startPanel").hidden = workflow.stage !== "START";
   const preparing = workflow.stage === "PREPARE";

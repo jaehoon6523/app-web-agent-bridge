@@ -120,7 +120,7 @@ test("HTTP dashboard enforces authentication and forbids direct run.start approv
   const bridge = createBridgeServer({ runtimeConfig: {
     host: "127.0.0.1", port: 0, baseUrl: "http://127.0.0.1:0", demoMode: false,
     codex: { executablePath: process.execPath }, dashboard: { token },
-    webExtension: { sharedSecret: secret, expectedExtensionIdentity: "test-extension" }, relay: { webResponseTimeoutMs: 1000 },
+    webExtension: { enabled: true, sharedSecret: secret, expectedExtensionIdentity: "test-extension" }, relay: { webResponseTimeoutMs: 1000 },
   }, createLiveRuntime: async () => live });
   await bridge.listen();
   t.after(() => bridge.close());

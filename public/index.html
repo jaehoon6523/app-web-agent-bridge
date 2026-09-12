@@ -11,7 +11,7 @@
 <div class="layout">
   <aside class="history"><h2>실행 기록</h2><button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>미종료 작업 확인 · 중단</button><nav id="runList" aria-label="실행 선택"></nav></aside>
   <main>
-    <ol class="workflow" aria-label="작업 단계"><li id="stepStart">1. 시작</li><li id="stepPrepare">2. 준비</li><li id="stepWork">3. 작업</li><li id="stepResult">4. 결과</li></ol>
+    <ol class="workflow" aria-label="작업 단계"><li id="stepStart">1. 시작</li><li id="stepPrepare">2. 준비</li><li id="stepWork">3. 작업<span id="stepWorkBadge" class="step-badge" hidden aria-label="판단 대기 중"></span></li><li id="stepResult">4. 결과</li></ol>
     <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
     <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">

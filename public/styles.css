@@ -40,6 +40,9 @@ form { max-width:760px; } label { display:block; margin:20px 0 8px; } input,text
 .workflow { display:flex; gap:12px; list-style:none; padding:0; margin:0 0 24px; }
 .workflow li { flex:1; padding:10px 0; border-bottom:2px solid var(--line); color:var(--muted); }
 .workflow li[aria-current="step"] { border-color:var(--live); color:var(--text); font-weight:700; }
+.step-badge { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--warn); margin-left:6px; vertical-align:middle; }
+.step-badge:not([hidden]) { animation:status-pulse 1.6s ease-in-out infinite; }
+@media(prefers-reduced-motion:reduce) { .step-badge:not([hidden]) { animation:none; } }
 .tabs { display:flex; gap:0; margin-top:25px; border-bottom:1px solid var(--line); } .tabs button { border:0; border-bottom:2px solid transparent; } .tabs button[aria-pressed="true"] { border-bottom-color:var(--live); }
 .record { padding:14px 0; border-bottom:1px solid var(--line); overflow-wrap:anywhere; } .record strong { font-size:13px; } .record p { white-space:pre-wrap; } .record .links { display:flex; flex-wrap:wrap; gap:6px; } .record .links button { font-size:11px; padding:3px 8px; }
 pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; background:var(--panel); padding:14px; } time { font-size:11px; color:var(--muted); } dialog { width:min(960px,94vw); max-height:88vh; background:var(--bg); color:var(--text); border:1px solid var(--line); padding:22px; } dialog::backdrop { background:#0009; } #evidenceContent { max-height:60vh; overflow:auto; }

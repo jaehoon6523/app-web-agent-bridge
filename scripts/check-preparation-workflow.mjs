@@ -21,6 +21,7 @@ try {
   page.on('pageerror', error => errors.push(error.message));
   let connected = false, phase = 'START_IDLE';
   const prep = { preparationId: 'p1', version: 4, lifecycle: 'ACTIVE', objective: '화면 검증', targetRoot: 'C:/test',
+    conversationUrl: 'https://chatgpt.com/c/c1', // 서버(preparation-service.js:111)가 webSession과 함께 항상 같이 채우는 필드 - mock도 동일하게 유지
     state: 'WAITING_WEB_RESPONSE',
     discussion: [{ preparationId: 'p1', turnId: 't1', sequence: 1, actor: 'USER', content: '화면 검증' }],
     agreement: { status: 'DISCUSSING', summary: '', unresolvedQuestions: [], requirements: [] },
