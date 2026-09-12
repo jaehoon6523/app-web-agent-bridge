@@ -471,11 +471,20 @@ function renderPreparation() {
     const confidenceReason = activeDelivery.response?.confidenceReason
       ?? activeDelivery.response?.evidence?.confidenceReason
       ?? null;
+    const packet = activeDelivery.response?.packet;
+    if (packet?.type === "REQUIREMENTS_PROPOSAL") {
+      recovery.append(node("p", "내용 해석: 인지됨 · 기존 Git diff 분석 요구사항과 응답 검증 문제의 불일치를 인식하고 범위 전환을 질문함", "recovery-guidance ok"));
+      recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${(packet.questions ?? []).length}개`, "diagnostic-row health ok"));
+      recovery.append(node("p", "요구사항 상태: 범위 전환 확인 필요 · 아직 구현 범위로 확정하지 않음", "diagnostic-row health warn"));
+    } else if (activeDelivery.response && !packet) {
+      recovery.append(node("p", "내용 해석: 확인 불가 · 응답 packet을 해석하지 못함", "recovery-guidance error"));
+      recovery.append(node("p", "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
+    }
     if (activeDelivery.response?.confidence === "HEURISTIC") {
-      const reason = confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
-        ? "응답은 받았지만 ChatGPT DOM 가상화·변경으로 사용자 메시지와 응답의 직접 순서를 확정하지 못했습니다. 대화 화면을 새로고침한 뒤 응답을 다시 확인하세요."
-        : "응답은 받았지만 ChatGPT DOM 상태를 완전히 확정하지 못했습니다. DOM 변경 또는 확장 상태를 확인한 뒤 응답을 다시 확인하세요.";
-      recovery.append(node("p", `확인 필요: ${reason}`, "recovery-guidance error"));
+      recovery.append(node("p", "응답 전달 검증: 확인 불가 · 이번 요청에 대한 응답인지 DOM 순서로 확정하지 못함", "recovery-guidance error"));
+      recovery.append(node("p", confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
+        ? "DOM 상태: 가상화 또는 DOM 변경 의심 · 사용자 메시지가 현재 DOM에서 사라졌을 가능성"
+        : "DOM 상태: 원인 특정 불가 · DOM 변경 또는 확장 상태 확인 필요", "diagnostic-row health error"));
     }
     if (["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(activeDelivery.state) && !activeDelivery.response) {
       recovery.append(node("p", "전송 결과가 불명확합니다. 브릿지 연결이 끊겼거나 서버가 재시작되어 확장에 재확인 명령이 전달되지 않았을 수 있습니다. 서버와 확장 연결을 확인한 뒤 상태를 다시 확인하세요.", "recovery-guidance error"));
