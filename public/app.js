@@ -99,7 +99,9 @@ async function refresh() {
     snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null; connected = true;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
-    text("connectionNotice", "");
+    text("connectionNotice", result.preflight?.checks?.extensionAuthenticated === true
+      ? ""
+      : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
     for (const [operation, requestId] of unknownRequests) {
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
       if (current !== sequence || target !== selected) return;
@@ -238,7 +240,7 @@ function render() {
     !connected ? "서버 확인 필요" : cliConfigured ? "경로 설정됨" : "경로 설정 필요");
   const webAuthenticated = checks?.extensionAuthenticated === true;
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
-    !connected ? "서버 확인 필요" : webAuthenticated ? "확장 인증됨" : "확장 연결 대기");
+    !connected ? "서버 확인 필요" : webAuthenticated ? "확장 인증됨" : "확장 연결 대기 · 확장 팝업 확인");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
@@ -445,8 +447,15 @@ function renderPreparation() {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
       RESPONSE_STARTED: "응답 생성 중", RESPONSE_COMPLETED: "응답 수신 · 검증 또는 수신 확인 필요",
       ACKNOWLEDGED: "응답 처리 완료", RECOVERY_REQUIRED: "전송 상태 확인 필요", FAILED: "요청 실패" };
-    recovery.append(node("p", activeDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
-      : states[activeDelivery.state] ?? "처리 상태 미확인"));
+    const failures = activeDelivery.validation?.checks?.filter(item => !item.passed) ?? [];
+    const confidenceFailure = failures.find(item => item.name === "응답 신뢰도");
+    const displayedFailures = failures.filter(item => item !== confidenceFailure);
+    const responseSettled = Boolean(activeDelivery.response) && diagnostic.canRecover === true;
+    const status = responseSettled
+      ? "응답 수신·전송 종료 확인됨 · 확장 상태 확인"
+      : activeDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
+        : states[activeDelivery.state] ?? "처리 상태 미확인";
+    recovery.append(node("p", status));
     const confidenceReason = activeDelivery.response?.confidenceReason
       ?? activeDelivery.response?.evidence?.confidenceReason
       ?? null;
@@ -459,17 +468,12 @@ function renderPreparation() {
     if (["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(activeDelivery.state) && !activeDelivery.response) {
       recovery.append(node("p", "전송 결과가 불명확합니다. 브릿지 연결이 끊겼거나 서버가 재시작되어 확장에 재확인 명령이 전달되지 않았을 수 있습니다. 서버와 확장 연결을 확인한 뒤 상태를 다시 확인하세요.", "recovery-guidance error"));
     }
-    const failures = activeDelivery.validation?.checks?.filter(item => !item.passed) ?? [];
-    if (failures.length) {
-      const confidenceFailure = failures.find(item => item.name === "응답 신뢰도");
+    if (displayedFailures.length) {
       const otherFailures = failures.filter(item => item !== confidenceFailure);
       if (otherFailures.length) recovery.append(node("p", "확인하지 못한 항목: " + otherFailures.map(item => item.name).join(", "), "recovery-guidance error"));
-      const displayedFailures = failures.filter(item => item !== confidenceFailure);
-      if (displayedFailures.length) {
-        const detail = node("details", "");
-        detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(displayedFailures, null, 2)));
-        recovery.append(detail);
-      }
+      const detail = node("details", "");
+      detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(displayedFailures, null, 2)));
+      recovery.append(detail);
     }
   }
   recovery.append(node("h2", "대화 · 전송 상태"));
