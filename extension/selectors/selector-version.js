@@ -1,6 +1,6 @@
 (() => {
   globalThis.ChatGptBridgeSelectors = {
-    version: "2026-09-04.1",
+    version: "2026-09-12.1",
     groups: Object.create(null),
     resolveFirst(group, queryAll, isEligible = () => true) {
       const selectors = this.groups[group];

@@ -14,6 +14,7 @@
   // "empty composer, no controls rendered at all" if that ever matters.
   registry.groups.dictationButton = Object.freeze([
     "button[aria-label='받아쓰기 시작']",
+    "button[aria-label='Voice 시작']",
     "button[aria-label='Start voice input']",
     "button[aria-label*='Voice']",
   ]);

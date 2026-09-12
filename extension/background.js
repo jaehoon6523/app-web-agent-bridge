@@ -257,7 +257,13 @@ async function handleControllerMessage(raw) {
           if (current.currentDeliveryId !== completed.turnId || current.lastBoundSessionId !== saved.lastBoundSessionId) {
             throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "재확인 중 전송 대상이 변경됐습니다.");
           }
-          await store.update({ completedDelivery: { ...completed, rawText: result.text, confidence: result.confidence, evidence: result.evidence } });
+          await store.update({ completedDelivery: {
+            ...completed,
+            rawText: result.text,
+            confidence: result.confidence,
+            confidenceReason: result.confidenceReason ?? null,
+            evidence: result.evidence,
+          } });
         } catch (error) {
           send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
           break;

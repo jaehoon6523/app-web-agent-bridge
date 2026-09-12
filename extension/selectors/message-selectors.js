@@ -7,13 +7,14 @@
   ]);
   registry.groups.messageContainer = Object.freeze([
     "[data-message-id]",
+    "[data-turn-id][data-testid^='conversation-turn-']",
     "article[data-testid^='conversation-turn-']",
     "article",
   ]);
   registry.groups.messageContent = Object.freeze([
+    "[data-testid='collapsible-user-message-content']",
     "[data-message-content]",
     ".markdown",
     "[class*='markdown']",
   ]);
 })();
-
