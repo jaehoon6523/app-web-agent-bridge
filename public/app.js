@@ -24,7 +24,17 @@ function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   element.title = reason;
   if (reason) element.setAttribute("aria-description", reason);
   else element.removeAttribute("aria-description");
+  buttonReason(element, element.disabled ? disabledReason : "");
   return reason;
+}
+function buttonReason(element, reason = "") {
+  let note = element.nextElementSibling;
+  if (!note || !note.classList.contains("action-reason")) {
+    note = node("p", "", "action-reason muted");
+    element.after(note);
+  }
+  note.hidden = !element.disabled || !reason;
+  note.textContent = reason;
 }
 function workerIdentity(run) {
   const worker = run?.worker ?? {};
@@ -441,7 +451,9 @@ function renderPreparation() {
   }
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
-  const recovery = node("section", "", "session-recovery");
+  const recovery = node("details", "", "session-recovery");
+  recovery.open = true;
+  recovery.append(node("summary", "응답·전송 상태"));
   const activeDelivery = preparation.deliveries?.find(item => item.deliveryId === session?.activeDeliveryId);
   if (activeDelivery) {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
@@ -495,9 +507,19 @@ function renderPreparation() {
     else if (["READY", "예", "아니오"].includes(value)) row.classList.add("health", "ok", "diagnostic-row");
     else if (value === "확인되지 않음") row.classList.add("health", "warn", "diagnostic-row");
   }
+  const webActionReason = (action) => {
+    if (!connected) return "서버 연결이 없어 이 상태 확인을 실행할 수 없습니다. 로컬 서버와 8787 포트를 확인하세요.";
+    if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장이 인증되지 않았습니다. 확장 팝업에서 서버 주소와 연결 상태를 확인하세요.";
+    if (operations.webTurn !== "IDLE") return "다른 웹 상태 요청을 처리하는 중입니다. 처리가 끝난 뒤 다시 시도하세요.";
+    if (!capabilities().has(action)) return "현재 서버 상태에서는 이 작업을 사용할 수 없습니다.";
+    return "";
+  };
   for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
     const button = node("button", action === "web.reconcile" && activeDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
     button.dataset.webCommand = action;
+    const disabled = !capabilities().has(action) || operations.webTurn !== "IDLE";
+    button.disabled = disabled;
+    buttonReason(button, disabled ? webActionReason(action) : "");
     button.addEventListener("click", () => webSessionCommand(action)); recovery.append(button);
   }
   summary.append(recovery);
