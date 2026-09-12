@@ -262,6 +262,16 @@ export class PreparationService {
     this.setDiagnostics(context, observed);
     const pointerMatches = observed.currentDeliveryId === delivery.deliveryId;
     const response = delivery.response;
+    let parsed = null;
+    let packetParseError = null;
+    try {
+      const envelope = parseFinalControllerPacketJsonEnvelope(response.rawText);
+      parsed = envelope.parsed;
+      response.packet = parsed;
+      response.packetText = envelope.packetText;
+    } catch (error) {
+      packetParseError = error;
+    }
     const userMessageId = response?.evidence?.userMessageId ?? response?.binding?.lastObservedUserMessageId;
     const assistantMessageId = response?.evidence?.assistantMessageId ?? response?.binding?.lastObservedAssistantMessageId;
     const check = (name, expected, actual) => ({ name, expected: expected ?? null, actual: actual ?? null,
@@ -290,17 +300,7 @@ export class PreparationService {
       throw Object.assign(new Error("응답 확인 실패: " + failed.map(item => item.name).join(", ")),
         { code: "COMPLETION_EVIDENCE_MISMATCH", details: { checks: failed } });
     }
-    let parsed;
-    try {
-      const envelope = parseFinalControllerPacketJsonEnvelope(delivery.response.rawText);
-      parsed = envelope.parsed;
-      // The preparation adapter initially stores a transport placeholder
-      // packet. Replace it with the packet that was actually parsed so the
-      // dashboard can distinguish understood content from delivery evidence.
-      delivery.response.packet = parsed;
-      delivery.response.packetText = envelope.packetText;
-    }
-    catch {
+    if (packetParseError) {
       delivery.validation.format = "INVALID"; this.touch(context);
       fail("응답에 준비 제안 형식이 없습니다. 원문은 보존되어 있으며 승인할 수 없습니다.", "INVALID_AGREEMENT");
     }

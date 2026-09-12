@@ -654,7 +654,7 @@ async function handlePrompt(message) {
     assertTurnSessionBinding(frozenTurn, session);
     await store.update({ completedDelivery: {
       turnId: message.requestId, binding: session, rawText: result.text,
-      confidence: result.confidence, evidence: result.evidence,
+      confidence: result.confidence, confidenceReason: result.confidenceReason ?? null, evidence: result.evidence,
     } });
     console.info("[bridge:delivery:completed-awaiting-ack]", {
       deliveryId: message.requestId, sessionId: session.sessionId, runId: session.runId,
@@ -665,6 +665,7 @@ async function handlePrompt(message) {
       payload: {
         text: result.text,
         confidence: result.confidence,
+        confidenceReason: result.confidenceReason ?? null,
         evidence: result.evidence,
         session,
       },
