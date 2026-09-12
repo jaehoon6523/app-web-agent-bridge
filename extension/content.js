@@ -372,10 +372,24 @@ function locateAssociatedAssistant(
   return { status: "WAITING" };
 }
 
-function sendButtonEnabledState() {
-  const match = firstVisible("sendButton");
-  if (!match) return null;
-  return !match.element.disabled && match.element.getAttribute("aria-disabled") !== "true";
+function isComposerEmpty() {
+  const composer = firstVisible("composer");
+  if (!composer) return false; // Can't confirm emptiness without a visible composer; do not assume.
+  const element = composer.element;
+  const text = element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
+    ? element.value
+    : (element.innerText || element.textContent || "");
+  return text.trim().length === 0;
+}
+
+// Delegates to the selectors module's resolveSendButtonState(), which treats
+// "no send button because the composer is empty" as a confirmable state
+// (ChatGPT shows dictation/voice controls instead of a send button in that
+// case) rather than an ambiguous one. Any other missing-button case is an
+// unexpected selector/UI-contract mismatch and is reported there via
+// console.warn.
+function sendButtonState() {
+  return registry.resolveSendButtonState({ isComposerEmpty });
 }
 
 async function waitForAssistantResponse({ expected, baseline, userMessage, timeoutMs, stableMs, signal, requestId }) {
@@ -471,15 +485,23 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
       }
 
       const stopVisible = Boolean(firstVisible("stopButton"));
-      const sendEnabled = sendButtonEnabledState();
+      const sendState = sendButtonState();
+      // ENABLED: a real, clickable send button is visible -> composer has
+      // content and ChatGPT is ready for another turn.
+      // CONFIRMED_EMPTY_COMPOSER: no send button because the composer is
+      // empty -- ChatGPT's normal post-response state, not ambiguity.
+      // DISABLED / UNKNOWN do not confirm completion; UNKNOWN in particular
+      // means the composer has content but no send button was found, which
+      // is an unexpected selector/UI-contract mismatch (already logged by
+      // resolveSendButtonState()) and must keep polling/eventually time out
+      // rather than being silently treated as done.
+      const sendConfirmed = sendState.state === "ENABLED" || sendState.state === "CONFIRMED_EMPTY_COMPOSER";
       const stable = assistantId
         && lastText
         && Date.now() - lastTextChangeAt >= stableMs
         && Date.now() - lastDomMutationAt >= stableMs;
-      if (stable && !stopVisible && (sendEnabled === true || sendEnabled === null)) {
-        const confidence = virtualizedUser || sendEnabled === null
-          ? "HEURISTIC"
-          : "CONFIRMED_BY_UI_STATE";
+      if (stable && !stopVisible && sendConfirmed) {
+        const confidence = virtualizedUser ? "HEURISTIC" : "CONFIRMED_BY_UI_STATE";
         return {
           text: lastText,
           confidence,
@@ -490,7 +512,8 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
             conversationId: conversationIdFromUrl(location.href),
             responseAssociation: virtualizedUser ? "VIRTUALIZED_USER_HEURISTIC" : "DIRECT_DOM_ORDER",
             stopButtonVisible: stopVisible,
-            sendButtonEnabled: sendEnabled,
+            sendButtonState: sendState.state,
+            sendButtonEnabled: sendState.state === "ENABLED" ? true : sendState.state === "DISABLED" ? false : null,
             stableForMs: Math.min(Date.now() - lastTextChangeAt, Date.now() - lastDomMutationAt),
             ...selectedSelectorEvidence(),
           },
