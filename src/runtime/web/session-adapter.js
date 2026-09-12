@@ -573,9 +573,9 @@ export class ChatGptWebSessionAdapter {
     } finally { this.#sessionOperation = null; }
   }
 
-  async inspectDelivery() {
-    const message = await this.#request({ type: "web.delivery.inspect" },
-      new Set(["web.delivery.inspected", "web.session.error"]), 10_000);
+  async inspectDelivery({ refreshCompleted = false } = {}) {
+    const message = await this.#request({ type: "web.delivery.inspect", ...(refreshCompleted ? { payload: { refreshCompleted: true } } : {}) },
+      new Set(["web.delivery.inspected", "web.session.error"]), refreshCompleted ? 30_000 : 10_000);
     if (message.type === "web.session.error") throw this.#messageError(message);
     return message.payload;
   }

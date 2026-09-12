@@ -607,6 +607,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
 
+  if (message?.type === "agent.recheck") {
+    const expected = message.payload;
+    void (async () => {
+      if (currentJob) throw new ContentContractError("WEB_SESSION_BUSY", "페이지가 다른 요청을 처리 중입니다.");
+      assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
+      const baseline = messageSnapshot();
+      const matches = baseline.filter(item => item.id === expected.userMessageId && isExpectedUser(item, expected));
+      if (matches.length !== 1) throw new ContentContractError("AMBIGUOUS_PROMPT_BINDING", "원래 요청 메시지를 확인할 수 없습니다.");
+      const result = await waitForAssistantResponse({ expected, baseline, userMessage: matches[0],
+        timeoutMs: 15000, stableMs: 3500, signal: new AbortController().signal, requestId: expected.controllerMessageId });
+      if (result.evidence.assistantMessageId !== expected.assistantMessageId) {
+        throw new ContentContractError("AMBIGUOUS_COMPLETION", "원래 답변과 다른 메시지가 관측됐습니다.");
+      }
+      return result;
+    })().then(result => sendResponse({ ok: true, ...result }))
+      .catch(error => sendResponse({ ok: false, code: error.code, error: error.message }));
+    return true;
+  }
   if (message?.type === "agent.cancel") {
     sendResponse({ ok: true, cancelled: cancelCurrentJob(message.requestId) });
     return false;

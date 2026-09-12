@@ -426,6 +426,21 @@ function renderPreparation() {
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
   const recovery = node("section", "", "session-recovery");
+  const activeDelivery = preparation.deliveries?.find(item => item.deliveryId === session?.activeDeliveryId);
+  if (activeDelivery) {
+    const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
+      RESPONSE_STARTED: "응답 생성 중", RESPONSE_COMPLETED: "응답 수신 · 검증 또는 수신 확인 필요",
+      ACKNOWLEDGED: "응답 처리 완료", RECOVERY_REQUIRED: "전송 상태 확인 필요", FAILED: "요청 실패" };
+    recovery.append(node("p", activeDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
+      : states[activeDelivery.state] ?? "처리 상태 미확인"));
+    const failures = activeDelivery.validation?.checks?.filter(item => !item.passed) ?? [];
+    if (failures.length) {
+      recovery.append(node("p", "확인하지 못한 항목: " + failures.map(item => item.name).join(", ")));
+      const detail = node("details", "");
+      detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(failures, null, 2)));
+      recovery.append(detail);
+    }
+  }
   recovery.append(node("h2", "대화 · 전송 상태"));
   const bool = (value) => value === true ? "예" : value === false ? "아니오" : "확인되지 않음";
   for (const [label, value] of [
@@ -437,10 +452,10 @@ function renderPreparation() {
     ["pageBusy", bool(diagnostic.pageBusy)], ["generating", bool(diagnostic.generating)],
     ["extensionBusy", bool(diagnostic.extensionBusy)], ["pageStatus", diagnostic.pageStatus],
     ["canFocus", bool(diagnostic.canFocus)], ["canStop", bool(diagnostic.canStop)],
-    ["canRecover", bool(diagnostic.canRecover)],
+    ["해당 전송 종료 확인", bool(diagnostic.canRecover)],
   ]) recovery.append(node("p", label + ": " + (value ?? "확인되지 않음")));
-  for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["전송 기록 정리", "web.reconcile"]]) {
-    const button = node("button", label); button.type = "button";
+  for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
+    const button = node("button", action === "web.reconcile" && activeDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
     button.dataset.webCommand = action;
     button.addEventListener("click", () => webSessionCommand(action)); recovery.append(button);
   }

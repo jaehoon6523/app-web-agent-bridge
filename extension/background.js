@@ -238,6 +238,33 @@ async function handleControllerMessage(raw) {
       await handleDeliveryRecovery(message);
       break;
     case "web.delivery.inspect":
+      if (message.payload?.refreshCompleted) {
+        let recheckReservation;
+        try {
+          recheckReservation = turnGate.reserve(message.requestId);
+          const saved = await store.read();
+          const completed = saved.completedDelivery;
+          if (!completed || completed.turnId !== saved.currentDeliveryId || !saved.lastBoundRunId?.startsWith("prep_")) {
+            throw new ExtensionOperationError("RESPONSE_RECHECK_UNAVAILABLE", "다시 확인할 준비 응답이 없습니다.");
+          }
+          const result = await chrome.tabs.sendMessage(saved.tabId, { type: "agent.recheck", payload: {
+            expectedConversationUrl: saved.conversationUrl, expectedConversationId: saved.conversationId,
+            runId: saved.lastBoundRunId, controllerMessageId: completed.turnId,
+            userMessageId: completed.evidence?.userMessageId, assistantMessageId: completed.evidence?.assistantMessageId,
+          } });
+          if (!result?.ok) throw new ExtensionOperationError(result?.code ?? "RESPONSE_RECHECK_FAILED", result?.error ?? "응답 재확인에 실패했습니다.");
+          const current = await store.read();
+          if (current.currentDeliveryId !== completed.turnId || current.lastBoundSessionId !== saved.lastBoundSessionId) {
+            throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "재확인 중 전송 대상이 변경됐습니다.");
+          }
+          await store.update({ completedDelivery: { ...completed, rawText: result.text, confidence: result.confidence, evidence: result.evidence } });
+        } catch (error) {
+          send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
+          break;
+        } finally {
+          if (recheckReservation) turnGate.release(recheckReservation);
+        }
+      }
       send({ type: "web.delivery.inspected", requestId: message.requestId, payload: await deliveryDetails(await store.read()) });
       break;
     case "web.delivery.stop":

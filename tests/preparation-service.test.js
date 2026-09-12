@@ -136,6 +136,24 @@ test("run transitions preserve in-progress and terminal meaning across frontend 
   }
 });
 
+test("heuristic response preserves evidence and explains the precise failure without advancing", async (t) => {
+  const f = fixture(t), submit = f.web.submitTurn;
+  f.web.submitTurn = async (input) => {
+    const handle = await submit(input);
+    return { completion: handle.completion.then(response => ({ ...response, confidence: "HEURISTIC" })) };
+  };
+  await f.start(); await settled(f.service);
+  const context = f.service.current;
+  assert.equal(context.error.code, "COMPLETION_EVIDENCE_MISMATCH");
+  assert.deepEqual(context.error.details.checks.map(item => item.name), ["응답 신뢰도"]);
+  assert.equal(context.error.details.checks[0].actual, "HEURISTIC");
+  assert.ok(context.deliveries[0].response);
+  assert.ok(context.webSession.activeDeliveryId);
+  assert.equal(context.discussion.length, 1);
+  assert.equal((await f.service.project({ runs: [], run: null, commandCapabilities: [] })).workflow.stage, "START");
+  assert.ok(!f.service.capabilities().includes("preparation.approve"));
+});
+
 for (const recoverable of [true, false]) {
   test(`old manual delivery recovery gates new submission: ${recoverable}`, async (t) => {
     const f = fixture(t), resume = f.web.resume, inspect = f.web.inspectDelivery;

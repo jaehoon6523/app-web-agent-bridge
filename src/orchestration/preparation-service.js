@@ -264,20 +264,46 @@ export class PreparationService {
     const response = delivery.response;
     const userMessageId = response?.evidence?.userMessageId ?? response?.binding?.lastObservedUserMessageId;
     const assistantMessageId = response?.evidence?.assistantMessageId ?? response?.binding?.lastObservedAssistantMessageId;
-    // A lost ACK may leave the extension idle, but never authorizes a new response.
-    if (!context.diagnostics.exactConversation || observed.sessionId !== session.sessionId
-      || (observed.currentDeliveryId !== null && !pointerMatches)
-      || observed.generating !== false || observed.pageBusy !== false || observed.extensionBusy !== false
-      || !userMessageId || !assistantMessageId || observed.lastObservedUserMessageId !== userMessageId
-      || observed.lastObservedAssistantMessageId !== assistantMessageId
-      || response?.confidence !== "CONFIRMED_BY_UI_STATE") fail("Completion evidence is not confirmed.", "RECOVERY_REQUIRED");
-    const parsed = parseFinalControllerPacketJsonEnvelope(delivery.response.rawText).parsed;
+    const check = (name, expected, actual) => ({ name, expected: expected ?? null, actual: actual ?? null,
+      passed: expected !== undefined && actual === expected });
+    const checks = [
+      check("대화 연결", true, context.diagnostics.exactConversation),
+      check("응답 전송 ID", delivery.deliveryId, response?.turnId),
+      check("응답 세션 ID", session.sessionId, response?.binding?.sessionId),
+      check("응답 작업 ID", context.preparationId, response?.binding?.runId),
+      check("응답 대화 ID", session.conversationId, response?.binding?.conversationId),
+      check("전송 소유권", true, observed.currentDeliveryId === null || pointerMatches),
+      check("생성 종료", false, observed.generating),
+      check("페이지 처리 종료", false, observed.pageBusy),
+      check("확장 처리 종료", false, observed.extensionBusy),
+      check("사용자 메시지 증거", true, Boolean(userMessageId)),
+      check("답변 메시지 증거", true, Boolean(assistantMessageId)),
+      check("사용자 메시지 일치", userMessageId, observed.lastObservedUserMessageId),
+      check("답변 메시지 일치", assistantMessageId, observed.lastObservedAssistantMessageId),
+      check("응답 신뢰도", "CONFIRMED_BY_UI_STATE", response?.confidence),
+    ];
+    delivery.validation = { status: checks.every(item => item.passed) ? "CONFIRMED" : "FAILED", checks };
+    this.touch(context);
+    if (delivery.validation.status === "FAILED") {
+      const failed = checks.filter(item => !item.passed);
+      console.warn("[bridge:completion:unconfirmed]", { deliveryId: delivery.deliveryId, checks: failed });
+      throw Object.assign(new Error("응답 확인 실패: " + failed.map(item => item.name).join(", ")),
+        { code: "COMPLETION_EVIDENCE_MISMATCH", details: { checks: failed } });
+    }
+    let parsed;
+    try { parsed = parseFinalControllerPacketJsonEnvelope(delivery.response.rawText).parsed; }
+    catch {
+      delivery.validation.format = "INVALID"; this.touch(context);
+      fail("응답에 준비 제안 형식이 없습니다. 원문은 보존되어 있으며 승인할 수 없습니다.", "INVALID_AGREEMENT");
+    }
     if (parsed.type !== "REQUIREMENTS_PROPOSAL" || typeof parsed.summary !== "string"
       || !Array.isArray(parsed.questions) || parsed.questions.some((q) => typeof q !== "string" || !q.trim())
       || !Array.isArray(parsed.items) || parsed.items.length > 30
       || (!parsed.items.length && !parsed.questions.length)
       || parsed.items.some((r) => typeof r.statement !== "string" || !r.statement.trim()
         || typeof r.acceptanceCriteria !== "string" || !r.acceptanceCriteria.trim())) fail("Invalid designer response.", "INVALID_AGREEMENT");
+    delivery.validation.format = "CONFIRMED";
+    delivery.processingState = "ACK_PENDING"; this.touch(context);
     if (pointerMatches) {
       await this.web.acknowledgeDelivery({ turnId: delivery.deliveryId });
       const ack = await this.web.inspectDelivery();
@@ -286,7 +312,7 @@ export class PreparationService {
         || ack.conversationUrl !== session.conversationUrl || ack.generating !== false
         || ack.pageBusy !== false || ack.extensionBusy !== false
         || ack.lastObservedUserMessageId !== userMessageId
-        || ack.lastObservedAssistantMessageId !== assistantMessageId) fail("Delivery ACK is not confirmed.", "RECOVERY_REQUIRED");
+        || ack.lastObservedAssistantMessageId !== assistantMessageId) fail("응답은 저장됐지만 전송 정리 확인이 끝나지 않았습니다.", "ACK_UNCONFIRMED");
     }
     await this.web.confirmDeliveryAcknowledgement?.({ turnId: delivery.deliveryId, sessionId: session.sessionId,
       runId: context.preparationId, conversationUrl: session.conversationUrl });
@@ -298,7 +324,7 @@ export class PreparationService {
       summary: parsed.summary, unresolvedQuestions: parsed.questions, requirements: parsed.items };
     Object.assign(session, { activeDeliveryId: null, lastObservedUserMessageId: observed.lastObservedUserMessageId,
       lastObservedAssistantMessageId: observed.lastObservedAssistantMessageId });
-    delivery.state = "ACKNOWLEDGED"; context.error = null;
+    delivery.state = "ACKNOWLEDGED"; delivery.processingState = "COMPLETE"; context.error = null;
     context.state = context.agreement.status === "READY" ? "AGREEMENT_READY" : "DISCUSSING"; this.touch(context);
   }
   setDiagnostics(context, observed) {
@@ -327,13 +353,18 @@ export class PreparationService {
       if (input[key] !== value) fail("Web identity mismatch: " + key, "DELIVERY_RECOVERY_MISMATCH");
     }
     if (!this.capabilities().includes(type)) fail("Web operation is unavailable.");
-    const observed = await this.web.inspectDelivery();
+    const pendingDelivery = context.deliveries.find(item => item.deliveryId === session.activeDeliveryId);
+    const refreshCompleted = type === "web.reconcile" && pendingDelivery?.processingState !== "ACK_PENDING";
+    const observed = await this.web.inspectDelivery({ refreshCompleted });
     this.setDiagnostics(context, observed); this.touch(context);
     const completed = observed.completedDelivery;
     if (completed && completed.turnId === session.activeDeliveryId && completed.binding?.sessionId === session.sessionId
       && completed.binding?.runId === context.preparationId && completed.binding?.conversationId === session.conversationId) {
       const delivery = context.deliveries.find((d) => d.deliveryId === session.activeDeliveryId);
-      if (delivery && !delivery.response) { delivery.response = completed; delivery.state = "RESPONSE_COMPLETED"; this.touch(context); }
+      if (delivery && (!delivery.response || type === "web.reconcile")) {
+        if (delivery.response) (delivery.responseHistory ??= []).push(delivery.response);
+        delivery.response = completed; delivery.state = "RESPONSE_COMPLETED"; this.touch(context);
+      }
     }
     if (type === "web.inspect") return this.snapshot();
     if (session.activeDeliveryId !== input.deliveryId) fail("Delivery changed while inspecting.", "DELIVERY_RECOVERY_MISMATCH");

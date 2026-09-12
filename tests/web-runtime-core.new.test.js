@@ -646,6 +646,7 @@ test("manual intervention invalidates readiness and requires explicit recovery",
   assert.equal(inspection.ambiguousTurnId, "turn-manual-intervention");
   assert.deepEqual(runtimeEvents.at(-1).payload, {
     code: "MANUAL_INTERVENTION_DETECTED",
+    message: "Manual intervention was detected in the bound conversation",
     ambiguous: true,
     recoveryRequired: true,
   });
@@ -674,6 +675,7 @@ test("a submitted Web prompt timeout remains ambiguous and blocks resend", async
   assert.deepEqual(runtimeEvents.map((event) => event.type), ["TURN_STARTED", "TURN_FAILED"]);
   assert.deepEqual(runtimeEvents.at(-1).payload, {
     code: "WEB_TURN_AMBIGUOUS",
+    message: "Web prompt timed out after submission; its outcome is ambiguous",
     ambiguous: true,
     recoveryRequired: true,
   });
