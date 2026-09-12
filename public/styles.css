@@ -51,6 +51,10 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
 .session-recovery { margin:16px 0; padding:18px; border:1px solid var(--warn); background:var(--panel); border-radius:8px; overflow-wrap:anywhere; }
 .recovery-guidance { padding:10px 12px; border-left:3px solid var(--warn); background:#2a2419; }
 .recovery-guidance.error { border-left-color:var(--error); background:#2a1d21; }
+.recovery-guidance.ok { border-left-color:var(--live); background:#192a24; }
+.diagnostic-row { color:var(--muted); }
+.diagnostic-row.ok { color:var(--live); }
+.diagnostic-row.error { color:var(--error); }
 .session-recovery h3 { margin:0 0 8px; font-size:16px; }
 .session-recovery .session-title { margin:0 0 6px; font-weight:600; }
 .session-recovery a { color:var(--info); }

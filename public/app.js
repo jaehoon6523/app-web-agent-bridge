@@ -455,7 +455,7 @@ function renderPreparation() {
       ? "응답 수신·전송 종료 확인됨 · 확장 상태 확인"
       : activeDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
         : states[activeDelivery.state] ?? "처리 상태 미확인";
-    recovery.append(node("p", status));
+    recovery.append(node("p", status, responseSettled ? "recovery-guidance ok" : "recovery-guidance warn"));
     const confidenceReason = activeDelivery.response?.confidenceReason
       ?? activeDelivery.response?.evidence?.confidenceReason
       ?? null;
@@ -463,7 +463,7 @@ function renderPreparation() {
       const reason = confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
         ? "응답은 받았지만 ChatGPT DOM 가상화·변경으로 사용자 메시지와 응답의 직접 순서를 확정하지 못했습니다. 대화 화면을 새로고침한 뒤 응답을 다시 확인하세요."
         : "응답은 받았지만 ChatGPT DOM 상태를 완전히 확정하지 못했습니다. DOM 변경 또는 확장 상태를 확인한 뒤 응답을 다시 확인하세요.";
-      recovery.append(node("p", `확인 필요: ${reason}`, "recovery-guidance warn"));
+      recovery.append(node("p", `확인 필요: ${reason}`, "recovery-guidance error"));
     }
     if (["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(activeDelivery.state) && !activeDelivery.response) {
       recovery.append(node("p", "전송 결과가 불명확합니다. 브릿지 연결이 끊겼거나 서버가 재시작되어 확장에 재확인 명령이 전달되지 않았을 수 있습니다. 서버와 확장 연결을 확인한 뒤 상태를 다시 확인하세요.", "recovery-guidance error"));
@@ -489,6 +489,12 @@ function renderPreparation() {
     ["canFocus", bool(diagnostic.canFocus)], ["canStop", bool(diagnostic.canStop)],
     ["해당 전송 종료 확인", bool(diagnostic.canRecover)],
   ]) recovery.append(node("p", label + ": " + (value ?? "확인되지 않음")));
+  for (const row of recovery.querySelectorAll("p")) {
+    const value = row.textContent.split(": ").at(-1);
+    if (value === "RECOVERY_REQUIRED") row.classList.add("health", "error", "diagnostic-row");
+    else if (["READY", "예", "아니오"].includes(value)) row.classList.add("health", "ok", "diagnostic-row");
+    else if (value === "확인되지 않음") row.classList.add("health", "warn", "diagnostic-row");
+  }
   for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
     const button = node("button", action === "web.reconcile" && activeDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
     button.dataset.webCommand = action;
