@@ -12,12 +12,12 @@ const terminal = new Set(["APPLIED", "CANCELLED", "FAILED", "INCONCLUSIVE", "COM
 
 export function workflowForRun(run) {
   const phase = run.phase ?? run.stage;
-  const result = { COMPLETE: "APPLIED", STOPPING: "RECOVERY_REQUIRED" }[phase] ?? phase;
-  const results = new Set(["AWAITING_APPLY", "APPLIED", "HOLD", "RECOVERY_REQUIRED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
+  const result = phase;
+  const results = new Set(["AWAITING_APPLY", "APPLIED", "COMPLETE", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
   const state = results.has(result) ? result : ({
     CREATED: "RUN_CREATED", CANDIDATE_CAPTURE: "VERIFYING", REPORT_REPAIR: "REVIEW_RUNNING",
     EVIDENCE_SUPPLEMENT: "REVIEW_RUNNING",
-  }[phase] ?? (["RUN_CREATED", "PROVISIONING", "WORKER_RUNNING", "VERIFYING", "REVIEW_RUNNING", "REWORK", "APPLYING"].includes(phase) ? phase : "RECOVERY_REQUIRED"));
+  }[phase] ?? (["RUN_CREATED", "PROVISIONING", "WORKER_RUNNING", "VERIFYING", "REVIEW_RUNNING", "REWORK", "APPLYING", "STOPPING", "HOLD", "RECOVERY_REQUIRED"].includes(phase) ? phase : "RECOVERY_REQUIRED"));
   return { stage: results.has(state) ? "RESULT" : "WORK", state, runId: run.runId, runVersion: run.version };
 }
 
@@ -117,6 +117,7 @@ export class PreparationService {
         createdAt: stamp(), updatedAt: stamp(),
       };
       this.data.currentId = preparationId; this.data.contexts[preparationId] = context;
+      console.info("[bridge:preparation:start]", { preparationId, sessionId: context.webSession.sessionId });
       this.reserve(context, input.objective);
       return this.snapshot();
     }
@@ -184,7 +185,18 @@ export class PreparationService {
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
         if (unsent) context.webSession.activeDeliveryId = null;
         context.state = unsent ? "WEB_BLOCKED" : "RECOVERY_REQUIRED";
+        if (unsent && !context.deliveries.some((item) => item.state === "ACKNOWLEDGED")) {
+          context.lifecycle = "ABANDONED";
+          session.bindingState = "UNBOUND";
+        }
         context.error = { code: error.code ?? "WEB_FAILED", message: error.message, details: error.details ?? null };
+        console.warn("[bridge:preparation:failed]", {
+          preparationId: context.preparationId, sessionId: session.sessionId, deliveryId,
+          code: error.code ?? "WEB_FAILED", unsent, state: context.state,
+          blockingDeliveryId: error.details?.currentDeliveryId ?? null,
+          blockingSessionId: error.details?.sessionId ?? null,
+          blockingRunId: error.details?.runId ?? null,
+        });
         this.touch(context);
       }).finally(() => this.jobs.delete(context.preparationId));
     this.jobs.set(context.preparationId, job);
@@ -194,13 +206,38 @@ export class PreparationService {
     const session = context.webSession, delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
     const runId = context.preparationId;
     session.bindingState = "BINDING"; this.touch(context);
-    const binding = await this.web.resume({ binding: createWebSessionBinding({
+    console.info("[bridge:preparation:binding]", { preparationId: runId, sessionId: session.sessionId, deliveryId });
+    const request = { focus: true, binding: createWebSessionBinding({
       sessionId: session.sessionId, runId, title: null, bindingStatus: "NEEDS_REBIND",
       conversationId: session.conversationId, conversationUrl: session.conversationUrl,
       tabId: session.tabId, windowId: session.windowId,
       lastObservedUserMessageId: session.lastObservedUserMessageId,
       lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
-    }) });
+    }) };
+    let binding;
+    try { binding = await this.web.resume(request); }
+    catch (error) {
+      const previous = error.details;
+      if (error.code !== "REBIND_DURING_ACTIVE_DELIVERY"
+        || !/^manual_run_\d+$/.test(previous?.runId ?? "")
+        || !/^manual_session_\d+$/.test(previous?.sessionId ?? "")
+        || !/^turn_\d+$/.test(previous?.currentDeliveryId ?? "")) throw error;
+      // Preserve the old test's evidence before releasing its transport reservation.
+      context.previousTestDelivery = structuredClone(previous); this.touch(context);
+      try {
+        await this.web.recoverDelivery(previous);
+        const observed = await this.web.inspectDelivery();
+        if (observed.currentDeliveryId !== null || observed.sessionId !== previous.sessionId
+          || observed.runId !== previous.runId || observed.conversationUrl !== previous.conversationUrl) {
+          fail("이전 테스트 전송의 정리가 확인되지 않았습니다.", "DELIVERY_RECOVERY_MISMATCH");
+        }
+      } catch (recoveryError) {
+        recoveryError.message = "이전 브릿지 테스트 대화(" + previous.conversationUrl
+          + ")를 브라우저에서 하나만 열고 생성이 끝난 뒤 다시 시작하세요. " + recoveryError.message;
+        throw recoveryError;
+      }
+      binding = await this.web.resume(request);
+    }
     if (this.closed) return;
     if (binding.sessionId !== session.sessionId || binding.conversationId !== session.conversationId) fail("Web binding changed.");
     Object.assign(session, { tabId: binding.tabId, windowId: binding.windowId, bindingState: "BOUND" });
@@ -274,6 +311,14 @@ export class PreparationService {
     context.diagnostics = { ...observed, exactConversation,
       canFocus: exactConversation, canStop: exactDelivery && observed.generating === true && observed.activeRequestId === session.activeDeliveryId,
       canRecover: exactDelivery && observed.generating === false && observed.pageBusy === false && observed.extensionBusy === false };
+    console.info("[bridge:preparation:diagnostics]", {
+      preparationId: context.preparationId, sessionId: session.sessionId,
+      expectedDeliveryId: session.activeDeliveryId,
+      observedSessionId: observed.sessionId, observedRunId: observed.runId,
+      observedDeliveryId: observed.currentDeliveryId, exactConversation, exactDelivery,
+      generating: observed.generating, pageBusy: observed.pageBusy, extensionBusy: observed.extensionBusy,
+      canRecover: context.diagnostics.canRecover,
+    });
   }
   async webCommand(context, type, input) {
     const session = context.webSession;
@@ -350,20 +395,27 @@ export class PreparationService {
     }
     if (runId) context = Object.values(this.data.contexts).find((c) => c.resultingRunId === runId) ?? null;
     const active = context?.lifecycle === "ACTIVE";
-    const showPrepare = active && !runId;
+    const connecting = active && !context.discussion.some((turn) => turn.actor === "WEB_DESIGNER") && !runId;
+    const showPrepare = active && !connecting && !runId;
     const showStart = !showPrepare && !runId && (start || !snapshot.run)
       && !snapshot.runs.some((r) => !terminal.has(r.phase));
-    const workflow = showPrepare ? { stage: "PREPARE", state: context.state }
+    const workflow = connecting ? { stage: "START", state: context.state === "INITIALIZING" ? "CONNECTING_WEB" : context.state }
+      : showPrepare ? { stage: "PREPARE", state: context.state }
       : showStart ? { stage: "START", state: "START_IDLE" }
       : snapshot.run ? workflowForRun(snapshot.run) : { stage: "START", state: "START_IDLE" };
+    const showingRun = ["WORK", "RESULT"].includes(workflow.stage);
+    if (showingRun) {
+      context = Object.values(this.data.contexts).find((c) => c.resultingRunId === workflow.runId) ?? null;
+    }
     Object.assign(workflow, { preparationId: context?.preparationId ?? null, preparationVersion: context?.version ?? null,
       runId: workflow.runId ?? null, runVersion: workflow.runVersion ?? null });
     const canStart = !snapshot.runs.some((r) => !terminal.has(r.phase));
-    const caps = showPrepare || showStart ? [] : snapshot.commandCapabilities.filter((c) => c !== "run.start");
-    if (!runId) caps.push(...this.capabilities().filter((c) => c !== "preparation.start" || canStart));
+    const caps = showingRun ? snapshot.commandCapabilities.filter((c) => c !== "run.start") : [];
+    if (!runId) caps.push(...this.capabilities().filter((c) =>
+      c === "preparation.start" ? canStart : !showingRun));
     return { ...snapshot, workflow, preparation: structuredClone(context),
-      run: showPrepare || showStart ? null : snapshot.run,
-      deliveries: showPrepare ? structuredClone(context.deliveries) : snapshot.deliveries,
+      run: showingRun ? snapshot.run : null,
+      deliveries: showingRun ? snapshot.deliveries : structuredClone(context?.deliveries ?? []),
       commandCapabilities: caps };
   }
   close() { this.closed = true; this.unsubscribe?.(); this.db.close(); }

@@ -43,9 +43,15 @@
         <label for="conversationUrl">ChatGPT 대화 URL</label><input id="conversationUrl" type="url" required placeholder="https://chatgpt.com/c/…">
         <p class="muted">수정 결과를 감사할 ChatGPT 대화의 주소입니다. 브릿지 확장이 연결된 브라우저에서 이 대화의 탭을 하나만 열어 주세요.</p>
         <details hidden><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div><button id="editProject" type="button">프로젝트 설정</button></details>
-        <button id="planRun" disabled type="submit" class="primary">준비로 이동</button>
+        <button id="planRun" disabled type="submit" class="primary">준비 대화 시작</button>
         <button id="startRun" hidden type="button" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
       </form>
+      <section id="startProgress" hidden aria-live="polite" aria-atomic="true">
+        <span class="waiting-indicator" aria-hidden="true"></span>
+        <h2 id="startProgressTitle"></h2><p id="startProgressDetail"></p>
+      </section>
+      <div id="startRecovery"></div>
+      <button id="cancelInitialPreparation" type="button" hidden>요청 취소</button>
     </section>
     <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p></div>
       <div class="actions"><button id="stopRun" disabled>작업 중단</button></div><p id="stopReason" class="muted"></p><p id="commandResult" role="status"></p>

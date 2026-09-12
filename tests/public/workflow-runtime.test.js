@@ -12,6 +12,7 @@ async function dashboard(state, mutate = async () => ({})) {
     constructor() {
       this.children = []; this.listeners = {}; this.dataset = {}; this.value = "";
       this.checked = false; this.hidden = false; this.textContent = ""; this.attributes = {};
+      this.classList = { toggle() {} };
       all.push(this);
     }
     set id(value) { this._id = value; elements.set(value, this); }
@@ -20,6 +21,7 @@ async function dashboard(state, mutate = async () => ({})) {
     prepend(child) { if (!this.children.includes(child)) this.children.unshift(child); child.parentElement = this; }
     replaceChildren(...children) { this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = value; }
+    removeAttribute(key) { delete this.attributes[key]; }
     addEventListener(key, callback) { this.listeners[key] = callback; }
     contains() { return false; }
   }
@@ -31,6 +33,7 @@ async function dashboard(state, mutate = async () => ({})) {
       getElementById: (id) => elements.get(id),
       createElement: () => new Element(), addEventListener() {},
       querySelectorAll: () => all.filter((element) => element.dataset.webCommand),
+      querySelector: (selector) => selector === ".session-recovery" ? all.findLast(element => element.className === "session-recovery") ?? null : null,
     },
     fetch: async (url, options) => {
       calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
@@ -52,7 +55,7 @@ function prepared() {
       discussion: [{ turnId: "t1", preparationId: "p1", sequence: 1, actor: "USER", content: "아무거나" }],
       webSession: { sessionId: "s1", conversationId: "c1", conversationUrl: "https://chatgpt.com/c/c1", activeDeliveryId: "d1" },
     },
-    runs: [], run: null, preflight: {}, commandCapabilities: ["preparation.reply", "web.reconcile"],
+    runs: [], run: null, preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: ["preparation.reply", "web.reconcile"],
   };
 }
 test("refresh restores preparation and questions, and reply retains preparation identity", async () => {

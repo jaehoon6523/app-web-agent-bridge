@@ -28,9 +28,9 @@ function actionState(id, disabled, disabledReason = "", enabledReason = "") {
 }
 function workerIdentity(run) {
   const worker = run?.worker ?? {};
-  const provider = worker.provider ?? "codex";
+  const provider = worker.provider ?? null;
   const model = worker.model ?? null;
-  return model ? `${provider} / ${model}` : provider;
+  return [provider, model].filter(Boolean).join(" / ") || "정보 없음";
 }
 function externalEventRecords(run) {
   if (!run) return [];
@@ -97,7 +97,7 @@ async function refresh() {
     if (!result.workflow) throw new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다.");
     const canonical = normalizeDashboardState(result);
     snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null; connected = true;
-    if (workflow.stage === "PREPARE") requestedView = "";
+    if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     text("connectionNotice", "");
     for (const [operation, requestId] of unknownRequests) {
@@ -119,6 +119,7 @@ async function refresh() {
   render();
 }
 function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
+function webConnected() { return connected && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
 function health(id, name, state, detail) {
   const el = $(id);
   el.className = `health ${state}`;
@@ -174,7 +175,7 @@ function renderAudit() {
     assessments.append(row);
   }
   if (!assessments.children.length) assessments.append(node("p", run?.requirements
-    ? "아직 요구사항별 감사 결과가 없습니다." : "이전 대화 방식의 작업입니다. 대화 내용과 상태 변경은 ‘진행 기록’에서 확인하세요.", "muted"));
+    ? "아직 요구사항별 감사 결과가 없습니다." : "요구사항 기록이 없습니다. 확인 가능한 대화와 상태 변경은 ‘진행 기록’에서 확인하세요.", "muted"));
   for (const f of snapshot?.findings ?? []) {
     const row = node("article", "", "record");
     row.append(node("strong", `${f.findingId} · ${f.status}${f.status === "RESOLVED" && f.verifiedCandidateId !== run.candidate?.candidateId ? " · 새 후보 재검증 필요" : ""}`), node("p", f.problem), node("p", `해결 조건: ${f.resolutionCriteria}`));
@@ -186,7 +187,7 @@ function renderAudit() {
     row.append(history); findings.append(row);
   }
   if (!findings.children.length) findings.append(node("p", run?.requirements
-    ? "등록된 감사 지적이 없습니다." : "이전 대화 작업에는 요구사항별 감사 지적이 없습니다.", "muted"));
+    ? "등록된 감사 지적이 없습니다." : "요구사항별 감사 지적 기록이 없습니다.", "muted"));
   for (const e of snapshot?.evidence ?? []) {
     const row = node("article", "", "record");
     row.append(node("strong", `${e.kind} · ${e.producer}${e.valid === false ? " · 후보 증거로 무효" : ""}`), node("p", `${e.candidateId} · ${time(e.createdAt)}`, "muted"), node("p", JSON.stringify(e.result)));
@@ -248,6 +249,7 @@ function render() {
   text("runStageHeading", resultStage ? "결과" : "작업");
   $("startPanel").hidden = workflow.stage !== "START";
   const preparing = workflow.stage === "PREPARE";
+  renderInitialRequest();
   $("projectPanel").hidden = !preparing;
   $("runPanel").hidden = !["WORK", "RESULT"].includes(workflow.stage) || !run;
   const project = preflight?.project;
@@ -256,10 +258,30 @@ function render() {
     projectContainer.append(node("p", `${project.projectId} · ${project.targetRoot}`), node("p", `기준 ${project.requirementsId} / ${project.revision}`));
     for (const req of project.requirements.items) projectContainer.append(node("p", `${req.requirementId} · ${req.statement}`, "muted"));
   } else projectContainer.append(node("p", connected ? "사용할 프로젝트가 아직 준비되지 않았습니다." : "연결 후 프로젝트 설정을 확인합니다.", "muted"));
-  $("planRun").disabled = !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE";
-  $("chooseFolder").disabled = !connected || operations.folderPicker !== "IDLE";
-  $("newRun").disabled = !caps.has("preparation.start") || ["PREPARE", "WORK"].includes(workflow.stage);
-  text("newRunReason", workflow.stage === "PREPARE" ? "현재 준비를 유지합니다. 종료하려면 ‘준비 취소’를 선택하세요." : "새 준비는 서버가 허용할 때 시작할 수 있습니다.");
+  actionState("planRun", !webConnected() || !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
+    !webConnected() ? "브릿지 확장 연결이 확인돼야 전송할 수 있습니다." : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
+    "지정한 대화 탭을 확인한 뒤 첫 부탁을 전송합니다.");
+  if (workflow.stage === "START") {
+    if (workflow.state === "CONNECTING_WEB") {
+      text("startReason", "ChatGPT 대화 탭에 연결 중입니다. 아직 메시지를 전송하지 않았습니다.");
+    } else if (preparation?.state === "WEB_BLOCKED" && preparation?.error) {
+      text("startReason", "ChatGPT 연결에 실패해 메시지를 전송하지 않았습니다. 대화 탭과 브릿지 연결을 확인한 뒤 다시 시작하세요. "
+        + preparation.error.code + ": " + preparation.error.message);
+    }
+  }
+  $("chooseFolder").disabled = !connected || operations.folderPicker !== "IDLE" || preparation?.lifecycle === "ACTIVE";
+  $("newRun").disabled = !connected || busy || operations.preparationStart !== "IDLE"
+    || operations.runCommand !== "IDLE" || ["PREPARE", "WORK"].includes(workflow.stage)
+    || preparation?.lifecycle === "ACTIVE";
+  text("newRunReason", !connected ? "서버 연결 후 새 작업 입력 화면을 열 수 있습니다."
+    : workflow.stage === "PREPARE" ? "현재 준비를 유지합니다. 종료하려면 ‘준비 취소’를 선택하세요."
+    : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
+    : busy ? "진행 중인 작업을 먼저 종료하세요."
+    : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
+  if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
+    && !preparation?.error && !checks?.extensionAuthenticated) {
+    text("startReason", "입력은 가능합니다. 준비 대화를 시작하려면 브릿지 확장을 연결하세요.");
+  }
   if (recoveryRunId !== run?.runId) {
     recoveryRunId = run?.runId;
     $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryReason").value = "";
@@ -286,8 +308,8 @@ function render() {
   }
   if (!run) return;
   text("runObjective", run.objective); text("runContext", run.requirements
-    ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${run.activeActor ?? "대기"}`
-    : `이전 대화 작업 · Worker ${workerIdentity(run)} · ${run.activeActor ?? "대기"}`);
+    ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`
+    : `작업 기록 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
@@ -348,10 +370,33 @@ async function openEvidence(id, startLine = 1) {
 function proposalControls() {
   const caps = capabilities();
   $("proposeRequirements").hidden = true;
-  $("reviseRequirements").disabled = !caps.has("preparation.reply") || operations.webTurn !== "IDLE";
+  actionState("reviseRequirements", !webConnected() || !caps.has("preparation.reply") || operations.webTurn !== "IDLE",
+    !webConnected() ? "브릿지 확장 연결이 확인돼야 답변을 전송할 수 있습니다." : "현재 전송이나 복구 확인이 끝나야 답변을 보낼 수 있습니다.",
+    "같은 ChatGPT 대화에 답변을 전송합니다.");
   $("saveProject").disabled = !caps.has("preparation.approve") || operations.approval !== "IDLE";
   $("closeProject").disabled = !caps.has("preparation.cancel") || operations.preparationStart !== "IDLE";
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
+}
+function renderInitialRequest() {
+  const initial = workflow.stage === "START" && preparation?.lifecycle === "ACTIVE";
+  const pending = initial && ["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(preparation.state);
+  const recovery = document.querySelector(".session-recovery");
+  $("startRecovery").replaceChildren();
+  if (recovery) (initial ? $("startRecovery") : $("proposalSummary")).append(recovery);
+  $("startRecovery").hidden = !initial || pending;
+  $("startProgress").hidden = !initial;
+  $("startProgress").classList.toggle("is-waiting", pending);
+  $("startProgress").setAttribute("aria-busy", String(pending));
+  text("startProgressTitle", preparation?.state === "INITIALIZING" ? "ChatGPT 대화에 연결하고 있습니다"
+    : pending ? "ChatGPT 응답을 기다리고 있습니다" : "요청 상태 확인이 필요합니다");
+  text("startProgressDetail", pending ? "응답 확인이 끝나면 준비 화면으로 이동합니다."
+    : preparation?.error?.message ?? "전송 상태를 확인한 뒤 계속할 수 있습니다.");
+  for (const id of ["objective", "startRoot", "conversationUrl"]) {
+    $(id).readOnly = initial;
+    if (initial) $(id).value = id === "objective" ? preparation.objective : id === "startRoot" ? preparation.targetRoot : preparation.conversationUrl;
+  }
+  $("cancelInitialPreparation").hidden = !initial;
+  $("cancelInitialPreparation").disabled = !capabilities().has("preparation.cancel");
 }
 function renderPreparation() {
   if (!preparation) { preparationSignature = ""; return; }
@@ -401,12 +446,19 @@ function renderPreparation() {
   }
   summary.append(recovery);
   const error = preparation.error;
-  text("proposalStatus", error ? (error.code ?? "ERROR") + ": " + error.message : workflow.state);
+  const progress = { INITIALIZING: "ChatGPT 대화에 연결 중입니다.",
+    WAITING_WEB_RESPONSE: "웹 요청을 처리 중입니다. 응답 확인 전에는 승인할 수 없습니다.",
+    DISCUSSING: "웹 응답을 확인했습니다. 질문에 답하며 작업 범위를 정하세요.",
+    AGREEMENT_READY: "웹이 완료 기준을 제안했습니다. 내용을 검토하고 승인하세요.",
+    APPROVING: "승인을 처리하고 작업을 생성하고 있습니다. 작업 생성이 확인되면 이동합니다.",
+    RECOVERY_REQUIRED: "전송 또는 응답 확인이 끝나지 않았습니다. 상태 확인이 필요합니다." };
+  text("proposalStatus", error ? (error.code ?? "ERROR") + ": " + error.message : progress[workflow.state] ?? workflow.state);
 }
 async function preparationMutation(operation, capability, url, payload = {}) {
   if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;
+  if (["preparation.start", "preparation.reply"].includes(capability) && !webConnected()) return false;
   const requestId = crypto.randomUUID();
-  const expectedVersion = workflow.stage === "START" ? 0 : workflow.preparationVersion;
+  const expectedVersion = capability === "preparation.start" ? 0 : workflow.preparationVersion;
   operations[operation] = "RUNNING"; render();
   try {
     await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId, expectedVersion }) });
@@ -466,6 +518,8 @@ $("chooseFolder").addEventListener("click", async () => {
   finally { operations.folderPicker = "IDLE"; render(); }
 });
 $("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selected = ""; requestedView = "start"; refresh(); } });
+$("cancelInitialPreparation").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",
+  "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/cancel"));
 $("showUnfinishedRun").addEventListener("click", () => {
   const unfinished = snapshot?.runs?.find((run) => !terminal.has(run.phase));
   if (unfinished) { selected = unfinished.runId; refresh(); }

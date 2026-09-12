@@ -53,3 +53,9 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
 .session-recovery .actions { display:flex; flex-wrap:wrap; gap:8px; }
 .session-diagnostics { margin-top:14px; color:var(--muted); font-size:12px; }
 .session-diagnostics p { margin:4px 0; }
+#startProgress { margin-top:24px; padding:24px; border:1px solid var(--line); border-radius:12px; background:var(--panel); }
+#startProgress h2 { margin:8px 0; }
+.waiting-indicator { display:none; width:22px; height:22px; border:2px solid var(--line); border-top-color:var(--live); border-radius:50%; }
+.is-waiting .waiting-indicator { display:inline-block; animation:waiting-spin 1s linear infinite; }
+@keyframes waiting-spin { to { transform:rotate(360deg); } }
+@media(prefers-reduced-motion:reduce) { .is-waiting .waiting-indicator { animation:none; } }

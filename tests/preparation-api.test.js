@@ -16,7 +16,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   const token = "test-token-preparation-api-0123456789", secret = "test-secret-preparation-api-0123456789";
   const config = { host: "127.0.0.1", port: 0, baseUrl: "http://127.0.0.1:0", workspace: target, demoMode: false,
     persistence: { databasePath: path.join(root, "controller.sqlite") }, codex: { executablePath: process.execPath },
-    dashboard: { token }, webExtension: { sharedSecret: secret, expectedExtensionIdentity: "test" }, relay: { webResponseTimeoutMs: 1000 } };
+    dashboard: { token }, webExtension: { enabled: true, sharedSecret: secret, expectedExtensionIdentity: "test" }, relay: { webResponseTimeoutMs: 1000 } };
   let service;
   const create = () => createBridgeServer({ runtimeConfig: config, createLiveRuntime: async ({ webSession }) => {
     service = new CodeChangeService({ filename: path.join(root, "runs.sqlite"), artifactStore: {}, webSession, codex: {} });

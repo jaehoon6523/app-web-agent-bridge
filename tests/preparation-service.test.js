@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { PreparationService } from "../src/orchestration/preparation-service.js";
+import { PreparationService, workflowForRun } from "../src/orchestration/preparation-service.js";
+import { normalizeDashboardState } from "../public/dashboard-model.js";
 import { validateWebSessionBinding } from "../src/runtime/web/binding.js";
 
 const tick = () => new Promise(setImmediate);
@@ -41,7 +42,7 @@ function fixture(t) {
     } };
   let service = new PreparationService(options);
   t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { root, runs, calls, get service() { return service; }, ackFailure(value) { failAck = value; },
+  return { root, runs, calls, web, get service() { return service; }, ackFailure(value) { failAck = value; },
     observe(value) { inspection = value; }, afterAck(value) { afterAck = value; },
     restart() { service.close(); service = new PreparationService(options); },
     start() { return service.execute("preparation.start", { requestId: "start", expectedVersion: 0,
@@ -65,6 +66,100 @@ test("start returns server identity before dispatch; question-only reply retains
   assert.deepEqual(f.service.current.discussion.map((turn) => turn.sequence), [1, 2, 3, 4]);
   assert.equal(fs.existsSync(path.join(f.root, ".git")), false);
 });
+
+test("connection must succeed before entering preparation; absent tab never sends or enables approval", async (t) => {
+  const f = fixture(t);
+  let rejectConnection, sent = 0;
+  f.web.resume = ({ focus }) => {
+    assert.equal(focus, true);
+    return new Promise((resolve, reject) => { rejectConnection = reject; });
+  };
+  f.web.submitTurn = async () => { sent++; throw new Error("unexpected send"); };
+  await f.start(); await tick();
+  const snapshot = { runs: [], run: null, commandCapabilities: [] };
+  const pending = await f.service.project(snapshot);
+  assert.equal(pending.workflow.stage, "START");
+  assert.equal(pending.workflow.state, "CONNECTING_WEB");
+  rejectConnection(Object.assign(new Error("Conversation tab missing"), { code: "NEEDS_REBIND" }));
+  await settled(f.service);
+  const failed = await f.service.project(snapshot);
+  assert.equal(failed.workflow.stage, "START");
+  assert.equal(failed.preparation.state, "WEB_BLOCKED");
+  assert.equal(sent, 0);
+  assert.ok(failed.commandCapabilities.includes("preparation.start"));
+  assert.ok(!failed.commandCapabilities.includes("preparation.approve"));
+});
+
+test("result projection never attaches an unrelated preparation or its commands", async (t) => {
+  const f = fixture(t); await f.start(); await settled(f.service);
+  const run = { runId: "old-run", phase: "CANCELLED", version: 2 };
+  const snapshot = { run, runs: [run], commandCapabilities: ["state.get"] };
+  const selected = await f.service.project(snapshot, { runId: run.runId });
+  assert.equal(selected.workflow.stage, "RESULT");
+  assert.equal(selected.workflow.preparationId, null);
+  assert.equal(selected.preparation, null);
+  assert.deepEqual(selected.commandCapabilities, ["state.get"]);
+  await f.command("preparation.cancel");
+  const automatic = await f.service.project(snapshot);
+  assert.equal(automatic.workflow.preparationId, null);
+  assert.equal(automatic.preparation, null);
+  assert.ok(automatic.commandCapabilities.includes("preparation.start"));
+});
+
+test("first response must be stored and acknowledged before preparation is shown", async (t) => {
+  const f = fixture(t), submit = f.web.submitTurn;
+  let release;
+  f.web.submitTurn = async (input) => {
+    const handle = await submit(input);
+    return { completion: new Promise(resolve => { release = async () => resolve(await handle.completion); }) };
+  };
+  await f.start(); await tick(); await tick();
+  const snapshot = { runs: [], run: null, commandCapabilities: [] };
+  const pending = await f.service.project(snapshot);
+  assert.equal(pending.workflow.stage, "START");
+  assert.equal(pending.workflow.state, "WAITING_WEB_RESPONSE");
+  assert.equal(normalizeDashboardState(pending).workflow.state, "WAITING_WEB_RESPONSE");
+  assert.equal(pending.run, null);
+  assert.ok(!pending.commandCapabilities.includes("preparation.approve"));
+  await release(); await settled(f.service);
+  assert.equal((await f.service.project(snapshot)).workflow.stage, "PREPARE");
+});
+
+test("run transitions preserve in-progress and terminal meaning across frontend validation", () => {
+  for (const [phase, stage] of [["STOPPING", "WORK"], ["HOLD", "WORK"], ["RECOVERY_REQUIRED", "WORK"],
+    ["COMPLETE", "RESULT"], ["CANCELLED", "RESULT"], ["APPLIED", "RESULT"], ["APPLYING", "WORK"]]) {
+    const run = { runId: "run-test", version: 1, phase };
+    const workflow = workflowForRun(run);
+    assert.equal(workflow.stage, stage);
+    assert.equal(workflow.state, phase);
+    assert.equal(normalizeDashboardState({ run, workflow }).workflow.stage, stage);
+  }
+});
+
+for (const recoverable of [true, false]) {
+  test(`old manual delivery recovery gates new submission: ${recoverable}`, async (t) => {
+    const f = fixture(t), resume = f.web.resume, inspect = f.web.inspectDelivery;
+    let attempts = 0, recovered = false;
+    const previous = { currentDeliveryId: "turn_123", runId: "manual_run_123", sessionId: "manual_session_123",
+      conversationUrl: "https://chatgpt.com/c/old", completedDelivery: null };
+    f.web.resume = async (input) => {
+      if (++attempts === 1) throw Object.assign(new Error("blocked"), { code: "REBIND_DURING_ACTIVE_DELIVERY", details: previous });
+      return resume(input);
+    };
+    f.web.recoverDelivery = async (expected) => {
+      assert.deepEqual(expected, previous);
+      if (!recoverable) throw Object.assign(new Error("Old tab missing"), { code: "DELIVERY_RECOVERY_UNCONFIRMED" });
+      recovered = true;
+    };
+    f.web.inspectDelivery = async () => attempts === 1 ? { ...previous, currentDeliveryId: null } : inspect();
+    await f.start(); await settled(f.service);
+    assert.equal(recovered, recoverable);
+    assert.equal(attempts, recoverable ? 2 : 1);
+    assert.equal(f.service.current.state, recoverable ? "DISCUSSING" : "WEB_BLOCKED");
+    assert.deepEqual(f.service.current.previousTestDelivery, previous);
+    if (!recoverable) assert.match(f.service.current.error.message, /https:\/\/chatgpt.com\/c\/old/);
+  });
+}
 test("refresh/restart restores same preparation and receipt; approval retry yields one run", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);

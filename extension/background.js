@@ -29,8 +29,6 @@ const CHATGPT_URL_PATTERNS = Object.freeze([
 const store = createExtensionStateStore(chrome.storage.local);
 
 let socket = null;
-let reconnectTimer = null;
-let reconnectDelayMs = 1000;
 let authenticated = false;
 let pendingChallengeId = null;
 let handledChallengeIds = new Set();
@@ -89,8 +87,6 @@ function send(message, { allowUnauthenticated = false } = {}) {
 }
 
 async function connect() {
-  clearTimeout(reconnectTimer);
-  reconnectTimer = null;
   const state = await store.read();
   let controllerUrl;
   try {
@@ -127,7 +123,6 @@ async function connect() {
 
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket) return;
-    reconnectDelayMs = 1000;
     lastError = null;
     // No identity or state is sent until the controller challenge is authenticated.
     broadcastPopupState();
@@ -141,26 +136,18 @@ async function connect() {
     socket = null;
     authenticated = false;
     pendingChallengeId = null;
-    lastError = event.code === 1000
+    lastError = event.code === 4403 && lastError
+      ? lastError
+      : event.code === 1000
       ? null
       : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`;
     broadcastPopupState();
-    scheduleReconnect();
   });
   nextSocket.addEventListener("error", () => {
     if (socket !== nextSocket) return;
     lastError = "Could not connect to the local controller.";
     broadcastPopupState();
   });
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) return;
-  reconnectTimer = setTimeout(() => {
-    reconnectTimer = null;
-    void connect();
-  }, reconnectDelayMs);
-  reconnectDelayMs = Math.min(30_000, Math.round(reconnectDelayMs * 1.7));
 }
 
 async function answerAuthenticationChallenge(message) {
@@ -301,7 +288,9 @@ async function handlePrepare(message, explicitRebind) {
 async function handleDeliveryAcknowledgement(message) {
   try {
     turnGate.assertIdle("Delivery acknowledgement");
+    console.info("[bridge:delivery:ack-received]", { deliveryId: message.requestId });
     await store.clearDelivery(message.requestId);
+    console.info("[bridge:delivery:ack-cleared]", { deliveryId: message.requestId });
     broadcastPopupState();
   } catch (error) {
     send({ type: "web.prompt.error", requestId: message.requestId, payload: errorPayload(error) });
@@ -365,11 +354,20 @@ async function handleDeliveryRecovery(message) {
   let reservation;
   try {
     reservation = turnGate.reserve(message.requestId);
-    const state = await store.read(), expected = message.payload || {};
+    let state = await store.read();
+    const expected = message.payload || {};
     if (!state.currentDeliveryId || expected.currentDeliveryId !== state.currentDeliveryId
       || expected.runId !== state.lastBoundRunId || expected.sessionId !== state.lastBoundSessionId
       || expected.conversationUrl !== state.conversationUrl) {
       throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "복구 대상 전송이 변경됐습니다. 준비를 다시 요청하세요.");
+    }
+    const matched = matchExactConversationTabs(await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS }), state);
+    if (matched.status !== "BOUND") {
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 대화 탭을 하나만 열어 주세요.");
+    }
+    if (state.tabId !== matched.tab.id) {
+      await store.update({ tabId: matched.tab.id, windowId: matched.tab.windowId });
+      state = await store.read();
     }
     const details = await deliveryDetails(state);
     if (!details.pageReachable || details.pageBusy !== false || details.generating !== false
@@ -424,11 +422,26 @@ async function prepareBoundSession(payload) {
     || state.conversationUrl !== requested.conversationUrl
     || state.conversationId !== requested.conversationId
   );
+  console.info("[bridge:binding:prepare]", {
+    requestedSessionId: requested.sessionId, requestedRunId: requested.runId,
+    persistedSessionId: state.lastBoundSessionId, persistedRunId: state.lastBoundRunId,
+    currentDeliveryId: state.currentDeliveryId, persistedBindingDiffers,
+    sameConversation: state.conversationUrl === requested.conversationUrl,
+    completedDeliveryId: state.completedDelivery?.turnId ?? null,
+  });
   if (state.currentDeliveryId !== null && persistedBindingDiffers) {
+    const details = await deliveryDetails(state);
+    console.warn("[bridge:binding:blocked]", {
+      currentDeliveryId: details.currentDeliveryId, sessionId: details.sessionId, runId: details.runId,
+      pageReachable: details.pageReachable, pageBusy: details.pageBusy,
+      generating: details.generating, extensionBusy: details.extensionBusy,
+      pageStatus: details.pageStatus, activeRequestId: details.activeRequestId,
+      hasCompletedResult: details.completedDelivery !== null,
+    });
     throw new ExtensionOperationError(
       "REBIND_DURING_ACTIVE_DELIVERY",
       "A different Web session cannot replace a persisted binding during an active delivery.",
-      await deliveryDetails(state),
+      details,
     );
   }
   const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
@@ -610,6 +623,9 @@ async function handlePrompt(message) {
       turnId: message.requestId, binding: session, rawText: result.text,
       confidence: result.confidence, evidence: result.evidence,
     } });
+    console.info("[bridge:delivery:completed-awaiting-ack]", {
+      deliveryId: message.requestId, sessionId: session.sessionId, runId: session.runId,
+    });
     send({
       type: "web.prompt.result",
       requestId: message.requestId,
@@ -622,6 +638,11 @@ async function handlePrompt(message) {
     });
   } catch (error) {
     if (deliveryReserved && !contentDispatchStarted) await store.clearDelivery(message.requestId);
+    console.warn("[bridge:delivery:failed]", {
+      deliveryId: message.requestId, code: error.code ?? null,
+      deliveryReserved, contentDispatchStarted,
+      retainedForRecovery: deliveryReserved && contentDispatchStarted,
+    });
     lastError = error.message;
     if (error.code === "SESSION_AUTH_REQUIRED") {
       await store.update({ bindingStatus: "AUTH_REQUIRED" });

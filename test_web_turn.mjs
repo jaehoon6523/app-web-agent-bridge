@@ -1,5 +1,7 @@
 ﻿import "dotenv/config";
 import http from "node:http";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { WebSocketServer } from "ws";
 import { loadConfig } from "./src/config.js";
 import { WebExtensionTransport, ChatGptWebSessionAdapter } from "./src/runtime/web/index.js";
@@ -104,10 +106,10 @@ async function main() {
   if (unacknowledgedDeliveryId) {
     console.log(`\n2. 미완료 턴(${unacknowledgedDeliveryId}) ACK 처리 중...`);
     try {
-      await webSession.acknowledgeDelivery({ turnId: unacknowledgedDeliveryId });
+      throw new Error("이전 전송은 준비 화면의 복구 경로에서 확인해야 합니다.");
       console.log("-> acknowledgeDelivery 성공!");
     } catch (ackErr) {
-      console.warn("-> ACK 처리 통과:", ackErr.message);
+      throw ackErr;
     }
     await new Promise((r) => setTimeout(r, 300));
   }
@@ -125,6 +127,12 @@ async function main() {
 
   console.log("-> 메시지 전송 완료! ChatGPT 응답 스트리밍 수신 대기 중...");
   const turnResult = await completion;
+  const receiptPath = path.resolve(".agent-controller", "manual-receipts", turnId + ".json");
+  await fs.mkdir(path.dirname(receiptPath), { recursive: true });
+  await fs.writeFile(receiptPath, JSON.stringify(turnResult, null, 2), { flag: "wx" });
+  await webSession.acknowledgeDelivery({ turnId });
+  await webSession.confirmDeliveryAcknowledgement({ turnId, sessionId: currentBinding.sessionId,
+    runId: activeRunId, conversationUrl: canonicalUrl });
 
   console.log("\n==========================================");
   console.log("[ChatGPT 웹 응답 수신 성공!]");
