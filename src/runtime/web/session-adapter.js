@@ -481,6 +481,7 @@ export class ChatGptWebSessionAdapter {
         packet: parsed.packet,
         packetText: parsed.packetText,
         confidence,
+        confidenceReason: message.payload?.confidenceReason ?? null,
         evidence: message.payload.evidence ?? null,
         binding: this.#transport.snapshot.binding,
       });

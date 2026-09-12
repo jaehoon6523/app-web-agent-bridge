@@ -114,7 +114,7 @@ async function refresh() {
     if (current !== sequence || target !== selected) return;
     connected = false;
     if (error.status === 401) token = "";
-    text("connectionNotice", `연결을 확인해 주세요. ${error.message} · 마지막 확인 ${time(lastConfirmed)}`);
+    text("connectionNotice", `로컬 서버 연결이 끊겼습니다. 기본 포트 8787에서 npm start 또는 npm run dev가 실행 중인지 확인하고, 확장 연결을 다시 확인하세요. ${error.message} · 마지막 확인 ${time(lastConfirmed)}`);
   }
   render();
 }
@@ -126,6 +126,12 @@ function health(id, name, state, detail) {
   el.textContent = name;
   el.setAttribute("aria-label", `${name}: ${detail}`);
   text(`${id}Detail`, detail);
+}
+function signal(id, label, state, detail) {
+  const el = $(id);
+  text(id, `${label} · ${detail}`);
+  el.className = `health ${state}`;
+  el.setAttribute("aria-label", `${label}: ${detail}`);
 }
 function closeHealthDetails(restoreFocus = false) {
   for (const id of ["apiHealth", "sessionHealth", "engineHealth", "channelHealth"]) {
@@ -226,10 +232,15 @@ function render() {
     !connected || typeof checks?.codeWorkerExecutableConfigured !== "boolean" ? "확인 전" : checks.codeWorkerExecutableConfigured ? "경로 설정됨 · 실제 실행 상태는 확인 전" : "경로 설정 필요");
   health("channelHealth", "channel", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
     !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "확장 인증됨" : "확장 연결 대기");
-  text("serverSignal", connected ? "서버 · 연결됨" : "서버 · 확인 필요"); $("serverSignal").className = connected ? "ok" : "";
-  text("cliSignal", connected ? preflight?.checks?.codeWorkerExecutableConfigured ? "CLI · 경로 설정됨" : "CLI · 설정 필요" : "CLI · 확인 전");
-  text("webSignal", connected ? preflight?.checks?.extensionAuthenticated ? "웹 · 확장 인증됨" : "웹 · 연결 대기" : "웹 · 확인 전");
-  text("refreshSignal", `런 · ${connected ? "갱신됨" : "마지막 확인"} ${time(lastConfirmed)}`);
+  signal("serverSignal", "서버", connected ? "ok" : "error", connected ? "연결됨" : "연결 끊김 · npm start 확인 필요");
+  const cliConfigured = checks?.codeWorkerExecutableConfigured === true;
+  signal("cliSignal", "CLI", connected ? (cliConfigured ? "ok" : "warn") : "warn",
+    !connected ? "서버 확인 필요" : cliConfigured ? "경로 설정됨" : "경로 설정 필요");
+  const webAuthenticated = checks?.extensionAuthenticated === true;
+  signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
+    !connected ? "서버 확인 필요" : webAuthenticated ? "확장 인증됨" : "확장 연결 대기");
+  signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
+    connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
   $("editProject").disabled = (operations.runCommand !== "IDLE") || !connected || (operations.webTurn !== "IDLE");
@@ -436,12 +447,29 @@ function renderPreparation() {
       ACKNOWLEDGED: "응답 처리 완료", RECOVERY_REQUIRED: "전송 상태 확인 필요", FAILED: "요청 실패" };
     recovery.append(node("p", activeDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
       : states[activeDelivery.state] ?? "처리 상태 미확인"));
+    const confidenceReason = activeDelivery.response?.confidenceReason
+      ?? activeDelivery.response?.evidence?.confidenceReason
+      ?? null;
+    if (activeDelivery.response?.confidence === "HEURISTIC") {
+      const reason = confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
+        ? "응답은 받았지만 ChatGPT DOM 가상화·변경으로 사용자 메시지와 응답의 직접 순서를 확정하지 못했습니다. 대화 화면을 새로고침한 뒤 응답을 다시 확인하세요."
+        : "응답은 받았지만 ChatGPT DOM 상태를 완전히 확정하지 못했습니다. DOM 변경 또는 확장 상태를 확인한 뒤 응답을 다시 확인하세요.";
+      recovery.append(node("p", `확인 필요: ${reason}`, "recovery-guidance warn"));
+    }
+    if (["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(activeDelivery.state) && !activeDelivery.response) {
+      recovery.append(node("p", "전송 결과가 불명확합니다. 브릿지 연결이 끊겼거나 서버가 재시작되어 확장에 재확인 명령이 전달되지 않았을 수 있습니다. 서버와 확장 연결을 확인한 뒤 상태를 다시 확인하세요.", "recovery-guidance error"));
+    }
     const failures = activeDelivery.validation?.checks?.filter(item => !item.passed) ?? [];
     if (failures.length) {
-      recovery.append(node("p", "확인하지 못한 항목: " + failures.map(item => item.name).join(", ")));
-      const detail = node("details", "");
-      detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(failures, null, 2)));
-      recovery.append(detail);
+      const confidenceFailure = failures.find(item => item.name === "응답 신뢰도");
+      const otherFailures = failures.filter(item => item !== confidenceFailure);
+      if (otherFailures.length) recovery.append(node("p", "확인하지 못한 항목: " + otherFailures.map(item => item.name).join(", "), "recovery-guidance error"));
+      const displayedFailures = failures.filter(item => item !== confidenceFailure);
+      if (displayedFailures.length) {
+        const detail = node("details", "");
+        detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(displayedFailures, null, 2)));
+        recovery.append(detail);
+      }
     }
   }
   recovery.append(node("h2", "대화 · 전송 상태"));

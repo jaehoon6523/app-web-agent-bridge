@@ -505,6 +505,9 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
         return {
           text: lastText,
           confidence,
+          confidenceReason: virtualizedUser
+            ? "VIRTUALIZED_USER_DOM_UNCERTAIN"
+            : "DIRECT_DOM_ORDER_CONFIRMED",
           evidence: {
             userMessageId: userMessage.id,
             assistantMessageId: assistantId,
