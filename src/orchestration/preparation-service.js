@@ -120,14 +120,6 @@ export class PreparationService {
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
       const existingDelivery = await this.web.inspectDelivery().catch(() => null);
       if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
-        const legacyBridgeTest = /^turn_\d+$/u.test(existingDelivery.currentDeliveryId)
-          && /^manual_session_\d+$/u.test(existingDelivery.sessionId ?? "")
-          && /^manual_run_\d+$/u.test(existingDelivery.runId ?? "");
-        if (legacyBridgeTest && this.web.discardDelivery) {
-          await this.web.discardDelivery({ ...existingDelivery,
-            unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true,
-            reason: "Legacy bridge-test delivery cleanup" });
-        } else {
         fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
           stage: "PREPARATION_START_GUARD",
           currentDeliveryId: existingDelivery.currentDeliveryId,
@@ -136,7 +128,6 @@ export class PreparationService {
           conversationUrl: existingDelivery.conversationUrl ?? null,
           tabId: existingDelivery.tabId ?? null,
         });
-        }
       }
       const conversationUrl = typeof input.conversationUrl === "string" ? input.conversationUrl.trim() : "";
       if (typeof input.objective !== "string" || !input.objective.trim()
