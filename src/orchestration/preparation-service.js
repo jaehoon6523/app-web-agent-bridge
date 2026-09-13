@@ -603,5 +603,13 @@ export class PreparationService {
       deliveries: showingRun ? snapshot.deliveries : structuredClone(context?.deliveries ?? []),
       commandCapabilities: caps };
   }
-  close() { this.closed = true; this.unsubscribe?.(); this.db.close(); }
+  close() {
+    this.closed = true;
+    this.unsubscribe?.();
+    for (const job of this.jobs.values()) {
+      if (job && typeof job.cancel === "function") job.cancel();
+    }
+    this.jobs.clear();
+    this.db.close();
+  }
 }
