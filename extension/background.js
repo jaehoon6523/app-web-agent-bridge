@@ -937,6 +937,21 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type === "bridge.clearLegacyTestDelivery") {
+    void (async () => {
+      const state = await store.read();
+      const isLegacy = /^manual_session_\d+$/u.test(state.lastBoundSessionId || "")
+        && /^manual_run_\d+$/u.test(state.lastBoundRunId || "")
+        && /^turn_\d+$/u.test(state.currentDeliveryId || "");
+      if (!isLegacy) throw new ExtensionOperationError("NO_LEGACY_DELIVERY", "삭제할 오래된 브릿지 전송이 없습니다.");
+      turnGate.assertIdle("Legacy delivery cleanup");
+      await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND", bindingError: "Legacy bridge-test delivery was cleared by the user." });
+      broadcastPopupState();
+      sendResponse({ ok: true });
+    })().catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+
   return false;
 });
 
