@@ -34,13 +34,14 @@
           <button id="reloadProject" type="button">상태 다시 확인</button>
         </div>
         <p id="projectStatus" role="status"></p>
+        <p id="preparationPersistence" class="persistence-status" role="status"></p>
       </form>
     </section>
     <section id="startPanel"><h1>시작</h1>
       <p class="muted">첫 부탁과 ChatGPT 대화 URL을 입력하세요. 웹의 완료 기준 제안을 대화로 조정하고 승인한 뒤 구현을 시작합니다.</p>
       <form id="startForm"><label for="objective">이번에 맡길 작업</label><textarea id="objective" rows="4" required placeholder="예: 채팅 앱에서 메시지를 보낼 수 있게 해 줘."></textarea>
         <label for="startRoot">프로젝트 폴더</label><input id="startRoot" required placeholder="폴더를 선택하거나 경로를 입력하세요"><button id="chooseFolder" disabled type="button">파일 탐색기에서 폴더 선택</button><p id="folderStatus" class="muted" role="status"></p><p class="muted">웹과 합의를 마치고 승인하면 Git 저장소와 첫 커밋을 자동으로 준비합니다.</p>
-        <label for="conversationUrl">ChatGPT 대화 URL</label><input id="conversationUrl" type="url" required placeholder="https://chatgpt.com/c/…">
+        <label for="conversationUrl">ChatGPT 대화 URL</label><input id="conversationUrl" type="url" required placeholder="https://chatgpt.com/c/… 또는 https://chatgpt.com/">
         <p class="muted">수정 결과를 감사할 ChatGPT 대화의 주소입니다. 브릿지 확장이 연결된 브라우저에서 이 대화의 탭을 하나만 열어 주세요.</p>
         <details hidden><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div><button id="editProject" type="button">프로젝트 설정</button></details>
         <button id="planRun" disabled type="submit" class="primary">준비 대화 시작</button>
@@ -49,6 +50,14 @@
       <section id="startProgress" hidden aria-live="polite" aria-atomic="true">
         <span class="waiting-indicator" aria-hidden="true"></span>
         <h2 id="startProgressTitle"></h2><p id="startProgressDetail"></p>
+      </section>
+      <section id="discardPanel" hidden class="recovery-panel">
+        <h2>미확정 전송 폐기</h2><p>원래 ChatGPT 응답을 확인할 수 없을 때만 사용합니다. 자동 재전송 없이 기록을 보존하고 새 작업을 허용합니다.</p>
+        <p id="discardDelivery" class="muted"></p>
+        <label><input id="discardUnresolved" type="checkbox"> 원래 ChatGPT 응답 결과를 확인하지 못했습니다.</label>
+        <label><input id="discardNoResend" type="checkbox"> 이 요청을 자동 재전송하지 않겠습니다.</label>
+        <label for="discardReason">폐기 사유</label><textarea id="discardReason" rows="3"></textarea>
+        <button id="discardDeliveryButton" type="button">미확정 전송 폐기</button>
       </section>
       <div id="startRecovery"></div>
       <button id="cancelInitialPreparation" type="button" hidden>요청 취소</button>

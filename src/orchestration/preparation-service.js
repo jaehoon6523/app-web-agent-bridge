@@ -118,17 +118,20 @@ export class PreparationService {
       if (input.expectedVersion !== 0 || this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
+      const conversationUrl = typeof input.conversationUrl === "string" ? input.conversationUrl.trim() : "";
       if (typeof input.objective !== "string" || !input.objective.trim()
-        || !/^https:\/\/chatgpt\.com\/c\/[^/?#\s]+$/u.test(input.conversationUrl)) fail("Objective and exact conversation URL are required.", "INVALID_INPUT");
+        || !/^https:\/\/chatgpt\.com\/(?:c\/[^/?#\s]+)?\/?$/u.test(conversationUrl)) fail("Objective and a ChatGPT conversation URL or the ChatGPT start page are required.", "INVALID_INPUT");
       if (typeof input.targetRoot !== "string" || !path.isAbsolute(input.targetRoot)) fail("Select an absolute project folder.", "INVALID_INPUT");
       const targetRoot = fs.realpathSync(input.targetRoot);
       if (!fs.statSync(targetRoot).isDirectory() || path.parse(targetRoot).root === targetRoot) fail("Select a project folder.", "INVALID_INPUT");
       const preparationId = "prep_" + randomUUID();
       const context = {
         preparationId, version: 1, stage: "PREPARE", state: "INITIALIZING", lifecycle: "ACTIVE",
-        objective: input.objective, targetRoot, conversationUrl: input.conversationUrl,
-        webSession: { sessionId: "web_" + preparationId, conversationId: input.conversationUrl.split("/").at(-1),
-          conversationUrl: input.conversationUrl, tabId: null, windowId: null, bindingState: "UNBOUND",
+        objective: input.objective, targetRoot, conversationUrl,
+        webSession: { sessionId: "web_" + preparationId,
+          conversationId: conversationUrl === "https://chatgpt.com/" ? null : conversationUrl.split("/").at(-1),
+          conversationUrl: conversationUrl === "https://chatgpt.com/" ? null : conversationUrl,
+          tabId: null, windowId: null, bindingState: "UNBOUND",
           activeDeliveryId: null, lastObservedUserMessageId: null, lastObservedAssistantMessageId: null },
         discussion: [], agreement: { status: "DISCUSSING", summary: "", unresolvedQuestions: [], requirements: [] },
         deliveries: [], repository: null, resultingRunId: null, reservedRunId: null, error: null,
@@ -146,6 +149,23 @@ export class PreparationService {
       if (!this.capabilities().includes(type)) fail("Reply is unavailable.");
       if (typeof input.content !== "string" || !input.content.trim()) fail("Enter an answer.", "INVALID_INPUT");
       this.reserve(context, input.content); return this.snapshot();
+    }
+    if (type === "preparation.discard") {
+      const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
+      if (!delivery) fail("No unresolved delivery is available for discard.", "RECOVERY_REQUIRED");
+      if (input.unresolvedResultConfirmed !== true || input.noAutomaticResendConfirmed !== true) {
+        fail("Confirm that the original result was not observed and will not be resent.", "DISCARD_CONFIRMATION_REQUIRED");
+      }
+      if (typeof input.reason !== "string" || input.reason.trim().length < 3) fail("Enter a discard reason.", "INVALID_INPUT");
+      delivery.state = "RECOVERY_DISCARDED";
+      delivery.discardedAt = stamp(); delivery.discardReason = input.reason.trim();
+      delivery.discardEvidence = { sessionId: delivery.sessionId, conversationId: delivery.conversationId,
+        conversationUrl: context.webSession.conversationUrl, deliveryId: delivery.deliveryId };
+      context.webSession.activeDeliveryId = null; context.lifecycle = "ABANDONED";
+      context.state = "RECOVERY_REQUIRED"; context.error = { code: "RECOVERY_DISCARDED", message: "Unresolved delivery was explicitly discarded by the operator." };
+      context.recovery = { kind: "RECOVERY_DISCARDED", deliveryId: delivery.deliveryId,
+        at: delivery.discardedAt, reason: delivery.discardReason, evidence: delivery.discardEvidence };
+      this.touch(context); return this.snapshot();
     }
     if (type === "preparation.cancel") {
       if (!this.capabilities().includes(type)) fail("Inspect and stop the active delivery before cancellation.");
@@ -211,6 +231,7 @@ export class PreparationService {
         console.warn("[bridge:preparation:failed]", {
           preparationId: context.preparationId, sessionId: session.sessionId, deliveryId,
           code: error.code ?? "WEB_FAILED", unsent, state: context.state,
+          message: error.message, details: error.details ?? null,
           blockingDeliveryId: error.details?.currentDeliveryId ?? null,
           blockingSessionId: error.details?.sessionId ?? null,
           blockingRunId: error.details?.runId ?? null,
@@ -229,6 +250,7 @@ export class PreparationService {
       sessionId: session.sessionId, runId, title: null, bindingStatus: "NEEDS_REBIND",
       conversationId: session.conversationId, conversationUrl: session.conversationUrl,
       tabId: session.tabId, windowId: session.windowId,
+      documentId: session.documentId ?? null, frameId: session.frameId ?? null,
       lastObservedUserMessageId: session.lastObservedUserMessageId,
       lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
     }) };
@@ -257,18 +279,46 @@ export class PreparationService {
       binding = await this.web.resume(request);
     }
     if (this.closed) return;
-    if (binding.sessionId !== session.sessionId || binding.conversationId !== session.conversationId) fail("Web binding changed.");
-    Object.assign(session, { tabId: binding.tabId, windowId: binding.windowId, bindingState: "BOUND" });
+    if (binding.sessionId !== session.sessionId) fail("Web binding changed.");
+    if (session.conversationUrl !== null && binding.conversationId !== session.conversationId) fail("Web binding changed.");
+    if (session.conversationUrl === null && binding.bindingStatus !== "ROOT_READY" && (!binding.conversationUrl || !binding.conversationId)) fail("A new ChatGPT conversation was not established.", "NEW_CONVERSATION_NOT_READY");
+    Object.assign(session, {
+      conversationUrl: binding.conversationUrl,
+      conversationId: binding.conversationId,
+      tabId: binding.tabId, windowId: binding.windowId, bindingState: binding.bindingStatus,
+      documentId: binding.documentId, frameId: binding.frameId,
+    });
+    context.conversationUrl = binding.conversationUrl;
     delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; this.touch(context);
-    const text = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n기존 준비 문맥:\n'
+    const text = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n'
+    const responseFormatFallback = '중요: 요구사항 제안 packet을 정확히 만들 수 없거나 필요한 정보가 부족하면 <controller_packet>을 추측해서 만들지 말고, 태그가 전혀 없는 평문으로 부족한 정보와 질문만 설명한다. 평문 응답은 오류가 아니라 사용자 확인을 위한 정상적인 대화 응답이다.\n';
+    const controllerFacts = [
+      `컨트롤러 확정 사실(다시 질문하지 말 것): 준비 ID=${context.preparationId}`,
+      `프로젝트 루트=${context.targetRoot}`,
+      `ChatGPT 대화 URL=${context.conversationUrl}`,
+      `대화 ID=${context.webSession.conversationId}`,
+      `사용자의 최초 요청=${context.objective}`,
+      "승인 전 저장소 변경 금지=예",
+      "현재 검증 정책=코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않음",
+      "위 사실을 바탕으로 실제 수정 대상 파일·기능처럼 사용자만 결정할 수 있는 정보가 없을 때만 질문한다.",
+      "질문은 한 번에 하나만 하며, 이미 제공된 경로·URL·ID·제약을 다시 묻지 않는다.",
+    ].join("\\n") + "\\n";
       + JSON.stringify({ preparationId: context.preparationId, discussion: context.discussion, agreement: context.agreement })
       + "\n사용자의 첫 부탁:\n" + context.objective;
-    const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text,
+    const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text: responseFormatFallback + controllerFacts + text,
       parseResponse: (raw) => ({ body: raw, packetText: raw, packet: { type: "PLANNING_RESPONSE" } }) });
     if (delivery.state === "DISPATCHING") delivery.state = "SUBMITTED";
     this.touch(context);
     const response = await handle.completion;
     if (this.closed) return;
+    if (response.binding?.documentId !== session.documentId || response.binding?.frameId !== session.frameId) {
+      fail("Response document changed.");
+    }
+    if (session.bindingState === "ROOT_READY" && response.binding?.sessionId === session.sessionId && response.binding?.runId === runId && response.binding?.tabId === session.tabId && response.binding?.bindingStatus === "BOUND") {
+      Object.assign(session, { conversationUrl: response.binding.conversationUrl, conversationId: response.binding.conversationId, bindingState: "BOUND" });
+      context.conversationUrl = session.conversationUrl;
+      delivery.conversationId = session.conversationId;
+    }
     if (response.turnId !== deliveryId || response.binding?.sessionId !== session.sessionId
       || response.binding?.runId !== runId || response.binding?.conversationId !== session.conversationId) fail("Response identity changed.");
     delivery.response = response; delivery.state = "RESPONSE_COMPLETED"; this.touch(context);
@@ -279,19 +329,30 @@ export class PreparationService {
     const observed = await this.web.inspectDelivery();
     this.setDiagnostics(context, observed);
     const pointerMatches = observed.currentDeliveryId === delivery.deliveryId;
-    const response = delivery.response;
+    let response = delivery.response;
     let parsed = null;
     let packetParseError = null;
     try {
       const envelope = parseFinalControllerPacketJsonEnvelope(response.rawText);
       parsed = envelope.parsed;
-      response.packet = parsed;
-      response.packetText = envelope.packetText;
+      response = delivery.response = { ...response, packet: parsed, packetText: envelope.packetText };
     } catch (error) {
       packetParseError = error;
     }
     const userMessageId = response?.evidence?.userMessageId ?? response?.binding?.lastObservedUserMessageId;
     const assistantMessageId = response?.evidence?.assistantMessageId ?? response?.binding?.lastObservedAssistantMessageId;
+    const packetValid = !packetParseError
+      && parsed?.type === "REQUIREMENTS_PROPOSAL"
+      && typeof parsed.summary === "string"
+      && Array.isArray(parsed.questions)
+      && parsed.questions.every((question) => typeof question === "string" && question.trim())
+      && Array.isArray(parsed.items)
+      && parsed.items.length <= 30
+      && (parsed.items.length > 0 || parsed.questions.length > 0)
+      && parsed.items.every((item) => (
+        typeof item?.statement === "string" && item.statement.trim()
+        && typeof item?.acceptanceCriteria === "string" && item.acceptanceCriteria.trim()
+      ));
     const check = (name, expected, actual) => ({ name, expected: expected ?? null, actual: actual ?? null,
       passed: expected !== undefined && actual === expected });
     const checks = [
@@ -310,6 +371,13 @@ export class PreparationService {
       check("답변 메시지 일치", assistantMessageId, observed.lastObservedAssistantMessageId),
       check("응답 신뢰도", "CONFIRMED_BY_UI_STATE", response?.confidence),
     ];
+    // A valid final packet can confirm a response even when the page's user
+    // turn was virtualized before the DOM association completed.
+    const confidenceCheck = checks.at(-1);
+    if (response?.confidence === "HEURISTIC" && packetValid && assistantMessageId) {
+      confidenceCheck.passed = true;
+      confidenceCheck.evidence = "VALID_FINAL_CONTROLLER_PACKET";
+    }
     delivery.validation = { status: checks.every(item => item.passed) ? "CONFIRMED" : "FAILED", checks };
     this.touch(context);
     if (delivery.validation.status === "FAILED") {
@@ -388,7 +456,14 @@ export class PreparationService {
     }
     if (!this.capabilities().includes(type)) fail("Web operation is unavailable.");
     const pendingDelivery = context.deliveries.find(item => item.deliveryId === session.activeDeliveryId);
-    const refreshCompleted = type === "web.reconcile" && pendingDelivery?.processingState !== "ACK_PENDING";
+    // A completed response is already durable. Re-running the extension's DOM
+    // recheck here can fail solely because ChatGPT virtualized the original
+    // user message out of the visible DOM, producing AMBIGUOUS_PROMPT_BINDING.
+    // The completion path below parses and validates the stored controller
+    // packet, so only deliveries without a stored response need rechecking.
+    const refreshCompleted = type === "web.reconcile"
+      && pendingDelivery?.processingState !== "ACK_PENDING"
+      && !pendingDelivery?.response;
     const observed = await this.web.inspectDelivery({ refreshCompleted });
     this.setDiagnostics(context, observed); this.touch(context);
     const completed = observed.completedDelivery;
@@ -422,6 +497,7 @@ export class PreparationService {
     if (!context || context.lifecycle !== "ACTIVE") return this.available() ? ["preparation.start"] : [];
     const caps = [];
     const active = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
+    if (active && ["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(context.state)) caps.push("preparation.discard");
     if (context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
       && context.diagnostics?.canRecover && (active?.response || active?.stopped)) caps.push("preparation.cancel");
     if (!context.webSession.activeDeliveryId && !this.jobs.has(context.preparationId)) {

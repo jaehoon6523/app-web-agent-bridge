@@ -51,6 +51,16 @@ class FakeSocket extends EventEmitter {
   }
 
   receive(message) {
+    // Simulate the extension's success envelope; explicit trace values are never replaced.
+    if (message.type === "web.prompt.result" && message.payload?.trace === undefined) {
+      const session = message.payload.session;
+      message = { ...message, payload: { ...message.payload,
+        trace: { requestId: message.requestId, actionId: message.requestId, result: "success",
+          tabId: session?.tabId, bindingId: `${session?.sessionId}:${session?.runId}`,
+          documentId: session?.documentId, frameId: session?.frameId },
+        evidence: { documentId: session?.documentId, frameId: session?.frameId, ...message.payload.evidence },
+      } };
+    }
     this.emit("message", JSON.stringify(message));
   }
 }
@@ -61,6 +71,8 @@ function binding(overrides = {}) {
     runId: "run-1",
     tabId: 7,
     windowId: 3,
+    documentId: "document-1",
+    frameId: 0,
     conversationUrl: "https://chatgpt.com/c/conversation-1",
     conversationId: "conversation-1",
     title: "Bound conversation",
@@ -677,4 +689,32 @@ test("5-5 Given 활성 turn, When adapter.close, Then pending turn이 정리되�
     typeof error.code === "string" && error.code.length > 0
   ));
   assert.equal(adapter.activeTurnId, null);
+});
+
+test("root readiness permits first prompt before conversation exists and binds its response", async () => {
+  const { transport, socket } = authenticatedTransport();
+  const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 100 });
+  const bootstrap = createWebSessionBinding({
+    sessionId: "session-1", runId: "run-1", tabId: null, windowId: null,
+    conversationUrl: null, conversationId: null, title: null,
+    lastObservedUserMessageId: null, lastObservedAssistantMessageId: null,
+    bindingStatus: "NEEDS_REBIND",
+  });
+  const resuming = adapter.resume({ binding: bootstrap, focus: true });
+  const request = socket.sent.at(-1);
+  const resolved = binding({ conversationUrl: "https://chatgpt.com/c/created-from-root", conversationId: "created-from-root" });
+  socket.receive({
+    type: "web.session.ready", protocolVersion: 2, requestId: request.requestId,
+    payload: { session: binding({ conversationUrl: "https://chatgpt.com/", conversationId: null, bindingStatus: "ROOT_READY" }) },
+  });
+  const result = await resuming;
+  assert.equal(result.conversationId, null);
+  const turn = await adapter.submitTurn({ runId: "run-1", turnId: "root-first", controllerMessageId: "root-first", text: "First request" });
+  assert.equal(socket.sent.at(-1).type, "web.prompt");
+  socket.receive({ type: "web.prompt.result", protocolVersion: 2, requestId: "root-first", payload: {
+    session: resolved, text: controllerResponse(), confidence: "CONFIRMED_BY_UI_STATE",
+  } });
+  const completed = await turn.completion;
+  assert.equal(completed.binding.conversationId, "created-from-root");
+  await adapter.close();
 });

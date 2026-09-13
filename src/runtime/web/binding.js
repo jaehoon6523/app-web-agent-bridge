@@ -5,6 +5,8 @@ export const WEB_SESSION_BINDING_FIELDS = Object.freeze([
   "runId",
   "tabId",
   "windowId",
+  "documentId",
+  "frameId",
   "conversationUrl",
   "conversationId",
   "title",
@@ -88,6 +90,11 @@ export function validateWebSessionBinding(value) {
   requireString(value.runId, "WebSessionBinding.runId");
   requireInteger(value.tabId, "WebSessionBinding.tabId", { nullable: true });
   requireInteger(value.windowId, "WebSessionBinding.windowId", { nullable: true });
+  requireString(value.documentId, "WebSessionBinding.documentId", { nullable: true });
+  requireInteger(value.frameId, "WebSessionBinding.frameId", { nullable: true });
+  if (["BOUND", "ROOT_READY"].includes(value.bindingStatus) && (!value.documentId || value.frameId !== 0)) {
+    throw new WebProtocolError("A ready binding requires the current top-frame document", "INVALID_WEB_SESSION_BINDING");
+  }
   requireString(value.conversationUrl, "WebSessionBinding.conversationUrl", { nullable: true });
   requireString(value.conversationId, "WebSessionBinding.conversationId", { nullable: true });
   requireString(value.title, "WebSessionBinding.title", { nullable: true });
@@ -112,6 +119,9 @@ export function validateWebSessionBinding(value) {
       );
     }
   }
+  if (value.bindingStatus === "ROOT_READY" && (value.conversationUrl !== "https://chatgpt.com/" || value.conversationId !== null || value.tabId === null || value.windowId === null)) {
+    throw new WebProtocolError("ROOT_READY requires a selected ChatGPT start tab", "INVALID_WEB_SESSION_BINDING");
+  }
   if (value.bindingStatus === WebBindingStatus.BOUND) {
     if (
       value.tabId === null
@@ -129,6 +139,8 @@ export function validateWebSessionBinding(value) {
 }
 
 export function createWebSessionBinding(value) {
+  // Unprepared and persisted legacy bindings may omit document identity.
+  if (isPlainObject(value)) value = { documentId: null, frameId: null, ...value };
   validateWebSessionBinding(value);
   return Object.freeze(structuredClone(value));
 }

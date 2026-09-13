@@ -18,6 +18,8 @@ function boundState(overrides = {}) {
     conversationId: "conversation-1",
     tabId: 7,
     windowId: 3,
+    documentId: "document-1",
+    frameId: 0,
     currentDeliveryId: "delivery-1",
     bindingStatus: "BOUND",
     ...overrides,
@@ -62,6 +64,8 @@ test("a frozen turn rejects state, tab, or returned-session binding drift", () =
     conversationId: expected.conversationId,
     tabId: expected.tabId,
     windowId: expected.windowId,
+    documentId: expected.documentId,
+    frameId: expected.frameId,
     bindingStatus: "BOUND",
   };
   assert.equal(assertTurnSessionBinding(expected, session), session);
@@ -88,6 +92,8 @@ test("only exact relay-safe completion confidences with frozen conversation evid
     evidence: {
       conversationUrl: expected.conversationUrl,
       conversationId: expected.conversationId,
+      documentId: expected.documentId,
+      frameId: expected.frameId,
     },
   };
   assert.equal(assertRelaySafeCompletion(completion, expected), completion);

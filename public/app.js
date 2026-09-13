@@ -109,7 +109,8 @@ async function refresh() {
     snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null; connected = true;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
-    text("connectionNotice", result.preflight?.checks?.extensionAuthenticated === true
+    const extensionNeedsPreparation = workflow.stage === "PREPARE";
+    text("connectionNotice", !extensionNeedsPreparation || result.preflight?.checks?.extensionAuthenticated === true
       ? ""
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
     for (const [operation, requestId] of unknownRequests) {
@@ -132,6 +133,37 @@ async function refresh() {
 }
 function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
 function webConnected() { return connected && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
+function renderPreparationPersistence() {
+  const element = $("preparationPersistence");
+  if (!element) return;
+  if (!preparation?.preparationId) {
+    element.textContent = "저장된 준비 없음";
+    element.className = "persistence-status muted";
+    return;
+  }
+  const savedAt = preparation.updatedAt ? ` · 마지막 저장 ${time(preparation.updatedAt)}` : "";
+  if (!connected) {
+    element.textContent = `저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 서버 연결 끊김으로 저장/폐기 조작 불가`;
+    element.className = "persistence-status warn";
+    return;
+  }
+  if (preparation.lifecycle === "ACTIVE") {
+    element.textContent = `자동 저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 삭제 대신 ‘준비 취소’로 폐기합니다.`;
+    element.className = "persistence-status ok";
+  } else {
+    element.textContent = `저장된 준비 종료됨 · 준비 ID ${preparation.preparationId}${savedAt}`;
+    element.className = "persistence-status muted";
+  }
+}
+function disabledWebReason(action) {
+  if (!connected) return "웹 작업 비활성화: 서버 연결이 없어 상태를 확인할 수 없습니다.";
+  if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "웹 작업 비활성화: 브라우저 확장 인증이 확인되지 않았습니다.";
+  if (operations.webTurn !== "IDLE") return "웹 작업 비활성화: 다른 웹 상태 요청을 처리 중입니다.";
+  if (preparation?.webSession?.bindingState !== "BOUND") return `웹 작업 비활성화: 세션 바인딩이 BOUND가 아닙니다. 현재 상태: ${preparation?.webSession?.bindingState ?? "UNBOUND"}.`;
+  if (preparation?.diagnostics?.exactConversation !== true) return "웹 작업 비활성화: 현재 탭이 준비된 session·conversation·run identity와 정확히 일치하지 않습니다.";
+  if (!capabilities().has(action)) return `웹 작업 비활성화: 현재 서버가 ${action} 권한을 제공하지 않습니다. active delivery 또는 응답 처리 상태를 확인하세요.`;
+  return "";
+}
 function health(id, name, state, detail) {
   const el = $(id);
   el.className = `health ${state}`;
@@ -235,6 +267,7 @@ function render() {
   $("projectForm").prepend($("proposalWaiting"));
   $("proposalWaiting").hidden = workflow.stage !== "PREPARE" || !["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(workflow.state);
   proposalControls();
+  renderPreparationPersistence();
   const readiness = JSON.stringify([connected, preflight, [...caps], snapshot?.runs]);
   if (readiness !== readinessSignature) { lastCommandError = ""; readinessSignature = readiness; }
   const checks = preflight?.checks;
@@ -292,7 +325,8 @@ function render() {
       text("startReason", "ChatGPT 대화 탭에 연결 중입니다. 아직 메시지를 전송하지 않았습니다.");
     } else if (preparation?.state === "WEB_BLOCKED" && preparation?.error) {
       text("startReason", "ChatGPT 연결에 실패해 메시지를 전송하지 않았습니다. 대화 탭과 브릿지 연결을 확인한 뒤 다시 시작하세요. "
-        + preparation.error.code + ": " + preparation.error.message);
+        + preparation.error.code + ": " + preparation.error.message
+        + (preparation.error.details ? "\n실패 진단: " + JSON.stringify(preparation.error.details) : ""));
     }
   }
   $("chooseFolder").disabled = !connected || operations.folderPicker !== "IDLE" || preparation?.lifecycle === "ACTIVE";
@@ -399,8 +433,24 @@ function proposalControls() {
   actionState("reviseRequirements", !webConnected() || !caps.has("preparation.reply") || operations.webTurn !== "IDLE",
     !webConnected() ? "브릿지 확장 연결이 확인돼야 답변을 전송할 수 있습니다." : "현재 전송이나 복구 확인이 끝나야 답변을 보낼 수 있습니다.",
     "같은 ChatGPT 대화에 답변을 전송합니다.");
-  $("saveProject").disabled = !caps.has("preparation.approve") || operations.approval !== "IDLE";
-  $("closeProject").disabled = !caps.has("preparation.cancel") || operations.preparationStart !== "IDLE";
+  const approvalDisabled = !caps.has("preparation.approve") || operations.approval !== "IDLE";
+  actionState("saveProject", approvalDisabled,
+    !caps.has("preparation.approve")
+      ? `승인 비활성화: 현재 요구사항 상태는 ${agreement?.status ?? "확인되지 않음"}이며 preparation.approve 권한이 없습니다. 요구사항 합의가 READY인지 확인하세요.`
+      : "승인 비활성화: 이전 승인 요청이 아직 처리 중입니다.",
+    "현재 요구사항을 승인하고 작업을 시작합니다.");
+  const cancelDisabled = !caps.has("preparation.cancel") || operations.preparationStart !== "IDLE";
+  actionState("closeProject", cancelDisabled,
+    !connected ? "준비 폐기 비활성화: 서버 연결이 끊겨 저장된 준비를 안전하게 종료할 수 없습니다."
+      : !caps.has("preparation.cancel") ? "준비 폐기 비활성화: 현재 전송의 종료가 확인되지 않아 원문 기록을 보존한 채 폐기를 확정할 수 없습니다."
+        : "준비 폐기 비활성화: 이전 준비 작업이 처리 중입니다.",
+    "저장된 준비를 삭제하지 않고 ‘준비 취소’ 상태로 폐기합니다.");
+  const activeDelivery = preparation?.deliveries?.find((item) => item.deliveryId === preparation?.webSession?.activeDeliveryId);
+  const discardVisible = Boolean(activeDelivery && ["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(preparation.state));
+  $("discardPanel").hidden = !discardVisible;
+  text("discardDelivery", discardVisible ? `준비 ID: ${preparation.preparationId} · 전송 ID: ${activeDelivery.deliveryId} · 세션: ${activeDelivery.sessionId} · 대화: ${activeDelivery.conversationId ?? preparation.webSession?.conversationUrl ?? "확인되지 않음"}` : "");
+  $("discardDeliveryButton").disabled = !discardVisible || !caps.has("preparation.discard") || operations.preparationStart !== "IDLE"
+    || !$("discardUnresolved").checked || !$("discardNoResend").checked || $("discardReason").value.trim().length < 3;
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
 }
 function renderInitialRequest() {
@@ -454,6 +504,14 @@ function renderPreparation() {
   const recovery = node("details", "", "session-recovery");
   recovery.open = true;
   recovery.append(node("summary", "응답·전송 상태"));
+  const exactBound = session?.bindingState === "BOUND" && diagnostic.exactConversation === true;
+  const tabId = diagnostic.tabId ?? session?.tabId ?? "확인되지 않음";
+  const identity = diagnostic.extensionIdentity ?? session?.extensionIdentity ?? "확인되지 않음";
+  recovery.append(node("p",
+    exactBound
+      ? `연결 성공: ChatGPT tab ${tabId} · BOUND · identity: ${identity} · 정확한 conversation 일치`
+      : `연결 비활성화: ChatGPT tab ${tabId} · ${session?.bindingState ?? "UNBOUND"} · identity: ${identity} · BOUND 및 정확한 conversation 일치가 확인되지 않음`,
+    exactBound ? "recovery-guidance ok" : "recovery-guidance error"));
   const activeDelivery = preparation.deliveries?.find(item => item.deliveryId === session?.activeDeliveryId);
   if (activeDelivery) {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
@@ -531,7 +589,7 @@ function renderPreparation() {
     button.dataset.webCommand = action;
     const disabled = !capabilities().has(action) || operations.webTurn !== "IDLE";
     button.disabled = disabled;
-    buttonReason(button, disabled ? webActionReason(action) : "");
+    buttonReason(button, disabled ? disabledWebReason(action) : "");
     button.addEventListener("click", () => webSessionCommand(action)); recovery.append(button);
   }
   summary.append(recovery);
@@ -576,7 +634,7 @@ async function webSessionCommand(commandType) {
 async function beginPreparation() {
   if ($("planRun").disabled) return;
   const objective = $("objective").value, targetRoot = $("startRoot").value.trim(), conversationUrl = $("conversationUrl").value.trim();
-  if (!objective.trim() || !targetRoot || !/^https:\/\/chatgpt\.com\/c\/[^/?#\s]+$/u.test(conversationUrl)) {
+  if (!objective.trim() || !targetRoot || !/^https:\/\/chatgpt\.com\/(?:c\/[^/?#\s]+)?\/?$/u.test(conversationUrl)) {
     text("startReason", "첫 부탁·프로젝트 폴더·ChatGPT 대화 URL을 모두 입력하세요."); return;
   }
   await preparationMutation("preparationStart", "preparation.start", "/api/preparations", { objective, targetRoot, conversationUrl });
@@ -595,6 +653,13 @@ $("projectForm").addEventListener("submit", async (event) => {
 });
 $("closeProject").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",
   "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/cancel"));
+for (const id of ["discardUnresolved", "discardNoResend", "discardReason"]) $(id).addEventListener("input", render);
+$("discardDeliveryButton").addEventListener("click", () => preparationMutation("preparationStart", "preparation.discard",
+  "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/discard", {
+    unresolvedResultConfirmed: $("discardUnresolved").checked,
+    noAutomaticResendConfirmed: $("discardNoResend").checked,
+    reason: $("discardReason").value.trim(),
+  }));
 $("reloadProject").addEventListener("click", refresh);
 $("chooseFolder").addEventListener("click", async () => {
   if (!connected || operations.folderPicker !== "IDLE") return;

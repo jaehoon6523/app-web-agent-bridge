@@ -12,6 +12,7 @@ export const WebAuthenticationState = enumObject([
 ]);
 
 export const WebBindingStatus = enumObject([
+  "ROOT_READY",
   "BOUND",
   "NEEDS_REBIND",
   "AUTH_REQUIRED",

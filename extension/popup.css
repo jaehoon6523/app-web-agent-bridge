@@ -9,6 +9,7 @@ body {
   color: #f2f4f8;
 }
 main { padding: 16px; }
+#detail { overflow-wrap: anywhere; }
 header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
 .badge { border: 1px solid #444b57; border-radius: 999px; padding: 3px 8px; font-size: 12px; }
 .badge.ok { border-color: #3b8d67; color: #7fe1ad; }
@@ -24,7 +25,9 @@ input {
   background: #191c23;
   color: inherit;
 }
-p { min-height: 18px; color: #ff9aa7; font-size: 12px; }
+p { min-height: 18px; color: #ff9aa7; font-size: 12px; white-space: pre-line; }
+p.detail-ok { color: #7fe1ad; }
+p.detail-error { color: #ff9aa7; }
 .actions { display: flex; gap: 8px; }
 button {
   flex: 1;

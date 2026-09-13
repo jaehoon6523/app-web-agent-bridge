@@ -91,6 +91,8 @@ export function captureTurnBinding(state, {
     conversationId: requireNonEmptyString(state.conversationId, "conversationId"),
     tabId: requireTabId(state.tabId, "tabId"),
     windowId: requireTabId(state.windowId, "windowId"),
+    documentId: requireNonEmptyString(state.documentId, "documentId"),
+    frameId: requireTabId(state.frameId, "frameId"),
   };
   if (snapshot.runId !== state.lastBoundRunId) {
     throw new ExtensionTurnGuardError(
@@ -117,6 +119,8 @@ function observedStateBinding(state) {
     conversationId: state?.conversationId,
     tabId: state?.tabId,
     windowId: state?.windowId,
+    documentId: state?.documentId,
+    frameId: state?.frameId,
     bindingStatus: state?.bindingStatus,
   };
 }
@@ -130,6 +134,8 @@ function observedSessionBinding(session, requestId) {
     conversationId: session?.conversationId,
     tabId: session?.tabId,
     windowId: session?.windowId,
+    documentId: session?.documentId,
+    frameId: session?.frameId,
     bindingStatus: session?.bindingStatus,
   };
 }
@@ -143,6 +149,8 @@ function assertBindingFields(expected, observed) {
     "conversationId",
     "tabId",
     "windowId",
+    "documentId",
+    "frameId",
   ]) {
     if (observed[key] !== expected[key]) {
       throw new ExtensionTurnGuardError(
@@ -180,6 +188,9 @@ export function assertTurnTabBinding(expected, tab, canonicalUrl, conversationId
     conversationId,
     tabId: tab?.id,
     windowId: tab?.windowId,
+    // Tab metadata cannot identify a content document; the ping and receiver guard do.
+    documentId: expected.documentId,
+    frameId: expected.frameId,
     bindingStatus: "BOUND",
   };
   assertBindingFields(expected, observed);
@@ -203,6 +214,8 @@ export function assertRelaySafeCompletion(result, expected) {
   if (
     result.evidence?.conversationUrl !== expected.conversationUrl
     || result.evidence?.conversationId !== expected.conversationId
+    || result.evidence?.documentId !== expected.documentId
+    || result.evidence?.frameId !== expected.frameId
   ) {
     throw new ExtensionTurnGuardError(
       "TURN_BINDING_CHANGED",

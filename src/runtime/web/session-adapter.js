@@ -18,6 +18,8 @@ import {
  * @property {string} sessionId
  * @property {string} runId
  * @property {number | null} tabId
+ * @property {string | null} documentId
+ * @property {number | null} frameId
  * @property {number | null} windowId
  * @property {string | null} conversationUrl
  * @property {string | null} conversationId
@@ -42,6 +44,8 @@ const SESSION_INVALIDATING_CODES = new Set([
   "AUTH_REQUIRED",
   "WEB_SESSION_BINDING_MISSING",
   "WEB_SESSION_BINDING_MISMATCH",
+  "WEB_DOCUMENT_CHANGED",
+  "WEB_SUCCESS_TRACE_MISMATCH",
 ]);
 
 function safeParse(raw) {
@@ -342,7 +346,8 @@ export class ChatGptWebSessionAdapter {
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
     }
-    if (!binding.conversationUrl || !binding.conversationId) {
+    const conversationBootstrap = binding.conversationUrl === null && binding.conversationId === null;
+    if ((!binding.conversationUrl || !binding.conversationId) && !conversationBootstrap) {
       throw new WebProtocolError(
         "Resuming a Web session requires an exact conversation binding",
         "EXPLICIT_REBIND_REQUIRED",
@@ -359,6 +364,7 @@ export class ChatGptWebSessionAdapter {
       this.#acceptReturnedBinding(message.payload?.session, {
         expectedBinding: binding,
         allowTabRelocation: true,
+        allowConversationBootstrap: conversationBootstrap,
       });
       this.#ready = true;
       this.#emitRuntimeEvent(this.#runtimeEvent("SESSION_READY", null, {
@@ -407,7 +413,7 @@ export class ChatGptWebSessionAdapter {
       throw new WebProtocolError("Web session has not been confirmed ready", "WEB_SESSION_NOT_READY");
     }
     const binding = this.#transport.snapshot.binding;
-    if (!binding || binding.bindingStatus !== "BOUND") {
+    if (!binding || !["BOUND", "ROOT_READY"].includes(binding.bindingStatus)) {
       throw new WebProtocolError("Web session requires exact binding", "NEEDS_REBIND");
     }
     if (runId !== binding.runId) {
@@ -445,11 +451,11 @@ export class ChatGptWebSessionAdapter {
     this.#emitRuntimeEvent(this.#runtimeEvent("TURN_STARTED", turnId, {
       controllerMessageId,
     }));
-    const completion = this.#completeTurn(turnId, response, parseResponse);
+    const completion = this.#completeTurn(turnId, response, parseResponse, binding);
     return Object.freeze({ turnId, completion });
   }
 
-  async #completeTurn(turnId, response, parseResponse) {
+  async #completeTurn(turnId, response, parseResponse, expected) {
     try {
       const message = await response;
       if (message.type === "web.prompt.error") throw this.#messageError(message);
@@ -467,12 +473,24 @@ export class ChatGptWebSessionAdapter {
       ) {
         throw new WebProtocolError("Web result is not safe for automatic relay", "AMBIGUOUS_COMPLETION");
       }
+      const returned = message.payload?.session;
+      const trace = message.payload?.trace;
+      if (!trace || trace.requestId !== turnId || trace.actionId !== turnId || trace.result !== "success"
+        || trace.tabId !== expected?.tabId || trace.tabId !== returned?.tabId
+        || trace.bindingId !== `${expected?.sessionId}:${expected?.runId}`
+        || trace.documentId !== expected?.documentId || trace.documentId !== returned?.documentId
+        || trace.frameId !== expected?.frameId || trace.frameId !== returned?.frameId
+        || trace.documentId !== message.payload?.evidence?.documentId
+        || trace.frameId !== message.payload?.evidence?.frameId) {
+        throw new WebProtocolError("Web success trace does not match the dispatched document and action", "WEB_SUCCESS_TRACE_MISMATCH");
+      }
       const parsed = parseResponse(message.payload.text);
-      this.#acceptReturnedBinding(message.payload?.session);
+      this.#acceptReturnedBinding(message.payload?.session, { expectedBinding: expected, allowConversationBootstrap: expected?.bindingStatus === "ROOT_READY" });
       this.#emitRuntimeEvent(this.#runtimeEvent("TURN_COMPLETED", turnId, {
         confidence,
         packetType: parsed.packet.type ?? null,
         evidence: message.payload.evidence ?? null,
+        trace,
       }));
       return Object.freeze({
         turnId,
@@ -483,6 +501,7 @@ export class ChatGptWebSessionAdapter {
         confidence,
         confidenceReason: message.payload?.confidenceReason ?? null,
         evidence: message.payload.evidence ?? null,
+        trace,
         binding: this.#transport.snapshot.binding,
       });
     } catch (error) {
@@ -655,6 +674,7 @@ export class ChatGptWebSessionAdapter {
     {
       expectedBinding = this.#transport.snapshot.binding,
       allowTabRelocation = false,
+      allowConversationBootstrap = false,
     } = {},
   ) {
     if (!value) {
@@ -671,7 +691,10 @@ export class ChatGptWebSessionAdapter {
       );
     }
     const next = createWebSessionBinding(value);
+    const bootstrap = allowConversationBootstrap
+      && (current.conversationUrl === null || current.bindingStatus === "ROOT_READY") && current.conversationId === null;
     for (const key of ["sessionId", "runId", "conversationUrl", "conversationId"]) {
+      if (bootstrap && (key === "conversationUrl" || key === "conversationId")) continue;
       if (next[key] !== current[key]) {
         throw new WebProtocolError(
           `Returned Web binding changed immutable ${key}`,
@@ -681,14 +704,15 @@ export class ChatGptWebSessionAdapter {
     }
     if (
       !allowTabRelocation
-      && (next.tabId !== current.tabId || next.windowId !== current.windowId)
+      && (next.tabId !== current.tabId || next.windowId !== current.windowId
+        || next.documentId !== current.documentId || next.frameId !== current.frameId)
     ) {
       throw new WebProtocolError(
         "Returned Web binding changed the active tab during a bound operation",
         "WEB_SESSION_BINDING_MISMATCH",
       );
     }
-    if (next.bindingStatus !== WebBindingStatus.BOUND) {
+    if (next.bindingStatus !== WebBindingStatus.BOUND && !(bootstrap && next.bindingStatus === "ROOT_READY")) {
       throw new WebProtocolError(
         "Returned Web binding is no longer exact",
         "WEB_SESSION_BINDING_MISMATCH",

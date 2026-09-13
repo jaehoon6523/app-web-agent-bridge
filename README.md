@@ -52,9 +52,9 @@ npm start
 
 ## 화면 시나리오 검증
 
-`npm run test:ui`는 설치된 Chrome으로 실제 콘솔을 열어 설정 입력·저장·재조회, 시작 차단과 중단, 복구 확인, 시작, 연결 끊김, 증거 조회와 적용, 모바일 레이아웃을 검사합니다. Edge를 사용하려면 `UI_BROWSER_CHANNEL=msedge`, 별도 브라우저 경로는 `UI_BROWSER_EXECUTABLE`을 지정하세요.
+`npm run test:ui`는 설치된 Chrome으로 실제 콘솔을 열어 시작 입력, 새 대화 응답 대기, 문서 변경 진단·취소, 준비 대화·답변·새로고침·합의 승인, 작업 중단·복구, 연결 끊김, 증거 조회와 적용, 모바일 레이아웃을 검사합니다. Edge를 사용하려면 `UI_BROWSER_CHANNEL=msedge`, 별도 브라우저 경로는 `UI_BROWSER_EXECUTABLE`을 지정하세요.
 
-설정 저장은 임시 Git 저장소와 실제 로컬 API를 사용합니다. 외부 제공자의 실행·감사·적용 상태는 명시적인 브라우저 테스트 데이터로 대체하므로 실제 Codex/ChatGPT 동작 인증을 뜻하지 않습니다. 사용자 기록은 변경하지 않습니다. 스크린샷은 `.agent-controller/ui-qa`에 저장됩니다. 일반 검사는 `npm run check`로 실행합니다.
+초기 화면과 인증은 임시 데이터 폴더의 실제 로컬 서버를 사용합니다. 준비·실행·감사·적용 상태는 명시적인 브라우저 테스트 데이터로 대체하므로 실제 Codex/ChatGPT 동작 인증을 뜻하지 않습니다. 사용자 기록은 변경하지 않습니다. 스크린샷은 `.agent-controller/ui-qa`에 저장되고, 실패 시 `failure.png`와 `failure.json`에 진단을 남깁니다. 일반 검사는 `npm run check`로 실행합니다.
 
 ## 프로젝트 JSON 가져오기
 

@@ -37,7 +37,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
         if (message.type === "controller.auth.challenge") this.emit("message", JSON.stringify({ type: "extension.auth.response",
           protocolVersion: 2, challengeId: message.challengeId, extensionIdentity: "test", hmacSha256: computeWebChallengeHmac(message.nonce, secret) }));
         if (message.type === "web.session.prepare") {
-          binding = { ...message.payload, tabId: 1, windowId: 1, title: "Test", bindingStatus: "BOUND", lastObservedUserMessageId: null, lastObservedAssistantMessageId: null };
+          binding = { ...message.payload, tabId: 1, windowId: 1, documentId: "document-1", frameId: 0, title: "Test", bindingStatus: "BOUND", lastObservedUserMessageId: null, lastObservedAssistantMessageId: null };
           delete binding.focus; reply("web.session.ready", { session: binding });
         }
         if (message.type === "web.prompt") {
@@ -46,7 +46,10 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
             : { type: "REQUIREMENTS_PROPOSAL", summary: "값 표시", questions: [], items: [{ statement: "값 표시", acceptanceCriteria: "화면에 1이 표시된다" }] };
           binding.lastObservedUserMessageId = "u" + count; binding.lastObservedAssistantMessageId = "a" + count;
           release = () => reply("web.prompt.result", { text: "<controller_packet>\n" + JSON.stringify(packet) + "\n</controller_packet>",
-            confidence: "CONFIRMED_BY_UI_STATE", session: binding });
+            confidence: "CONFIRMED_BY_UI_STATE", session: binding,
+            evidence: { documentId: binding.documentId, frameId: binding.frameId },
+            trace: { requestId: active, actionId: active, result: "success", tabId: binding.tabId,
+              bindingId: `${binding.sessionId}:${binding.runId}`, documentId: binding.documentId, frameId: binding.frameId } });
         }
         if (message.type === "web.delivery.inspect") reply("web.delivery.inspected", {
           currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,

@@ -54,6 +54,8 @@ test("extension state survives service-worker store reconstruction", async () =>
     conversationId: "abc",
     tabId: 4,
     windowId: 2,
+    documentId: "document-1",
+    frameId: 0,
     currentDeliveryId: "delivery-1",
     lastObservedUserMessageId: "u1",
     lastObservedAssistantMessageId: "a1",

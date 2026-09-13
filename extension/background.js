@@ -1,7 +1,5 @@
-import {
-  assertStrongExtensionSharedSecret,
-  computeChallengeHmac,
-} from "./runtime/hmac.js";
+import { inspectBoundDocument, createSuccessTrace, diagnosticError, errorPayload } from "./runtime/document-binding.js";
+import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import {
   canonicalChatGptUrl,
   conversationIdFromUrl,
@@ -9,10 +7,7 @@ import {
   validateLocalControllerUrl,
 } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
-import {
-  createExtensionStateStore,
-  ensureExtensionIdentity,
-} from "./runtime/storage.js";
+import { createExtensionStateStore, ensureExtensionIdentity } from "./runtime/storage.js";
 import {
   assertRelaySafeCompletion,
   assertTurnSessionBinding,
@@ -23,9 +18,7 @@ import {
 } from "./runtime/turn-guard.js";
 
 const PROTOCOL_VERSION = 2;
-const CHATGPT_URL_PATTERNS = Object.freeze([
-  "https://chatgpt.com/*",
-]);
+const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
 
 let socket = null;
@@ -44,21 +37,26 @@ class ExtensionOperationError extends Error {
   }
 }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function errorPayload(error) {
-  return {
-    code: typeof error?.code === "string" ? error.code : "WEB_EXTENSION_ERROR",
-    message: error?.message || "The ChatGPT Web extension operation failed.",
-    details: error?.details ?? null,
-  };
-}
+function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 
 async function connectionState() {
-  const state = await store.read();
+  let state = await store.read();
+  const roots = (await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS })).filter(tab => canonicalChatGptUrl(tab.url) === "https://chatgpt.com/");
+  const rootPage = roots.length === 1 ? await chrome.tabs.sendMessage(roots[0].id, { type: "agent.ping" }).catch(() => null) : null;
+  if (state.bindingStatus === "AMBIGUOUS" && !state.bindingError) {
+    const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+    const bindingError = diagnosticError(new ExtensionOperationError("AMBIGUOUS", "A previous binding attempt was ambiguous; current tab topology was captured.", {
+      mode: "STORED_AMBIGUOUS_RECOVERY", persistedTabId: state.tabId, persistedUrl: state.conversationUrl,
+      persistedConversationId: state.conversationId,
+      candidates: tabs.map((tab) => ({
+        tabId: tab.id, windowId: tab.windowId, url: tab.url,
+        canonicalUrl: canonicalChatGptUrl(tab.url), conversationId: conversationIdFromUrl(tab.url),
+      })),
+    }));
+    state = await store.update({ bindingError });
+  }
   return {
+    startTab: rootPage?.ready && !rootPage.busy && !rootPage.generating ? { tabId: roots[0].id, ready: true } : null,
     connected: authenticated && socket?.readyState === WebSocket.OPEN,
     transportConnected: socket?.readyState === WebSocket.OPEN,
     connecting: socket?.readyState === WebSocket.CONNECTING,
@@ -67,6 +65,7 @@ async function connectionState() {
     tabId: state.tabId,
     conversationUrl: state.conversationUrl,
     bindingStatus: state.bindingStatus,
+    bindingError: state.bindingError,
     currentDeliveryId: state.currentDeliveryId,
     extensionIdentity: state.extensionIdentity || null,
     lastError,
@@ -249,6 +248,7 @@ async function handleControllerMessage(raw) {
           }
           const result = await chrome.tabs.sendMessage(saved.tabId, { type: "agent.recheck", payload: {
             expectedConversationUrl: saved.conversationUrl, expectedConversationId: saved.conversationId,
+            expectedDocumentId: saved.documentId, expectedFrameId: saved.frameId,
             runId: saved.lastBoundRunId, controllerMessageId: completed.turnId,
             userMessageId: completed.evidence?.userMessageId, assistantMessageId: completed.evidence?.assistantMessageId,
           } });
@@ -308,8 +308,14 @@ async function handlePrepare(message, explicitRebind) {
     const session = explicitRebind
       ? await rebindSession(message.payload || {})
       : await prepareBoundSession(message.payload || {});
+    lastError = null;
+    await store.update({ bindingError: null });
+    broadcastPopupState();
     send({ type: "web.session.ready", requestId: message.requestId, payload: { session } });
   } catch (error) {
+    lastError = diagnosticError(error);
+    await store.update({ bindingError: lastError });
+    broadcastPopupState();
     if (error?.code === "SESSION_AUTH_REQUIRED") {
       await store.update({ bindingStatus: "AUTH_REQUIRED" });
     }
@@ -394,9 +400,14 @@ async function handleDeliveryRecovery(message) {
       || expected.conversationUrl !== state.conversationUrl) {
       throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "복구 대상 전송이 변경됐습니다. 준비를 다시 요청하세요.");
     }
-    const matched = matchExactConversationTabs(await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS }), state);
+    const recoveryTabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+    const matched = matchExactConversationTabs(recoveryTabs, state);
     if (matched.status !== "BOUND") {
-      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 대화 탭을 하나만 열어 주세요.");
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 전송을 복구할 대화 탭을 확정할 수 없습니다.", {
+        stage: "RECOVERY_TAB_LOOKUP", matchStatus: matched.status, currentDeliveryId: state.currentDeliveryId,
+        sessionId: state.lastBoundSessionId, runId: state.lastBoundRunId, conversationUrl: state.conversationUrl,
+        storedTabId: state.tabId, candidates: recoveryTabs.map(tab => ({ tabId: tab.id, url: tab.url })),
+      });
     }
     if (state.tabId !== matched.tab.id) {
       await store.update({ tabId: matched.tab.id, windowId: matched.tab.windowId });
@@ -430,20 +441,28 @@ function requireBindingInput(payload) {
   const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
   const runId = typeof payload.runId === "string" ? payload.runId : "";
   const conversationUrl = canonicalChatGptUrl(payload.conversationUrl);
-  const conversationId = typeof payload.conversationId === "string" ? payload.conversationId : "";
-  if (!sessionId || !runId || !conversationUrl || !conversationId) {
+  const suppliedConversationId = typeof payload.conversationId === "string" && payload.conversationId
+    ? payload.conversationId : null;
+  const bootstrap = suppliedConversationId === null
+    && (conversationUrl === "https://chatgpt.com/" || (conversationUrl === null && payload.conversationUrl === null));
+  if (!sessionId || !runId || ((!conversationUrl) && !bootstrap) || (!suppliedConversationId && !bootstrap)) {
     throw new ExtensionOperationError(
       "EXACT_SESSION_BINDING_REQUIRED",
-      "Session ID, run ID, canonical conversation URL, and conversation ID are required.",
+      "Session ID, run ID, and either an exact conversation or the ChatGPT start page are required.",
     );
   }
-  if (conversationIdFromUrl(conversationUrl) !== conversationId) {
+  if (!bootstrap && conversationIdFromUrl(conversationUrl) !== suppliedConversationId) {
     throw new ExtensionOperationError(
       "CONVERSATION_ID_MISMATCH",
       "Conversation URL and conversation ID do not identify the same conversation.",
     );
   }
-  return { sessionId, runId, conversationUrl, conversationId };
+  return {
+    sessionId, runId,
+    conversationUrl: bootstrap ? null : conversationUrl,
+    conversationId: bootstrap ? null : suppliedConversationId,
+    bootstrap,
+  };
 }
 
 async function prepareBoundSession(payload) {
@@ -477,11 +496,61 @@ async function prepareBoundSession(payload) {
       details,
     );
   }
-  const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-  const matched = matchExactConversationTabs(tabs, requested);
+  let matched;
+  if (requested.bootstrap) {
+    const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+    const roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+    if (roots.length === 0) {
+      await store.update({ bindingStatus: "NEEDS_REBIND" });
+      throw new ExtensionOperationError("NEEDS_REBIND", "Open https://chatgpt.com/ in the selected browser tab before starting a new conversation.", {
+        mode: "NEW_CONVERSATION_BOOTSTRAP", rootTabs: [], requestedSessionId: requested.sessionId,
+      });
+    }
+    if (roots.length > 1) {
+      await store.update({ bindingStatus: "AMBIGUOUS" });
+      throw new ExtensionOperationError("AMBIGUOUS", "More than one ChatGPT start page is open; the new conversation source cannot be identified.", {
+        mode: "NEW_CONVERSATION_BOOTSTRAP", rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })),
+      });
+    }
+    const root = roots[0];
+    if (payload.focus) await focusTab(root);
+    await waitForContentScript(root.id, 30_000, true);
+    const page = await chrome.tabs.sendMessage(root.id, { type: "agent.ping" });
+    if (!page?.ready || page.busy || page.generating || page.url !== "https://chatgpt.com/") {
+      throw new ExtensionOperationError("ROOT_NOT_READY", "ChatGPT 새 대화 입력창을 사용할 수 없습니다.", page);
+    }
+    const documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: "https://chatgpt.com/", conversationId: null });
+    await store.update({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
+      tabId: root.id, windowId: root.windowId, conversationUrl: "https://chatgpt.com/", conversationId: null,
+      bindingStatus: "ROOT_READY", bindingError: null });
+    return { ...documentBinding, sessionId: requested.sessionId, runId: requested.runId, tabId: root.id, windowId: root.windowId,
+      conversationUrl: "https://chatgpt.com/", conversationId: null, title: root.title || "ChatGPT",
+      lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "ROOT_READY" };
+  } else {
+    const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+    const preferred = Number.isSafeInteger(state.tabId)
+      ? tabs.find((tab) => tab.id === state.tabId
+        && canonicalChatGptUrl(tab?.url) === requested.conversationUrl
+        && conversationIdFromUrl(tab?.url) === requested.conversationId)
+      : null;
+    matched = preferred
+      ? { status: "BOUND", tab: preferred }
+      : matchExactConversationTabs(tabs, requested);
+  }
   if (matched.status !== "BOUND") {
     await store.update({ bindingStatus: matched.status });
-    throw new ExtensionOperationError(matched.status, "The exact ChatGPT conversation tab could not be uniquely recovered.");
+    throw new ExtensionOperationError(matched.status, "The exact ChatGPT conversation tab could not be uniquely recovered.", {
+      mode: "EXACT_CONVERSATION_RECOVERY", requested: {
+        sessionId: requested.sessionId, runId: requested.runId,
+        conversationUrl: requested.conversationUrl, conversationId: requested.conversationId,
+      }, persisted: {
+        tabId: state.tabId, windowId: state.windowId, conversationUrl: state.conversationUrl,
+        conversationId: state.conversationId, bindingStatus: state.bindingStatus,
+      }, candidates: (await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS })).map((tab) => ({
+        tabId: tab.id, windowId: tab.windowId, url: tab.url,
+        canonicalUrl: canonicalChatGptUrl(tab.url), conversationId: conversationIdFromUrl(tab.url),
+      })),
+    });
   }
   if (payload.focus === true) await focusTab(matched.tab);
   await waitForContentScript(matched.tab.id, 30_000, true);
@@ -511,7 +580,9 @@ async function rebindSession(payload) {
 }
 
 async function persistBoundTab(tab, requested) {
+  const documentBinding = await inspectBoundDocument(chrome.tabs, tab.id, requested);
   await store.update({
+    ...documentBinding,
     lastBoundSessionId: requested.sessionId,
     lastBoundRunId: requested.runId,
     conversationUrl: requested.conversationUrl,
@@ -532,7 +603,7 @@ async function requireExactBoundTab(expectedTurn = null) {
   try {
     tab = await chrome.tabs.get(state.tabId);
   } catch {
-    await store.update({ bindingStatus: "NEEDS_REBIND", tabId: null, windowId: null });
+    await store.update({ bindingStatus: "NEEDS_REBIND", tabId: null, windowId: null, documentId: null, frameId: null });
     throw new ExtensionOperationError("NEEDS_REBIND", "The bound ChatGPT tab no longer exists.");
   }
   if (
@@ -554,16 +625,6 @@ async function requireExactBoundTab(expectedTurn = null) {
       conversationIdFromUrl(tab.url),
     );
   }
-  const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-  const unique = matchExactConversationTabs(tabs, state);
-  if (unique.status !== "BOUND" || unique.tab.id !== state.tabId) {
-    await store.update({ bindingStatus: "AMBIGUOUS" });
-    throw new ExtensionOperationError(
-      "MANUAL_INTERVENTION_DETECTED",
-      "The bound conversation is no longer represented by exactly one expected tab.",
-      { bindingStatus: unique.status },
-    );
-  }
   if (expectedTurn) assertTurnStateBinding(expectedTurn, await store.read());
   return tab;
 }
@@ -582,7 +643,6 @@ async function handlePrompt(message) {
     });
     return;
   }
-
   const payload = message.payload || {};
   try {
     const state = await store.read();
@@ -607,22 +667,26 @@ async function handlePrompt(message) {
         { currentDeliveryId: state.currentDeliveryId },
       );
     }
-
     const reservedState = await store.reserveDelivery(message.requestId);
     deliveryReserved = true;
-    const frozenTurn = captureTurnBinding(reservedState, {
+    const bootstrap = reservedState.bindingStatus === "ROOT_READY";
+    const turnIdentity = {
       requestId: message.requestId,
       controllerMessageId: payload.controllerMessageId,
       runId: payload.runId,
-    });
+    };
+    let frozenTurn = bootstrap ? null : captureTurnBinding(reservedState, turnIdentity);
     broadcastPopupState();
-    const tab = await requireExactBoundTab(frozenTurn);
+    const tab = bootstrap ? await chrome.tabs.get(reservedState.tabId) : await requireExactBoundTab(frozenTurn);
+    if (bootstrap && canonicalChatGptUrl(tab.url) !== "https://chatgpt.com/") throw new ExtensionOperationError("ROOT_CHANGED", "선택한 새 대화 탭의 주소가 변경되었습니다.");
     await waitForContentScript(tab.id);
     const markedText = createControlledPrompt({
       controllerMessageId: payload.controllerMessageId,
       runId: payload.runId,
       text: payload.text,
     });
+    if (!reservedState.documentId || reservedState.frameId !== 0) throw new ExtensionOperationError("WEB_DOCUMENT_CHANGED", "Prepare the current ChatGPT document before sending.");
+    await inspectBoundDocument(chrome.tabs, tab.id, reservedState);
     contentDispatchStarted = true;
     const result = await chrome.tabs.sendMessage(tab.id, {
       type: "agent.prompt",
@@ -633,6 +697,8 @@ async function handlePrompt(message) {
         runId: payload.runId,
         expectedConversationUrl: state.conversationUrl,
         expectedConversationId: state.conversationId,
+        expectedDocumentId: reservedState.documentId,
+        expectedFrameId: reservedState.frameId,
         timeoutMs: payload.timeoutMs,
         stableMs: payload.stableMs,
       },
@@ -644,6 +710,20 @@ async function handlePrompt(message) {
         result?.evidence || null,
       );
     }
+    if (bootstrap) {
+      const current = await store.read();
+      const observed = await chrome.tabs.get(tab.id);
+      const url = canonicalChatGptUrl(observed.url), id = conversationIdFromUrl(url);
+      if (current.currentDeliveryId !== message.requestId || current.lastBoundSessionId !== reservedState.lastBoundSessionId
+        || current.lastBoundRunId !== reservedState.lastBoundRunId
+        || current.documentId !== reservedState.documentId || current.frameId !== reservedState.frameId
+        || result.evidence?.documentId !== reservedState.documentId || result.evidence?.frameId !== reservedState.frameId
+        || current.tabId !== tab.id || !id || result.evidence?.conversationUrl !== url || result.evidence?.conversationId !== id) {
+        throw new ExtensionOperationError("TURN_BINDING_CHANGED", "새 대화 생성 결과와 전송한 탭의 식별자가 일치하지 않습니다.");
+      }
+      await store.update({ conversationUrl: url, conversationId: id, bindingStatus: "BOUND" });
+      frozenTurn = captureTurnBinding(await store.read(), turnIdentity);
+    }
     assertRelaySafeCompletion(result, frozenTurn);
     assertTurnStateBinding(frozenTurn, await store.read());
     await store.update({
@@ -652,7 +732,9 @@ async function handlePrompt(message) {
     });
     const session = await getSessionInfo(frozenTurn);
     assertTurnSessionBinding(frozenTurn, session);
+    const trace = createSuccessTrace(message.requestId, session);
     await store.update({ completedDelivery: {
+      trace,
       turnId: message.requestId, binding: session, rawText: result.text,
       confidence: result.confidence, confidenceReason: result.confidenceReason ?? null, evidence: result.evidence,
     } });
@@ -667,6 +749,7 @@ async function handlePrompt(message) {
         confidence: result.confidence,
         confidenceReason: result.confidenceReason ?? null,
         evidence: result.evidence,
+        trace,
         session,
       },
     });
@@ -680,6 +763,8 @@ async function handlePrompt(message) {
     lastError = error.message;
     if (error.code === "SESSION_AUTH_REQUIRED") {
       await store.update({ bindingStatus: "AUTH_REQUIRED" });
+    } else if (error.code === "WEB_DOCUMENT_CHANGED") {
+      await store.update({ bindingStatus: "NEEDS_REBIND", bindingError: diagnosticError(error) });
     } else if (["MANUAL_INTERVENTION_DETECTED", "TURN_BINDING_CHANGED"].includes(error.code)) {
       await store.update({ bindingStatus: "AMBIGUOUS" });
     }
@@ -699,7 +784,6 @@ async function handlePrompt(message) {
     }
   }
 }
-
 async function cancelPrompt(requestId) {
   const state = await store.read();
   if (state.currentDeliveryId !== requestId || state.tabId === null) return;
@@ -726,12 +810,15 @@ async function getSessionInfo(expectedTurn = null) {
   if (expectedTurn) assertTurnStateBinding(expectedTurn, state);
   const tab = await requireExactBoundTab(expectedTurn);
   const finalState = await store.read();
+  await inspectBoundDocument(chrome.tabs, tab.id, finalState);
   if (expectedTurn) assertTurnStateBinding(expectedTurn, finalState);
   const session = {
     sessionId: finalState.lastBoundSessionId,
     runId: finalState.lastBoundRunId,
     tabId: tab.id,
     windowId: tab.windowId,
+    documentId: finalState.documentId,
+    frameId: finalState.frameId,
     conversationUrl: finalState.conversationUrl,
     conversationId: finalState.conversationId,
     title: tab.title || "ChatGPT",
@@ -843,7 +930,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   void store.read().then(async (state) => {
     if (tabId !== state.tabId) return;
-    await store.update({ tabId: null, windowId: null, bindingStatus: "NEEDS_REBIND" });
+    await store.update({ tabId: null, windowId: null, documentId: null, frameId: null, bindingStatus: "NEEDS_REBIND" });
     if (authenticated) send({ type: "extension.state", payload: { session: null, busy: turnGate.active } });
     broadcastPopupState();
   });
@@ -852,11 +939,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 async function inspectBoundTabTopology(triggerTabId = null) {
   const state = await store.read();
   if (state.bindingStatus !== "BOUND") return;
-  const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-  const matched = matchExactConversationTabs(tabs, state);
-  const stillExact = matched.status === "BOUND" && matched.tab.id === state.tabId;
+  let tab;
+  try { tab = await chrome.tabs.get(state.tabId); } catch { tab = null; }
+  const stillExact = tab
+    && canonicalChatGptUrl(tab.url) === state.conversationUrl
+    && conversationIdFromUrl(tab.url) === state.conversationId;
   if (stillExact) return;
   await store.update({ bindingStatus: "AMBIGUOUS" });
+  lastError = diagnosticError(new ExtensionOperationError("AMBIGUOUS", "The persisted ChatGPT tab no longer matches the bound conversation.", {
+    mode: "BOUND_TAB_TOPOLOGY", persistedTabId: state.tabId, persistedUrl: state.conversationUrl,
+    persistedConversationId: state.conversationId, observedTabId: tab?.id ?? null,
+    observedUrl: tab?.url ?? null, observedConversationId: conversationIdFromUrl(tab?.url),
+  }));
+  await store.update({ bindingError: lastError });
+  broadcastPopupState();
   if (state.currentDeliveryId && state.tabId !== null) {
     await chrome.tabs.sendMessage(state.tabId, {
       type: "agent.cancel",

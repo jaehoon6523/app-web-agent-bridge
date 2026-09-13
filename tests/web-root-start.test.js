@@ -1,0 +1,64 @@
+import * as documentBinding from "../extension/runtime/document-binding.js";
+import test from "node:test";
+import assert from "node:assert/strict";
+import vm from "node:vm";
+import { readFileSync } from "node:fs";
+import * as conversation from "../extension/runtime/conversation.js";
+import * as guards from "../extension/runtime/turn-guard.js";
+import { createControlledPrompt } from "../extension/runtime/markers.js";
+
+const source = readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
+test("content sends on root before resolving the created conversation", async () => {
+  const content = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
+  const location = { href: "https://chatgpt.com/" }, order = [];
+  const context = vm.createContext({ ...documentBinding, location, currentJob: null, AbortController, DOMException,
+    canonicalConversationUrl: conversation.canonicalChatGptUrl, conversationIdFromUrl: conversation.conversationIdFromUrl,
+    assertExpectedDocument: payload => { assert.equal(payload.expectedDocumentId, "document-1"); assert.equal(payload.expectedFrameId, 0); },
+    requireSelectorRegistry() {}, selectorTelemetry: new Map(), messageSnapshot: () => [],
+    parseMarkers: () => ({ controllerMessageId: "d1", runId: "r1" }),
+    assertExpectedConversation: url => assert.equal(url, location.href),
+    inspectPageState: () => ({ status: "READY" }),
+    ContentContractError: class extends Error {},
+    submitPrompt: async () => { assert.equal(location.href, "https://chatgpt.com/"); order.push("sent"); location.href = "https://chatgpt.com/c/new"; },
+    waitForControlledUserMessage: async expected => { assert.equal(expected.expectedConversationId, "new"); order.push("associated"); return { id: "u1" }; },
+    waitForAssistantResponse: async ({ expected }) => { order.push("response"); return expected.expectedConversationUrl; },
+  });
+  vm.runInContext(content.slice(content.indexOf("async function executePrompt("), content.indexOf("function cancelCurrentJob(")), context);
+  const result = await context.executePrompt("d1", { text: "request", controllerMessageId: "d1", runId: "r1", expectedConversationUrl: location.href, expectedConversationId: null, expectedDocumentId: "document-1", expectedFrameId: 0 });
+  assert.equal(result, "https://chatgpt.com/c/new");
+  assert.deepEqual(order, ["sent", "associated", "response"]);
+});
+test("root prepare returns without navigation; first delivery sends once and persists created conversation", async () => {
+  const state = { tabId: 99, bindingStatus: "AMBIGUOUS", currentDeliveryId: null };
+  const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/" };
+  const sent = [], prompts = [];
+  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, createControlledPrompt,
+    console, Number, Date, setTimeout, clearTimeout, lastError: null,
+    CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
+    turnGate: guards.createActiveTurnGate(), authenticated: false,
+    broadcastPopupState() {}, waitForContentScript: async () => {}, focusTab: async () => {},
+    send: m => sent.push(m), errorPayload: e => ({ code: e.code, message: e.message }),
+    ExtensionOperationError: class extends Error { constructor(code, message, details) { super(message); this.code = code; this.details = details; } },
+    store: { read: async () => ({ ...state }), update: async p => Object.assign(state, p),
+      reserveDelivery: async id => { state.currentDeliveryId = id; return { ...state }; },
+      clearDelivery: async () => { state.currentDeliveryId = null; } },
+    chrome: { tabs: { query: async () => [tab], get: async () => ({ ...tab }), sendMessage: async (_id, m) => {
+      if (m.type === "agent.ping") return { ok: true, ready: true, url: tab.url, conversationId: conversation.conversationIdFromUrl(tab.url), documentId: "document-1", frameId: 0 };
+      prompts.push(m);
+      assert.equal(tab.url, "https://chatgpt.com/");
+      tab.url = "https://chatgpt.com/c/created";
+      return { ok: true, text: "reply", confidence: "CONFIRMED_BY_UI_STATE",
+        evidence: { documentId: "document-1", frameId: 0, conversationUrl: tab.url, conversationId: "created", userMessageId: "u1", assistantMessageId: "a1" } };
+    } } },
+  });
+  vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function focusTab(")), context);
+  const ready = await context.prepareBoundSession({ sessionId: "s1", runId: "r1", conversationUrl: null, conversationId: null });
+  assert.equal(ready.bindingStatus, "ROOT_READY");
+  assert.equal(prompts.length, 0);
+  await context.handlePrompt({ requestId: "d1", payload: { runId: "r1", controllerMessageId: "d1", text: "request" } });
+  assert.equal(prompts.length, 1);
+  assert.equal(sent[0]?.type, "web.prompt.result", JSON.stringify(sent));
+  assert.equal(state.conversationId, "created");
+  assert.equal(state.completedDelivery.turnId, "d1");
+  assert.equal(state.currentDeliveryId, "d1");
+});

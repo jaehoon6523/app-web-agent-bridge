@@ -11,6 +11,15 @@ const CHATGPT_HOSTS = new Set(["chatgpt.com"]);
 const selectorTelemetry = new Map();
 
 let currentJob = null;
+// A content-script document token, not a Chrome navigation documentId.
+const DOCUMENT_ID = crypto.randomUUID();
+const FRAME_ID = window === window.top ? 0 : null;
+
+function assertExpectedDocument(payload) {
+  if (payload?.expectedDocumentId !== DOCUMENT_ID || payload?.expectedFrameId !== 0 || FRAME_ID !== 0) {
+    throw new ContentContractError("WEB_DOCUMENT_CHANGED", "The bound ChatGPT document changed; prepare the session again.");
+  }
+}
 
 class ContentContractError extends Error {
   constructor(code, message, evidence = null) {
@@ -282,12 +291,16 @@ async function waitForEnabledSend(signal) {
   );
 }
 
-async function submitPrompt(text, signal) {
+async function submitPrompt(text, signal, expected) {
   const composer = await waitForVisible("composer", 30_000, signal);
+  assertExpectedDocument(expected);
+  assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
   composer.element.focus();
   setNativeValue(composer.element, text);
   await sleep(250, signal);
   const sendButton = await waitForEnabledSend(signal);
+  assertExpectedDocument(expected);
+  assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
   sendButton.element.click();
 }
 
@@ -363,12 +376,29 @@ function locateAssociatedAssistant(
     return { status: "WAITING" };
   }
 
-  // Virtualized histories may remove the user turn. Only one new assistant DOM ID is safe enough for HEURISTIC evidence.
+  // Virtualized histories may remove the user turn. Recover the association only
+  // when the submitted turn produced exactly one new assistant and that
+  // assistant is the last visible message. This keeps the fallback tied to the
+  // current turn instead of treating an arbitrary new assistant as a match.
   const candidates = messages.filter((message) => (
     message.role === "assistant" && message.id && !baselineAssistantIds.has(message.id)
   ));
   if (candidates.length > 1) return { status: "AMBIGUOUS" };
-  if (candidates.length === 1) return { status: "MATCHED", message: candidates[0], virtualizedUser: true };
+  if (candidates.length === 1) {
+    const candidate = candidates[0];
+    const isLastVisibleMessage = messages.at(-1) === candidate;
+    const hasLaterUserMessage = messages.some((message) => (
+      message.role === "user" && message.index > candidate.index
+    ));
+    if (isLastVisibleMessage && !hasLaterUserMessage) {
+      return {
+        status: "MATCHED",
+        message: candidate,
+        virtualizedUser: true,
+        virtualizedAssociationConfirmed: true,
+      };
+    }
+  }
   return { status: "WAITING" };
 }
 
@@ -409,6 +439,7 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
   let lastTextChangeAt = Date.now();
   let lastProgressAt = 0;
   let virtualizedUser = false;
+  let virtualizedAssociationConfirmed = false;
   let lastDomMutationAt = Date.now();
   const observer = new MutationObserver(() => {
     lastDomMutationAt = Date.now();
@@ -422,6 +453,7 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
   try {
     while (Date.now() < deadline) {
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      assertExpectedDocument(expected);
       assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
       const page = inspectPageState();
       if (page.status !== "READY") {
@@ -461,6 +493,7 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
         assistantId = candidate.id;
         assistantElement = candidate.element;
         virtualizedUser ||= association.virtualizedUser;
+        virtualizedAssociationConfirmed ||= association.virtualizedAssociationConfirmed === true;
         const text = elementText(assistantElement);
         if (text !== lastText) {
           lastText = text;
@@ -476,6 +509,8 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
           payload: {
             text: lastText,
             evidence: {
+              documentId: DOCUMENT_ID,
+              frameId: FRAME_ID,
               userMessageId: userMessage.id,
               assistantMessageId: assistantId,
               conversationUrl: canonicalConversationUrl(location.href),
@@ -501,19 +536,29 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
         && Date.now() - lastTextChangeAt >= stableMs
         && Date.now() - lastDomMutationAt >= stableMs;
       if (stable && !stopVisible && sendConfirmed) {
-        const confidence = virtualizedUser ? "HEURISTIC" : "CONFIRMED_BY_UI_STATE";
+        const confidence = virtualizedUser && !virtualizedAssociationConfirmed
+          ? "HEURISTIC"
+          : "CONFIRMED_BY_UI_STATE";
         return {
           text: lastText,
           confidence,
           confidenceReason: virtualizedUser
-            ? "VIRTUALIZED_USER_DOM_UNCERTAIN"
+            ? (virtualizedAssociationConfirmed
+              ? "VIRTUALIZED_USER_RECOVERED_BY_LAST_ASSISTANT"
+              : "VIRTUALIZED_USER_DOM_UNCERTAIN")
             : "DIRECT_DOM_ORDER_CONFIRMED",
           evidence: {
+            documentId: DOCUMENT_ID,
+            frameId: FRAME_ID,
             userMessageId: userMessage.id,
             assistantMessageId: assistantId,
             conversationUrl: canonicalConversationUrl(location.href),
             conversationId: conversationIdFromUrl(location.href),
-            responseAssociation: virtualizedUser ? "VIRTUALIZED_USER_HEURISTIC" : "DIRECT_DOM_ORDER",
+            responseAssociation: virtualizedUser
+              ? (virtualizedAssociationConfirmed
+                ? "VIRTUALIZED_USER_LAST_ASSISTANT"
+                : "VIRTUALIZED_USER_HEURISTIC")
+              : "DIRECT_DOM_ORDER",
             stopButtonVisible: stopVisible,
             sendButtonState: sendState.state,
             sendButtonEnabled: sendState.state === "ENABLED" ? true : sendState.state === "DISABLED" ? false : null,
@@ -543,6 +588,7 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
 }
 
 async function executePrompt(requestId, payload) {
+  assertExpectedDocument(payload);
   if (currentJob) throw new ContentContractError("WEB_SESSION_BUSY", "Another ChatGPT prompt is active in this tab.");
   requireSelectorRegistry();
   const text = String(payload?.text || "");
@@ -550,9 +596,12 @@ async function executePrompt(requestId, payload) {
     controllerMessageId: String(payload?.controllerMessageId || ""),
     runId: String(payload?.runId || ""),
     expectedConversationUrl: canonicalConversationUrl(payload?.expectedConversationUrl),
-    expectedConversationId: String(payload?.expectedConversationId || ""),
+    expectedConversationId: payload?.expectedConversationId || null,
+    expectedDocumentId: payload.expectedDocumentId,
+    expectedFrameId: payload.expectedFrameId,
   };
-  if (!text.trim() || !expected.controllerMessageId || !expected.runId || !expected.expectedConversationUrl || !expected.expectedConversationId) {
+  const bootstrap = expected.expectedConversationUrl === "https://chatgpt.com/" && expected.expectedConversationId === null;
+  if (!text.trim() || !expected.controllerMessageId || !expected.runId || !expected.expectedConversationUrl || (!expected.expectedConversationId && !bootstrap)) {
     throw new ContentContractError("INVALID_DELIVERY", "Prompt and exact delivery binding are required.");
   }
   const markers = parseMarkers(text);
@@ -573,7 +622,18 @@ async function executePrompt(requestId, payload) {
   selectorTelemetry.clear();
   try {
     const baseline = messageSnapshot();
-    await submitPrompt(text, abortController.signal);
+    await submitPrompt(text, abortController.signal, expected);
+    if (bootstrap) {
+      const deadline = Date.now() + 30_000;
+      while (!conversationIdFromUrl(location.href) && Date.now() < deadline) {
+        if (abortController.signal.aborted) throw new DOMException("Cancelled", "AbortError");
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      const id = conversationIdFromUrl(location.href);
+      if (!id) throw new ContentContractError("NEW_CONVERSATION_TIMEOUT", "첫 메시지 전송 후 대화 주소가 생성되지 않았습니다. 자동 재전송하지 않습니다.");
+      expected.expectedConversationUrl = canonicalConversationUrl(location.href);
+      expected.expectedConversationId = id;
+    }
     const userMessage = await waitForControlledUserMessage(expected, baseline, abortController.signal);
     return await waitForAssistantResponse({
       expected,
@@ -629,6 +689,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       generating: Boolean(firstVisible("stopButton")),
       pageStatus: page.status,
       selectorVersion: registry?.version ?? null,
+      documentId: DOCUMENT_ID,
+      frameId: FRAME_ID,
     });
     return false;
   }
@@ -637,6 +699,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const expected = message.payload;
     void (async () => {
       if (currentJob) throw new ContentContractError("WEB_SESSION_BUSY", "페이지가 다른 요청을 처리 중입니다.");
+      assertExpectedDocument(expected);
       assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
       const baseline = messageSnapshot();
       const matches = baseline.filter(item => item.id === expected.userMessageId && isExpectedUser(item, expected));

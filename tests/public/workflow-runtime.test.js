@@ -4,21 +4,51 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { normalizeDashboardState } from "../../public/dashboard-model.js";
 
-async function dashboard(state, mutate = async () => ({})) {
+export async function dashboard(state, mutate = async () => ({})) {
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
   const source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const elements = new Map(), all = [], calls = [];
   class Element {
-    constructor() {
+    constructor(tagName = "") {
+      this.tagName = String(tagName).toUpperCase();
       this.children = []; this.listeners = {}; this.dataset = {}; this.value = "";
       this.checked = false; this.hidden = false; this.textContent = ""; this.attributes = {};
-      this.classList = { toggle() {} };
+      this.classList = {
+        add: (...names) => { for (const name of names) this.className = `${this.className ?? ""} ${name}`.trim(); },
+        remove: (...names) => { this.className = String(this.className ?? "").split(/\s+/u).filter((name) => !names.includes(name)).join(" "); },
+        contains: (name) => String(this.className ?? "").split(/\s+/u).includes(name),
+        toggle: () => {},
+      };
       all.push(this);
     }
     set id(value) { this._id = value; elements.set(value, this); }
     get id() { return this._id; }
     append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
     prepend(child) { if (!this.children.includes(child)) this.children.unshift(child); child.parentElement = this; }
+    after(...siblings) {
+      const parent = this.parentElement;
+      if (!parent) return;
+      const index = parent.children.indexOf(this);
+      parent.children.splice(index + 1, 0, ...siblings);
+      for (const sibling of siblings) sibling.parentElement = parent;
+    }
+    get nextElementSibling() {
+      if (!this.parentElement) return null;
+      const index = this.parentElement.children.indexOf(this);
+      return this.parentElement.children[index + 1] ?? null;
+    }
+    querySelectorAll(selector) {
+      const descendants = [];
+      const visit = (element) => {
+        for (const child of element.children) {
+          if (selector === "p" && child.tagName === "P") descendants.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return descendants;
+    }
+    focus() {}
     replaceChildren(...children) { this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = value; }
     removeAttribute(key) { delete this.attributes[key]; }
@@ -31,7 +61,7 @@ async function dashboard(state, mutate = async () => ({})) {
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
     document: {
       getElementById: (id) => elements.get(id),
-      createElement: () => new Element(), addEventListener() {},
+      createElement: (tagName) => new Element(tagName), addEventListener() {},
       querySelectorAll: () => all.filter((element) => element.dataset.webCommand),
       querySelector: (selector) => selector === ".session-recovery" ? all.findLast(element => element.className === "session-recovery") ?? null : null,
     },

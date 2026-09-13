@@ -8,15 +8,18 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   conversationId: null,
   tabId: null,
   windowId: null,
+  documentId: null,
+  frameId: null,
   currentDeliveryId: null,
   completedDelivery: null,
   lastObservedUserMessageId: null,
   lastObservedAssistantMessageId: null,
+  bindingError: null,
   bindingStatus: "NEEDS_REBIND",
 });
 
 const STORED_KEYS = Object.freeze(Object.keys(DEFAULT_EXTENSION_CONFIG));
-const BINDING_STATUSES = new Set(["BOUND", "NEEDS_REBIND", "AUTH_REQUIRED", "AMBIGUOUS"]);
+const BINDING_STATUSES = new Set(["ROOT_READY", "BOUND", "NEEDS_REBIND", "AUTH_REQUIRED", "AMBIGUOUS"]);
 
 export class ExtensionStateError extends Error {
   constructor(code, message, details = null) {
@@ -48,22 +51,28 @@ export function normalizeExtensionState(value = {}) {
     conversationId: nullableString(value.conversationId),
     tabId: nullableInteger(value.tabId),
     windowId: nullableInteger(value.windowId),
+    documentId: nullableString(value.documentId),
+    frameId: nullableInteger(value.frameId),
     currentDeliveryId: nullableString(value.currentDeliveryId),
     completedDelivery: value.completedDelivery && typeof value.completedDelivery === "object"
       ? structuredClone(value.completedDelivery) : null,
     lastObservedUserMessageId: nullableString(value.lastObservedUserMessageId),
     lastObservedAssistantMessageId: nullableString(value.lastObservedAssistantMessageId),
+    bindingError: nullableString(value.bindingError),
     bindingStatus: BINDING_STATUSES.has(value.bindingStatus)
       ? value.bindingStatus
       : "NEEDS_REBIND",
   };
   if (
-    state.bindingStatus === "BOUND"
+    ["BOUND", "ROOT_READY"].includes(state.bindingStatus)
     && (
       state.tabId === null
       || state.windowId === null
       || state.conversationUrl === null
-      || state.conversationId === null
+      || state.documentId === null
+      || state.frameId !== 0
+      || (state.bindingStatus === "BOUND" && state.conversationId === null)
+      || (state.bindingStatus === "ROOT_READY" && (state.conversationUrl !== "https://chatgpt.com/" || state.conversationId !== null))
       || state.lastBoundSessionId === null
       || state.lastBoundRunId === null
     )

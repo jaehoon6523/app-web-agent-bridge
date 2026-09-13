@@ -297,7 +297,7 @@ export function createBridgeServer({
   };
   app.post("/api/preparations", requireDashboardMutation, preparationRoute("preparation.start"));
   app.post("/api/preparations/web", requireDashboardMutation, preparationRoute("web"));
-  for (const action of ["reply", "approve", "cancel"]) {
+  for (const action of ["reply", "approve", "cancel", "discard"]) {
     app.post("/api/preparations/:id/" + action, requireDashboardMutation, preparationRoute("preparation." + action));
   }
 

@@ -17,8 +17,15 @@ function fixture(t) {
   const runs = new Map(), calls = [];
   let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {};
   const web = {
-    async resume(input) { validateWebSessionBinding(input.binding); binding = { ...input.binding, bindingStatus: "BOUND", tabId: 1, windowId: 2 }; calls.push(binding.sessionId); return binding; },
+    async resume(input) {
+      validateWebSessionBinding(input.binding);
+      binding = input.binding.conversationUrl === null
+        ? { ...input.binding, conversationUrl: "https://chatgpt.com/", conversationId: null, bindingStatus: "ROOT_READY", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 }
+        : { ...input.binding, bindingStatus: "BOUND", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 };
+      calls.push(binding.sessionId); return binding;
+    },
     async submitTurn(input) {
+      if (binding.bindingStatus === "ROOT_READY") binding = { ...binding, conversationUrl: "https://chatgpt.com/c/new-conversation", conversationId: "new-conversation", bindingStatus: "BOUND" };
       active = input.turnId; count++;
       const parsed = count === 1 ? { type: "REQUIREMENTS_PROPOSAL", summary: "무엇을 만들까요?", questions: ["원하는 기능?"], items: [] }
         : { type: "REQUIREMENTS_PROPOSAL", summary: "채팅", questions: [], items: [{ statement: "메시지 전송", acceptanceCriteria: "목록에 한 번 표시" }] };
@@ -50,6 +57,21 @@ function fixture(t) {
     command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), expectedVersion: service.current.version, preparationId: service.current.preparationId, ...extras }); },
   };
 }
+test("unresolved delivery can be explicitly discarded with confirmations and remains auditable", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const before = f.service.current;
+  const deliveryId = before.webSession.activeDeliveryId;
+  await f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Original conversation is unavailable." });
+  const after = f.service.current;
+  const delivery = after.deliveries.find((item) => item.deliveryId === deliveryId);
+  assert.equal(delivery.state, "RECOVERY_DISCARDED");
+  assert.equal(after.webSession.activeDeliveryId, null);
+  assert.equal(after.lifecycle, "ABANDONED");
+  assert.equal(after.recovery.kind, "RECOVERY_DISCARDED");
+  assert.equal(after.recovery.evidence.conversationUrl, before.webSession.conversationUrl);
+  assert.ok(after.recovery.at);
+});
 test("start returns server identity before dispatch; question-only reply retains session and discussion", async (t) => {
   const f = fixture(t), first = await f.start();
   assert.equal(f.calls.length, 0);
@@ -65,6 +87,20 @@ test("start returns server identity before dispatch; question-only reply retains
   assert.equal(f.service.current.state, "AGREEMENT_READY");
   assert.deepEqual(f.service.current.discussion.map((turn) => turn.sequence), [1, 2, 3, 4]);
   assert.equal(fs.existsSync(path.join(f.root, ".git")), false);
+});
+
+test("ChatGPT start page bootstraps a newly created exact conversation", async (t) => {
+  const f = fixture(t);
+  const first = await f.service.execute("preparation.start", {
+    requestId: "start-root", expectedVersion: 0, objective: "아무거나", targetRoot: f.root,
+    conversationUrl: "https://chatgpt.com/",
+  });
+  assert.equal(first.conversationUrl, "https://chatgpt.com/");
+  assert.equal(first.webSession.conversationUrl, null);
+  await settled(f.service);
+  assert.equal(f.service.current.state, "DISCUSSING");
+  assert.equal(f.service.current.conversationUrl, "https://chatgpt.com/c/new-conversation");
+  assert.equal(f.service.current.webSession.conversationId, "new-conversation");
 });
 
 test("connection must succeed before entering preparation; absent tab never sends or enables approval", async (t) => {
@@ -136,7 +172,7 @@ test("run transitions preserve in-progress and terminal meaning across frontend 
   }
 });
 
-test("heuristic response preserves evidence and explains the precise failure without advancing", async (t) => {
+test("heuristic response with a valid final controller packet is accepted", async (t) => {
   const f = fixture(t), submit = f.web.submitTurn;
   f.web.submitTurn = async (input) => {
     const handle = await submit(input);
@@ -144,13 +180,11 @@ test("heuristic response preserves evidence and explains the precise failure wit
   };
   await f.start(); await settled(f.service);
   const context = f.service.current;
-  assert.equal(context.error.code, "COMPLETION_EVIDENCE_MISMATCH");
-  assert.deepEqual(context.error.details.checks.map(item => item.name), ["응답 신뢰도"]);
-  assert.equal(context.error.details.checks[0].actual, "HEURISTIC");
+  assert.equal(context.error, null);
   assert.ok(context.deliveries[0].response);
-  assert.ok(context.webSession.activeDeliveryId);
-  assert.equal(context.discussion.length, 1);
-  assert.equal((await f.service.project({ runs: [], run: null, commandCapabilities: [] })).workflow.stage, "START");
+  assert.equal(context.webSession.activeDeliveryId, null);
+  assert.equal(context.discussion.length, 2);
+  assert.equal((await f.service.project({ runs: [], run: null, commandCapabilities: [] })).workflow.stage, "PREPARE");
   assert.ok(!f.service.capabilities().includes("preparation.approve"));
 });
 
