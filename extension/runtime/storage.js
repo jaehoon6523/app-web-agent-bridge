@@ -63,6 +63,16 @@ export function normalizeExtensionState(value = {}) {
       ? value.bindingStatus
       : "NEEDS_REBIND",
   };
+  // Old bridge-test fixtures must never block a real preparation forever.
+  // Their synthetic identity is deliberately narrow so real unresolved turns remain recoverable.
+  if (/^manual_session_\d+$/u.test(state.lastBoundSessionId ?? "")
+    && /^manual_run_\d+$/u.test(state.lastBoundRunId ?? "")
+    && /^turn_\d+$/u.test(state.currentDeliveryId ?? "")) {
+    state.currentDeliveryId = null;
+    state.completedDelivery = null;
+    state.bindingStatus = "NEEDS_REBIND";
+    state.bindingError = "Legacy bridge-test delivery was cleared before a new preparation.";
+  }
   if (
     ["BOUND", "ROOT_READY"].includes(state.bindingStatus)
     && (
