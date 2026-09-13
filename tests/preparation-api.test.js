@@ -51,7 +51,10 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
             trace: { requestId: active, actionId: active, result: "success", tabId: binding.tabId,
               bindingId: `${binding.sessionId}:${binding.runId}`, documentId: binding.documentId, frameId: binding.frameId } });
         }
-        if (message.type === "web.delivery.inspect") reply("web.delivery.inspected", {
+        if (message.type === "web.delivery.inspect" && !binding) reply("web.delivery.inspected", { currentDeliveryId: null,
+          sessionId: null, runId: null, conversationUrl: null, conversationId: null,
+          pageReachable: true, pageBusy: false, generating: false, extensionBusy: false });
+        if (message.type === "web.delivery.inspect" && binding) reply("web.delivery.inspected", {
           currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
           conversationUrl: binding.conversationUrl, conversationId: binding.conversationId, observedConversationUrl: binding.conversationUrl,
           pageReachable: true, pageBusy: false, generating: false, extensionBusy: false, pageStatus: "READY",
