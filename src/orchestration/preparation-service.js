@@ -157,6 +157,11 @@ export class PreparationService {
         fail("Confirm that the original result was not observed and will not be resent.", "DISCARD_CONFIRMATION_REQUIRED");
       }
       if (typeof input.reason !== "string" || input.reason.trim().length < 3) fail("Enter a discard reason.", "INVALID_INPUT");
+      const blocking = context.error?.details?.currentDeliveryId ? context.error.details : null;
+      if (blocking && this.web.discardDelivery) {
+        await this.web.discardDelivery({ ...blocking, unresolvedResultConfirmed: true,
+          noAutomaticResendConfirmed: true, reason: input.reason.trim() });
+      }
       delivery.state = "RECOVERY_DISCARDED";
       delivery.discardedAt = stamp(); delivery.discardReason = input.reason.trim();
       delivery.discardEvidence = { sessionId: delivery.sessionId, conversationId: delivery.conversationId,

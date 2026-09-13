@@ -572,6 +572,13 @@ export class ChatGptWebSessionAdapter {
     this.#transport.send({ type: "web.delivery.ack", requestId: turnId });
   }
 
+  async discardDelivery(expected) {
+    const message = await this.#request({ type: "web.delivery.discard", payload: expected },
+      new Set(["web.delivery.discarded", "web.session.error"]), 10_000);
+    if (message.type === "web.session.error") throw this.#messageError(message);
+    return message.payload;
+  }
+
   async recoverDelivery(expected) {
     if (this.#activeTurnId !== null || this.#sessionOperation !== null || this.#pending.size > 0) {
       throw new WebProtocolError("A Web session operation is already active", "WEB_SESSION_BUSY");
