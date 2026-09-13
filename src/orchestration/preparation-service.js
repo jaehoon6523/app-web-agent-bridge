@@ -251,7 +251,8 @@ export class PreparationService {
     const runId = context.preparationId;
     session.bindingState = "BINDING"; this.touch(context);
     console.info("[bridge:preparation:binding]", { preparationId: runId, sessionId: session.sessionId, deliveryId });
-    const request = { focus: true, binding: createWebSessionBinding({
+    // Preparing or recovering a delivery must never steal focus from the user's current tab.
+    const request = { focus: false, binding: createWebSessionBinding({
       sessionId: session.sessionId, runId, title: null, bindingStatus: "NEEDS_REBIND",
       conversationId: session.conversationId, conversationUrl: session.conversationUrl,
       tabId: session.tabId, windowId: session.windowId,
