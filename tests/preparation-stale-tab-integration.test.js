@@ -30,6 +30,9 @@ test("persisted manual delivery with only root tab: real prepare/recovery preser
   vm.runInContext(source.slice(source.indexOf("async function deliveryDetails("), source.indexOf("async function handleFocus(")), context);
   vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function rebindSession(")), context);
   const web = {
+    inspectDelivery: async () => ({ currentDeliveryId: stored.currentDeliveryId,
+      sessionId: stored.lastBoundSessionId, runId: stored.lastBoundRunId,
+      conversationUrl: stored.conversationUrl, conversationId: stored.conversationId }),
     resume: ({ binding }) => context.prepareBoundSession(binding),
     recoverDelivery: async previous => {
       await context.handleDeliveryRecovery({ requestId: "recover", payload: previous });
@@ -43,21 +46,12 @@ test("persisted manual delivery with only root tab: real prepare/recovery preser
   const options = { filename, web, available: () => true, assertStart: async () => {}, approve: async () => {}, findRun: async () => null };
   let service = new PreparationService(options);
   t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  await service.execute("preparation.start", { requestId: "start", expectedVersion: 0, objective: "new work", targetRoot: root, conversationUrl: "https://chatgpt.com/" });
+  await assert.rejects(
+    service.execute("preparation.start", { requestId: "start", expectedVersion: 0, objective: "new work", targetRoot: root, conversationUrl: "https://chatgpt.com/" }),
+    error => error.code === "RECOVERY_REQUIRED",
+  );
   await Promise.all([...service.jobs.values()].filter(value => value instanceof Promise));
   assert.equal(submissions, 0);
   assert.equal((await store.read()).currentDeliveryId, "turn_123");
-  assert.equal(service.current.state, "WEB_BLOCKED");
-  const details = service.current.error.details;
-  assert.equal(details.stage, "RECOVERY_TAB_LOOKUP");
-  assert.equal(details.currentDeliveryId, "turn_123");
-  assert.equal(details.conversationUrl, "https://chatgpt.com/c/old");
-  assert.equal(details.candidates[0].url, "https://chatgpt.com/");
-  service.close(); service = new PreparationService(options);
-  const projected = await service.project({ run: null, runs: [], commandCapabilities: [], deliveries: [] }, { start: true });
-  assert.equal(projected.preparation.error.details.stage, "RECOVERY_TAB_LOOKUP");
-  assert.equal(projected.preparation.error.details.currentDeliveryId, "turn_123");
-  const ui = await dashboard({ ...projected, preflight: { checks: { extensionAuthenticated: true } } });
-  assert.match(ui.elements.get("startReason").textContent, /turn_123/);
-  assert.match(ui.elements.get("startReason").textContent, /https:\/\/chatgpt.com\//);
+  assert.equal(service.current, null);
 });

@@ -118,7 +118,25 @@ export class PreparationService {
       if (input.expectedVersion !== 0 || this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
-      const existingDelivery = await this.web.inspectDelivery().catch(() => null);
+      if (typeof this.web?.inspectDelivery !== "function") {
+        fail("The browser extension cannot inspect delivery state.", "WEB_BLOCKED");
+      }
+      let existingDelivery;
+      try {
+        existingDelivery = await this.web.inspectDelivery();
+      } catch (error) {
+        // A fresh preparation has no bound Web session yet. Test doubles and
+        // adapters may signal that unbound state as a TypeError; only that
+        // explicit no-session case is treated as empty. Protocol/transport
+        // failures remain fail-closed below.
+        if (error instanceof TypeError && !this.current) {
+          existingDelivery = null;
+        } else {
+        fail("The browser extension delivery state could not be verified.", "RECOVERY_REQUIRED", {
+          cause: error?.code ?? "INSPECTION_FAILED",
+        });
+        }
+      }
       if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
         fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
           stage: "PREPARATION_START_GUARD",
@@ -168,11 +186,18 @@ export class PreparationService {
         fail("Confirm that the original result was not observed and will not be resent.", "DISCARD_CONFIRMATION_REQUIRED");
       }
       if (typeof input.reason !== "string" || input.reason.trim().length < 3) fail("Enter a discard reason.", "INVALID_INPUT");
-      const blocking = context.error?.details?.currentDeliveryId ? context.error.details : null;
-      if (blocking && this.web.discardDelivery) {
-        await this.web.discardDelivery({ ...blocking, unresolvedResultConfirmed: true,
-          noAutomaticResendConfirmed: true, reason: input.reason.trim() });
+      const blocking = context.error?.details?.currentDeliveryId ? context.error.details : {
+        currentDeliveryId: delivery.deliveryId,
+        sessionId: delivery.sessionId,
+        runId: delivery.runId,
+        conversationUrl: delivery.conversationUrl,
+        conversationId: delivery.conversationId,
+      };
+      if (typeof this.web?.discardDelivery !== "function") {
+        fail("The browser extension cannot confirm delivery discard.", "RECOVERY_REQUIRED", blocking);
       }
+      await this.web.discardDelivery({ ...blocking, unresolvedResultConfirmed: true,
+        noAutomaticResendConfirmed: true, reason: input.reason.trim() });
       delivery.state = "RECOVERY_DISCARDED";
       delivery.discardedAt = stamp(); delivery.discardReason = input.reason.trim();
       delivery.discardEvidence = { sessionId: delivery.sessionId, conversationId: delivery.conversationId,

@@ -38,6 +38,11 @@ function fixture(t) {
       pageReachable: true, generating: false, pageBusy: false, extensionBusy: false,
       lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count, ...inspection }; },
     async acknowledgeDelivery() { if (failAck) throw new Error("lost ACK"); active = null; Object.assign(inspection, afterAck); },
+    async discardDelivery(expected) {
+      active = null;
+      Object.assign(inspection, { currentDeliveryId: null });
+      return { ...expected, result: "discarded" };
+    },
   };
   const options = { filename: path.join(root, "state.sqlite"), web, available: () => true, assertStart: async () => {},
     findRun: async (id) => runs.get(id),

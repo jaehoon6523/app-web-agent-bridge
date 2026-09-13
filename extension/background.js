@@ -8,6 +8,7 @@ import {
 } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
 import { createExtensionStateStore, ensureExtensionIdentity } from "./runtime/storage.js";
+import { clearLegacyTestDelivery } from "./runtime/legacy-cleanup.js";
 import {
   assertRelaySafeCompletion,
   assertTurnSessionBinding,
@@ -16,18 +17,15 @@ import {
   captureTurnBinding,
   createActiveTurnGate,
 } from "./runtime/turn-guard.js";
-
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
-
 let socket = null;
 let authenticated = false;
 let pendingChallengeId = null;
 let handledChallengeIds = new Set();
 const turnGate = createActiveTurnGate();
 let lastError = null;
-
 class ExtensionOperationError extends Error {
   constructor(code, message, details = null) {
     super(message);
@@ -36,9 +34,7 @@ class ExtensionOperationError extends Error {
     this.details = details;
   }
 }
-
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
-
 async function connectionState() {
   let state = await store.read();
   const roots = (await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS })).filter(tab => canonicalChatGptUrl(tab.url) === "https://chatgpt.com/");
@@ -71,20 +67,17 @@ async function connectionState() {
     lastError,
   };
 }
-
 function broadcastPopupState() {
   void connectionState()
     .then((payload) => chrome.runtime.sendMessage({ type: "bridge.state", payload }))
     .catch(() => {});
 }
-
 function send(message, { allowUnauthenticated = false } = {}) {
   if (socket?.readyState !== WebSocket.OPEN) return false;
   if (!allowUnauthenticated && !authenticated) return false;
   socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
   return true;
 }
-
 async function connect() {
   const state = await store.read();
   let controllerUrl;
@@ -104,7 +97,6 @@ async function connect() {
     broadcastPopupState();
     return;
   }
-
   const previousSocket = socket;
   socket = null;
   authenticated = false;
@@ -115,11 +107,9 @@ async function connect() {
   } catch {
     // A new authenticated connection is still attempted below.
   }
-
   const nextSocket = new WebSocket(controllerUrl);
   socket = nextSocket;
   broadcastPopupState();
-
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket) return;
     lastError = null;
@@ -148,7 +138,6 @@ async function connect() {
     broadcastPopupState();
   });
 }
-
 async function answerAuthenticationChallenge(message) {
   if (
     message.protocolVersion !== PROTOCOL_VERSION
@@ -172,7 +161,6 @@ async function answerAuthenticationChallenge(message) {
     hmacSha256,
   }, { allowUnauthenticated: true });
 }
-
 async function handleControllerMessage(raw) {
   let message;
   try {
@@ -181,7 +169,6 @@ async function handleControllerMessage(raw) {
     return;
   }
   if (!message || typeof message !== "object" || message.protocolVersion !== PROTOCOL_VERSION) return;
-
   if (!authenticated) {
     if (message.type === "controller.auth.challenge") {
       await answerAuthenticationChallenge(message);
@@ -216,7 +203,6 @@ async function handleControllerMessage(raw) {
     // All other controller commands are ignored until authentication completes.
     return;
   }
-
   switch (message.type) {
     case "web.session.prepare":
       await handlePrepare(message, false);
@@ -247,7 +233,7 @@ async function handleControllerMessage(raw) {
           const saved = await store.read();
           const completed = saved.completedDelivery;
           if (!completed || completed.turnId !== saved.currentDeliveryId || !saved.lastBoundRunId?.startsWith("prep_")) {
-            throw new ExtensionOperationError("RESPONSE_RECHECK_UNAVAILABLE", "다시 확인할 준비 응답이 없습니다.");
+            throw new ExtensionOperationError("RESPONSE_RECHECK_UNAVAILABLE", "?�시 ?�인??준�??�답???�습?�다.");
           }
           const result = await chrome.tabs.sendMessage(saved.tabId, { type: "agent.recheck", payload: {
             expectedConversationUrl: saved.conversationUrl, expectedConversationId: saved.conversationId,
@@ -255,10 +241,10 @@ async function handleControllerMessage(raw) {
             runId: saved.lastBoundRunId, controllerMessageId: completed.turnId,
             userMessageId: completed.evidence?.userMessageId, assistantMessageId: completed.evidence?.assistantMessageId,
           } });
-          if (!result?.ok) throw new ExtensionOperationError(result?.code ?? "RESPONSE_RECHECK_FAILED", result?.error ?? "응답 재확인에 실패했습니다.");
+          if (!result?.ok) throw new ExtensionOperationError(result?.code ?? "RESPONSE_RECHECK_FAILED", result?.error ?? "?�답 ?�확?�에 ?�패?�습?�다.");
           const current = await store.read();
           if (current.currentDeliveryId !== completed.turnId || current.lastBoundSessionId !== saved.lastBoundSessionId) {
-            throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "재확인 중 전송 대상이 변경됐습니다.");
+            throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "?�확??�??�송 ?�?�이 변경됐?�니??");
           }
           await store.update({ completedDelivery: {
             ...completed,
@@ -284,10 +270,10 @@ async function handleControllerMessage(raw) {
         const state = await store.read();
         if (state.tabId === null || state.lastBoundSessionId !== message.payload?.sessionId
           || state.conversationUrl !== message.payload?.conversationUrl) {
-          throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "이전 대화 탭이 변경됐습니다. 상태를 다시 확인하세요.");
+          throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "?�전 ?�????�� 변경됐?�니?? ?�태�??�시 ?�인?�세??");
         }
         const tab = await chrome.tabs.get(state.tabId);
-        if (canonicalChatGptUrl(tab.url) !== state.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "기존 탭이 다른 대화로 이동했습니다.");
+        if (canonicalChatGptUrl(tab.url) !== state.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "기존 ??�� ?�른 ?�?�로 ?�동?�습?�다.");
         await focusTab(tab);
         send({ type: "web.delivery.focused", requestId: message.requestId, payload: {} });
       } catch (error) {
@@ -304,7 +290,6 @@ async function handleControllerMessage(raw) {
       break;
   }
 }
-
 async function handlePrepare(message, explicitRebind) {
   try {
     turnGate.assertIdle(explicitRebind ? "Session rebind" : "Session preparation");
@@ -326,7 +311,6 @@ async function handlePrepare(message, explicitRebind) {
     send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
   }
 }
-
 async function handleDeliveryAcknowledgement(message) {
   try {
     turnGate.assertIdle("Delivery acknowledgement");
@@ -338,17 +322,15 @@ async function handleDeliveryAcknowledgement(message) {
     send({ type: "web.prompt.error", requestId: message.requestId, payload: errorPayload(error) });
   }
 }
-
 async function handleDeliveryDiscard(message) {
   try { turnGate.assertIdle("Delivery discard"); const state = await store.read(), expected = message.payload || {};
     if (state.currentDeliveryId !== expected.currentDeliveryId || state.lastBoundSessionId !== expected.sessionId
-      || state.lastBoundRunId !== expected.runId || state.conversationUrl !== expected.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 identity가 현재 기록과 다릅니다.");
-    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true || typeof expected.reason !== "string" || expected.reason.trim().length < 3) throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과와 자동 재전송 금지를 확인하고 폐기 사유를 입력하세요.");
+      || state.lastBoundRunId !== expected.runId || state.conversationUrl !== expected.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "?�기 ?�???�송 identity가 ?�재 기록�??�릅?�다.");
+    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true || typeof expected.reason !== "string" || expected.reason.trim().length < 3) throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확??결과?� ?�동 ?�전??금�?�??�인?�고 ?�기 ?�유�??�력?�세??");
     await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND", bindingError: `RECOVERY_DISCARDED: ${expected.reason.trim()}` });
     send({ type: "web.delivery.discarded", requestId: message.requestId, payload: { ...expected, result: "discarded" } });
   } catch (error) { send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) }); }
 }
-
 async function deliveryDetails(state) {
   let page = null;
   if (state.tabId !== null) {
@@ -369,26 +351,25 @@ async function deliveryDetails(state) {
     completedDelivery: state.completedDelivery?.turnId === state.currentDeliveryId ? state.completedDelivery : null,
   };
 }
-
 async function handleDeliveryStop(message) {
   try {
     const state = await store.read(), expected = message.payload || {};
     if (!state.currentDeliveryId || expected.currentDeliveryId !== state.currentDeliveryId
       || expected.runId !== state.lastBoundRunId || expected.sessionId !== state.lastBoundSessionId
       || expected.conversationUrl !== state.conversationUrl) {
-      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "종료 대상 전송이 변경됐습니다. 상태를 다시 확인하세요.");
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "종료 ?�???�송??변경됐?�니?? ?�태�??�시 ?�인?�세??");
     }
     let details = await deliveryDetails(state);
     if (details.activeRequestId !== state.currentDeliveryId || details.observedConversationUrl !== state.conversationUrl) {
-      throw new ExtensionOperationError("DELIVERY_STOP_UNAVAILABLE", "해당 전송의 생성 작업을 식별할 수 없습니다. 대화 탭에서 생성 상태를 확인하세요.", details);
+      throw new ExtensionOperationError("DELIVERY_STOP_UNAVAILABLE", "?�당 ?�송???�성 ?�업???�별?????�습?�다. ?�????��???�성 ?�태�??�인?�세??", details);
     }
     const stopped = await chrome.tabs.sendMessage(state.tabId, { type: "agent.cancel", requestId: state.currentDeliveryId });
-    if (!stopped?.ok || !stopped.cancelled) throw new ExtensionOperationError("INTERRUPT_NOT_CONFIRMED", "생성 종료 요청이 확인되지 않았습니다.", details);
+    if (!stopped?.ok || !stopped.cancelled) throw new ExtensionOperationError("INTERRUPT_NOT_CONFIRMED", "?�성 종료 ?�청???�인?��? ?�았?�니??", details);
     const deadline = Date.now() + 5000;
     do {
       details = await deliveryDetails(await store.read());
       if (details.currentDeliveryId !== state.currentDeliveryId || details.sessionId !== state.lastBoundSessionId) {
-        throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "종료 확인 중 전송 대상이 변경됐습니다.", details);
+        throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "종료 ?�인 �??�송 ?�?�이 변경됐?�니??", details);
       }
       if (details.pageReachable && details.pageBusy === false && details.generating === false && !details.extensionBusy
         && details.observedConversationUrl === state.conversationUrl) {
@@ -396,12 +377,11 @@ async function handleDeliveryStop(message) {
       }
       await sleep(150);
     } while (Date.now() < deadline);
-    throw new ExtensionOperationError("INTERRUPT_NOT_CONFIRMED", "종료를 요청했지만 생성 종료는 아직 확인되지 않았습니다. 상태를 다시 확인하세요.", details);
+    throw new ExtensionOperationError("INTERRUPT_NOT_CONFIRMED", "종료�??�청?��?�??�성 종료???�직 ?�인?��? ?�았?�니?? ?�태�??�시 ?�인?�세??", details);
   } catch (error) {
     send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
   }
 }
-
 async function handleDeliveryRecovery(message) {
   let reservation;
   try {
@@ -411,12 +391,12 @@ async function handleDeliveryRecovery(message) {
     if (!state.currentDeliveryId || expected.currentDeliveryId !== state.currentDeliveryId
       || expected.runId !== state.lastBoundRunId || expected.sessionId !== state.lastBoundSessionId
       || expected.conversationUrl !== state.conversationUrl) {
-      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "복구 대상 전송이 변경됐습니다. 준비를 다시 요청하세요.");
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "복구 ?�???�송??변경됐?�니?? 준비�? ?�시 ?�청?�세??");
     }
     const recoveryTabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
     const matched = matchExactConversationTabs(recoveryTabs, state);
     if (matched.status !== "BOUND") {
-      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 전송을 복구할 대화 탭을 확정할 수 없습니다.", {
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "?�전 ?�송??복구???�????�� ?�정?????�습?�다.", {
         stage: "RECOVERY_TAB_LOOKUP", matchStatus: matched.status, currentDeliveryId: state.currentDeliveryId,
         sessionId: state.lastBoundSessionId, runId: state.lastBoundRunId, conversationUrl: state.conversationUrl,
         storedTabId: state.tabId, candidates: recoveryTabs.map(tab => ({ tabId: tab.id, url: tab.url })),
@@ -429,7 +409,7 @@ async function handleDeliveryRecovery(message) {
     const details = await deliveryDetails(state);
     if (!details.pageReachable || details.pageBusy !== false || details.generating !== false
       || details.pageStatus !== "READY" || details.observedConversationUrl !== state.conversationUrl) {
-      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 대화의 생성 종료를 확인하지 못했습니다. 해당 대화 탭을 확인하세요.", details);
+      throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "?�전 ?�?�의 ?�성 종료�??�인?��? 못했?�니?? ?�당 ?�????�� ?�인?�세??", details);
     }
     await store.clearDelivery(state.currentDeliveryId);
     send({ type: "web.delivery.recovered", requestId: message.requestId, payload: { ...details, extensionBusy: false } });
@@ -440,7 +420,6 @@ async function handleDeliveryRecovery(message) {
     broadcastPopupState();
   }
 }
-
 async function handleFocus(message) {
   try {
     turnGate.assertIdle("Session focus");
@@ -449,7 +428,6 @@ async function handleFocus(message) {
     send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
   }
 }
-
 function requireBindingInput(payload) {
   const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
   const runId = typeof payload.runId === "string" ? payload.runId : "";
@@ -477,7 +455,6 @@ function requireBindingInput(payload) {
     bootstrap,
   };
 }
-
 async function prepareBoundSession(payload) {
   const requested = requireBindingInput(payload);
   const state = await store.read();
@@ -530,7 +507,7 @@ async function prepareBoundSession(payload) {
     await waitForContentScript(root.id, 30_000, true);
     const page = await chrome.tabs.sendMessage(root.id, { type: "agent.ping" });
     if (!page?.ready || page.busy || page.generating || page.url !== "https://chatgpt.com/") {
-      throw new ExtensionOperationError("ROOT_NOT_READY", "ChatGPT 새 대화 입력창을 사용할 수 없습니다.", page);
+      throw new ExtensionOperationError("ROOT_NOT_READY", "ChatGPT ???�???�력창을 ?�용?????�습?�다.", page);
     }
     const documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: "https://chatgpt.com/", conversationId: null });
     await store.update({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
@@ -570,7 +547,6 @@ async function prepareBoundSession(payload) {
   await persistBoundTab(matched.tab, requested);
   return getSessionInfo();
 }
-
 async function rebindSession(payload) {
   const requested = requireBindingInput(payload);
   if (!Number.isSafeInteger(payload.tabId)) {
@@ -591,7 +567,6 @@ async function rebindSession(payload) {
   await persistBoundTab(tab, requested);
   return getSessionInfo();
 }
-
 async function persistBoundTab(tab, requested) {
   const documentBinding = await inspectBoundDocument(chrome.tabs, tab.id, requested);
   await store.update({
@@ -605,7 +580,6 @@ async function persistBoundTab(tab, requested) {
     bindingStatus: "BOUND",
   });
 }
-
 async function requireExactBoundTab(expectedTurn = null) {
   const state = await store.read();
   if (expectedTurn) assertTurnStateBinding(expectedTurn, state);
@@ -641,7 +615,6 @@ async function requireExactBoundTab(expectedTurn = null) {
   if (expectedTurn) assertTurnStateBinding(expectedTurn, await store.read());
   return tab;
 }
-
 async function handlePrompt(message) {
   let reservation;
   let deliveryReserved = false, contentDispatchStarted = false;
@@ -691,7 +664,7 @@ async function handlePrompt(message) {
     let frozenTurn = bootstrap ? null : captureTurnBinding(reservedState, turnIdentity);
     broadcastPopupState();
     const tab = bootstrap ? await chrome.tabs.get(reservedState.tabId) : await requireExactBoundTab(frozenTurn);
-    if (bootstrap && canonicalChatGptUrl(tab.url) !== "https://chatgpt.com/") throw new ExtensionOperationError("ROOT_CHANGED", "선택한 새 대화 탭의 주소가 변경되었습니다.");
+    if (bootstrap && canonicalChatGptUrl(tab.url) !== "https://chatgpt.com/") throw new ExtensionOperationError("ROOT_CHANGED", "?�택?????�????�� 주소가 변경되?�습?�다.");
     await waitForContentScript(tab.id);
     const markedText = createControlledPrompt({
       controllerMessageId: payload.controllerMessageId,
@@ -732,7 +705,7 @@ async function handlePrompt(message) {
         || current.documentId !== reservedState.documentId || current.frameId !== reservedState.frameId
         || result.evidence?.documentId !== reservedState.documentId || result.evidence?.frameId !== reservedState.frameId
         || current.tabId !== tab.id || !id || result.evidence?.conversationUrl !== url || result.evidence?.conversationId !== id) {
-        throw new ExtensionOperationError("TURN_BINDING_CHANGED", "새 대화 생성 결과와 전송한 탭의 식별자가 일치하지 않습니다.");
+        throw new ExtensionOperationError("TURN_BINDING_CHANGED", "???�???�성 결과?� ?�송????�� ?�별?��? ?�치?��? ?�습?�다.");
       }
       await store.update({ conversationUrl: url, conversationId: id, bindingStatus: "BOUND" });
       frozenTurn = captureTurnBinding(await store.read(), turnIdentity);
@@ -817,7 +790,6 @@ async function cancelPrompt(requestId) {
     });
   }
 }
-
 async function getSessionInfo(expectedTurn = null) {
   const state = await store.read();
   if (expectedTurn) assertTurnStateBinding(expectedTurn, state);
@@ -842,16 +814,13 @@ async function getSessionInfo(expectedTurn = null) {
   if (expectedTurn) assertTurnSessionBinding(expectedTurn, session);
   return session;
 }
-
 async function focusTab(tab) {
   await chrome.windows.update(tab.windowId, { focused: true });
   await chrome.tabs.update(tab.id, { active: true });
 }
-
 async function focusBoundTab() {
   await focusTab(await requireExactBoundTab());
 }
-
 async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false) {
   const deadline = Date.now() + timeoutMs;
   let contentScriptResponded = false;
@@ -875,7 +844,6 @@ async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer =
       : "ChatGPT content script is unavailable in the bound conversation.",
   );
 }
-
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "agent.progress") {
     if (!authenticated) return false;
@@ -886,7 +854,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
-
   if (message?.type === "agent.manualIntervention") {
     void store.update({ bindingStatus: "AMBIGUOUS" }).then(() => {
       if (authenticated) {
@@ -896,7 +863,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     sendResponse({ ok: true });
     return false;
   }
-
   if (message?.type === "bridge.getState") {
     void Promise.all([connectionState(), store.read()])
       .then(([state, stored]) => sendResponse({
@@ -910,7 +876,6 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }));
     return true;
   }
-
   if (message?.type === "bridge.saveConfig") {
     void (async () => {
       const current = await store.read();
@@ -931,19 +896,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })().catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-
   if (message?.type === "bridge.reconnect") {
     void connect().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-
   if (message?.type === "bridge.clearLegacyTestDelivery") {
     void (async () => {
       const state = await store.read();
       const isLegacy = /^manual_session_\d+$/u.test(state.lastBoundSessionId || "")
         && /^manual_run_\d+$/u.test(state.lastBoundRunId || "")
         && /^turn_\d+$/u.test(state.currentDeliveryId || "");
-      if (!isLegacy) throw new ExtensionOperationError("NO_LEGACY_DELIVERY", "삭제할 오래된 브릿지 전송이 없습니다.");
+      if (!isLegacy) throw new ExtensionOperationError("NO_LEGACY_DELIVERY", "??��???�래??브릿지 ?�송???�습?�다.");
       turnGate.assertIdle("Legacy delivery cleanup");
       await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND", bindingError: "Legacy bridge-test delivery was cleared by the user." });
       broadcastPopupState();
@@ -951,10 +914,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     })().catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-
   return false;
 });
-
 chrome.tabs.onRemoved.addListener((tabId) => {
   void store.read().then(async (state) => {
     if (tabId !== state.tabId) return;
@@ -963,7 +924,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     broadcastPopupState();
   });
 });
-
 async function inspectBoundTabTopology(triggerTabId = null) {
   const state = await store.read();
   if (state.bindingStatus !== "BOUND") return;
@@ -1002,11 +962,9 @@ async function inspectBoundTabTopology(triggerTabId = null) {
   }
   broadcastPopupState();
 }
-
 chrome.tabs.onCreated.addListener((tab) => {
   if (canonicalChatGptUrl(tab.url)) void inspectBoundTabTopology(tab.id);
 });
-
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (typeof changeInfo.url === "string" && canonicalChatGptUrl(changeInfo.url)) {
     void inspectBoundTabTopology(tabId);
@@ -1018,9 +976,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     }
   });
 });
-
 setInterval(() => {
   if (authenticated) send({ type: "extension.heartbeat", payload: { at: Date.now(), busy: turnGate.active } });
 }, 20_000);
-
 void store.read().then(() => connect());
