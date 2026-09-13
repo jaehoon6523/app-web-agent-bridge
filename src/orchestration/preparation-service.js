@@ -497,7 +497,9 @@ export class PreparationService {
     if (!context || context.lifecycle !== "ACTIVE") return this.available() ? ["preparation.start"] : [];
     const caps = [];
     const active = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
-    if (active && ["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(context.state)) caps.push("preparation.discard");
+    if (active && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
+      || context.error?.code === "DELIVERY_RECOVERY_UNCONFIRMED"
+      || context.error?.code === "REBIND_DURING_ACTIVE_DELIVERY")) caps.push("preparation.discard");
     if (context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
       && context.diagnostics?.canRecover && (active?.response || active?.stopped)) caps.push("preparation.cancel");
     if (!context.webSession.activeDeliveryId && !this.jobs.has(context.preparationId)) {

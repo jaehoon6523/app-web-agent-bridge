@@ -446,7 +446,10 @@ function proposalControls() {
         : "준비 폐기 비활성화: 이전 준비 작업이 처리 중입니다.",
     "저장된 준비를 삭제하지 않고 ‘준비 취소’ 상태로 폐기합니다.");
   const activeDelivery = preparation?.deliveries?.find((item) => item.deliveryId === preparation?.webSession?.activeDeliveryId);
-  const discardVisible = Boolean(activeDelivery && ["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(preparation.state));
+  const discardVisible = Boolean(activeDelivery && (
+    ["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(preparation.state)
+    || ["DELIVERY_RECOVERY_UNCONFIRMED", "REBIND_DURING_ACTIVE_DELIVERY"].includes(preparation.error?.code)
+  ));
   $("discardPanel").hidden = !discardVisible;
   text("discardDelivery", discardVisible ? `준비 ID: ${preparation.preparationId} · 전송 ID: ${activeDelivery.deliveryId} · 세션: ${activeDelivery.sessionId} · 대화: ${activeDelivery.conversationId ?? preparation.webSession?.conversationUrl ?? "확인되지 않음"}` : "");
   $("discardDeliveryButton").disabled = !discardVisible || !caps.has("preparation.discard") || operations.preparationStart !== "IDLE"
