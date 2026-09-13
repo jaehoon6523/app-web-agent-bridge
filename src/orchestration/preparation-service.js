@@ -118,6 +118,17 @@ export class PreparationService {
       if (input.expectedVersion !== 0 || this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
+      const existingDelivery = await this.web.inspectDelivery();
+      if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
+        fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
+          stage: "PREPARATION_START_GUARD",
+          currentDeliveryId: existingDelivery.currentDeliveryId,
+          sessionId: existingDelivery.sessionId ?? null,
+          runId: existingDelivery.runId ?? null,
+          conversationUrl: existingDelivery.conversationUrl ?? null,
+          tabId: existingDelivery.tabId ?? null,
+        });
+      }
       const conversationUrl = typeof input.conversationUrl === "string" ? input.conversationUrl.trim() : "";
       if (typeof input.objective !== "string" || !input.objective.trim()
         || !/^https:\/\/chatgpt\.com\/(?:c\/[^/?#\s]+)?\/?$/u.test(conversationUrl)) fail("Objective and a ChatGPT conversation URL or the ChatGPT start page are required.", "INVALID_INPUT");
