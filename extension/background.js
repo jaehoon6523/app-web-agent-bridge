@@ -340,20 +340,11 @@ async function handleDeliveryAcknowledgement(message) {
 }
 
 async function handleDeliveryDiscard(message) {
-  try {
-    turnGate.assertIdle("Delivery discard");
-    const state = await store.read(), expected = message.payload || {};
-    if (state.currentDeliveryId !== expected.currentDeliveryId
-      || state.lastBoundSessionId !== expected.sessionId || state.lastBoundRunId !== expected.runId
-      || state.conversationUrl !== expected.conversationUrl) {
-      throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 identity가 현재 기록과 다릅니다.");
-    }
-    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true
-      || typeof expected.reason !== "string" || expected.reason.trim().length < 3) {
-      throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과와 자동 재전송 금지를 확인하고 폐기 사유를 입력하세요.");
-    }
-    await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND",
-      bindingError: `RECOVERY_DISCARDED: ${expected.reason.trim()}` });
+  try { turnGate.assertIdle("Delivery discard"); const state = await store.read(), expected = message.payload || {};
+    if (state.currentDeliveryId !== expected.currentDeliveryId || state.lastBoundSessionId !== expected.sessionId
+      || state.lastBoundRunId !== expected.runId || state.conversationUrl !== expected.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 identity가 현재 기록과 다릅니다.");
+    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true || typeof expected.reason !== "string" || expected.reason.trim().length < 3) throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과와 자동 재전송 금지를 확인하고 폐기 사유를 입력하세요.");
+    await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND", bindingError: `RECOVERY_DISCARDED: ${expected.reason.trim()}` });
     send({ type: "web.delivery.discarded", requestId: message.requestId, payload: { ...expected, result: "discarded" } });
   } catch (error) { send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) }); }
 }
