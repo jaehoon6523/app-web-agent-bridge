@@ -6,7 +6,7 @@ import { canonicalJson } from "../domain/canonical-json.js";
 import { createWebSessionBinding } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 
-function fail(message, code = "PREPARATION_CONFLICT") { throw Object.assign(new Error(message), { code }); }
+function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
 const stamp = () => new Date().toISOString();
 const terminal = new Set(["APPLIED", "CANCELLED", "FAILED", "INCONCLUSIVE", "COMPLETE"]);
 
