@@ -118,7 +118,7 @@ export class PreparationService {
       if (input.expectedVersion !== 0 || this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
-      const existingDelivery = await this.web.inspectDelivery();
+      const existingDelivery = await this.web.inspectDelivery().catch(() => null);
       if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
         fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
           stage: "PREPARATION_START_GUARD",
