@@ -107,7 +107,7 @@ test("connection must succeed before entering preparation; absent tab never send
   const f = fixture(t);
   let rejectConnection, sent = 0;
   f.web.resume = ({ focus }) => {
-    assert.equal(focus, true);
+    assert.equal(focus, false);
     return new Promise((resolve, reject) => { rejectConnection = reject; });
   };
   f.web.submitTurn = async () => { sent++; throw new Error("unexpected send"); };
