@@ -33,7 +33,7 @@ function fixture(t) {
       return { completion: Promise.resolve({ turnId: active, binding, confidence: "CONFIRMED_BY_UI_STATE",
         rawText: "<controller_packet>\n" + JSON.stringify(parsed) + "\n</controller_packet>" }) };
     },
-    async inspectDelivery() { return { currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
+    async inspectDelivery() { if (!binding) return { currentDeliveryId: null }; return { currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
       conversationId: binding.conversationId, conversationUrl: binding.conversationUrl, observedConversationUrl: binding.conversationUrl,
       pageReachable: true, generating: false, pageBusy: false, extensionBusy: false,
       lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count, ...inspection }; },

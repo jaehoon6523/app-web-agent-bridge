@@ -125,11 +125,7 @@ export class PreparationService {
       try {
         existingDelivery = await this.web.inspectDelivery();
       } catch (error) {
-        // A fresh preparation has no bound Web session yet. Test doubles and
-        // adapters may signal that unbound state as a TypeError; only that
-        // explicit no-session case is treated as empty. Protocol/transport
-        // failures remain fail-closed below.
-        if (error instanceof TypeError && !this.current) {
+        if (error?.code === "WEB_SESSION_NOT_BOUND") {
           existingDelivery = null;
         } else {
         fail("The browser extension delivery state could not be verified.", "RECOVERY_REQUIRED", {
