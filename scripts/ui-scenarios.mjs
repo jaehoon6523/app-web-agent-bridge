@@ -68,7 +68,9 @@ try {
  assert.equal(fixture.mutations.length,0);
  await page.fill('#conversationUrl','https://chatgpt.com/'); await page.click('#planRun'); await visible('startProgress');
  assert.equal(fixture.mutations[0].body.conversationUrl,'https://chatgpt.com/');
- assert.equal(fixture.mutations[0].body.expectedVersion,0);
+ assert.equal(Object.hasOwn(fixture.mutations[0].body,'expectedVersion'),false);
+ assert.equal(typeof fixture.mutations[0].body.requestId,'string');
+ assert.ok(fixture.mutations[0].body.requestId.length > 0);
  assert.equal(await page.locator('#planRun').isDisabled(),true);
  await screenshot('02-root-waiting');
  fixture.block(); await page.reload();
@@ -83,7 +85,9 @@ try {
  await screenshot('04-preparation');
  await page.fill('#proposalFeedback','Show a greeting.'); await page.click('#reviseRequirements'); await enabled('saveProject');
  assert.equal(fixture.mutations.at(-1).pathname,'/api/preparations/prep-qa/reply');
- assert.equal(fixture.mutations.at(-1).body.expectedVersion,2);
+ assert.equal(Object.hasOwn(fixture.mutations.at(-1).body,'expectedVersion'),false);
+ assert.equal(typeof fixture.mutations.at(-1).body.requestId,'string');
+ assert.ok(fixture.mutations.at(-1).body.requestId.length > 0);
  await page.reload(); await enabled('saveProject');
  assert.equal(await page.inputValue('#planningObjective'),'UI scenario task');
  assert.match(await page.locator('#preparationPersistence').textContent(),/prep-qa/);

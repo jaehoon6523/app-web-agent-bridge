@@ -84,8 +84,9 @@ export class PreparationService {
   }
   async execute(type, input) {
     if (this.closed) fail("Server is closing.");
-    if (!input || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200
-      || !Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 0) fail("requestId and expectedVersion are required.", "INVALID_COMMAND");
+    if (!input || typeof input.requestId !== "string" || !input.requestId || input.requestId.length > 200) {
+      fail("requestId is required.", "INVALID_COMMAND");
+    }
     const hash = canonicalJson({ type, input });
     const previous = this.data.receipts[input.requestId];
     if (previous) {
@@ -110,12 +111,10 @@ export class PreparationService {
   context(input) {
     const context = this.current;
     if (!context || context.preparationId !== input.preparationId) fail("Preparation identity changed.");
-    if (input.expectedVersion !== context.version) fail("Preparation version changed.", "PREPARATION_VERSION_CONFLICT");
     return context;
   }
   async dispatch(type, input) {
     if (type === "preparation.start") {
-      if (input.expectedVersion !== 0 || this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
       if (typeof this.web?.inspectDelivery !== "function") {
@@ -133,6 +132,20 @@ export class PreparationService {
         });
         }
       }
+      // A server restart can leave an ACTIVE preparation behind after the
+      // extension has already lost its delivery reservation. That orphan must
+      // not block an unrelated new preparation; preserve it as evidence and
+      // release only the server-side active pointer.
+      if (this.current?.lifecycle === "ACTIVE" && existingDelivery?.currentDeliveryId == null) {
+        const orphan = this.current;
+        orphan.lifecycle = "ABANDONED";
+        orphan.state = "RECOVERY_REQUIRED";
+        orphan.error = { code: "ORPHANED_PREPARATION", message: "The browser no longer has the active delivery reservation." };
+        orphan.recovery = { kind: "ORPHANED_PREPARATION", at: stamp(), activeDeliveryId: orphan.webSession.activeDeliveryId };
+        orphan.webSession.activeDeliveryId = null;
+        this.touch(orphan);
+      }
+      if (this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
         fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
           stage: "PREPARATION_START_GUARD",

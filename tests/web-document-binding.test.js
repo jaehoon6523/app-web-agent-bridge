@@ -61,6 +61,7 @@ function harness({ root = false, reloadBeforePing = false, reloadAfterPing = fal
       },
     } },
   });
+  vm.runInContext(background.slice(background.indexOf("function bridgeLog("), background.indexOf("class ExtensionOperationError")), context);
   vm.runInContext(background.slice(background.indexOf("function requireBindingInput("), background.indexOf("async function focusTab(")), context);
   return { state, messages, dispatches, clicks,
     run: () => context.handlePrompt({ requestId: "t1", payload: { controllerMessageId: "t1", runId: "r1", text: "request" } }) };

@@ -19,10 +19,7 @@ function render(response) {
     return;
   }
   const state = response.state || {};
-  const legacy = /^manual_session_\d+$/u.test(state.lastBoundSessionId || "")
-    && /^manual_run_\d+$/u.test(state.lastBoundRunId || "")
-    && /^turn_\d+$/u.test(state.currentDeliveryId || "");
-  legacyRecovery.hidden = !legacy;
+  legacyRecovery.hidden = !state.currentDeliveryId;
   status.textContent = state.connected
     ? (state.busy ? "busy" : "authenticated")
     : state.transportConnected
@@ -90,6 +87,7 @@ save.addEventListener("click", async () => {
 clearLegacy.addEventListener("click", async () => {
   clearLegacy.disabled = true;
   const result = await send({ type: "bridge.clearLegacyTestDelivery" });
+  if (result?.ok) await send({ type: "bridge.reconnect" });
   detail.textContent = result?.ok ? "오래된 전송을 삭제했습니다. 새 작업을 시작하세요." : (result?.error || "삭제하지 못했습니다.");
   await refresh();
   clearLegacy.disabled = false;

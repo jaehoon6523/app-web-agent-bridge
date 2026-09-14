@@ -713,6 +713,8 @@ test("root readiness permits first prompt before conversation exists and binds i
   assert.equal(socket.sent.at(-1).type, "web.prompt");
   socket.receive({ type: "web.prompt.result", protocolVersion: 2, requestId: "root-first", payload: {
     session: resolved, text: controllerResponse(), confidence: "CONFIRMED_BY_UI_STATE",
+    evidence: { conversationUrl: resolved.conversationUrl, conversationId: resolved.conversationId,
+      userMessageId: "root-user-1", assistantMessageId: "root-assistant-1" },
   } });
   const completed = await turn.completion;
   assert.equal(completed.binding.conversationId, "created-from-root");

@@ -81,7 +81,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.equal((await state()).workflow.stage, "START");
   assert.equal((await post("/api/project/prepare", { targetRoot: target })).status, 410);
   assert.equal((await post("/api/runs/start", {})).status, 410);
-  const created = await post("/api/preparations", { requestId: "start", expectedVersion: 0,
+  const created = await post("/api/preparations", { requestId: "start",
     objective: "  아무거나\n", targetRoot: target, conversationUrl: "https://chatgpt.com/c/test" });
   assert.equal(created.status, 202, await created.clone().text());
   const prep = await created.json();
@@ -106,7 +106,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.equal(count, 1);
   assert.equal(current.preparation.objective, "  아무거나\n");
   const reply = await post("/api/preparations/" + prep.preparationId + "/reply", {
-    requestId: "reply", expectedVersion: current.workflow.preparationVersion, content: "값 표시",
+    requestId: "reply", content: "값 표시",
   });
   assert.equal(reply.status, 202, await reply.clone().text());
   await ready("WAITING_WEB_RESPONSE"); dropAck = true; release();
@@ -118,7 +118,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.equal(current.workflow.stage, "PREPARE");
   assert.equal(current.preparation.webSession.activeDeliveryId, deliveryId);
   const reconciled = await post("/api/preparations/web", { ...identity, deliveryId, command: "web.reconcile",
-    requestId: "reconcile", expectedVersion: current.workflow.preparationVersion });
+    requestId: "reconcile" });
   assert.equal(reconciled.status, 200, await reconciled.clone().text());
   current = await ready("AGREEMENT_READY");
   assert.equal(count, 2);
@@ -127,7 +127,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.equal(current.preparation.webSession.activeDeliveryId, null);
   assert.deepEqual(current.preparation.deliveries.map((d) => d.state), ["ACKNOWLEDGED", "ACKNOWLEDGED"]);
   assert.equal(fs.existsSync(path.join(target, ".git")), false);
-  const input = { requestId: "approve", expectedVersion: current.workflow.preparationVersion };
+  const input = { requestId: "approve" };
   const approveUrl = "/api/preparations/" + prep.preparationId + "/approve";
   const [approved, concurrent] = await Promise.all([post(approveUrl, input), post(approveUrl, input)]);
   assert.equal(approved.status, 200, await approved.clone().text());

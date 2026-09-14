@@ -1,74 +1,43 @@
-# 구현·검증 상태
+# 구현과 검증 범위
 
-기준: 사용자 「CLI 구현·웹 감사 시스템 통합 기준안」 v1.0, 2026-09-07. 갱신: 2026-09-08.
+기준: 사용자 「CLI 구현·웹 감사 시스템 통합 기준안」 v1.0, REQ-01~21.
+현재 코드의 소유 위치와 연결 제안 검토는 [MIGRATION_PLAN](MIGRATION_PLAN.md)에 있다.
+이 목록은 대상 프로젝트 RequirementsSet을 대신하지 않는다. 과거 테스트 개수는 Git 이력에서 확인하고 현재 성공 근거로 재사용하지 않는다.
 
-아래 상태는 감사 시스템 자체의 REQ-01~21입니다. 대상 프로젝트의 런 RequirementsSet과 별개입니다. 자동 테스트의 CLI/Web은 모의 응답이며 실제 제공자 성공으로 계산하지 않습니다. **전체 제품 완료 상태가 아닙니다.**
+## 구현된 경로
 
-| REQ | 상태 | 구현·검증 근거와 남은 범위 |
+| 범위 | 구현 | 확인할 검사 / 남은 한계 |
 |---|---|---|
-| 01 기준 고정 | 검증 완료(자동 범위) | requirements revision/hash, target/base/policy 저장. 동일 revision 내용 변경 거절. 실제 프로젝트 설정은 별도 지정 필요 |
-| 02 시작 확인 | 부분 구현 | 필수 프로젝트·연결·clean target 차단. 실제 검증 환경 준비와 OS 권한 효과 미검증 |
-| 03 감사 시작 | 검증 완료(자동 범위) | CODE_CHANGE 접수·ID 선반환·이후 실패 조회. API 테스트와 지연 provisioning 테스트 |
-| 04 작업 분리 | 부분 구현 | worktree, Codex workspaceWrite/네트워크 비허용 정책, target 보존 검사. 제한된 읽기 경로와 호스트 검증 명령의 OS 격리 미구현·실효성 미검증 |
-| 05 후보 고정 | 검증 완료(자동 범위) | base/tree/patch/변경 파일/원문 blob 보존, 원문 변경 불일치 테스트 |
-| 06 실행 기록 | 부분 구현 | 실제 명령·위치·환경 식별·출력·종료·실패·후보 변경 수집. 출력 8 MiB 초과는 잘림 표시, 바이너리 결과 수집 미지원 |
-| 07 감사 자료 | 검증 완료(자동 범위) | 기준·역할·후보·증거 목록·구간·미해결 지적 전달, 원문 조회. 실제 웹의 충분한 자료 검토 여부 미검증 |
-| 08 추가 조회 | 검증 완료(자동 범위) | 같은 후보 CODE/EVIDENCE, 잘림·제공 불가 표시, 경로 탈출 거절 |
-| 09 추가 검증 | 부분 구현 | 등록 ID 실행·미등록 명시적 미처리, 결과 후보 결합. 실행 명령 OS 샌드박스는 미구현 |
-| 10 항목별 판정 | 검증 완료(자동 범위) | 누락·중복·알 수 없는 ID·필요 증거 종류 검사. 웹 판단의 진실성 보증 아님 |
-| 11 통과 검사 | 검증 완료(자동 범위) | 점수 독립, 불충족·판단 불가·미해결·다른 후보/기준 차단 |
-| 12 지적 유지 | 검증 완료(자동 범위) | 컨트롤러 ID·필수 여부·근거·해결 조건·이력, 누락 시 유지 |
-| 13 수정 전달 | 검증 완료(자동 범위) | 모든 미해결 지적 brief·지적별 수정 보고 검사 |
-| 14 해결 확인 | 검증 완료(자동 범위) | FIX_SUBMITTED는 미해결, 웹의 현재 후보 판정으로 해결, 새 후보 재검증 필요 유지 |
-| 15 경로 분리 | 검증 완료(자동 범위) | 코드/증거 보완은 같은 후보·응답 보완은 같은 작업, 수정은 새 후보 |
-| 16 한도 종료 | 검증 완료(자동 범위) | 회차·증거·형식·전체 시간 별도 설정, 잔여 지적·요청 보존. 운영값 미확정 |
-| 17 대상 적용 | 검증 완료(자동 범위) | candidate/review/base/hash/version 결합, 기준 이동 거절, 저장된 patch 적용·실제 tree 검사 |
-| 18 진행 표시 | 구현됨·브라우저 동작 미검증 | 실제 이벤트·지적·증거 연결, DOM 대역 검사. 브라우저 도구가 사용 가능한 브라우저 없음 반환 |
-| 19 결과 구분 | 구현됨·브라우저 동작 미검증 | 상태·감사·적용·종료 이유 구분, 연결 끊김과 실제 시각 보존을 DOM 대역으로 확인 |
-| 20 중단 | 부분 구현 | 후속 배정·늦은 통과 차단, 종료 확인 실패는 복구 필요. 실제 외부 프로세스/원격 턴 종료 및 자식 프로세스 전체 종료 미검증 |
-| 21 재시작 | 검증 완료(자동 범위) | 실행 불확실·과거 판정 보존·자동 재전송 금지, 적용 기준/후보/불확실 판별. 실제 제공자 재시작 사례 미검증 |
+| 기준 고정·시작, REQ-01~03 | 프로젝트 설정, preparation 합의, revision/hash, 비동기 접수 | preparation/API/domain 검사. 실제 운영 기준은 사용자가 지정 |
+| 작업 분리·후보 고정, REQ-04~05 | 런별 Git worktree, 회차별 새 Worker, tree/patch/blob 캡처 | Git/Worker 검사와 browser fixture 연결. worktree는 OS 보안 경계가 아님 |
+| 실행 기록, REQ-06 | 실제 Node 명령, 결과 디렉터리, 시간/종료/오류/후보 불변 검사 | candidate evidence 검사. 출력 제한·바이너리 수집·프로세스 트리 한계 유지 |
+| 감사·추가 조회, REQ-07~09 | 고정 후보/요구사항/증거 전달, 등록 검증 ID만 실행 | 감사 서비스·Web Adapter·browser fixture. 실 ChatGPT의 충분한 자료 검토는 별도 |
+| 판정·지적·수정, REQ-10~15 | 요구사항별 판정, Controller 지적 ID, 새 Worker, 재검토, 형식 보완 분리 | domain/service 검사. browser fixture는 캡처 patch를 읽어 REWORK→PASS |
+| 한도, REQ-16 | 회차·증거·형식·전체/턴 시간 한도 | 경계 검사. 운영 숫자를 예제로 대신 확정하지 않음 |
+| 적용, REQ-17 | 별도 code.apply, candidate/review/base/hash/version 검사 | 임시 Git 적용/재시작 검사. 자동 merge/commit/push 없음 |
+| 화면, REQ-18~19 | 준비·작업·결과·지적·증거 표시 | test:ui는 실제 브라우저 + API fixture. 제품 제공자 연결 검증과 별개 |
+| 중단·재시작, REQ-20~21 | 늦은 응답 차단, 복구 필요, 자동 재전송 금지, 적용 상태 조정 | fake process/adapter/persistence 검사. 실제 제공자 crash/restart는 미검증 |
 
-## 검증 증거
+## 자동 검사의 역할
 
-- `tests/code-review.test.js`: VAL-02~06·09의 판정·증거·지적 차단.
-- `tests/code-change-service.test.js`: VAL-01·04·07·10·12~14·16, 임시 Git + SQLite + 모의 에이전트.
-- `tests/code-change-e2e.test.js`: 실제 Node 검증 실행 실패·후보 변조·중단/늦은 응답·무변경 보류·비동기 접수. 이름의 e2e는 실제 제공자 연동을 뜻하지 않음.
-- `tests/audit-boundaries.test.js`: 범위 밖 요청·연결 유실·한도·적용 중 재시작·기준 이동·원문 보존·과거 PASS·CLI 미설정 상태의 기록 조회.
-- `tests/public/audit-console.test.js`: VAL-17~18, 실제 UI 스크립트와 DOM/네트워크 대역.
-- `tests/server-cutover.test.js`, `tests/dashboard-controller.test.js`: 인증·동일 출처·CODE_CHANGE 접수·영속 명령·기존 DISCUSSION 회귀.
-- 2026-09-08 `npm run check`: 린트·타입 검사 통과, 자동 테스트 380개 통과, 실패·skip 0. 이후 공유 아티팩트 참조 보존 변경에 대해 `tests/dashboard-controller.test.js` 6개 재검사 통과. 실제 제공자·브라우저 검증 결과가 아니다.
+- `npm run check`: 정적 검사와 Node 테스트. fixture 제공자 성공을 실제 제공자 성공으로 계산하지 않는다.
+- `npm run test:browser`: 전체 extension scripts + 실제 Web Adapter/HMAC/WebSocket + Chromium DOM. 실제 Codex Adapter와 fixture subprocess를 더한 2회차 감사 흐름도 검사한다. Chrome API와 제공자 페이지/응답은 fixture다.
+- `npm run test:ui`: 콘솔 화면과 입력. 준비·실행 상태는 API fixture다.
+- `npm run certify`: 저장된 후보/리뷰/요구사항/증거 정합성. 실 제공자 출처나 artifact 원문을 독립 인증하지 않는다.
 
-## 남은 실제 환경 작업
+`tests/web-root-start.test.js`는 recovery 모듈의 경계 검사다. 이전의 함수 문자열 추출·가짜 완료 테스트가 다루던 root/역할/문서 이동 흐름은 `scripts/test-extension.mjs`의 실제 DOM 검사로 이동했다. 다른 legacy VM 테스트가 남아 있으므로 저장소 전체가 browser integration으로 전환됐다는 뜻은 아니다.
 
-1. 대상은 사용자가 지정한 `https://github.com/jaehoon6523/app-web-agent-bridge.git`의 로컬 저장소다. 실제 감사 런용 ChatGPT 대화 URL은 아직 제공되지 않았다.
-2. 대상 RequirementsSet, 허용 검증 명령, 회차·시간 운영값을 프로젝트 설정으로 지정해야 한다. README 예시는 형식 설명이며 실제 운영 설정으로 자동 채택하지 않는다.
-3. 설치된 Codex·확장·ChatGPT 로그인과 실제 왕복 감사, 기능 누락 발견→수정→재감사, 실제 외부 종료/재시작을 검증해야 한다.
-4. OS 권한 격리와 검증 프로세스 자식 트리 종료·출력 전체 보관·바이너리 증거 수집은 추가 구현 또는 명시적 지원 범위 결정이 필요하다. worktree 존재로 충족 처리하지 않는다.
-5. 브라우저 제어가 연결되면 실제 렌더링·명령·증거 페이지·모바일 배치를 확인한다.
+## 남은 실제 환경 검증
 
-## 결정 기록
+1. 대상 Git repo, RequirementsSet, 등록 검증, 한도와 외부 제공자 전송 범위를 확정한다.
+2. 설치된 Codex app-server 버전·인증과 실제 thread/turn 왕복을 확인한다.
+3. 설치된 Chrome extension, 로그인된 ChatGPT와 실제 메시지/응답/문서 binding을 확인한다. `/uc/` DOM을 처리하는 코드가 있다는 것이 인증된 계정 검증을 뜻하지 않는다.
+4. 실제 누락 발견→새 Worker 수정→새 후보→실제 재감사 PASS를 확인한다. 초기 PASS로 correction loop를 검증했다고 하지 않는다.
+5. 별도 crash/timeout/reload/restart 실행에서 불확실한 전송 보존·늦은 응답 차단·자동 재전송 금지를 확인한다.
+6. OS 접근 제한과 검증 프로세스 자식 트리 종료는 독립적으로 검증/보완한다.
 
-사용자의 “이제 모두 진행”, “진행 및 커밋”에 따라 기준안의 구현과 검증을 진행한다. 기준안의 제안을 첫 운영 방향으로 사용하되 다음 미정 항목을 이미 확정된 운영값으로 취급하지 않는다.
+## 현재 검토 시 유의할 변경
 
-| DEC | 적용·미정 상태 |
-|---|---|
-| 01 | REQ-01~21 구현 대상. 부분 구현·미검증을 별도 표시 |
-| 02 | 지정 GitHub 저장소, 단일 프로젝트 설정. 실제 런의 기준 JSON 미지정 |
-| 03 | 사전 등록 실행 파일·리터럴 인자. 실제 허용 명령과 OS 실행 권한 미지정 |
-| 04 | 실제 Web 대화 URL·로그인·제공자 왕복 미검증 |
-| 05 | 한도 종류 구현. 숫자는 필수 프로젝트 설정, 자동 기본값 없음 |
-| 06 | HTTP 우선 구현, WS 보류 |
-| 07 | CODE_CHANGE pause/resume/retry/자유입력 보류 |
-| 08 | 서버 연결·CLI 경로 설정·확장 인증·조회 시각을 각 관찰 사실로 표시. 정상 readiness로 대체하지 않음 |
-| 09 | 별도 code.apply와 정확한 후보 결합. 운영 주체는 로컬 인증된 사용자 |
-| 10 | 새 revision·새 런으로 기준 변경, 이전 리뷰를 새 승인으로 승계하지 않음 |
+폐기 요청은 현재 전송·세션·런·대화 identity가 모두 일치해야 한다. 일반 복구 응답도 `forced` 값으로 identity 검사를 우회하지 않는다. 이 검사를 복원했으며, fixture 검사의 성공을 실제 제공자 복구 검증으로 확대하지 않는다.
 
-## 설계 빈칸 보완 — Audit contract v3
-
-- 복구 필요 런에 인증된 운영자의 외부 종료·대상 확인과 사유를 받는 `run.abandon` 및 콘솔 UI를 추가했다. 중단된 로컬 작업이 남으면 거절하며 기록을 보존한다. 새 런도 clean target 검사를 통과해야 한다.
-- 요구사항별 검증 ID·기대 종료 코드·필수 결과 파일을 고정하고 최신 실행·정확한 실행 출처를 검사한다. 관련 없는 실패 실행과 이전 결과 재사용을 차단한다.
-- 실행마다 새 BRIDGE_RESULT_DIR을 사용한다. 기존 작업 사본 파일·symlink·hard link 결과를 수집하지 않는다. OS 권한 격리 구현을 뜻하지 않는다.
-- 필수 요구사항의 위반은 컨트롤러가 필수 지적으로 보존한다. 선택 개선안은 suggestions로 기록한다.
-- REQUIREMENTS_JSON을 명시적 수용 기준으로 사용하고 참고 문서 원문과 참조를 검증·고정한다. 기존 운영 설정의 명시적 갱신이 필요하다.
-- schemaVersion 1/2의 미완료 승인 승계를 차단한다. 확인 후 폐기 및 새 런이 필요하다.
-- 이번 검증: 신규 회귀 12개 포함 `npm run check` 392/392 통과, lint·typecheck 통과. 실제 제공자 왕복·실제 브라우저·OS 격리는 이번 검증 범위에 포함하지 않았다.
+현재 `candidatePacketType` 관련 repair 권한은 `src/domain/protocol-repair-policy.js`와 `tests/discussion-protocol-failure.test.js`에서 Controller 입력 기반으로 분리되어 있다. 과거 위험을 현재 미해결 P0로 재기재하지 않는다. 점수 threshold 판정이나 새 Artifact wrapper도 현재 계약으로 도입하지 않는다.

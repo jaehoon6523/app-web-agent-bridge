@@ -59,9 +59,9 @@ function fixture(t) {
     get discarded() { return discarded; },
     observe(value) { inspection = value; }, afterAck(value) { afterAck = value; },
     restart() { service.close(); service = new PreparationService(options); },
-    start() { return service.execute("preparation.start", { requestId: "start", expectedVersion: 0,
+    start() { return service.execute("preparation.start", { requestId: "start",
       objective: "  아무거나\n", targetRoot: root, conversationUrl: "https://chatgpt.com/c/test" }); },
-    command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), expectedVersion: service.current.version, preparationId: service.current.preparationId, ...extras }); },
+    command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), preparationId: service.current.preparationId, ...extras }); },
   };
 }
 test("unresolved delivery can be explicitly discarded with confirmations and remains auditable", async (t) => {
@@ -84,7 +84,7 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
 
 test("root bootstrap timeout discard uses the canonical preparation and session identity", async (t) => {
   const f = fixture(t);
-  await f.service.execute("preparation.start", { requestId: "start-root-discard", expectedVersion: 0,
+  await f.service.execute("preparation.start", { requestId: "start-root-discard",
     objective: "안녕", targetRoot: f.root, conversationUrl: "https://chatgpt.com/" });
   const context = f.service.current;
   const delivery = context.deliveries.find((item) => item.deliveryId === context.webSession.activeDeliveryId);
@@ -125,7 +125,7 @@ test("start returns server identity before dispatch; question-only reply retains
 test("ChatGPT start page bootstraps a newly created exact conversation", async (t) => {
   const f = fixture(t);
   const first = await f.service.execute("preparation.start", {
-    requestId: "start-root", expectedVersion: 0, objective: "아무거나", targetRoot: f.root,
+    requestId: "start-root", objective: "아무거나", targetRoot: f.root,
     conversationUrl: "https://chatgpt.com/",
   });
   assert.equal(first.conversationUrl, "https://chatgpt.com/");
@@ -250,7 +250,7 @@ test("refresh/restart restores same preparation and receipt; approval retry yiel
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);
   const before = f.service.snapshot(); f.restart();
   assert.deepEqual(f.service.snapshot(), before);
-  const input = { requestId: "approve", expectedVersion: before.version, preparationId: before.preparationId };
+  const input = { requestId: "approve", preparationId: before.preparationId };
   const first = await f.service.execute("preparation.approve", input);
   const second = await f.service.execute("preparation.approve", input);
   assert.deepEqual(first, second); assert.equal(f.runs.size, 1);
@@ -272,10 +272,9 @@ test("unacknowledged completed response reconciles without another Web turn", as
   assert.equal(f.service.current.webSession.activeDeliveryId, null);
   assert.equal(f.calls.length, 1);
 });
-test("stale version and reusing a request ID with different input are rejected", async (t) => {
+test("preparation commands no longer require a version and request IDs remain idempotent", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
-  await assert.rejects(f.command("preparation.reply", { expectedVersion: 1, content: "x" }), /version changed/);
-  await assert.rejects(f.service.execute("preparation.start", { requestId: "start", expectedVersion: 0, objective: "different" }), /different command/);
+  await assert.rejects(f.service.execute("preparation.start", { requestId: "start", objective: "different" }), /different command/);
 });
 
 for (const [label, observation] of Object.entries({

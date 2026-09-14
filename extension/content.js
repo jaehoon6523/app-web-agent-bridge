@@ -11,6 +11,9 @@ const CHATGPT_HOSTS = new Set(["chatgpt.com"]);
 const selectorTelemetry = new Map();
 
 let currentJob = null;
+function contentTrace(event, details = {}) {
+  console.info(`[bridge:trace:content:${event}]`, { at: new Date().toISOString(), ...details });
+}
 // A content-script document token, not a Chrome navigation documentId.
 const DOCUMENT_ID = crypto.randomUUID();
 const FRAME_ID = window === window.top ? 0 : null;
@@ -499,6 +502,7 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
         baselineUserElements,
       );
       if (association.status === "MANUAL_INTERVENTION_DETECTED") {
+        contentTrace("manual-intervention", { requestId: expected?.requestId ?? null, observedMessageId: association.observedMessageId ?? null, expectedConversationId: expected?.expectedConversationId ?? null });
         throw new ContentContractError(
           "MANUAL_INTERVENTION_DETECTED",
           "A manual user message appeared in the bound conversation.",

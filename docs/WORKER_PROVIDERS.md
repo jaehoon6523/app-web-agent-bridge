@@ -1,6 +1,10 @@
 # Worker providers and telemetry
 
-Exactly one implementation worker is attached to a code-change run.
+Exactly one implementation worker is active at a time in a code-change run.
+Each implementation iteration creates and closes its own worker. Codex iterations
+start fresh threads; they reuse the run's isolated Git worktree so rework can amend
+the preceding candidate. Adapter-level exact-thread resume is not permission for
+the CODE_CHANGE controller to restart an interrupted iteration automatically.
 The controller does not launch Codex, DeepSeek, Claude, Qwen, and Gemini in parallel.
 
 Supported provider identifiers:
@@ -12,6 +16,11 @@ Supported provider identifiers:
 - `gemini`
 
 Codex uses the existing native app-server adapter.
+The implementation is in `src/runtime/codex/` and the capture wrapper is
+`src/runtime/code-change-worker.js`. Worker/reviewer instructions and the worker
+output schema are in `src/orchestration/code-change-prompts.js`; audit validation
+remains in `src/domain/code-review.js`. The reviewer does not receive a worker's
+conversation history, and worker claims cannot substitute for captured evidence.
 The other providers use a version-neutral JSONL adapter so the controller does not depend
 on unstable vendor-specific CLI flags. `CODE_WORKER_EXECUTABLE` may point to the vendor CLI
 through a small shim that translates the following protocol.

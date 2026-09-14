@@ -609,10 +609,9 @@ async function preparationMutation(operation, capability, url, payload = {}) {
   if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;
   if (["preparation.start", "preparation.reply"].includes(capability) && !webConnected()) return false;
   const requestId = crypto.randomUUID();
-  const expectedVersion = capability === "preparation.start" ? 0 : workflow.preparationVersion;
   operations[operation] = "RUNNING"; render();
   try {
-    await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId, expectedVersion }) });
+    await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId }) });
     text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
     return true;
   } catch (error) {

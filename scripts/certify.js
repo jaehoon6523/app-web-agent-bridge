@@ -2,6 +2,9 @@ import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import dotenv from "dotenv";
+import { canonicalJson } from "../src/domain/canonical-json.js";
+import { requirementsRef } from "../src/domain/audit-contract.js";
+import { evaluateCodeReview } from "../src/domain/code-review.js";
 
 dotenv.config({ quiet: true });
 
@@ -77,7 +80,7 @@ export async function main({
   await check();
 
   process.stdout.write(
-    "\nCertification phase 2/2: persisted live audit evidence\n",
+    "\nCertification phase 2/2: persisted audit consistency (provider provenance not certified)\n",
   );
 
   requireCondition(
@@ -150,7 +153,40 @@ export async function main({
     "Required unresolved findings remain.",
   );
 
-  process.stdout.write("\nCertification result: PASS\n");
+  const record = snapshot.run;
+  const review = record.reviews?.at(-1);
+  requireCondition(review?.decision === "PASS" && review.report && record.candidate && record.capture,
+    "The run has no complete candidate-bound review and capture.");
+  requireCondition(
+    review.candidateId === record.candidate.candidateId
+      && record.candidate.runId === runId
+      && record.capture.candidateTree === record.candidate.candidateTree
+      && record.capture.artifact?.sha256 === record.candidate.patchHash
+      && record.capture.baseCommit === record.baseCommit
+      && record.candidate.baseCommit === record.baseCommit,
+    "The persisted review and capture identify different candidates.",
+  );
+  requireCondition(
+    canonicalJson(requirementsRef(record.requirements)) === canonicalJson(record.requirementsRef)
+      && canonicalJson(review.requirementsRef) === canonicalJson(record.requirementsRef),
+    "The reviewed requirements do not match the fixed requirements.",
+  );
+  requireCondition(Array.isArray(record.findings) && Array.isArray(record.evidence), "The run has no canonical findings/evidence arrays.");
+  requireCondition(
+    Array.isArray(snapshot.findings)
+      && canonicalJson(snapshot.assessments) === canonicalJson(review.report.assessments)
+      && canonicalJson(snapshot.evidence) === canonicalJson(record.evidence)
+      && canonicalJson(snapshot.findings) === canonicalJson(record.findings),
+    "The projected audit evidence differs from the canonical run.",
+  );
+  const evaluation = evaluateCodeReview(review.report, {
+    runId, requestId: review.requestId, candidateId: record.candidate.candidateId,
+    requirementsRef: record.requirementsRef, requirements: record.requirements,
+    findings: record.findings, evidence: record.evidence,
+  });
+  requireCondition(evaluation.decision === "PASS", "Re-evaluating the persisted report did not produce PASS.");
+
+  process.stdout.write("\nPersisted audit consistency: PASS (not live-provider certification)\n");
   process.stdout.write(`Run: ${runId}\n`);
   process.stdout.write(`Stage: ${stage}\n`);
   process.stdout.write(`Assessments: ${snapshot.assessments.length}\n`);

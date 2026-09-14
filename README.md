@@ -6,10 +6,10 @@ CLI 구현 → 고정 후보·실행 증거 → 웹 감사 → 지적 → 수정
 
 ## 현재 경로
 
-- 주 콘솔과 `POST /api/runs/start`는 `CODE_CHANGE`로 시작합니다. 목표와 기존 ChatGPT 대화 URL만 받습니다.
+- 주 콘솔은 준비 대화·합의 승인을 거쳐 `CODE_CHANGE`를 시작합니다. 준비 API와 화면 계약은 [WORKFLOW_CONTRACT](public/WORKFLOW_CONTRACT.md), [API_INTEGRATION](public/API_INTEGRATION.md)을 참조하세요. 직접 `POST /api/runs/start`를 호출하는 CODE_CHANGE 경로에는 확정 프로젝트 설정과 정확한 기존 대화 URL이 필요합니다.
 - 프로젝트·요구사항·허용 검증·한도는 콘솔의 **프로젝트 설정**에서 입력·저장합니다. 미종료 작업이 없을 때 변경할 수 있고 다음 작업부터 바로 반영됩니다. 기존 런의 기준은 변경하지 않습니다.
 - 한 번에 한 런을 수행하고 과거 런은 조회할 수 있습니다. 중단·별도 적용·기록 다운로드·증거 원문 조회를 지원합니다.
-- HTTP 조회를 사용합니다. 대시보드 WS, pause/resume/retry, 실행 중 자유입력은 CODE_CHANGE 초기 범위에서 보류합니다. 과거 DISCUSSION 엔진과 명령은 별도로 남아 있습니다.
+- HTTP 조회를 사용합니다. CODE_CHANGE의 pause/resume/retry와 실행 중 자유입력은 지원하지 않습니다. 준비 대화의 답변과 기존 DISCUSSION 엔진은 별도 계약입니다.
 - 접수 시 런을 저장하고 ID를 반환합니다. 이후 웹 준비 실패·구현 실패도 해당 런에 남습니다.
 
 ## 실행 설정
@@ -167,7 +167,12 @@ npm start
 
 ```powershell
 npm run check
-node --test --experimental-test-isolation=none tests/audit-boundaries.test.js tests/public/audit-console.test.js
+npm run test:browser
+npm run test:ui
 ```
 
 자동 검사는 임시 실제 Git 저장소·실제 Node 검증 명령·SQLite와 모의 CLI/Web 응답을 사용합니다. `tests/public/audit-console.test.js`는 배포 UI 스크립트를 DOM/네트워크 대역으로 검사하며 실제 브라우저 검사와 구분합니다. 실제 웹 감사자가 누락을 찾아내는지, 설치된 확장·로그인·OS 권한을 포함한 전체 흐름은 별도 실연동 검증이 필요합니다.
+
+`test:browser`는 실제 Chromium에서 content script와 background 전체를 Web Adapter에 연결하고, 실제 Codex Adapter에 JSONL fixture 프로세스를 연결해 캡처→리뷰→REWORK→새 Worker→PASS를 검사합니다. Reviewer fixture는 캡처된 patch 내용을 읽어 판정하며 호출 횟수로 PASS를 반환하지 않습니다. Chrome API와 제공자 페이지/응답은 대역이므로 실제 Codex·ChatGPT 성공 증거는 아닙니다. 설치된 Chrome이 없으면 실패하며 자동 skip하지 않습니다. `check`에는 브라우저 검사가 포함되지 않으므로 확장 변경 시 두 명령을 모두 실행하세요.
+
+현재 연결 제안에 대한 검토, 코드 소유 위치와 실제 제공자 검증 순서는 [MIGRATION_PLAN](MIGRATION_PLAN.md)에 있습니다. 저장된 감사의 정합성 검사와 실제 제공자 검증의 차이는 [CERTIFICATION](docs/CERTIFICATION.md)에 명시합니다.

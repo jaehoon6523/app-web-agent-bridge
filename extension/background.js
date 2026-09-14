@@ -1,23 +1,11 @@
 import { inspectBoundDocument, createSuccessTrace, diagnosticError, errorPayload } from "./runtime/document-binding.js";
 import { recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
-import {
-  canonicalChatGptUrl,
-  conversationIdFromUrl,
-  matchExactConversationTabs,
-  validateLocalControllerUrl,
-} from "./runtime/conversation.js";
+import { canonicalChatGptUrl, conversationIdFromUrl, matchExactConversationTabs, validateLocalControllerUrl } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
 import { createExtensionStateStore, ensureExtensionIdentity } from "./runtime/storage.js";
 import { clearLegacyTestDelivery } from "./runtime/legacy-cleanup.js";
-import {
-  assertRelaySafeCompletion,
-  assertTurnSessionBinding,
-  assertTurnStateBinding,
-  assertTurnTabBinding,
-  captureTurnBinding,
-  createActiveTurnGate,
-} from "./runtime/turn-guard.js";
+import { assertRelaySafeCompletion, assertTurnSessionBinding, assertTurnStateBinding, assertTurnTabBinding, captureTurnBinding, createActiveTurnGate } from "./runtime/turn-guard.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -27,6 +15,9 @@ let pendingChallengeId = null;
 let handledChallengeIds = new Set();
 const turnGate = createActiveTurnGate();
 let lastError = null;
+function bridgeLog(event, details = {}) {
+  console.info(`[bridge:trace:${event}]`, { at: new Date().toISOString(), ...details });
+}
 class ExtensionOperationError extends Error {
   constructor(code, message, details = null) {
     super(message);
@@ -155,12 +146,7 @@ async function answerAuthenticationChallenge(message) {
   const state = await store.read();
   const extensionIdentity = await ensureExtensionIdentity(store);
   const hmacSha256 = await computeChallengeHmac(message.nonce, state.sharedSecret);
-  send({
-    type: "extension.auth.response",
-    challengeId: message.challengeId,
-    extensionIdentity,
-    hmacSha256,
-  }, { allowUnauthenticated: true });
+  send({ type: "extension.auth.response", challengeId: message.challengeId, extensionIdentity, hmacSha256 }, { allowUnauthenticated: true });
 }
 async function handleControllerMessage(raw) {
   let message;
@@ -292,16 +278,19 @@ async function handleControllerMessage(raw) {
   }
 }
 async function handlePrepare(message, explicitRebind) {
+  bridgeLog("prepare:start", { preparationId: message.payload?.preparationId ?? null, sessionId: message.payload?.sessionId ?? null, explicitRebind });
   try {
     turnGate.assertIdle(explicitRebind ? "Session rebind" : "Session preparation");
     const session = explicitRebind
       ? await rebindSession(message.payload || {})
       : await prepareBoundSession(message.payload || {});
     lastError = null;
+    bridgeLog("prepare:bound", { sessionId: session.sessionId, runId: session.runId, tabId: session.tabId, bindingStatus: session.bindingStatus, conversationUrl: session.conversationUrl, conversationId: session.conversationId });
     await store.update({ bindingError: null });
     broadcastPopupState();
     send({ type: "web.session.ready", requestId: message.requestId, payload: { session } });
   } catch (error) {
+    bridgeLog("prepare:failed", { code: error.code ?? null, message: error.message, details: error.details ?? null });
     lastError = diagnosticError(error);
     await store.update({ bindingError: lastError });
     broadcastPopupState();
@@ -325,9 +314,9 @@ async function handleDeliveryAcknowledgement(message) {
 }
 async function handleDeliveryDiscard(message) {
   try { turnGate.assertIdle("Delivery discard"); const state = await store.read(), expected = message.payload || {};
+    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true || typeof expected.reason !== "string" || expected.reason.trim().length < 3) throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과와 자동 재전송 금지를 확인하고 폐기 사유를 입력하세요.");
     if (state.currentDeliveryId !== expected.currentDeliveryId || state.lastBoundSessionId !== expected.sessionId
       || state.lastBoundRunId !== expected.runId || state.conversationUrl !== expected.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 identity가 현재 기록과 다릅니다.");
-    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true || typeof expected.reason !== "string" || expected.reason.trim().length < 3) throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과와 자동 재전송 금지를 확인하고 폐기 사유를 입력하세요.");
     await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND", bindingError: `RECOVERY_DISCARDED: ${expected.reason.trim()}` });
     send({ type: "web.delivery.discarded", requestId: message.requestId, payload: { ...expected, result: "discarded" } });
   } catch (error) { send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) }); }
@@ -631,6 +620,7 @@ async function handlePrompt(message) {
     return;
   }
   const payload = message.payload || {};
+  bridgeLog("prompt:start", { deliveryId: message.requestId, controllerMessageId: payload.controllerMessageId ?? null, runId: payload.runId ?? null });
   try {
     const state = await store.read();
     if (
@@ -657,6 +647,7 @@ async function handlePrompt(message) {
     const reservedState = await store.reserveDelivery(message.requestId);
     deliveryReserved = true;
     const bootstrap = reservedState.bindingStatus === "ROOT_READY";
+    bridgeLog("prompt:reserved", { deliveryId: message.requestId, tabId: reservedState.tabId, bindingStatus: reservedState.bindingStatus, conversationUrl: reservedState.conversationUrl, conversationId: reservedState.conversationId, bootstrap });
     const turnIdentity = {
       requestId: message.requestId,
       controllerMessageId: payload.controllerMessageId,
@@ -675,6 +666,7 @@ async function handlePrompt(message) {
     if (!reservedState.documentId || reservedState.frameId !== 0) throw new ExtensionOperationError("WEB_DOCUMENT_CHANGED", "Prepare the current ChatGPT document before sending.");
     await inspectBoundDocument(chrome.tabs, tab.id, reservedState);
     contentDispatchStarted = true;
+    bridgeLog("prompt:dispatch", { deliveryId: message.requestId, tabId: tab.id, bootstrap });
     let result;
     let bootstrapRecovered = false;
     try {
@@ -713,14 +705,17 @@ async function handlePrompt(message) {
       const current = await store.read();
       const observed = await chrome.tabs.get(tab.id);
       const url = canonicalChatGptUrl(observed.url), id = conversationIdFromUrl(url);
+      // During bootstrap the response may contain a temporary WEB:* ID before
+      // the browser URL settles on the real conversation ID.
       if (current.currentDeliveryId !== message.requestId || current.lastBoundSessionId !== reservedState.lastBoundSessionId
         || current.lastBoundRunId !== reservedState.lastBoundRunId
         || current.documentId !== reservedState.documentId || current.frameId !== reservedState.frameId
         || result.evidence?.documentId !== reservedState.documentId || result.evidence?.frameId !== reservedState.frameId
-        || current.tabId !== tab.id || !id || result.evidence?.conversationUrl !== url || result.evidence?.conversationId !== id) {
+        || current.tabId !== tab.id || !id) {
         throw new ExtensionOperationError("TURN_BINDING_CHANGED", "새 대화 생성 결과와 전송한 탭의 식별자가 일치하지 않습니다.");
       }
       await store.update({ conversationUrl: url, conversationId: id, bindingStatus: "BOUND" });
+      bridgeLog("prompt:conversation-bound", { deliveryId: message.requestId, tabId: tab.id, conversationUrl: url, conversationId: id });
       frozenTurn = captureTurnBinding(await store.read(), turnIdentity);
     }
     assertRelaySafeCompletion(result, frozenTurn);
@@ -753,6 +748,7 @@ async function handlePrompt(message) {
       },
     });
   } catch (error) {
+    bridgeLog("prompt:failed", { deliveryId: message.requestId, code: error.code ?? null, message: error.message, details: error.details ?? null, deliveryReserved, contentDispatchStarted });
     if (deliveryReserved && !contentDispatchStarted) await store.clearDelivery(message.requestId);
     console.warn("[bridge:delivery:failed]", {
       deliveryId: message.requestId, code: error.code ?? null,
@@ -834,9 +830,19 @@ async function focusTab(tab) {
 async function focusBoundTab() {
   await focusTab(await requireExactBoundTab());
 }
+function chatGptContentScriptFiles() {
+  const entry = chrome.runtime.getManifest().content_scripts?.find((item) =>
+    Array.isArray(item.matches) && item.matches.includes("https://chatgpt.com/*"),
+  );
+  if (!Array.isArray(entry?.js) || entry.js.length === 0) {
+    throw new ExtensionOperationError("CONTENT_SCRIPT_CONFIG_INVALID", "ChatGPT content script configuration is missing.");
+  }
+  return entry.js;
+}
 async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false) {
   const deadline = Date.now() + timeoutMs;
   let contentScriptResponded = false;
+  let injectionAttempted = false;
   while (Date.now() < deadline) {
     try {
       const response = await chrome.tabs.sendMessage(tabId, { type: "agent.ping" });
@@ -847,6 +853,16 @@ async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer =
       }
     } catch (error) {
       if (error instanceof ExtensionOperationError) throw error;
+      if (!injectionAttempted) {
+        injectionAttempted = true;
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        if (canonicalChatGptUrl(tab?.url)) {
+          await chrome.scripting.executeScript({
+            target: { tabId, frameIds: [0] },
+            files: chatGptContentScriptFiles(),
+          }).catch(() => null);
+        }
+      }
     }
     await sleep(350);
   }
@@ -967,9 +983,7 @@ async function inspectBoundTabTopology(triggerTabId = null) {
   }
   broadcastPopupState();
 }
-chrome.tabs.onCreated.addListener((tab) => {
-  if (canonicalChatGptUrl(tab.url)) void inspectBoundTabTopology(tab.id);
-});
+chrome.tabs.onCreated.addListener((tab) => { if (canonicalChatGptUrl(tab.url)) void inspectBoundTabTopology(tab.id); });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (typeof changeInfo.url === "string" && canonicalChatGptUrl(changeInfo.url)) {
     void inspectBoundTabTopology(tabId);
@@ -981,7 +995,5 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     }
   });
 });
-setInterval(() => {
-  if (authenticated) send({ type: "extension.heartbeat", payload: { at: Date.now(), busy: turnGate.active } });
-}, 20_000);
+setInterval(() => { if (authenticated) send({ type: "extension.heartbeat", payload: { at: Date.now(), busy: turnGate.active } }); }, 20_000);
 void store.read().then(() => connect());

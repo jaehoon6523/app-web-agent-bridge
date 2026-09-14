@@ -4,7 +4,7 @@
   "version": "0.2.1",
   "description": "Binds an exact ChatGPT conversation to the local two-agent controller.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "tabs"],
+  "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
     "https://chatgpt.com/*"
   ],

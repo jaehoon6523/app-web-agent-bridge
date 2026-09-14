@@ -475,14 +475,21 @@ export class ChatGptWebSessionAdapter {
       }
       const returned = message.payload?.session;
       const trace = message.payload?.trace;
+      const bootstrap = expected?.bindingStatus === "ROOT_READY" && expected?.conversationId === null;
       if (!trace || trace.requestId !== turnId || trace.actionId !== turnId || trace.result !== "success"
         || trace.tabId !== expected?.tabId || trace.tabId !== returned?.tabId
         || trace.bindingId !== `${expected?.sessionId}:${expected?.runId}`
-        || trace.documentId !== expected?.documentId || trace.documentId !== returned?.documentId
+        || (!bootstrap && trace.documentId !== expected?.documentId) || trace.documentId !== returned?.documentId
         || trace.frameId !== expected?.frameId || trace.frameId !== returned?.frameId
         || trace.documentId !== message.payload?.evidence?.documentId
         || trace.frameId !== message.payload?.evidence?.frameId) {
         throw new WebProtocolError("Web success trace does not match the dispatched document and action", "WEB_SUCCESS_TRACE_MISMATCH");
+      }
+      if (bootstrap && (returned?.bindingStatus !== "BOUND" || !returned?.conversationId
+        || message.payload?.evidence?.conversationUrl !== returned?.conversationUrl
+        || message.payload?.evidence?.conversationId !== returned?.conversationId
+        || !message.payload?.evidence?.userMessageId || !message.payload?.evidence?.assistantMessageId)) {
+        throw new WebProtocolError("Bootstrap result lacks an exact observed conversation and message pair", "WEB_SESSION_BINDING_MISMATCH");
       }
       const parsed = parseResponse(message.payload.text);
       this.#acceptReturnedBinding(message.payload?.session, { expectedBinding: expected, allowConversationBootstrap: expected?.bindingStatus === "ROOT_READY" });
@@ -712,7 +719,7 @@ export class ChatGptWebSessionAdapter {
     if (
       !allowTabRelocation
       && (next.tabId !== current.tabId || next.windowId !== current.windowId
-        || next.documentId !== current.documentId || next.frameId !== current.frameId)
+        || (!bootstrap && next.documentId !== current.documentId) || next.frameId !== current.frameId)
     ) {
       throw new WebProtocolError(
         "Returned Web binding changed the active tab during a bound operation",

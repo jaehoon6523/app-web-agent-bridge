@@ -29,7 +29,7 @@ export function setupAudit(t, hooks = {}) {
   const briefs=[], prompts=[], acknowledgements=[];
   const configured = project(target); hooks.configure?.(configured);
   const options = { filename:path.join(directory,"controller.sqlite"), artifactStore:new ArtifactStore(path.join(directory,"artifacts")), codex:{}, project:configured,
-    createWorker:async ({workspace,persistThreadId,persistCapture}) => {
+    createWorker:hooks.createWorker ?? (async ({workspace,persistThreadId,persistCapture}) => {
       const number=++starts;
       return { async start(){await persistThreadId({threadId:`worker-${number}`});}, async close(){}, async submitTurn({text}) {
         const brief=JSON.parse(text.slice(text.indexOf("\n")+1)); briefs.push(brief);
@@ -38,8 +38,8 @@ export function setupAudit(t, hooks = {}) {
         const report={summary:"Implementation claim",requirementClaims:brief.requirements.items.map((r)=>({requirementId:r.requirementId,claim:"Implemented"})),findingResponses:brief.unresolvedFindings.map((f)=>({findingId:f.findingId,explanation:"Submitted fix"})),unverified:[]};
         return {turnId:`worker-turn-${number}`,completion:Promise.resolve({text:JSON.stringify(report),capture})};
       }};
-    },
-    webSession:{activeTurnId:null,async resume(input){if(hooks.resume) await hooks.resume(input);},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
+    }),
+    webSession:hooks.webSession ?? {activeTurnId:null,async resume(input){if(hooks.resume) await hooks.resume(input);},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
       async submitTurn({runId,turnId,text,parseResponse}) {
         this.activeTurnId=turnId; const data=JSON.parse(text.slice(text.indexOf("\n")+1)); prompts.push(data); const number=++reviews;
         const report = hooks.review ? await hooks.review(data, number, service) : reportFor(data.context,number===1?"UNSATISFIED":"SATISFIED");

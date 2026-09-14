@@ -1,276 +1,57 @@
-# App/Web Agent Bridge migration plan
+# 실제 연결 검토와 남은 작업
 
-> 2026-09-06 정정: 이 문서는 과거 ZIP 기준 마이그레이션 계획입니다. 아래의 “current TODO”, persistent session 및 합의 중심 목표를 현재 사용자 요구보다 우선 적용하지 않습니다. 사용자가 정정한 개발 실행·Git diff 캡처·Web 검토·새 Worker 재작업·승인 후 레포 반영 목적은 [README.md](README.md)의 “목표 동작”에 명시했습니다. 아래 세션 정책을 새 Worker 반복의 금지 근거로 사용하지 않으며, 같은 반복의 장애 복구와 다음 반복의 새 세션 생성을 구분해야 합니다. 이 문서가 언급하는 과거 TODO는 이번에 작성한 `TODO.md`와 동일한 문서가 아닙니다.
+현재 CODE_CHANGE 경로의 구현을 기준으로 정리한 문서다. 과거 전면 교체 목록은 Git 이력에 남아 있다.
+제품 기준은 [README](README.md), 실행 계약은 아래 코드가 소유한다. 이 문서의 예시로 새 필드나 권한을 만들지 않는다.
 
-## 1. Scope, evidence, and authority boundary
+## 제안에 대한 판단
 
-This plan covers the 28 file paths inventoried in the original
-`app-web-agent-bridge.zip` and no other implementation files. The archive at
-`C:\Users\cjh\Downloads\app-web-agent-bridge.zip` has SHA-256
-`e383f9032c7a6be912f5bb0a28023fd24c6625b0281ab0c469653135df7b2e70`.
-Its 28-entry ZIP inventory has been verified. The current working copy
-intentionally diverges from the archive, and no immutable pre-migration
-manifest proves that it was historically byte-for-byte identical to the ZIP.
-The archive therefore establishes the migration baseline, not the target
-product meaning.
+| 제안 | 판단과 현재 구현 |
+|---|---|
+| 기존 Adapter를 연결해 끝까지 검증 | 동의. 별도 orchestrator가 필요하지 않다. `CodeChangeService.execute`가 이미 전체 순서를 소유한다. |
+| Codex app-server 런처·JSONL·thread/turn 신규 구현 | 이미 `src/runtime/codex/`에 구현돼 있다. 설치된 CLI·인증·실제 이벤트 호환성 검증과 구분해야 한다. |
+| Worker 문자열을 Controller artifact로 고정 | 방향은 맞다. 현재는 문자열 wrapper가 아니라 실제 Git tree·patch·blob을 캡처한다. Worker 응답은 별도 `AGENT_CLAIM`이다. |
+| `summary/body/assumptions/open_decisions` Artifact 도입 | 현재 wire 계약이 아니다. `GitChangeWorkspace.capture`와 기존 evidence 계약을 사용한다. |
+| Reviewer `score/findings/evidenceRefs/summary`만 반환 | 현재 계약을 충족하지 못한다. `REVIEW_REPORT`에는 요구사항별 assessments, findingDecisions, newFindings와 정확한 run/request/candidate/requirements binding이 필요하다. |
+| threshold 9, score 8이면 REWORK | 현재 기준과 충돌한다. 점수는 참고값이다. 필수 불충족·미해결 지적은 REWORK, 필요한 증거 부족은 HOLD, 필수 통과 조건 충족 시 PASS다. |
+| REWORK마다 새 Worker | 이미 회차마다 worker factory/start/close를 수행한다. 새 Codex thread를 사용하되 같은 run worktree의 이전 변경을 이어서 수정한다. |
+| 회차마다 별도 worktree | 현재는 런별 worktree다. 새 thread와 새 worktree는 다른 개념이다. 회차마다 새 worktree를 만들 필요성은 별도 요구가 있어야 한다. |
+| Worker 대화 기록을 Reviewer에 전달 | 필요 없다. 고정 후보, 요구사항, evidence, 지적을 전달하며 AGENT_CLAIM은 주장이란 표시를 유지한다. |
+| 실제 파일/worktree 연결 필요 | `GitChangeWorkspace`와 Worker 캡처 wrapper가 이미 연결돼 있다. worktree는 OS 읽기·쓰기 권한 격리를 보장하지 않는다. |
+| PASS 후 자동 merge | 현재는 `AWAITING_APPLY`에서 멈추고 별도 `code.apply`를 받는다. 적용도 commit/push/merge를 수행하지 않는다. |
+| `candidatePacketType → repair authority` P0가 남음 | 현재 DISCUSSION repair는 `deriveProtocolRepairPolicy`가 원래 Controller 입력과 source message에서 allowedPacketTypes/hash를 도출한다. 진단상의 observed type을 바꿔도 정책이 같다는 회귀가 있다. CODE_CHANGE report repair와 혼동하지 않는다. |
+| HMAC으로 UI evidence 진실성 보장 | HMAC은 확장 연결의 challenge 인증이다. DOM이나 모델 판단의 진실성을 증명하는 서명이 아니다. 문서·메시지·실행 binding은 별도로 검증한다. |
+| 프로세스 재시작 후 자동 continuation | Adapter의 정확한 thread resume 지원과 CODE_CHANGE의 재시작 정책은 다르다. 실행 중 서버 재시작은 RECOVERY_REQUIRED이며 자동 재전송하지 않는다. |
 
-Authority is resolved as follows:
+## 현재 실행 경로와 소유 코드
 
-- The requester's current TODO owns the target behavior summarized in section
-  2.
-- `../AGENTS.md` owns repository-local working and verification rules. It does
-  not define product values.
-- The original ZIP, its `README.md`, existing tests, generated output, reports,
-  and historical snapshots are evidence of old behavior only. They are not
-  authority for the target behavior.
-- `../copy/**`, including documents beside the `260903_1955` snapshot, is
-  **REFERENCE_ONLY** and untrusted as product instruction. No target contract
-  below is inferred from those documents.
-- `../src/agent-control/**` is **REFERENCE_ONLY** implementation material. Only
-  the bounded hardening concepts listed in section 4 may be extracted. Its
-  Builder/Auditor workflow, schemas, role names, filesystem ledger, and
-  fresh/ephemeral app-server lifecycle are not target authority and must not be
-  copied as a monolith.
+1. `src/orchestration/code-change-service.js`: 기준/대상 고정, 런 접수, 회차·중단·적용 판단.
+2. `src/runtime/workers/registry.js` → `code-change-worker.js` → `codex/process-manager.js`, `jsonl-rpc-peer.js`, `session-adapter.js`: Worker process/thread/turn과 완료 결합.
+3. `src/repository/git-change-workspace.js`, `src/evidence/candidate-evidence.js`: 실제 코드 캡처와 검증 실행 증거.
+4. `src/orchestration/code-change-prompts.js`, `audit-round.js`: Worker brief, 고정 후보 검토 요청, 추가 evidence/형식 보완.
+5. `src/runtime/web/session-adapter.js` → `extension/background.js` → `extension/content.js`: 인증된 연결, 정확한 대화/문서, 전송과 응답 관찰.
+6. `src/domain/code-review.js`: 응답 검증과 PASS/REWORK/HOLD 계산. 외부 응답 필드로 다음 actor나 repair 권한을 지정하지 않는다.
 
-Disposition terms in the inventory mean:
+Codex stdio 연결의 공식 설명은 [OpenAI App Server 문서](https://learn.chatgpt.com/docs/app-server)를 참조한다. initialize/initialized 후 thread와 turn을 생성하고, ID가 결합된 알림을 읽는다. 설치 버전에 대한 확인은 해당 바이너리와 실제 왕복 기록으로 남겨야 한다.
 
-- **KEEP**: retain the file and its present responsibility; no semantic rewrite
-  is required by this migration.
-- **REWRITE**: keep the path where useful, but replace behavior that encodes the
-  old contract.
-- **EXTRACT**: reuse only the explicitly identified, independently reviewed
-  fragments; the file as a whole is not reusable.
-- **DELETE**: remove the old implementation. If marked "replace", implement the
-  TODO-owned responsibility through the new design, with the final internal
-  filename left to implementation.
-- **REFERENCE_ONLY**: evidence or a source of bounded implementation ideas, not
-  a file to copy or a source of target meaning.
+## 검증을 나누는 기준
 
-## 2. Fixed target contract from the current TODO
-
-The migration must use the public actors `CODEX_AGENT` and
-`CHATGPT_WEB_AGENT`, with run modes `DISCUSSION` and `CODE_CHANGE`. It must not
-use `[[DONE]]` or free-text matching as a completion signal. The Controller is
-the only state writer and drives one active actor at a time in the automatic
-order `CODEX_AGENT -> CHATGPT_WEB_AGENT -> CODEX_AGENT`.
-
-The persisted M2 records are:
-
-- `AgentRun(runId, mode, objective, objectiveHash, policyHash, phase,
-  activeActor, maxTurns, currentTurn, paused, blocker, version, createdAt,
-  updatedAt)`.
-- `AgentSessionRecord(sessionId, runId, actor, provider, externalSessionId,
-  externalLocator, status, activeTurnId, lastCompletedTurnId, lastObservedAt,
-  version)`, where provider is `CODEX_APP_SERVER` or `CHATGPT_WEB` and status is
-  one of `CREATING`, `READY`, `RUNNING`, `WAITING`, `DISCONNECTED`,
-  `AUTH_REQUIRED`, `FAILED`, or `CLOSED`.
-- `RelayMessage(messageId, runId, sequence, fromActor, toActor,
-  sourceSessionId, sourceTurnId, inReplyTo, kind, content, contentHash,
-  normalizedPacket, objectiveHash, policyHash, createdAt)`, where kind is one
-  of `INITIAL_OBJECTIVE`, `PROPOSAL`, `CRITIQUE`, `REVISION`, `ACCEPTANCE`,
-  `BLOCKER`, or `PROTOCOL_REPAIR`.
-
-Agent output is accepted only as a strict schema with
-`additionalProperties: false`:
-
-- `PROPOSAL {type:'PROPOSAL', proposal_id, proposal_sha256, summary, body,
-  assumptions:[], open_decisions:[]}`
-- `CRITIQUE {type:'CRITIQUE', target_proposal_sha256,
-  blocking_findings:[], non_blocking_findings:[], requested_changes:[]}`
-- `ACCEPT {type:'ACCEPT', accepted_proposal_sha256, blocking_findings:[]}`
-- `BLOCKED {type:'BLOCKED', reason_code: one of 'PRODUCT_DECISION_REQUIRED',
-  'CONSENSUS_NOT_REACHED', 'INSUFFICIENT_INFORMATION', or 'AGENT_CAPABILITY_LIMIT',
-  description, required_decisions:[]}`
-
-`ProtocolErrorPacket` is named by the TODO, but its fields are not specified:
-**UNRESOLVED — requires authority before implementation**. It must not be
-invented from the old relay protocol.
-
-Canonical JSON plus SHA-256 binding applies to the objective, policy, content,
-proposal, packet, event, and `CODE_CHANGE` candidate manifest. JSON object keys
-are sorted before UTF-8 serialization, as required by the current TODO. Numeric
-normalization beyond JSON's own finite-number representation remains an internal
-implementation constraint and must not be promoted into a new wire contract.
-
-The M3 phases are exactly `CREATED`, `STARTING_SESSIONS`,
-`CODEX_TURN_PENDING`, `CODEX_TURN_RUNNING`, `CODEX_RESPONSE_STORED`,
-`CODEX_TO_WEB_PENDING`, `WEB_TURN_RUNNING`, `WEB_RESPONSE_STORED`,
-`WEB_TO_CODEX_PENDING`, `CONSENSUS_CHECK`, `HUMAN_GATE`,
-`RECOVERY_REQUIRED`, `COMPLETE`, `FAILED`, and `CANCELLED`.
-
-Blockers are exactly `RUNTIME_APPROVAL{approvalId}`,
-`USER_DECISION{decisionIds}`, `SESSION_AUTH{actor}`, and
-`RECOVERY_CONFIRMATION{operationId}`. Consensus is checked after each completed
-response. Reaching `maxTurns` produces `INCONCLUSIVE`. A pause requested while
-pending prevents the next delivery; a pause requested while an actor is
-running allows that response to complete and then prevents the next delivery.
-Interrupt is a separate operation. Bounded limits are `maxTurns`,
-`maxProtocolRepairs`, `maxDeliveryAttempts`, and
-`maxConsecutiveActorFailures`.
-
-The M4 SQLite store contains `runs`, `agent_sessions`, `relay_messages`,
-`delivery_attempts`, `agent_packets`, `domain_events`, `approvals`,
-`run_projections`, and `recovery_operations`. Its event chain is
-`SHA256(previous_event_hash + canonical_event_json)`. Event and projection
-updates are one transaction; relay-message and outbox creation are one
-transaction. Delivery states are exactly `PENDING`, `DISPATCHING`, `SUBMITTED`,
-`RESPONSE_STARTED`, `RESPONSE_COMPLETED`, `RELAYED`, `FAILED`, and `AMBIGUOUS`.
-A crash after `SUBMITTED` must not cause an immediate retry. Projection rebuild
-is required.
-
-The Codex thread and exact ChatGPT conversation binding must survive Controller
-restart and be resumed or recovered fail-closed. Extension authentication uses
-HMAC. ChatGPT DOM access uses a selector registry rather than selectors embedded
-as an implicit contract in one content script. The dashboard retains two
-supervision panes.
-
-SQLite DDL, transaction mechanics, one-time nonce storage and exact URL parsing
-are private implementation choices as long as they preserve this contract and
-do not create fallback behavior. They are not new product authority. By
-contrast, the undefined `ProtocolErrorPacket` shape and the cross-contract
-meanings below are observable protocol decisions and remain unresolved.
-
-Two cross-contract gaps block a fully automatic relay but do not block the
-independent infrastructure work:
-
-- `RelayMessage.fromActor` only permits the two Agent actors, while
-  `INITIAL_OBJECTIVE` originates with the user/Controller. Assigning that
-  message to either Agent would falsify provenance. The owner must either add a
-  non-Agent source, make the initial source representable separately, or state
-  that the initial objective is not a `RelayMessage`.
-- A `PROPOSAL` packet has `summary`, `body`, `assumptions`, and
-  `open_decisions`, while `ProposalArtifact` has `title`, `body`,
-  `assumptions`, and `decisions`. No current rule maps `summary` to `title` or
-  `open_decisions` to `decisions`, and the latter are not semantically
-  interchangeable. The Controller must not fabricate a ProposalArtifact from
-  that packet until the projection owner is fixed.
-
-## 3. Complete 28-file disposition
-
-### Repository and launch files (8)
-
-| Existing file | Disposition | Concrete reason and migration boundary |
+| 명령 | 실제 실행하는 것 | 대체하는 것 / 보장하지 않는 것 |
 |---|---|---|
-| `.env.example` | **REWRITE** | It currently owns `EXTENSION_TOKEN`, `LOG_DIR`, `DEMO_MODE`, and `APP_*` timeout naming. Replace the example with configuration required by HMAC auth, SQLite persistence, persistent session recovery, and TODO-owned limits. Exact new variable names are unresolved; do not invent them in advance. |
-| `.gitignore` | **REWRITE** | It ignores `data/*.jsonl`, which belongs to the deleted JSONL ledger. It must cover the selected SQLite database and its runtime sidecars plus local secrets after their exact configured paths are decided. |
-| `LICENSE` | **KEEP** | The MIT license is independent of actor names, state, persistence, transport, and UI behavior. |
-| `package.json` | **REWRITE** | The description and scripts encode the old App/Web relay and demo. The dependency/runtime declaration must support the selected SQLite implementation and new verification entry points. The SQLite library and any Node engine change are unresolved implementation choices. |
-| `README.md` | **REWRITE** | It documents `APP_AGENT`/`WEB_AGENT`, `[[DONE]]`, JSONL, new/opportunistically reused tabs, and an acknowledged lack of thread resume. The separate query-token behavior is evidenced by the old implementation code, not the README. Those documented claims directly conflict with the TODO. Treat the current text only as evidence of the old system. |
-| `start-demo.cmd` | **DELETE** | It enables fake agents whose responses synthesize `[[DONE]]` and fabricated sessions. Keeping it would provide a path that appears successful without the required persistent providers, strict packets, authenticated binding, or recovery semantics. |
-| `start-live.cmd` | **KEEP** | It only invokes `node src/server.js`; that remains a valid thin Windows launcher while `src/server.js` is rewritten in place. |
-| `data/.gitkeep` | **KEEP** | The empty placeholder carries no old semantics and preserves a local data directory suitable for the TODO-required SQLite store. It does not choose the database filename. |
+| `npm run check` | 정적 검사, domain, SQLite, 임시 Git, Node 자식 프로세스 등 자동 검사 | 실제 Codex 계정·ChatGPT 응답·브라우저 검증을 보장하지 않음 |
+| `npm run test:browser` | 실제 Chromium DOM, manifest 순서의 content scripts, background ESM 전체, HMAC·WebSocket·Web Adapter, fixture JSONL process와 Codex Adapter를 포함한 REWORK→PASS | Chrome extension API와 ChatGPT 페이지/모델은 fixture. 확장 설치/서비스 워커 수명/실제 제공자 지능은 미검증 |
+| `npm run test:ui` | 콘솔 브라우저 입력·표시·레이아웃·일부 네트워크 실패 | 준비/실행/적용 API와 상태 전환은 fixture |
+| `npm run certify` | 저장된 감사 기록의 candidate/requirements/report/evidence 정합성 재검사 | 실제 제공자 출처·아티팩트 원문 무결성·실시간 동작의 독립 인증 아님 |
 
-### Chrome extension (6)
+`test:browser`는 기존 함수를 문자열로 잘라 호출하거나 send/response 감지 함수를 성공값으로 대체하지 않는다. 다만 Chrome API fixture와 페이지 fixture의 한계를 없애지는 못한다. 실제 제공자 검증을 대신했다고 보고하지 않는다.
 
-| Existing file | Disposition | Concrete reason and migration boundary |
-|---|---|---|
-| `extension/manifest.json` | **REWRITE** | The MV3 service-worker/content-script shape and ChatGPT host scope are useful, but the product name/description describes the old bridge. Revalidate the minimum permissions and CSP against the HMAC channel and exact-conversation design; add no permission without a demonstrated need. |
-| `extension/background.js` | **REWRITE** | It puts a reusable token in the WebSocket query, keeps `selectedTabId` only in memory, falls back after loss to an active ChatGPT tab or the final `tabs.query` result without a recency sort, and can silently create a different conversation. Replace it with authenticated message handling and persisted, exact `externalSessionId`/`externalLocator` binding that rejects ambiguity. Its in-memory `busy` and request flow cannot be the delivery/outbox authority. |
-| `extension/content.js` | **REWRITE** | Selectors are hard-coded locally, and response completion is inferred from a stop button disappearing plus 2.5 seconds of stable text. Replace this with the TODO-required selector registry, explicit observation evidence, exact conversation/turn correlation, and fail-closed ambiguity handling. Browser DOM remains an unreliable observation surface, never the Controller's state authority. |
-| `extension/popup.html` | **REWRITE** | The UI asks for an "Extension token" and shows no exact bound conversation or recovery/auth state. Update it to the HMAC configuration and binding status once those unresolved protocol details are authorized. |
-| `extension/popup.js` | **REWRITE** | It stores/returns `controllerToken` and reports only an in-memory tab id. Its commands and rendering must follow the authenticated extension state and persistent conversation binding, without making the popup a writer of run state. |
-| `extension/popup.css` | **KEEP** | The styling is generic to popup layout, badges, inputs, and buttons; it contains no old actor, completion, persistence, or protocol semantics. New semantic states may receive additive classes later. |
+## 실제 제공자 검증 순서
 
-### Dashboard (3)
+1. 운영자가 지정한 clean Git target, 확정 RequirementsSet, 등록 검증과 한도, Codex 실행 경로/인증, 확장 설정과 대상 ChatGPT 대화를 준비한다. 예제 설정을 운영값으로 자동 승격하지 않는다.
+2. 실제 콘솔 준비 흐름으로 시작한다. root 탭은 첫 메시지 관찰 후 대화 ID를 확보하고, CODE_CHANGE에는 확정된 대화가 전달된다.
+3. 첫 실제 Worker의 process/thread/turn, workerTurns inputRef/outputRef, 원본 target 보존과 captured tree/patch를 확인한다.
+4. 실제 Web 응답의 요청/대화/문서/메시지 identity와 저장된 요청·응답을 확인한다. 전송 버튼 클릭·텍스트 안정화만으로 감사 성공을 판단하지 않는다.
+5. 실제 누락을 Reviewer가 발견한 REWORK, 다음 Worker의 새 thread, 다른 후보, 지적의 재검증과 PASS를 확인한다. 반복 횟수를 맞추려고 리뷰 결과를 조작하지 않는다. 첫 회차에 PASS면 REWORK 경로는 미검증으로 남긴다.
+6. PASS는 적용 대기에서 멈춘다. 별도 적용을 요청받은 경우에만 candidate/review/base/hash/version을 결합해 적용한다.
+7. 별도의 승인된 실행에서 crash, timeout, browser reload, 연결 유실과 재시작을 검증한다. 모호한 전송은 자동 재시도하지 않고 기록 보존·복구 필요·늦은 응답 차단을 확인한다.
 
-| Existing file | Disposition | Concrete reason and migration boundary |
-|---|---|---|
-| `public/index.html` | **REWRITE** | It already has two panes, but exposes `APP_AGENT`/`WEB_AGENT`, a `stopOnDone` checkbox, free-form role instructions, old reset commands, and no mode, packet, blocker, persisted-session, delivery, or recovery presentation. Preserve the two-pane intent while binding controls only to TODO-owned actions and states. |
-| `public/app.js` | **REWRITE** | It renders the old in-memory snapshot (`agents.app/web`, messages, approvals), uses old commands, and treats WebSocket push state as sufficient. Rebuild it as a read/projection consumer plus command client for version-checked Controller operations; it must never become another state writer. |
-| `public/styles.css` | **EXTRACT** | Reuse only generic color tokens, panel primitives, accessible badges, and the two-column grid. The file also encodes `data-agent="app"`, `--app`/`--web`, old run-state classes, and old panel structure, so it cannot be retained wholesale. |
-
-### Controller and provider adapters (8)
-
-| Existing file | Disposition | Concrete reason and migration boundary |
-|---|---|---|
-| `src/orchestrator.js` | **REWRITE** | It is an in-memory alternating loop with actors `app`/`web`, arbitrary role instructions, a regex `[[DONE]]` stop, and no M2 records, exact M3 phases, strict packets, hash-bound consensus, transactional outbox, version checks, or crash recovery. Replace it with the single-writer deterministic Controller state machine. |
-| `src/codex-app-server.js` | **EXTRACT** | Reuse only reviewed JSONL/JSON-RPC framing, request correlation, initialization, delta/final-answer observation, interrupt, and approval-adapter ideas. The current code launches an unpinned command through `shell: true`, inherits all of `process.env`, keeps the thread id only in memory, clears it on failure/close, and lacks a persisted thread-resume lifecycle; those parts must be replaced for persistent `CODEX_AGENT` identity and recovery. |
-| `src/web-agent-gateway.js` | **REWRITE** | Its pending-request map and session snapshot are volatile, it trusts a socket after query-token upgrade, and it resolves any correlated `web.prompt.result` without persisted delivery state, exact conversation binding, packet validation, or recovery rules. Rebuild it as a transport adapter beneath Controller-owned session/outbox state. |
-| `src/event-store.js` | **DELETE (replace)** | The JSONL appender has only a process-local sequence/write chain, ignores every malformed JSON line rather than only a truncated final line, and has no tables, transactions, projections, outbox, hash chain, version checks, or crash classification. Replace the responsibility with the M4 SQLite store; do not wrap or dual-write the JSONL format as a fallback. |
-| `src/server.js` | **REWRITE** | It constructs all state in memory, accepts dashboard mutations without expected-version binding, authenticates the extension with a URL query token, and routes old commands directly to the old orchestrator. Rebuild composition and routes around one Controller writer, SQLite recovery, HMAC extension authentication, projection reads, and the TODO's distinct pause/interrupt behavior. |
-| `src/config.js` | **REWRITE** | It defaults to an example token, exposes `dangerFullAccess`, carries demo/JSONL configuration, accepts an executable name rather than a pinned identity, and has only a single max-turn setting. Replace validation with target persistence/auth/session/limit configuration while leaving unspecified field names unresolved. |
-| `src/demo-agents.js` | **DELETE** | It fabricates session ids, always reports connected, parses old actor names, and emits `[[DONE]]`. It would bypass strict provider identity, packet validation, persistence, and recovery, so it must not remain as a success path. |
-| `src/utils.js` | **EXTRACT** | `deferred`, bounded timeout cleanup, string/integer validation, safe error projection, timestamps, and cryptographically random ids are separable helpers. Do not carry `redactToken` forward as the HMAC design, and do not let generic helpers define canonical JSON or hash semantics without the TODO-owned contract. |
-
-### Existing tests (3)
-
-| Existing file | Disposition | Concrete reason and migration boundary |
-|---|---|---|
-| `tests/orchestrator.test.js` | **REWRITE** | It asserts `APP -> WEB -> APP`, exact free-text relay, JSONL writes, and `[[DONE]]` termination. Replace those obsolete assertions with the exact M2/M3 state machine, one-active-actor rule, strict packets/consensus, pause versus interrupt, limits, `INCONCLUSIVE`, transactional outbox, and recovery boundaries. |
-| `tests/codex-app-server.test.js` | **REWRITE** | Its two tests cover only final-answer selection and a workspace-write object. They do not distinguish `thread/start` from persistent `thread/resume`, verify external session identity, executable/env hardening, receipts, restart recovery, or mismatched notifications. |
-| `tests/web-agent-gateway.test.js` | **REWRITE** | Its fake socket accepts a tab id and URL and proves only request-id correlation. Replace it with coverage that distinguishes exact conversation binding, HMAC tamper/replay failures once specified, disconnect/reconnect, delivery states, ambiguous post-`SUBMITTED` recovery, selector-registry failure, and strict packet handoff. |
-
-Inventory total: **28 files** = 4 KEEP + 18 REWRITE + 3 EXTRACT + 3
-DELETE. `REFERENCE_ONLY` applies to the external archive/reference inputs described
-in section 1, not to an original file that should ship unchanged.
-
-Per `../AGENTS.md`, changing test cases, assertions, or acceptance scope requires
-the requester to approve the proposed test changes first. The current request
-explicitly includes the M16 test scope and therefore authorizes the listed
-replacement and additional tests within that scope; it does not authorize an
-unrelated acceptance expansion.
-
-## 4. Selective extraction from `../src/agent-control`
-
-Do not import `controller.mjs`, `codex-app-server-runner.mjs`,
-`codex-exec-runner.mjs`, or `cli.mjs` wholesale. They are coupled to
-Builder/Auditor roles, `agent-control-state-v7`/`agent-message-v7`, separate Git
-clones, filesystem message files, human gates different from M3, and (for the
-app-server runner) a fresh process with `ephemeral: true`. That lifecycle
-directly conflicts with persistent Codex thread resume.
-
-Extract only these concepts, adapting each to the TODO-owned model:
-
-| Concept to extract | Observed reference behavior | Target use and exclusion |
-|---|---|---|
-| Executable pinning | Resolves an absolute real path, rejects forbidden-root overlap, verifies executable access and SHA-256 before spawn. | Apply at the Codex process boundary. Do not copy Builder/Auditor config shapes or assume the current pin field names are public contract. |
-| Environment allowlist | Builds the app-server environment from an explicit key allowlist instead of forwarding all `process.env`. | Replace the original adapter's ambient environment inheritance. The final allowed set needs security review; do not copy provider credentials or repository-specific policy blindly. |
-| Execution receipts | Hash-binds command/runtime identity, prompt/policy inputs, bounded outputs, exit/termination facts, and an immutable receipt. | Record evidence needed for `CODE_CHANGE` and recovery without turning the old receipt schema into a new external contract. Exact receipt schema is unresolved. |
-| Interrupted-execution marker | Leaves a marker when an agent process may have been interrupted and requires verified process-tree termination before recovery acknowledgement. | Map the safety property to `RECOVERY_REQUIRED`, `RECOVERY_CONFIRMATION{operationId}`, and `recovery_operations`. Do not copy its filesystem state machine or human-decision vocabulary. |
-| Expected state/version | Rejects mutation when the expected last-message hash no longer matches current state. | Use the TODO's record `version` fields to reject stale Controller commands/observations. The wire field carrying an expected version remains unresolved. |
-| Bounded iteration | Validates a positive maximum and stops retry cycles when the bound is reached. | Enforce the four TODO limits and `INCONCLUSIVE`; do not reuse the Builder/Auditor iteration meaning. |
-| Git verifier | Pins Git, strips `GIT_*`, disables hooks/global/system config/lazy fetch/replace objects, checks repository topology/refs, and derives changed files from a base/candidate commit. | Reuse only reviewed verification functions for `CODE_CHANGE` evidence and candidate-manifest hashing. Do not copy worktree reservation, dual-clone ownership, branch naming, or acceptance semantics unless separately authorized. |
-| Atomic/single-writer discipline | Uses an exclusive Controller lock, immutable history entries, hash linkage, and atomic state replacement. | Preserve the exclusivity and stale-write safety properties, but implement authoritative state in the M4 SQLite transactions rather than duplicating its filesystem ledger. |
-
-## 5. Implementation order and non-negotiable gates
-
-1. Freeze unresolved observable contract choices before code that would expose
-   them: `ProtocolErrorPacket`, initial-objective provenance, Proposal packet to
-   Proposal artifact projection, proposal hash scope, and non-empty
-   finding/decision item shapes. No old fallback is allowed.
-2. Replace persistence first: SQLite migrations, canonical hashing, transactional
-   event/projection writes, relay/outbox atomicity, delivery-state recovery, and
-   projection rebuild.
-3. Implement the single-writer M2/M3 Controller against that store, including
-   validated packets, consensus checks, limits, pause semantics, separate
-   interrupt, blockers, and stale-version rejection.
-4. Build the persistent Codex and ChatGPT provider adapters. Resume only the
-   stored exact external identity; identity mismatch or post-`SUBMITTED`
-   uncertainty enters the appropriate blocker/recovery path rather than retrying
-   or silently creating a replacement conversation.
-5. Add HMAC extension authentication and selector-registry-based DOM observation
-   as bounded private transport mechanisms; any identity or recovery meaning
-   visible outside the adapter still requires an owned contract.
-6. Rebind the two-pane dashboard to read projections and issue Controller
-   commands. It must not infer success from WebSocket connectivity, non-empty
-   text, a URL, or a DOM-stability timeout.
-7. Replace the three obsolete test suites with the requester-approved M16
-   behavior, persistence/restart, negative-auth, ambiguity, and exact-state-
-   transition coverage. A passing old six-test suite is not evidence that this
-   migration works.
-
-Completion requires executable evidence for the changed behavior: deterministic
-state transitions, SQLite transaction/crash boundaries, hash-chain verification,
-persistent Codex resume, exact ChatGPT conversation reconnection, HMAC rejection
-cases, strict packet rejection, selector ambiguity, pause/interrupt behavior,
-all four limits, `INCONCLUSIVE`, and browser interaction for both dashboard
-panes. File existence, HTTP 2xx, a screenshot, or the old unit tests alone are
-insufficient.
-
-## Audit contract v3
-
-- RequirementsSet에 명시적 `authority: REQUIREMENTS_JSON`, REFERENCE 원문, 등록된 sourceRefs를 요구한다. 원문 내용도 revision/hash에 포함된다.
-- EXECUTION/ARTIFACT 요구사항에는 `verificationMethod.checks`를 명시한다. 기존 성공 기록을 이용해 자동 생성하지 않는다.
-- 검증 결과 파일은 매 실행 새 `BRIDGE_RESULT_DIR`에 기록하도록 검증 명령을 수정한다. 기존 cwd 결과는 수집하지 않는다.
-- 미완료 schemaVersion 1/2 런은 복구 필요로 보존하며 승인 승계하지 않는다. 외부 작업·대상 확인 후 run.abandon으로 폐기하고 새 런을 시작한다.
-- 운영 확인은 OPERATOR_ATTESTATION으로 저장하며 자동 종료 검증으로 표시하지 않는다.
+현재 작업의 fixture 실행 결과는 실제 계정에 대한 위 1~7 수행 기록이 아니다. 실환경 결과는 기존 런 저장소와 artifact에 보존하고, 연결 표시나 테스트 개수로 대체하지 않는다.

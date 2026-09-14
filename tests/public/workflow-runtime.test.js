@@ -98,7 +98,7 @@ test("refresh restores preparation and questions, and reply retains preparation 
   ui.elements.get("proposalFeedback").value = "채팅";
   await ui.elements.get("reviseRequirements").listeners.click();
   const mutation = ui.calls.find((call) => call.url.endsWith("/reply"));
-  assert.deepEqual(mutation, { url: "/api/preparations/p1/reply", body: { content: "채팅", requestId: "request-1", expectedVersion: 3 } });
+  assert.deepEqual(mutation, { url: "/api/preparations/p1/reply", body: { content: "채팅", requestId: "request-1" } });
 });
 test("reconcile sends exact identity and never follows with a proposal", async () => {
   const ui = await dashboard(prepared());
@@ -131,7 +131,7 @@ test("approval is a single mutation carrying the canonical version", async () =>
   const ui = await dashboard(state);
   await ui.elements.get("projectForm").listeners.submit({ preventDefault() {} });
   assert.deepEqual(ui.calls.filter((call) => call.url.startsWith("/api/preparations")), [
-    { url: "/api/preparations/p1/approve", body: { requestId: "request-1", expectedVersion: 3 } },
+    { url: "/api/preparations/p1/approve", body: { requestId: "request-1" } },
   ]);
 });
 

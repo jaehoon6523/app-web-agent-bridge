@@ -47,7 +47,7 @@ test("persisted manual delivery with only root tab: real prepare/recovery preser
   let service = new PreparationService(options);
   t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
   await assert.rejects(
-    service.execute("preparation.start", { requestId: "start", expectedVersion: 0, objective: "new work", targetRoot: root, conversationUrl: "https://chatgpt.com/" }),
+    service.execute("preparation.start", { requestId: "start", objective: "new work", targetRoot: root, conversationUrl: "https://chatgpt.com/" }),
     error => error.code === "RECOVERY_REQUIRED",
   );
   await Promise.all([...service.jobs.values()].filter(value => value instanceof Promise));

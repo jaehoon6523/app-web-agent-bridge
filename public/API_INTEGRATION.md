@@ -6,7 +6,7 @@ legacy proposal API로 fallback하지 않는다. 서버에 workflow가 없으면
 
 프런트엔드가 사용하는 준비 명령:
 
-| 요청 | payload (공통 requestId, expectedVersion 포함) |
+| 요청 | payload (공통 requestId 포함) |
 |---|---|
 | POST /api/preparations | objective 원문, targetRoot, conversationUrl |
 | POST /api/preparations/:id/reply | content |
