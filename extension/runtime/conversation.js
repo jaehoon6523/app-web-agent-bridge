@@ -21,7 +21,7 @@ export function conversationIdFromUrl(value) {
   const canonical = canonicalChatGptUrl(value);
   if (!canonical) return null;
   const segments = new URL(canonical).pathname.split("/").filter(Boolean);
-  const markerIndex = segments.lastIndexOf("c");
+  const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
   return markerIndex >= 0 && markerIndex + 1 < segments.length
     ? decodeURIComponent(segments[markerIndex + 1])
     : null;

@@ -262,6 +262,8 @@ test("unauthenticated candidate socket cannot evict an authenticated active tran
 test("exact conversation binding never falls back to active or latest tabs", () => {
   assert.equal(canonicalConversationUrl("https://chatgpt.com/c/abc?x=1#y"), "https://chatgpt.com/c/abc");
   assert.equal(extractConversationId("https://chatgpt.com/c/abc"), "abc");
+  assert.equal(canonicalConversationUrl("https://chatgpt.com/uc/guest-abc?x=1#y"), "https://chatgpt.com/uc/guest-abc");
+  assert.equal(extractConversationId("https://chatgpt.com/uc/guest-abc"), "guest-abc");
   assert.equal(canonicalConversationUrl("https://chat.openai.com/c/abc"), null);
   const binding = boundSession();
   const result = selectExactConversationTab([

@@ -116,7 +116,7 @@ function conversationIdFromUrl(value) {
   const canonical = canonicalConversationUrl(value);
   if (!canonical) return null;
   const parts = new URL(canonical).pathname.split("/").filter(Boolean);
-  const index = parts.lastIndexOf("c");
+  const index = Math.max(parts.lastIndexOf("c"), parts.lastIndexOf("uc"));
   return index >= 0 && index + 1 < parts.length ? decodeURIComponent(parts[index + 1]) : null;
 }
 

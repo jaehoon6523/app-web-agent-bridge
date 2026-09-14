@@ -28,6 +28,18 @@ test("content sends on root before resolving the created conversation", async ()
   assert.equal(result, "https://chatgpt.com/c/new");
   assert.deepEqual(order, ["sent", "associated", "response"]);
 });
+test("content recognizes an unauthenticated conversation URL", () => {
+  const content = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
+  const context = vm.createContext({ URL, decodeURIComponent, CHATGPT_HOSTS: new Set(["chatgpt.com"]) });
+  vm.runInContext(
+    content.slice(content.indexOf("function canonicalConversationUrl("), content.indexOf("function inspectPageState(")),
+    context,
+  );
+  assert.equal(
+    context.conversationIdFromUrl("https://chatgpt.com/uc/6aa79817-cb80-83ea-98df-aab9c01d9751"),
+    "6aa79817-cb80-83ea-98df-aab9c01d9751",
+  );
+});
 test("root prepare returns without navigation; first delivery sends once and persists created conversation", async () => {
   const state = { tabId: 99, bindingStatus: "AMBIGUOUS", currentDeliveryId: null };
   const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/" };

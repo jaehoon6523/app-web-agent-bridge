@@ -78,7 +78,7 @@ export function extractConversationId(value) {
   if (!canonical) return null;
   const pathname = new URL(canonical).pathname;
   const segments = pathname.split("/").filter(Boolean);
-  const markerIndex = segments.lastIndexOf("c");
+  const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
   if (markerIndex < 0 || markerIndex + 1 >= segments.length) return null;
   const id = decodeURIComponent(segments[markerIndex + 1]);
   return id.length > 0 ? id : null;
