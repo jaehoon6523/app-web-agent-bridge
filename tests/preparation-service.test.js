@@ -15,7 +15,7 @@ async function settled(service) {
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "canonical-preparation-"));
   const runs = new Map(), calls = [];
-  let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {};
+  let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {}, discarded = null;
   const web = {
     async resume(input) {
       validateWebSessionBinding(input.binding);
@@ -39,6 +39,7 @@ function fixture(t) {
       lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count, ...inspection }; },
     async acknowledgeDelivery() { if (failAck) throw new Error("lost ACK"); active = null; Object.assign(inspection, afterAck); },
     async discardDelivery(expected) {
+      discarded = structuredClone(expected);
       active = null;
       Object.assign(inspection, { currentDeliveryId: null });
       return { ...expected, result: "discarded" };
@@ -55,6 +56,7 @@ function fixture(t) {
   let service = new PreparationService(options);
   t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
   return { root, runs, calls, web, get service() { return service; }, ackFailure(value) { failAck = value; },
+    get discarded() { return discarded; },
     observe(value) { inspection = value; }, afterAck(value) { afterAck = value; },
     restart() { service.close(); service = new PreparationService(options); },
     start() { return service.execute("preparation.start", { requestId: "start", expectedVersion: 0,
@@ -75,7 +77,33 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
   assert.equal(after.lifecycle, "ABANDONED");
   assert.equal(after.recovery.kind, "RECOVERY_DISCARDED");
   assert.equal(after.recovery.evidence.conversationUrl, before.webSession.conversationUrl);
+  assert.equal(f.discarded.runId, before.preparationId);
+  assert.equal(f.discarded.conversationUrl, before.webSession.conversationUrl);
   assert.ok(after.recovery.at);
+});
+
+test("root bootstrap timeout discard uses the canonical preparation and session identity", async (t) => {
+  const f = fixture(t);
+  await f.service.execute("preparation.start", { requestId: "start-root-discard", expectedVersion: 0,
+    objective: "안녕", targetRoot: f.root, conversationUrl: "https://chatgpt.com/" });
+  const context = f.service.current;
+  const delivery = context.deliveries.find((item) => item.deliveryId === context.webSession.activeDeliveryId);
+  context.state = "RECOVERY_REQUIRED";
+  context.error = { code: "NEW_CONVERSATION_TIMEOUT", message: "Conversation URL was not created.", details: null };
+  context.webSession.bindingState = "RECOVERY_REQUIRED";
+  context.webSession.conversationUrl = "https://chatgpt.com/";
+  context.webSession.conversationId = null;
+  delivery.state = "RECOVERY_REQUIRED";
+  delete delivery.runId;
+  delete delivery.conversationUrl;
+  await f.command("preparation.discard", { unresolvedResultConfirmed: true,
+    noAutomaticResendConfirmed: true, reason: "No ChatGPT response was observed." });
+  assert.equal(f.discarded.currentDeliveryId, delivery.deliveryId);
+  assert.equal(f.discarded.sessionId, context.webSession.sessionId);
+  assert.equal(f.discarded.runId, context.preparationId);
+  assert.equal(f.discarded.conversationUrl, "https://chatgpt.com/");
+  assert.equal(f.discarded.conversationId, null);
+  assert.equal(context.lifecycle, "ABANDONED");
 });
 test("start returns server identity before dispatch; question-only reply retains session and discussion", async (t) => {
   const f = fixture(t), first = await f.start();

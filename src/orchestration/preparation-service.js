@@ -185,9 +185,9 @@ export class PreparationService {
       const blocking = context.error?.details?.currentDeliveryId ? context.error.details : {
         currentDeliveryId: delivery.deliveryId,
         sessionId: delivery.sessionId,
-        runId: delivery.runId,
-        conversationUrl: delivery.conversationUrl,
-        conversationId: delivery.conversationId,
+        runId: context.preparationId,
+        conversationUrl: context.webSession.conversationUrl,
+        conversationId: context.webSession.conversationId,
       };
       if (typeof this.web?.discardDelivery !== "function") {
         fail("The browser extension cannot confirm delivery discard.", "RECOVERY_REQUIRED", blocking);
