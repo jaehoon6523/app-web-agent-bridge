@@ -662,6 +662,48 @@ async function executePrompt(requestId, payload) {
   }
 }
 
+async function observeSubmittedPrompt(requestId, payload) {
+  assertExpectedDocument(payload);
+  if (currentJob) throw new ContentContractError("WEB_SESSION_BUSY", "Another ChatGPT prompt is active in this tab.");
+  requireSelectorRegistry();
+  const expected = {
+    controllerMessageId: String(payload?.controllerMessageId || ""),
+    runId: String(payload?.runId || ""),
+    expectedConversationUrl: canonicalConversationUrl(payload?.expectedConversationUrl),
+    expectedConversationId: payload?.expectedConversationId || null,
+    expectedDocumentId: payload.expectedDocumentId,
+    expectedFrameId: payload.expectedFrameId,
+  };
+  if (!expected.controllerMessageId || !expected.runId || !expected.expectedConversationUrl || !expected.expectedConversationId) {
+    throw new ContentContractError("INVALID_DELIVERY", "An exact submitted-prompt binding is required.");
+  }
+  assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
+  const page = inspectPageState();
+  if (page.status !== "READY") {
+    throw new ContentContractError(page.status, `ChatGPT page is not ready (${page.status}).`);
+  }
+
+  const abortController = new AbortController();
+  currentJob = { requestId, abortController, expected };
+  selectorTelemetry.clear();
+  try {
+    // The prompt was submitted by the previous root document. Never click send here.
+    const baseline = messageSnapshot();
+    const userMessage = await waitForControlledUserMessage(expected, baseline, abortController.signal);
+    return await waitForAssistantResponse({
+      expected,
+      baseline,
+      userMessage,
+      timeoutMs: Number.isSafeInteger(payload.timeoutMs) ? payload.timeoutMs : 300_000,
+      stableMs: Number.isSafeInteger(payload.stableMs) ? Math.max(payload.stableMs, 1000) : 3500,
+      signal: abortController.signal,
+      requestId,
+    });
+  } finally {
+    currentJob = null;
+  }
+}
+
 function cancelCurrentJob(requestId) {
   if (!currentJob || (requestId && currentJob.requestId !== requestId)) return false;
   currentJob.abortController.abort();
@@ -725,6 +767,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       .catch((error) => {
         if (error?.name === "AbortError") {
           sendResponse({ ok: false, code: "TURN_INTERRUPTED", error: "Prompt cancelled." });
+        } else {
+          sendResponse({
+            ok: false,
+            code: error?.code || "CONTENT_SCRIPT_FAILURE",
+            error: error?.message || String(error),
+            evidence: error?.evidence ?? selectedSelectorEvidence(),
+            confidence: error?.code === "AMBIGUOUS_COMPLETION" ? "AMBIGUOUS" : null,
+          });
+        }
+      });
+    return true;
+  }
+  if (message?.type === "agent.observeSubmittedPrompt") {
+    void observeSubmittedPrompt(message.requestId, message.payload)
+      .then((result) => sendResponse({ ok: true, ...result }))
+      .catch((error) => {
+        if (error?.name === "AbortError") {
+          sendResponse({ ok: false, code: "TURN_INTERRUPTED", error: "Prompt observation cancelled." });
         } else {
           sendResponse({
             ok: false,

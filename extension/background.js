@@ -1,4 +1,5 @@
 import { inspectBoundDocument, createSuccessTrace, diagnosticError, errorPayload } from "./runtime/document-binding.js";
+import { recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import {
   canonicalChatGptUrl,
@@ -674,21 +675,33 @@ async function handlePrompt(message) {
     if (!reservedState.documentId || reservedState.frameId !== 0) throw new ExtensionOperationError("WEB_DOCUMENT_CHANGED", "Prepare the current ChatGPT document before sending.");
     await inspectBoundDocument(chrome.tabs, tab.id, reservedState);
     contentDispatchStarted = true;
-    const result = await chrome.tabs.sendMessage(tab.id, {
-      type: "agent.prompt",
-      requestId: message.requestId,
-      payload: {
-        text: markedText,
-        controllerMessageId: payload.controllerMessageId,
-        runId: payload.runId,
-        expectedConversationUrl: state.conversationUrl,
-        expectedConversationId: state.conversationId,
-        expectedDocumentId: reservedState.documentId,
-        expectedFrameId: reservedState.frameId,
-        timeoutMs: payload.timeoutMs,
-        stableMs: payload.stableMs,
-      },
-    });
+    let result;
+    let bootstrapRecovered = false;
+    try {
+      result = await chrome.tabs.sendMessage(tab.id, {
+        type: "agent.prompt",
+        requestId: message.requestId,
+        payload: {
+          text: markedText,
+          controllerMessageId: payload.controllerMessageId,
+          runId: payload.runId,
+          expectedConversationUrl: state.conversationUrl,
+          expectedConversationId: state.conversationId,
+          expectedDocumentId: reservedState.documentId,
+          expectedFrameId: reservedState.frameId,
+          timeoutMs: payload.timeoutMs,
+          stableMs: payload.stableMs,
+        },
+      });
+    } catch (error) {
+      if (!bootstrap) throw error;
+      const recovered = await recoverBootstrapAfterNavigation({
+        tabs: chrome.tabs, store, tab, reservedState, turnIdentity, payload, waitForContentScript, sleep,
+      });
+      result = recovered.result;
+      frozenTurn = recovered.frozenTurn;
+      bootstrapRecovered = true;
+    }
     if (!result?.ok) {
       throw new ExtensionOperationError(
         result?.code || "CONTENT_SCRIPT_FAILURE",
@@ -696,7 +709,7 @@ async function handlePrompt(message) {
         result?.evidence || null,
       );
     }
-    if (bootstrap) {
+    if (bootstrap && !bootstrapRecovered) {
       const current = await store.read();
       const observed = await chrome.tabs.get(tab.id);
       const url = canonicalChatGptUrl(observed.url), id = conversationIdFromUrl(url);

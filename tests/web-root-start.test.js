@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import * as conversation from "../extension/runtime/conversation.js";
 import * as guards from "../extension/runtime/turn-guard.js";
 import { createControlledPrompt } from "../extension/runtime/markers.js";
+import { recoverBootstrapAfterNavigation } from "../extension/runtime/bootstrap-recovery.js";
 
 const source = readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
 test("content sends on root before resolving the created conversation", async () => {
@@ -40,11 +41,38 @@ test("content recognizes an unauthenticated conversation URL", () => {
     "6aa79817-cb80-83ea-98df-aab9c01d9751",
   );
 });
+test("new conversation document observes the submitted prompt without clicking send", async () => {
+  const content = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
+  let submissions = 0;
+  const expectedUrl = "https://chatgpt.com/uc/guest-created";
+  const context = vm.createContext({ currentJob: null, AbortController,
+    assertExpectedDocument: payload => assert.equal(payload.expectedDocumentId, "document-2"),
+    requireSelectorRegistry() {}, canonicalConversationUrl: value => value,
+    assertExpectedConversation: (url, id) => { assert.equal(url, expectedUrl); assert.equal(id, "guest-created"); },
+    inspectPageState: () => ({ status: "READY" }), selectorTelemetry: new Map(),
+    messageSnapshot: () => [{ id: "u1", role: "user" }],
+    waitForControlledUserMessage: async () => ({ id: "u1", role: "user" }),
+    waitForAssistantResponse: async () => ({ text: "reply" }),
+    submitPrompt: async () => { submissions += 1; },
+    ContentContractError: class extends Error {}, Number,
+  });
+  vm.runInContext(
+    content.slice(content.indexOf("async function observeSubmittedPrompt("), content.indexOf("function cancelCurrentJob(")),
+    context,
+  );
+  const result = await context.observeSubmittedPrompt("d1", {
+    controllerMessageId: "d1", runId: "r1", expectedConversationUrl: expectedUrl,
+    expectedConversationId: "guest-created", expectedDocumentId: "document-2", expectedFrameId: 0,
+  });
+  assert.equal(result.text, "reply");
+  assert.equal(submissions, 0);
+});
 test("root prepare returns without navigation; first delivery sends once and persists created conversation", async () => {
   const state = { tabId: 99, bindingStatus: "AMBIGUOUS", currentDeliveryId: null };
   const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/" };
   const sent = [], prompts = [];
   const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, createControlledPrompt,
+    recoverBootstrapAfterNavigation,
     console, Number, Date, setTimeout, clearTimeout, lastError: null,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
     turnGate: guards.createActiveTurnGate(), authenticated: false,
@@ -73,4 +101,66 @@ test("root prepare returns without navigation; first delivery sends once and per
   assert.equal(state.conversationId, "created");
   assert.equal(state.completedDelivery.turnId, "d1");
   assert.equal(state.currentDeliveryId, "d1");
+});
+
+test("root delivery reattaches after navigation closes the original message channel without resending", async () => {
+  const state = {
+    lastBoundSessionId: "s1", lastBoundRunId: "r1", currentDeliveryId: null,
+    tabId: 1, windowId: 2, documentId: "document-1", frameId: 0,
+    conversationUrl: "https://chatgpt.com/", conversationId: null, bindingStatus: "ROOT_READY",
+  };
+  const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/", title: "ChatGPT" };
+  const sent = [], prompts = [], observations = [];
+  const page = () => ({
+    ok: true, ready: true, url: tab.url,
+    conversationId: conversation.conversationIdFromUrl(tab.url),
+    documentId: tab.url === "https://chatgpt.com/" ? "document-1" : "document-2",
+    frameId: 0,
+  });
+  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, createControlledPrompt,
+    recoverBootstrapAfterNavigation,
+    console, Number, Date, setTimeout, clearTimeout, lastError: null, sleep: async () => {},
+    turnGate: guards.createActiveTurnGate(), authenticated: false,
+    broadcastPopupState() {}, focusTab: async () => {}, waitForContentScript: async () => page(),
+    send: message => sent.push(message), errorPayload: error => ({ code: error.code, message: error.message }),
+    ExtensionOperationError: class extends Error {
+      constructor(code, message, details) { super(message); this.code = code; this.details = details; }
+    },
+    store: {
+      read: async () => ({ ...state }),
+      update: async patch => Object.assign(state, patch),
+      reserveDelivery: async id => { state.currentDeliveryId = id; return { ...state }; },
+      clearDelivery: async () => { state.currentDeliveryId = null; },
+    },
+    chrome: { tabs: {
+      get: async () => ({ ...tab }),
+      sendMessage: async (_tabId, message) => {
+        if (message.type === "agent.ping") return page();
+        if (message.type === "agent.prompt") {
+          prompts.push(message);
+          tab.url = "https://chatgpt.com/uc/guest-created";
+          throw new Error("A listener indicated an asynchronous response, but the message channel closed.");
+        }
+        if (message.type === "agent.observeSubmittedPrompt") {
+          observations.push(message);
+          return { ok: true, text: "reply", confidence: "CONFIRMED_BY_UI_STATE",
+            evidence: { documentId: "document-2", frameId: 0, conversationUrl: tab.url,
+              conversationId: "guest-created", userMessageId: "u1", assistantMessageId: "a1" } };
+        }
+        throw new Error(`Unexpected message: ${message.type}`);
+      },
+    } },
+  });
+  vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function focusTab(")), context);
+  await context.handlePrompt({ requestId: "d1", payload: {
+    runId: "r1", controllerMessageId: "d1", text: "request",
+  } });
+  assert.equal(prompts.length, 1);
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].payload.expectedDocumentId, "document-2");
+  assert.equal(state.conversationUrl, "https://chatgpt.com/uc/guest-created");
+  assert.equal(state.conversationId, "guest-created");
+  assert.equal(state.documentId, "document-2");
+  assert.equal(state.completedDelivery.turnId, "d1");
+  assert.equal(sent[0]?.type, "web.prompt.result", JSON.stringify(sent));
 });
