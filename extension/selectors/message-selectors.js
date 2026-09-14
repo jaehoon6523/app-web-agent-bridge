@@ -2,6 +2,8 @@
   const registry = globalThis.ChatGptBridgeSelectors;
   if (!registry?.groups) throw new Error("Selector registry was not initialized");
   registry.groups.message = Object.freeze([
+    "[data-testid^='conversation-turn-']",
+    ".user-turn, .agent-turn, .assistant-turn",
     "[data-message-author-role]",
     "article [data-message-author-role]",
   ]);

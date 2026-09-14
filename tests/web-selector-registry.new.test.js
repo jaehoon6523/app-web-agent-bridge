@@ -29,6 +29,8 @@ test("selector scripts build an ordered, versioned registry without orchestratio
   }
   assert.equal(registry.groups.composer[0], "#prompt-textarea");
   assert.equal(registry.groups.sendButton[0], "button[data-testid='send-button']");
+  assert.equal(registry.groups.message[0], "[data-testid^='conversation-turn-']");
+  assert.ok(registry.groups.message.includes(".user-turn, .agent-turn, .assistant-turn"));
   const calls = [];
   const fallback = registry.resolveFirst("composer", (selector) => {
     calls.push(selector);

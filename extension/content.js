@@ -224,13 +224,32 @@ function messageId(container) {
     || null;
 }
 
+function messageRole(roleNode) {
+  const explicit = roleNode.getAttribute?.("data-message-author-role")
+    || roleNode.querySelector?.("[data-message-author-role]")?.getAttribute("data-message-author-role");
+  if (explicit === "user" || explicit === "assistant") return explicit;
+
+  const container = messageContainer(roleNode);
+  const classes = `${String(roleNode.className || "")} ${String(container.className || "")}`.toLowerCase();
+  if (classes.includes("user-turn")) return "user";
+  if (classes.includes("agent-turn") || classes.includes("assistant-turn")) return "assistant";
+
+  const labelled = [container, ...(container.querySelectorAll?.("h1, h2, h3, h4, h5, h6") || [])];
+  for (const node of labelled) {
+    const label = `${node.getAttribute?.("aria-label") || ""} ${node.textContent || ""}`
+      .trim().toLowerCase().replace(/\s+/g, " ");
+    if (/^(you said|user said|user|사용자|나의 말|내가 말함|내 말)(:|의 말| 메시지|$)/u.test(label)) return "user";
+    if (/^(chatgpt said|assistant said|chatgpt|assistant|챗지피티|어시스턴트)(:|의 말| 메시지|$)/u.test(label)) return "assistant";
+  }
+  return null;
+}
+
 function messageSnapshot() {
   requireSelectorRegistry();
   let roleNodes = [];
   for (const selector of registry.groups.message) {
     roleNodes = [...document.querySelectorAll(selector)].filter((node) => {
-      const role = node.getAttribute("data-message-author-role")
-        || node.querySelector?.("[data-message-author-role]")?.getAttribute("data-message-author-role");
+      const role = messageRole(node);
       return role === "user" || role === "assistant";
     });
     if (roleNodes.length) {
@@ -244,8 +263,7 @@ function messageSnapshot() {
     const container = messageContainer(roleNode);
     if (seen.has(container)) return;
     seen.add(container);
-    const role = roleNode.getAttribute("data-message-author-role")
-      || roleNode.querySelector?.("[data-message-author-role]")?.getAttribute("data-message-author-role");
+    const role = messageRole(roleNode);
     messages.push({
       id: messageId(container),
       role,
@@ -306,6 +324,7 @@ async function submitPrompt(text, signal, expected) {
 
 async function waitForControlledUserMessage(expected, baseline, signal) {
   const deadline = Date.now() + 15_000;
+  let lastMessages = baseline;
   const baselineUserIds = new Set(baseline.filter((message) => message.role === "user").map((message) => message.id));
   const baselineUserElements = new Set(
     baseline.filter((message) => message.role === "user").map((message) => message.element),
@@ -313,6 +332,7 @@ async function waitForControlledUserMessage(expected, baseline, signal) {
   while (Date.now() < deadline) {
     assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
     const messages = messageSnapshot();
+    lastMessages = messages;
     const matches = messages.filter((message) => isExpectedUser(message, expected));
     if (matches.length > 1) {
       throw new ContentContractError("AMBIGUOUS_PROMPT_BINDING", "The controlled prompt appears more than once.");
@@ -341,7 +361,17 @@ async function waitForControlledUserMessage(expected, baseline, signal) {
     }
     await sleep(200, signal);
   }
-  throw new ContentContractError("MESSAGE_SEND_FAILED", "The controlled user message was not observed after send.");
+  throw new ContentContractError(
+    "MESSAGE_SEND_FAILED",
+    "The controlled user message was not observed after send.",
+    {
+      conversationUrl: canonicalConversationUrl(location.href),
+      observedMessageCount: lastMessages.length,
+      observedUserCount: lastMessages.filter((message) => message.role === "user").length,
+      observedAssistantCount: lastMessages.filter((message) => message.role === "assistant").length,
+      ...selectedSelectorEvidence(),
+    },
+  );
 }
 
 function locateAssociatedAssistant(

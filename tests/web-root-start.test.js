@@ -41,6 +41,26 @@ test("content recognizes an unauthenticated conversation URL", () => {
     "6aa79817-cb80-83ea-98df-aab9c01d9751",
   );
 });
+test("content infers message roles from unauthenticated turn containers", () => {
+  const content = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
+  const context = vm.createContext({ String, messageContainer: node => node });
+  vm.runInContext(
+    content.slice(content.indexOf("function messageRole("), content.indexOf("function messageSnapshot(")),
+    context,
+  );
+  const turn = (className, heading = "") => ({
+    className,
+    getAttribute: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => heading ? [{ getAttribute: () => null, textContent: heading }] : [],
+    textContent: "",
+  });
+  assert.equal(context.messageRole(turn("group/user-turn")), "user");
+  assert.equal(context.messageRole(turn("group/agent-turn")), "assistant");
+  assert.equal(context.messageRole(turn("", "You said:")), "user");
+  assert.equal(context.messageRole(turn("", "ChatGPT said:")), "assistant");
+  assert.equal(context.messageRole(turn("", "Unrelated heading")), null);
+});
 test("new conversation document observes the submitted prompt without clicking send", async () => {
   const content = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
   let submissions = 0;
