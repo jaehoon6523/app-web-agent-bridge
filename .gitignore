@@ -12,3 +12,4 @@ db_temp/
 /files.txt
 /node_modules.zip
 /src (2).zip
+.verified-*.log
