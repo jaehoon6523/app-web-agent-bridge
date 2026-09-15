@@ -1,5 +1,5 @@
 import { inspectBoundDocument, createSuccessTrace, diagnosticError, errorPayload } from "./runtime/document-binding.js";
-import { recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
+import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import { canonicalChatGptUrl, conversationIdFromUrl, matchExactConversationTabs, validateLocalControllerUrl } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
@@ -31,16 +31,17 @@ async function connectionState() {
   let state = await store.read();
   const roots = (await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS })).filter(tab => canonicalChatGptUrl(tab.url) === "https://chatgpt.com/");
   const rootPage = roots.length === 1 ? await chrome.tabs.sendMessage(roots[0].id, { type: "agent.ping" }).catch(() => null) : null;
+  const bindingRecovery = classifyStoredAmbiguousRoot({ state, roots, rootPage, busy: turnGate.active });
+  if (bindingRecovery?.recovered) state = await store.update(bindingRecovery.patch);
   if (state.bindingStatus === "AMBIGUOUS" && !state.bindingError) {
     const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-    const bindingError = diagnosticError(new ExtensionOperationError("AMBIGUOUS", "A previous binding attempt was ambiguous; current tab topology was captured.", {
+    const bindingError = diagnosticError(new ExtensionOperationError(bindingRecovery?.code ?? "STORED_AMBIGUOUS_REBIND_REQUIRED",
+      bindingRecovery?.message ?? "저장된 모호한 바인딩을 자동 복구할 수 없습니다.", {
       mode: "STORED_AMBIGUOUS_RECOVERY", persistedTabId: state.tabId, persistedUrl: state.conversationUrl,
-      persistedConversationId: state.conversationId,
-      candidates: tabs.map((tab) => ({
+      persistedConversationId: state.conversationId, candidates: tabs.map((tab) => ({
         tabId: tab.id, windowId: tab.windowId, url: tab.url,
         canonicalUrl: canonicalChatGptUrl(tab.url), conversationId: conversationIdFromUrl(tab.url),
-      })),
-    }));
+      })), }));
     state = await store.update({ bindingError });
   }
   return {
@@ -53,9 +54,8 @@ async function connectionState() {
     tabId: state.tabId,
     conversationUrl: state.conversationUrl,
     bindingStatus: state.bindingStatus,
-    bindingError: state.bindingError,
-    currentDeliveryId: state.currentDeliveryId,
-    extensionIdentity: state.extensionIdentity || null,
+    bindingError: state.bindingError, currentDeliveryId: state.currentDeliveryId,
+    extensionIdentity: state.extensionIdentity || null, bindingRecovery: bindingRecovery ? { code: bindingRecovery.code, message: bindingRecovery.message, recovered: bindingRecovery.recovered } : null,
     lastError,
   };
 }

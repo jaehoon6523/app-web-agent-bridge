@@ -44,7 +44,7 @@ function render(response) {
   const bindingSummary = Number.isInteger(state.tabId)
     ? `ChatGPT tab ${state.tabId} · ${state.bindingStatus || "NEEDS_REBIND"} · identity: ${identity}`
     : `ChatGPT tab 확인되지 않음 · ${state.bindingStatus || "NEEDS_REBIND"} · identity: ${identity}`;
-  const reason = state.bindingError || state.lastError
+  const reason = state.bindingRecovery?.message || state.bindingError || state.lastError
     || (state.bindingStatus !== "BOUND" ? `비활성화 이유: 현재 바인딩 상태가 ${state.bindingStatus || "NEEDS_REBIND"}입니다. 정확한 ChatGPT 탭을 다시 바인딩하세요.` : null)
     || (!state.connected ? "비활성화 이유: 컨트롤러 인증 또는 연결이 완료되지 않았습니다." : null)
     || (!state.extensionIdentity ? "비활성화 이유: 확장 identity가 아직 확인되지 않았습니다." : null);
@@ -53,7 +53,7 @@ function render(response) {
     status.textContent = "새 대화 시작 가능";
     status.className = "badge ok";
     detail.className = "detail-ok";
-    detail.textContent = `ChatGPT tab ${state.startTab.tabId} · 새 대화 입력창 확인됨\nhttps://chatgpt.com/에서 준비 대화를 시작할 수 있습니다.`;
+    detail.textContent = `ChatGPT tab ${state.startTab.tabId} · 새 대화 입력창 확인됨\n${state.bindingRecovery?.message || "https://chatgpt.com/에서 준비 대화를 시작할 수 있습니다."}`;
   }
   if (response.config) {
     controllerUrl.value = response.config.controllerUrl || "";

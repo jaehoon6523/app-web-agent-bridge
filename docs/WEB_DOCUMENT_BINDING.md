@@ -13,3 +13,5 @@ If validation fails before dispatch, the unsent delivery reservation is cleared.
 After updating, reload the unpacked extension and refresh the ChatGPT tab so the controller, service worker, and content script use the same contract. Prepare the session again before sending.
 
 `npm run test:browser` exercises the full background and content scripts with the real Web adapter and Chromium DOM fixtures, including first-send document navigation and `/c/WEB:*` to durable conversation URL settlement. It does not install the extension or authenticate with ChatGPT. The fixture cannot certify Chrome service-worker suspension or current live provider DOM behavior.
+
+Stored `AMBIGUOUS` recovery uses a closed code-to-message contract. One exact, ready, idle root tab maps to `STORED_AMBIGUOUS_ROOT_RECOVERED` and `ROOT_READY`. An unresolved delivery maps to `STORED_AMBIGUOUS_DELIVERY_REVIEW_REQUIRED` and remains blocked. All other mismatches map to `STORED_AMBIGUOUS_REBIND_REQUIRED`. The popup renders the mapped message supplied by this contract instead of interpreting raw topology details independently.

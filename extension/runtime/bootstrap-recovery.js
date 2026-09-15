@@ -1,5 +1,6 @@
 import { canonicalChatGptUrl, conversationIdFromUrl } from "./conversation.js";
 import { captureTurnBinding } from "./turn-guard.js";
+export { classifyStoredAmbiguousRoot } from "./binding-recovery.js";
 
 function fail(code, message) {
   throw Object.assign(new Error(message), { code });
