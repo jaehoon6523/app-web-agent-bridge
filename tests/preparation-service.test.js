@@ -136,6 +136,28 @@ test("ChatGPT start page bootstraps a newly created exact conversation", async (
   assert.equal(f.service.current.webSession.conversationId, "new-conversation");
 });
 
+test("a new root preparation supersedes a prior recovery-required delivery", async (t) => {
+  const f = fixture(t);
+  const submitTurn = f.web.submitTurn;
+  f.web.submitTurn = async (input) => {
+    await submitTurn(input);
+    throw Object.assign(new Error("lost response"), { code: "MANUAL_INTERVENTION_DETECTED" });
+  };
+  await f.service.execute("preparation.start", {
+    requestId: "start-old", objective: "old", targetRoot: f.root, conversationUrl: "https://chatgpt.com/",
+  });
+  await settled(f.service);
+  const old = f.service.current;
+  assert.equal(old.state, "RECOVERY_REQUIRED");
+  const oldDeliveryId = old.webSession.activeDeliveryId;
+  const next = await f.service.execute("preparation.start", {
+    requestId: "start-new", objective: "new", targetRoot: f.root, conversationUrl: "https://chatgpt.com/",
+  });
+  assert.equal(old.lifecycle, "ABANDONED");
+  assert.equal(f.service.current.preparationId, next.preparationId);
+  assert.equal(f.discarded.currentDeliveryId, oldDeliveryId);
+});
+
 test("connection must succeed before entering preparation; absent tab never sends or enables approval", async (t) => {
   const f = fixture(t);
   let rejectConnection, sent = 0;

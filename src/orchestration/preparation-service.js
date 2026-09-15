@@ -159,6 +159,29 @@ export class PreparationService {
         orphan.webSession.activeDeliveryId = null;
         this.touch(orphan);
       }
+      const startsNewConversation = input.conversationUrl === "https://chatgpt.com/";
+      if (startsNewConversation && this.current?.lifecycle === "ACTIVE"
+        && this.current.state === "RECOVERY_REQUIRED" && existingDelivery?.currentDeliveryId != null) {
+        const superseded = this.current;
+        const delivery = superseded.deliveries.find((item) => item.deliveryId === superseded.webSession.activeDeliveryId);
+        await this.web.discardDelivery({
+          ...existingDelivery,
+          unresolvedResultConfirmed: true,
+          noAutomaticResendConfirmed: true,
+          reason: "Superseded by an explicit new preparation start.",
+        });
+        if (delivery) {
+          delivery.state = "RECOVERY_DISCARDED";
+          delivery.discardedAt = stamp();
+          delivery.discardReason = "Superseded by an explicit new preparation start.";
+        }
+        superseded.webSession.activeDeliveryId = null;
+        superseded.lifecycle = "ABANDONED";
+        superseded.error = { code: "SUPERSEDED_BY_NEW_PREPARATION", message: "An explicit new preparation start superseded this recovery-required preparation." };
+        superseded.recovery = { kind: "RECOVERY_DISCARDED", deliveryId: existingDelivery.currentDeliveryId, at: stamp(), reason: superseded.error.message };
+        this.touch(superseded);
+        existingDelivery = await this.web.inspectDelivery();
+      }
       if (this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
       if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
         fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
