@@ -120,7 +120,10 @@ function conversationIdFromUrl(value) {
   if (!canonical) return null;
   const parts = new URL(canonical).pathname.split("/").filter(Boolean);
   const index = Math.max(parts.lastIndexOf("c"), parts.lastIndexOf("uc"));
-  return index >= 0 && index + 1 < parts.length ? decodeURIComponent(parts[index + 1]) : null;
+  if (index < 0 || index + 1 >= parts.length) return null;
+  const id = decodeURIComponent(parts[index + 1]);
+  // ChatGPT can expose WEB:* briefly while a new conversation is being created.
+  return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
 }
 
 function inspectPageState() {

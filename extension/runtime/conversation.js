@@ -22,9 +22,10 @@ export function conversationIdFromUrl(value) {
   if (!canonical) return null;
   const segments = new URL(canonical).pathname.split("/").filter(Boolean);
   const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
-  return markerIndex >= 0 && markerIndex + 1 < segments.length
-    ? decodeURIComponent(segments[markerIndex + 1])
-    : null;
+  if (markerIndex < 0 || markerIndex + 1 >= segments.length) return null;
+  const id = decodeURIComponent(segments[markerIndex + 1]);
+  // ChatGPT can expose WEB:* briefly while a new conversation is being created.
+  return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
 }
 
 export function matchExactConversationTabs(tabs, { conversationUrl, conversationId }) {

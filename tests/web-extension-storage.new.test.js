@@ -11,6 +11,7 @@ import {
   ensureExtensionIdentity,
 } from "../extension/runtime/storage.js";
 import {
+  conversationIdFromUrl,
   matchExactConversationTabs,
   validateLocalControllerUrl,
 } from "../extension/runtime/conversation.js";
@@ -127,6 +128,9 @@ test("extension configuration rejects weak shared secrets", () => {
 });
 
 test("extension conversation matching is exact and local controller URLs cannot carry tokens", () => {
+  assert.equal(conversationIdFromUrl("https://chatgpt.com/c/WEB:temporary"), null);
+  assert.equal(conversationIdFromUrl("https://chatgpt.com/c/WEB%3Atemporary"), null);
+  assert.equal(conversationIdFromUrl("https://chatgpt.com/uc/guest-abc"), "guest-abc");
   const exact = matchExactConversationTabs([
     { id: 1, active: true, url: "https://chatgpt.com/c/wrong" },
     { id: 2, active: false, url: "https://chatgpt.com/c/right" },

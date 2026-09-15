@@ -13,6 +13,14 @@ const content = readFileSync(new URL("../extension/content.js", import.meta.url)
 const documentGuard = content.slice(content.indexOf("function assertExpectedDocument("), content.indexOf("class ContentContractError"));
 const execute = content.slice(content.indexOf("async function executePrompt("), content.indexOf("function cancelCurrentJob("));
 
+test("content script rejects temporary WEB conversation IDs", () => {
+  const context = vm.createContext({ URL, CHATGPT_HOSTS: new Set(["chatgpt.com"]) });
+  vm.runInContext(content.slice(content.indexOf("function canonicalConversationUrl("), content.indexOf("function inspectPageState(")), context);
+  assert.equal(context.conversationIdFromUrl("https://chatgpt.com/c/WEB:temporary"), null);
+  assert.equal(context.conversationIdFromUrl("https://chatgpt.com/c/WEB%3Atemporary"), null);
+  assert.equal(context.conversationIdFromUrl("https://chatgpt.com/c/real-id"), "real-id");
+});
+
 function harness({ root = false, reloadBeforePing = false, reloadAfterPing = false, staleEvidence = false } = {}) {
   const state = { lastBoundSessionId: "s1", lastBoundRunId: "r1", currentDeliveryId: null,
     tabId: 7, windowId: 1, documentId: "d1", frameId: 0,
