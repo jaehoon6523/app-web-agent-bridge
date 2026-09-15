@@ -977,7 +977,7 @@ async function inspectBoundTabTopology(triggerTabId = null) {
         reason: "WEB_TAB_TOPOLOGY_CHANGED",
         triggerTabId,
         expectedUrl: state.conversationUrl,
-        observedBindingStatus: matched.status,
+        observedBindingStatus: "AMBIGUOUS",
       },
     });
   }
