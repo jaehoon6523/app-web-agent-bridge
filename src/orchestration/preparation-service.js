@@ -232,22 +232,27 @@ export class PreparationService {
         fail("Confirm that the original result was not observed and will not be resent.", "DISCARD_CONFIRMATION_REQUIRED");
       }
       if (typeof input.reason !== "string" || input.reason.trim().length < 3) fail("Enter a discard reason.", "INVALID_INPUT");
-      const blocking = context.error?.details?.currentDeliveryId ? context.error.details : {
-        currentDeliveryId: delivery.deliveryId,
-        sessionId: delivery.sessionId,
-        runId: context.preparationId,
-        conversationUrl: context.webSession.conversationUrl,
-        conversationId: context.webSession.conversationId,
-      };
-      if (typeof this.web?.discardDelivery !== "function") {
-        fail("The browser extension cannot confirm delivery discard.", "RECOVERY_REQUIRED", blocking);
+      const observed = await this.web.inspectDelivery();
+      if (observed.currentDeliveryId !== null && observed.currentDeliveryId !== delivery.deliveryId) {
+        fail("The extension delivery belongs to a different preparation.", "DELIVERY_RECOVERY_MISMATCH", {
+          expectedDeliveryId: delivery.deliveryId,
+          observedDeliveryId: observed.currentDeliveryId,
+          observedSessionId: observed.sessionId ?? null,
+          observedRunId: observed.runId ?? null,
+        });
       }
-      await this.web.discardDelivery({ ...blocking, unresolvedResultConfirmed: true,
-        noAutomaticResendConfirmed: true, reason: input.reason.trim() });
+      if (typeof this.web?.discardDelivery !== "function") {
+        fail("The browser extension cannot confirm delivery discard.", "RECOVERY_REQUIRED", observed);
+      }
+      if (observed.currentDeliveryId !== null) {
+        await this.web.discardDelivery({ ...observed, unresolvedResultConfirmed: true,
+          noAutomaticResendConfirmed: true, reason: input.reason.trim() });
+      }
       delivery.state = "RECOVERY_DISCARDED";
       delivery.discardedAt = stamp(); delivery.discardReason = input.reason.trim();
       delivery.discardEvidence = { sessionId: delivery.sessionId, conversationId: delivery.conversationId,
-        conversationUrl: context.webSession.conversationUrl, deliveryId: delivery.deliveryId };
+        conversationUrl: context.webSession.conversationUrl, deliveryId: delivery.deliveryId,
+        remoteDeliveryId: observed.currentDeliveryId, remoteAlreadyCleared: observed.currentDeliveryId === null };
       context.webSession.activeDeliveryId = null; context.lifecycle = "ABANDONED";
       context.state = "RECOVERY_REQUIRED"; context.error = { code: "RECOVERY_DISCARDED", message: "Unresolved delivery was explicitly discarded by the operator." };
       context.recovery = { kind: "RECOVERY_DISCARDED", deliveryId: delivery.deliveryId,

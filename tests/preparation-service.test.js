@@ -69,6 +69,8 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
   await f.start();
   const before = f.service.current;
   const deliveryId = before.webSession.activeDeliveryId;
+  f.web.inspectDelivery = async () => ({ currentDeliveryId: deliveryId, sessionId: before.webSession.sessionId,
+    runId: before.preparationId, conversationUrl: before.webSession.conversationUrl, conversationId: before.webSession.conversationId });
   await f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Original conversation is unavailable." });
   const after = f.service.current;
   const delivery = after.deliveries.find((item) => item.deliveryId === deliveryId);
@@ -82,12 +84,27 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
   assert.ok(after.recovery.at);
 });
 
+test("discard refuses a delivery owned by a different extension preparation", async (t) => {
+  const f = fixture(t);
+  await f.start();
+  const before = f.service.current;
+  f.web.inspectDelivery = async () => ({ currentDeliveryId: "delivery-other", sessionId: "session-other", runId: "run-other" });
+  await assert.rejects(
+    f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Check ownership." }),
+    (error) => error.code === "DELIVERY_RECOVERY_MISMATCH",
+  );
+  assert.equal(f.discarded, null);
+  assert.equal(f.service.current.webSession.activeDeliveryId, before.webSession.activeDeliveryId);
+});
+
 test("root bootstrap timeout discard uses the canonical preparation and session identity", async (t) => {
   const f = fixture(t);
   await f.service.execute("preparation.start", { requestId: "start-root-discard",
     objective: "안녕", targetRoot: f.root, conversationUrl: "https://chatgpt.com/" });
   const context = f.service.current;
   const delivery = context.deliveries.find((item) => item.deliveryId === context.webSession.activeDeliveryId);
+  f.web.inspectDelivery = async () => ({ currentDeliveryId: delivery.deliveryId, sessionId: context.webSession.sessionId,
+    runId: context.preparationId, conversationUrl: "https://chatgpt.com/", conversationId: null });
   context.state = "RECOVERY_REQUIRED";
   context.error = { code: "NEW_CONVERSATION_TIMEOUT", message: "Conversation URL was not created.", details: null };
   context.webSession.bindingState = "RECOVERY_REQUIRED";
