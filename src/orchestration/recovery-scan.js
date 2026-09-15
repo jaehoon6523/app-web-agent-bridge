@@ -4,16 +4,11 @@ import {
   RunPhase,
 } from "../domain/vocabulary.js";
 import { DeliveryState } from "../persistence/schema.js";
+import { isUncertainDeliveryState } from "../persistence/delivery-state.js";
 
 const ACTIVE_TURN_PHASES = new Set([
   RunPhase.CODEX_TURN_RUNNING,
   RunPhase.WEB_TURN_RUNNING,
-]);
-const UNCERTAIN_DELIVERY_STATES = new Set([
-  DeliveryState.DISPATCHING,
-  DeliveryState.SUBMITTED,
-  DeliveryState.RESPONSE_STARTED,
-  DeliveryState.AMBIGUOUS,
 ]);
 
 function requireStore(store) {
@@ -134,7 +129,7 @@ export function scanStartupRecovery(store) {
         }
         completedWithoutCanonicalResponse = message === null && rejection === null;
       }
-      if (UNCERTAIN_DELIVERY_STATES.has(delivery.state) || completedWithoutCanonicalResponse) {
+      if (isUncertainDeliveryState(delivery.state) || completedWithoutCanonicalResponse) {
         reasons.push(reason("DELIVERY_UNCERTAIN", {
           deliveryId: delivery.deliveryId,
           inputId: delivery.inputId,
@@ -177,4 +172,4 @@ export function hasRecoveryWork(store) {
   return scanStartupRecovery(store).length > 0;
 }
 
-export { ACTIVE_TURN_PHASES, UNCERTAIN_DELIVERY_STATES };
+export { ACTIVE_TURN_PHASES };

@@ -403,10 +403,6 @@ export class SqliteStore {
     ));
   }
 
-  updateAgentSession(input) {
-    return this.upsertAgentSession(input);
-  }
-
   getAgentSession(sessionId) {
     this.#assertOpen();
     return getAgentSessionEntity(this.#database, sessionId, persistenceErrorTypes());
@@ -602,10 +598,6 @@ export class SqliteStore {
 
       return Object.freeze({ ...event, previousHash, eventHash });
     });
-  }
-
-  appendEventAndProject(input) {
-    return this.appendEventAndUpdateProjection(input);
   }
 
   #insertEvent(event, previousHash, eventHash) {
@@ -822,6 +814,14 @@ export class SqliteStore {
           ORDER BY created_at, delivery_id LIMIT ?
         `).all(DeliveryState.PENDING, runId, limit);
     return rows.map((row) => this.#deliveryFromRow(row));
+  }
+
+  getSingleDispatchableDelivery({ runId = null } = {}) {
+    const deliveries = this.listDispatchableDeliveries({ runId, limit: 2 });
+    if (deliveries.length > 1) throw new PersistenceError(
+      `Run ${runId} has multiple pending deliveries.`, "MULTIPLE_PENDING_DELIVERIES",
+    );
+    return deliveries[0] ?? null;
   }
 
   /** @param {{runId?: string | null, claimedAt?: string}} [input] */

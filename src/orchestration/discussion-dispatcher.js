@@ -75,7 +75,7 @@ function validateDependencies({ store, controller, sessions, artifactStore }) {
     "getAgentMessage",
     "getProposalArtifactBySourceMessage",
     "listAgentSessions",
-    "listDispatchableDeliveries",
+    "getSingleDispatchableDelivery",
   ]) {
     if (typeof store?.[method] !== "function") {
       throw new TypeError(`DiscussionOutboxDispatcher requires store.${method}().`);
@@ -269,16 +269,10 @@ export class DiscussionOutboxDispatcher {
       throw new DiscussionDispatcherError(`Run ${runId} does not exist.`, "RUN_NOT_FOUND");
     }
     if (TERMINAL_PHASES.has(run.phase) || run.paused || run.blocker !== null) return null;
-    const pending = this.#store.listDispatchableDeliveries({ runId, limit: 2 });
-    if (pending.length === 0) return null;
-    if (pending.length > 1) {
-      throw new DiscussionDispatcherError(
-        `Run ${runId} has multiple pending discussion deliveries.`,
-        "MULTIPLE_PENDING_DISCUSSION_DELIVERIES",
-      );
-    }
+    const pending = this.#store.getSingleDispatchableDelivery({ runId });
+    if (pending === null) return null;
 
-    const pendingInput = this.#store.getAgentTurnInput(pending[0].inputId);
+    const pendingInput = this.#store.getAgentTurnInput(pending.inputId);
     validateAgentTurnInput(pendingInput);
     const context = sourceContext(this.#store, pendingInput);
     const prompt = rematerializeDiscussionPrompt({
@@ -299,7 +293,7 @@ export class DiscussionOutboxDispatcher {
       expectedRunVersion: run.version,
     });
     if (claimed === null) return null;
-    if (claimed.deliveryId !== pending[0].deliveryId) {
+    if (claimed.deliveryId !== pending.deliveryId) {
       throw new DiscussionDispatcherError(
         "The claimed delivery differs from the preflighted delivery.",
         "DISCUSSION_DELIVERY_CLAIM_MISMATCH",

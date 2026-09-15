@@ -233,7 +233,7 @@ test("startup verification detects event sequence gaps and reorder attempts", (t
   const store = new SqliteStore(filename);
   const run = makeRun();
   store.createRun(run, { runLimits: runLimitsFor(run) });
-  store.appendEventAndProject({
+  store.appendEventAndUpdateProjection({
     runId: run.runId,
     expectedVersion: 1,
     eventId: "event-02",

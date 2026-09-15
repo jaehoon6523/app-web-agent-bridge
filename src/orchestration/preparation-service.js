@@ -9,16 +9,30 @@ import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-pac
 function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
 const stamp = () => new Date().toISOString();
 const terminal = new Set(["APPLIED", "CANCELLED", "FAILED", "INCONCLUSIVE", "COMPLETE"]);
+const RESULT_STATES = new Set(["AWAITING_APPLY", "APPLIED", "COMPLETE", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
+
+function isValidRequirementsProposal(packet) {
+  return packet?.type === "REQUIREMENTS_PROPOSAL"
+    && typeof packet.summary === "string"
+    && Array.isArray(packet.questions)
+    && packet.questions.every((question) => typeof question === "string" && question.trim())
+    && Array.isArray(packet.items)
+    && packet.items.length <= 30
+    && (packet.items.length > 0 || packet.questions.length > 0)
+    && packet.items.every((item) => (
+      typeof item?.statement === "string" && item.statement.trim()
+      && typeof item?.acceptanceCriteria === "string" && item.acceptanceCriteria.trim()
+    ));
+}
 
 export function workflowForRun(run) {
   const phase = run.phase ?? run.stage;
   const result = phase;
-  const results = new Set(["AWAITING_APPLY", "APPLIED", "COMPLETE", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
-  const state = results.has(result) ? result : ({
+  const state = RESULT_STATES.has(result) ? result : ({
     CREATED: "RUN_CREATED", CANDIDATE_CAPTURE: "VERIFYING", REPORT_REPAIR: "REVIEW_RUNNING",
     EVIDENCE_SUPPLEMENT: "REVIEW_RUNNING",
   }[phase] ?? (["RUN_CREATED", "PROVISIONING", "WORKER_RUNNING", "VERIFYING", "REVIEW_RUNNING", "REWORK", "APPLYING", "STOPPING", "HOLD", "RECOVERY_REQUIRED"].includes(phase) ? phase : "RECOVERY_REQUIRED"));
-  return { stage: results.has(state) ? "RESULT" : "WORK", state, runId: run.runId, runVersion: run.version };
+  return { stage: RESULT_STATES.has(state) ? "RESULT" : "WORK", state, runId: run.runId, runVersion: run.version };
 }
 
 /** Owns preparation identity, durable receipts, and all PREPARE transitions.
@@ -392,18 +406,7 @@ export class PreparationService {
     }
     const userMessageId = response?.evidence?.userMessageId ?? response?.binding?.lastObservedUserMessageId;
     const assistantMessageId = response?.evidence?.assistantMessageId ?? response?.binding?.lastObservedAssistantMessageId;
-    const packetValid = !packetParseError
-      && parsed?.type === "REQUIREMENTS_PROPOSAL"
-      && typeof parsed.summary === "string"
-      && Array.isArray(parsed.questions)
-      && parsed.questions.every((question) => typeof question === "string" && question.trim())
-      && Array.isArray(parsed.items)
-      && parsed.items.length <= 30
-      && (parsed.items.length > 0 || parsed.questions.length > 0)
-      && parsed.items.every((item) => (
-        typeof item?.statement === "string" && item.statement.trim()
-        && typeof item?.acceptanceCriteria === "string" && item.acceptanceCriteria.trim()
-      ));
+    const packetValid = !packetParseError && isValidRequirementsProposal(parsed);
     const check = (name, expected, actual) => ({ name, expected: expected ?? null, actual: actual ?? null,
       passed: expected !== undefined && actual === expected });
     const checks = [
@@ -441,12 +444,7 @@ export class PreparationService {
       delivery.validation.format = "INVALID"; this.touch(context);
       fail("응답에 준비 제안 형식이 없습니다. 원문은 보존되어 있으며 승인할 수 없습니다.", "INVALID_AGREEMENT");
     }
-    if (parsed.type !== "REQUIREMENTS_PROPOSAL" || typeof parsed.summary !== "string"
-      || !Array.isArray(parsed.questions) || parsed.questions.some((q) => typeof q !== "string" || !q.trim())
-      || !Array.isArray(parsed.items) || parsed.items.length > 30
-      || (!parsed.items.length && !parsed.questions.length)
-      || parsed.items.some((r) => typeof r.statement !== "string" || !r.statement.trim()
-        || typeof r.acceptanceCriteria !== "string" || !r.acceptanceCriteria.trim())) fail("Invalid designer response.", "INVALID_AGREEMENT");
+    if (!isValidRequirementsProposal(parsed)) fail("Invalid designer response.", "INVALID_AGREEMENT");
     delivery.validation.format = "CONFIRMED";
     delivery.processingState = "ACK_PENDING"; this.touch(context);
     if (pointerMatches) {

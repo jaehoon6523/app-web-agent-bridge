@@ -142,21 +142,21 @@ test("agent sessions use exact run ownership and version CAS", (t) => {
     lastObservedAt: T1,
     version: 2,
   });
-  assert.deepEqual(store.updateAgentSession({
+  assert.deepEqual(store.upsertAgentSession({
     session: ready,
     expectedVersion: 1,
     updatedAt: T1,
   }), ready);
   assert.deepEqual(store.getAgentSession(original.sessionId), ready);
 
-  assert.throws(() => store.updateAgentSession({
+  assert.throws(() => store.upsertAgentSession({
     session: ready,
     expectedVersion: 1,
     updatedAt: T1,
   }), OptimisticConcurrencyError);
 
   const wrongOwner = makeSession(runB.runId, { version: 3 });
-  assert.throws(() => store.updateAgentSession({
+  assert.throws(() => store.upsertAgentSession({
     session: wrongOwner,
     expectedVersion: 2,
     updatedAt: T1,
@@ -168,7 +168,7 @@ test("agent sessions use exact run ownership and version CAS", (t) => {
     provider: SessionProvider.CHATGPT_WEB,
     version: 3,
   });
-  assert.throws(() => store.updateAgentSession({
+  assert.throws(() => store.upsertAgentSession({
     session: changedIdentity,
     expectedVersion: 2,
     updatedAt: T1,

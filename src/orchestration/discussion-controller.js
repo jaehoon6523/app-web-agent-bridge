@@ -25,6 +25,7 @@ import {
 } from "../domain/vocabulary.js";
 import { runOutcomeHash } from "../persistence/run-outcomes.js";
 import { DeliveryState } from "../persistence/schema.js";
+import { isResponsePendingDeliveryState } from "../persistence/delivery-state.js";
 import {
   DiscussionResponseDisposition,
   planDiscussionResponse,
@@ -272,16 +273,10 @@ export class DiscussionController {
     requirePositiveInteger(expectedRunVersion, "expectedRunVersion");
     return this.#store.withTransaction(() => {
       const run = requireExpectedRun(this.#store, runId, expectedRunVersion);
-      const pending = this.#store.listDispatchableDeliveries({ runId, limit: 2 });
-      if (pending.length === 0) return null;
-      if (pending.length > 1) {
-        throw new DiscussionControllerError(
-          `Run ${runId} has multiple pending discussion deliveries.`,
-          "MULTIPLE_PENDING_DISCUSSION_DELIVERIES",
-        );
-      }
+      const pending = this.#store.getSingleDispatchableDelivery({ runId });
+      if (pending === null) return null;
       if (run.paused || run.blocker !== null) return null;
-      const turnInput = this.#store.getAgentTurnInput(pending[0].inputId);
+      const turnInput = this.#store.getAgentTurnInput(pending.inputId);
       validateAgentTurnInput(turnInput);
       const correctPhase = turnInput.kind === AgentTurnInputKind.PROTOCOL_REPAIR
         ? run.phase === RESPONSE_PHASE_BY_ACTOR[turnInput.targetActor]
@@ -441,7 +436,7 @@ export class DiscussionController {
       );
       if (
         delivery.runId !== runId
-        || !new Set([DeliveryState.SUBMITTED, DeliveryState.RESPONSE_STARTED]).has(delivery.state)
+        || !isResponsePendingDeliveryState(delivery.state)
       ) {
         throw new DiscussionControllerError(
           "An invalid response requires this run's submitted or started delivery.",
@@ -719,7 +714,7 @@ export class DiscussionController {
       );
       if (
         delivery.runId !== runId
-        || !new Set([DeliveryState.SUBMITTED, DeliveryState.RESPONSE_STARTED]).has(delivery.state)
+        || !isResponsePendingDeliveryState(delivery.state)
       ) {
         throw new DiscussionControllerError(
           "A valid response requires this run's submitted or started delivery.",

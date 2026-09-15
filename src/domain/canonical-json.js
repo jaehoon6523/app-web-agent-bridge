@@ -89,8 +89,6 @@ export function canonicalJson(value) {
   return serialize(value, "$", new Set());
 }
 
-export const canonicalStringify = canonicalJson;
-
 export function sha256Text(value) {
   if (typeof value !== "string") {
     throw new TypeError("sha256Text value must be a string");
@@ -102,6 +100,3 @@ export function sha256Text(value) {
 export function sha256CanonicalJson(value) {
   return sha256Text(canonicalJson(value));
 }
-
-export const hashText = sha256Text;
-export const hashCanonicalJson = sha256CanonicalJson;

@@ -199,7 +199,7 @@ function saveQueuedInitialInput(store, run, suffix = "01") {
 
 function markCodexSessionRunning(store, turnId) {
   const session = store.getAgentSession("codex-session-01");
-  return store.updateAgentSession({
+  return store.upsertAgentSession({
     session: createAgentSessionRecord({
       ...session,
       status: AgentSessionStatus.RUNNING,
@@ -433,6 +433,23 @@ test("claim is deterministic and SUBMITTED delivery is not retried after reopen"
     () => new SqliteStore(filename),
     /state PENDING must not retain a provider receipt/u,
   );
+});
+
+test("single dispatchable delivery is the persistence cardinality check", (t) => {
+  const { store, run } = openStore(t);
+  saveQueuedInitialInput(store, run);
+  saveInput(store, makeTurnInput(run, {
+    inputId: "input-02",
+    kind: AgentTurnInputKind.PROTOCOL_REPAIR,
+    targetActor: AgentActor.CHATGPT_WEB_AGENT,
+    createdAt: T1,
+  }), "02");
+
+  assert.throws(
+    () => store.getSingleDispatchableDelivery({ runId: run.runId }),
+    (error) => error.code === "MULTIPLE_PENDING_DELIVERIES",
+  );
+  store.close();
 });
 
 test("startup rejects a provider receipt without submission evidence", (t) => {

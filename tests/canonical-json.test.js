@@ -3,7 +3,6 @@ import test from "node:test";
 import {
   CanonicalJsonError,
   canonicalJson,
-  canonicalStringify,
   sha256CanonicalJson,
   sha256Text,
 } from "../src/domain/canonical-json.js";
@@ -24,7 +23,7 @@ test("canonical JSON recursively sorts object keys and preserves array order", (
 
   const expected = '{"a":true,"list":[{"a":1,"b":2},"x"],"nested":{"c":3,"d":4},"z":1}';
   assert.equal(canonicalJson(first), expected);
-  assert.equal(canonicalStringify(second), expected);
+  assert.equal(canonicalJson(second), expected);
   assert.equal(sha256CanonicalJson(first), sha256CanonicalJson(second));
 });
 

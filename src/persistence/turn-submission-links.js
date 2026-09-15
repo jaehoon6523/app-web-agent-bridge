@@ -1,4 +1,5 @@
 import { SHA256_DIGEST_PATTERN } from "../domain/agent-messages.js";
+import { matchesSessionBinding } from "../domain/agent-attribution.js";
 import { canonicalJson, sha256CanonicalJson } from "../domain/canonical-json.js";
 import { validateAgentRun } from "../domain/contracts.js";
 import {
@@ -9,6 +10,11 @@ import {
 } from "../domain/vocabulary.js";
 import { getAgentTurnInputEntity } from "./agent-communications.js";
 import { DeliveryState } from "./schema.js";
+import {
+  forbidsDeliveryReceipt,
+  isResponsePendingDeliveryState,
+  requiresDeliveryReceipt,
+} from "./delivery-state.js";
 import { getAgentSessionEntity } from "./sqlite-entities.js";
 import { validateSubmittedProviderReceipt } from "./delivery-transition-input.js";
 
@@ -30,20 +36,6 @@ const RUNNING_PHASE_BY_ACTOR = Object.freeze({
   [AgentActor.CODEX_AGENT]: RunPhase.CODEX_TURN_RUNNING,
   [AgentActor.CHATGPT_WEB_AGENT]: RunPhase.WEB_TURN_RUNNING,
 });
-const RECEIPT_REQUIRED_STATES = new Set([
-  DeliveryState.SUBMITTED,
-  DeliveryState.RESPONSE_STARTED,
-  DeliveryState.RESPONSE_COMPLETED,
-  DeliveryState.RELAYED,
-]);
-const RECEIPT_FORBIDDEN_STATES = new Set([
-  DeliveryState.PENDING,
-  DeliveryState.DISPATCHING,
-]);
-const CURRENT_IN_FLIGHT_STATES = new Set([
-  DeliveryState.SUBMITTED,
-  DeliveryState.RESPONSE_STARTED,
-]);
 
 function integrity(errors, context, message, options = undefined) {
   throw new errors.EventChainIntegrityError(`${context} ${message}`, options);
@@ -220,7 +212,7 @@ function verifyCurrentInFlightSession(database, delivery, submission, errors) {
   if (
     !submission
     || submission.details.attemptCount !== Number(delivery.attempt_count)
-    || !CURRENT_IN_FLIGHT_STATES.has(delivery.state)
+    || !isResponsePendingDeliveryState(delivery.state)
     || delivery.provider_receipt_json === null
   ) return;
   const { details, session } = submission;
@@ -233,10 +225,7 @@ function verifyCurrentInFlightSession(database, delivery, submission, errors) {
   if (
     session.status !== AgentSessionStatus.RUNNING
     || session.activeTurnId !== details.turnId
-    || session.sessionId !== receipt.sessionBinding.sessionId
-    || session.version !== receipt.sessionBinding.version + 1
-    || session.externalSessionId !== receipt.sessionBinding.externalSessionId
-    || session.externalLocator !== receipt.sessionBinding.externalLocator
+    || !matchesSessionBinding(session, receipt.sessionBinding, { versionOffset: 1 })
   ) {
     integrity(
       errors,
@@ -308,7 +297,7 @@ export function verifyTurnSubmissionLinksEntity(database, errors) {
     const submission = latestByDelivery.get(delivery.delivery_id);
     verifyCurrentInFlightSession(database, delivery, submission, errors);
     if (delivery.provider_receipt_json === null) {
-      if (RECEIPT_REQUIRED_STATES.has(delivery.state)) {
+      if (requiresDeliveryReceipt(delivery.state)) {
         integrity(
           errors,
           `delivery ${delivery.delivery_id}`,
@@ -330,7 +319,7 @@ export function verifyTurnSubmissionLinksEntity(database, errors) {
       }
       continue;
     }
-    if (RECEIPT_FORBIDDEN_STATES.has(delivery.state)) {
+    if (forbidsDeliveryReceipt(delivery.state)) {
       integrity(
         errors,
         `delivery ${delivery.delivery_id}`,

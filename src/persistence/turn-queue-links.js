@@ -19,6 +19,7 @@ import {
 } from "./agent-communications.js";
 import { getAgentPacketRejectionByDeliveryEntity } from "./agent-packet-rejections.js";
 import { DeliveryState } from "./schema.js";
+import { isSettledDeliveryState } from "./delivery-state.js";
 import { verifyTurnSubmissionLinksEntity } from "./turn-submission-links.js";
 import { getRunOutcomeEntity } from "./run-outcomes.js";
 
@@ -36,10 +37,6 @@ const TERMINAL_PHASES = new Set([
   RunPhase.COMPLETE,
   RunPhase.FAILED,
   RunPhase.CANCELLED,
-]);
-const SETTLED_DELIVERY_STATES = new Set([
-  DeliveryState.RESPONSE_COMPLETED,
-  DeliveryState.RELAYED,
 ]);
 const PENDING_ACTOR_BY_PHASE = Object.freeze({
   [RunPhase.CODEX_TURN_PENDING]: AgentActor.CODEX_AGENT,
@@ -198,7 +195,7 @@ function verifyRunCoverage(database, runId, queuedInputIds, errors) {
   `).all(runId);
   const expectedPendingActor = PENDING_ACTOR_BY_PHASE[run.phase] ?? null;
   if (expectedPendingActor !== null) {
-    const unsettled = deliveries.filter(({ state }) => !SETTLED_DELIVERY_STATES.has(state));
+    const unsettled = deliveries.filter(({ state }) => !isSettledDeliveryState(state));
     if (unsettled.length !== 1) {
       integrity(errors, `run ${runId}`, "pending phase must have exactly one unsettled delivery");
     }
@@ -214,7 +211,7 @@ function verifyRunCoverage(database, runId, queuedInputIds, errors) {
   const cancelled = run.phase === RunPhase.CANCELLED
     && getRunOutcomeEntity(database, runId, errors)?.outcome.type === "CANCELLED";
   for (const delivery of deliveries) {
-    const settled = SETTLED_DELIVERY_STATES.has(delivery.state);
+    const settled = isSettledDeliveryState(delivery.state);
     if (!settled && !cancelled) {
       integrity(errors, `terminal run ${runId}`, `retains unsettled delivery ${delivery.delivery_id}`);
     }

@@ -1,4 +1,5 @@
 import { validateAgentMessage, validateAgentTurnInput } from "../domain/agent-messages.js";
+import { matchesSessionTurnIdentity } from "../domain/agent-attribution.js";
 import { assertProtocolRepairPolicyBinding } from "../domain/protocol-repair-policy.js";
 import {
   AgentMessageKind,
@@ -24,11 +25,11 @@ export function assertSessionTurnIdAvailable(store, session, turnId) {
       && delivery.providerReceipt?.externalTurnId === turnId;
   });
   const messageReused = store.listAgentMessages(session.runId).some((message) => (
-    message.sessionId === session.sessionId && message.turnId === turnId
+    matchesSessionTurnIdentity(message, { sessionId: session.sessionId, turnId })
   ));
   const rejectionReused = store.listDeliveries(session.runId).some((delivery) => {
     const rejection = store.getAgentPacketRejectionByDelivery(delivery.deliveryId);
-    return rejection?.sessionId === session.sessionId && rejection.turnId === turnId;
+    return matchesSessionTurnIdentity(rejection, { sessionId: session.sessionId, turnId });
   });
   if (completedTurnReused || receiptTurnReused || messageReused || rejectionReused) {
     throw new DiscussionResponseContextError(

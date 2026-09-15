@@ -1,4 +1,5 @@
 import { validateAgentSessionRecord } from "../domain/contracts.js";
+import { matchesSessionBinding, matchesSessionTurnIdentity } from "../domain/agent-attribution.js";
 import { AgentSessionStatus } from "../domain/vocabulary.js";
 import { validateSubmittedProviderReceipt } from "../persistence/delivery-transition-input.js";
 
@@ -13,13 +14,6 @@ export class DiscussionSessionBindingError extends Error {
     this.name = "DiscussionSessionBindingError";
     this.code = code;
   }
-}
-
-function sameBinding(session, snapshot) {
-  return session.sessionId === snapshot.sessionId
-    && session.version === snapshot.version
-    && session.externalSessionId === snapshot.externalSessionId
-    && session.externalLocator === snapshot.externalLocator;
 }
 
 export function bindDiscussionProviderReceipt(providerReceipt, session) {
@@ -51,7 +45,7 @@ export function sessionForDiscussionSubmission(store, run, turnInput, providerRe
       "DISCUSSION_SESSION_NOT_READY",
     );
   }
-  if (!sameBinding(matches[0], receipt.sessionBinding)) {
+  if (!matchesSessionBinding(matches[0], receipt.sessionBinding)) {
     throw new DiscussionSessionBindingError(
       `Input ${turnInput.inputId} no longer has its preflighted runtime session binding.`,
       "AGENT_SESSION_BINDING_CHANGED",
@@ -97,7 +91,10 @@ export function requireSubmittedDiscussionSession({
     );
   }
   if (
-    receipt.externalTurnId !== turnId
+    !matchesSessionTurnIdentity(
+      { sessionId, turnId },
+      { sessionId: receipt.sessionBinding.sessionId, turnId: receipt.externalTurnId },
+    )
     || session.status !== AgentSessionStatus.RUNNING
     || session.activeTurnId !== turnId
   ) {
@@ -110,7 +107,7 @@ export function requireSubmittedDiscussionSession({
     ...receipt.sessionBinding,
     version: receipt.sessionBinding.version + 1,
   };
-  if (!sameBinding(session, expectedRunningBinding)) {
+  if (!matchesSessionBinding(session, expectedRunningBinding)) {
     throw new DiscussionSessionBindingError(
       `Agent session ${sessionId} changed after turn ${turnId} was submitted.`,
       "AGENT_SESSION_BINDING_CHANGED",

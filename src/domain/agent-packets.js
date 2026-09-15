@@ -277,5 +277,4 @@ export function agentPacketHash(packet) {
   return sha256CanonicalJson(packet);
 }
 
-export const packetHash = agentPacketHash;
 export { AgentPacketType };

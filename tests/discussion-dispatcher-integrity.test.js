@@ -129,7 +129,7 @@ async function waitFor(predicate, message, timeoutMs = 2_000) {
 
 function mutatePersistedSession(store, sessionId, changes) {
   const session = store.getAgentSession(sessionId);
-  return store.updateAgentSession({
+  return store.upsertAgentSession({
     session: {
       ...session,
       ...changes,

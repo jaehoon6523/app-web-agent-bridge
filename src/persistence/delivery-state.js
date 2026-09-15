@@ -27,8 +27,40 @@ const ALLOWED_DELIVERY_TRANSITIONS = Object.freeze({
   [DeliveryState.RELAYED]: new Set(),
 });
 
+const SETTLED_STATES = new Set([DeliveryState.RESPONSE_COMPLETED, DeliveryState.RELAYED]);
+const RECEIPT_REQUIRED_STATES = new Set([
+  DeliveryState.SUBMITTED,
+  DeliveryState.RESPONSE_STARTED,
+  DeliveryState.RESPONSE_COMPLETED,
+  DeliveryState.RELAYED,
+]);
+const UNCERTAIN_STATES = new Set([
+  DeliveryState.DISPATCHING,
+  DeliveryState.SUBMITTED,
+  DeliveryState.RESPONSE_STARTED,
+  DeliveryState.AMBIGUOUS,
+]);
+
 export function canTransitionDelivery(from, to) {
   return ALLOWED_DELIVERY_TRANSITIONS[from]?.has(to) === true;
 }
 
-export { ALLOWED_DELIVERY_TRANSITIONS };
+export function isSettledDeliveryState(state) {
+  return SETTLED_STATES.has(state);
+}
+
+export function requiresDeliveryReceipt(state) {
+  return RECEIPT_REQUIRED_STATES.has(state);
+}
+
+export function forbidsDeliveryReceipt(state) {
+  return state === DeliveryState.PENDING || state === DeliveryState.DISPATCHING;
+}
+
+export function isUncertainDeliveryState(state) {
+  return UNCERTAIN_STATES.has(state);
+}
+
+export function isResponsePendingDeliveryState(state) {
+  return state === DeliveryState.SUBMITTED || state === DeliveryState.RESPONSE_STARTED;
+}
