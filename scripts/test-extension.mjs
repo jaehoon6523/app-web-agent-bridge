@@ -26,6 +26,29 @@ for (const variant of ['roles', 'classes', 'headings']) {
   });
 }
 
+test('browser fixture: temporary WEB ID settles to the durable conversation without manual intervention', { timeout: 25_000 }, async t => {
+  const f = await extensionBrowser(t, { navigation: 'temporary-web', variant: 'roles' });
+  await f.prepare();
+  assert.equal(f.readStorage().bindingStatus, 'ROOT_READY');
+
+  const result = await f.submit();
+
+  assert.equal(
+    await f.page.evaluate(() => sessionStorage.getItem('temporaryConversationUrl')),
+    'https://chatgpt.com/c/WEB:temporary',
+  );
+  assert.equal(f.page.url(), 'https://chatgpt.com/c/created');
+  assert.equal(result.binding.conversationUrl, 'https://chatgpt.com/c/created');
+  assert.equal(result.binding.conversationId, 'created');
+  assert.equal(result.binding.bindingStatus, 'BOUND');
+  assert.equal(result.evidence.userMessageId, 'u1');
+  assert.equal(f.readStorage().conversationId, 'created');
+  assert.equal(f.readStorage().bindingStatus, 'BOUND');
+  assert.equal(f.commands.filter(message => message.type === 'agent.prompt').length, 1);
+  assert.equal(f.frames.some(frame => frame.type === 'web.manual-intervention'), false);
+  assert.deepEqual(f.errors, []);
+});
+
 test('browser fixture: new document is observed without resending the submitted prompt', { timeout: 25_000 }, async t => {
   const f = await extensionBrowser(t, { navigation: 'document', variant: 'classes' });
   await f.prepare();

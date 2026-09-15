@@ -119,7 +119,14 @@ export async function extensionBrowser(t, { navigation = 'spa', variant = 'roles
           sessionStorage.setItem('clicks', String(Number(sessionStorage.getItem('clicks') || 0) + 1));
           sessionStorage.setItem('submitted', text); composer.value = '';
           if (navigation === 'document') { location.href = '/uc/created'; return; }
-          if (location.pathname === '/') history.pushState({}, '', '/c/created');
+          if (location.pathname === '/') {
+            if (navigation === 'temporary-web') {
+              history.pushState({}, '', '/c/WEB:temporary');
+              sessionStorage.setItem('temporaryConversationUrl', location.href);
+              await new Promise(resolve => setTimeout(resolve, 250));
+            }
+            history.pushState({}, '', '/c/created');
+          }
           const sequence = sessionStorage.getItem('clicks');
           appendMessage('user', 'u' + sequence, text);
           const response = await window.fixtureReply(text);

@@ -12,4 +12,4 @@ If validation fails before dispatch, the unsent delivery reservation is cleared.
 
 After updating, reload the unpacked extension and refresh the ChatGPT tab so the controller, service worker, and content script use the same contract. Prepare the session again before sending.
 
-`npm run test:browser` exercises the full background and content scripts with the real Web adapter and Chromium DOM fixtures, including first-send document navigation. It does not install the extension or authenticate with ChatGPT. The fixture cannot certify Chrome service-worker suspension or current live provider DOM behavior.
+`npm run test:browser` exercises the full background and content scripts with the real Web adapter and Chromium DOM fixtures, including first-send document navigation and `/c/WEB:*` to durable conversation URL settlement. It does not install the extension or authenticate with ChatGPT. The fixture cannot certify Chrome service-worker suspension or current live provider DOM behavior.
