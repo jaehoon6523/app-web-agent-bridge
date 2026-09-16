@@ -19,7 +19,7 @@ function render(response) {
     return;
   }
   const state = response.state || {};
-  legacyRecovery.hidden = !state.currentDeliveryId;
+  legacyRecovery.hidden = state.legacyTestDelivery !== true;
   status.textContent = state.connected
     ? (state.busy ? "busy" : "authenticated")
     : state.transportConnected

@@ -249,7 +249,7 @@ export class PreparationService {
       .catch((error) => {
         if (this.closed) return;
         const delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
-        const unsent = delivery.state === "RESERVED";
+        const unsent = delivery.state === "RESERVED" || error.details?.browserDispatchStarted === false;
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
         if (unsent) context.webSession.activeDeliveryId = null;
         context.state = unsent ? "WEB_BLOCKED" : "RECOVERY_REQUIRED";

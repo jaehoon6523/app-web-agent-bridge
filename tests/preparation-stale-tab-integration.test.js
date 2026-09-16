@@ -5,6 +5,7 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { createExtensionStateStore } from "../extension/runtime/storage.js";
+import { createStoredTarget } from "../extension/runtime/current-target.js";
 
 test("a new root preparation parks another session's unresolved delivery instead of recovering or blocking on it", async () => {
   let stored = {
@@ -28,7 +29,7 @@ test("a new root preparation parks another session's unresolved delivery instead
   };
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
   const context = vm.createContext({
-    ...documentBinding, ...conversation, console, store,
+    ...documentBinding, ...conversation, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
     chrome: { tabs: {
       query: async () => [rootTab],
@@ -82,7 +83,7 @@ test("a failed new root binding leaves the existing session and delivery untouch
   const before = await store.read();
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
   const context = vm.createContext({
-    ...documentBinding, ...conversation, console, store,
+    ...documentBinding, ...conversation, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
     chrome: { tabs: { query: async () => [], sendMessage: async () => null } },
     waitForContentScript: async () => { throw new Error("must not wait without a root tab"); },

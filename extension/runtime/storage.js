@@ -13,6 +13,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   currentDeliveryId: null,
   completedDelivery: null,
   deliveryScopes: {},
+  lastActiveChatGptTarget: null,
   lastObservedUserMessageId: null,
   lastObservedAssistantMessageId: null,
   bindingError: null,
@@ -29,6 +30,12 @@ export class ExtensionStateError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+export function isLegacyBridgeTestDelivery(state) {
+  return /^manual_session_\d+$/u.test(state?.lastBoundSessionId ?? "")
+    && /^manual_run_\d+$/u.test(state?.lastBoundRunId ?? "")
+    && /^turn_\d+$/u.test(state?.currentDeliveryId ?? "");
 }
 
 function nullableString(value) {
@@ -57,6 +64,15 @@ function normalizeDeliveryScopes(value) {
   return scopes;
 }
 
+function normalizeActiveTarget(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const tabId = nullableInteger(value.tabId), windowId = nullableInteger(value.windowId);
+  const documentId = nullableString(value.documentId), frameId = nullableInteger(value.frameId);
+  const conversationUrl = nullableString(value.conversationUrl);
+  if (tabId === null || windowId === null || documentId === null || frameId !== 0 || conversationUrl === null) return null;
+  return { tabId, windowId, documentId, frameId, conversationUrl, conversationId: nullableString(value.conversationId), observedAt: Number.isFinite(value.observedAt) ? value.observedAt : 0 };
+}
+
 export function normalizeExtensionState(value = {}) {
   const state = {
     controllerUrl: typeof value.controllerUrl === "string" && value.controllerUrl.length > 0
@@ -76,6 +92,7 @@ export function normalizeExtensionState(value = {}) {
     completedDelivery: value.completedDelivery && typeof value.completedDelivery === "object"
       ? structuredClone(value.completedDelivery) : null,
     deliveryScopes: normalizeDeliveryScopes(value.deliveryScopes),
+    lastActiveChatGptTarget: normalizeActiveTarget(value.lastActiveChatGptTarget),
     lastObservedUserMessageId: nullableString(value.lastObservedUserMessageId),
     lastObservedAssistantMessageId: nullableString(value.lastObservedAssistantMessageId),
     bindingError: nullableString(value.bindingError),
@@ -213,6 +230,15 @@ export function createExtensionStateStore(storageArea) {
         const next = normalizeExtensionState({ ...current, currentDeliveryId: null });
         await storageArea.set(next);
         return next;
+      });
+    },
+    async clearLegacyTestDelivery() {
+      return mutate(async () => {
+        const current = await readStoredState();
+        if (!isLegacyBridgeTestDelivery(current)) throw new ExtensionStateError("NO_LEGACY_TEST_DELIVERY", "삭제할 오래된 브릿지 테스트 전송이 없습니다.");
+        const next = normalizeExtensionState({ ...current, currentDeliveryId: null, completedDelivery: null,
+          bindingStatus: "NEEDS_REBIND", bindingError: "Legacy bridge-test delivery was cleared by the user." });
+        await storageArea.set(next); return next;
       });
     },
   });

@@ -3,8 +3,8 @@ import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation } from "./
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import { canonicalChatGptUrl, conversationIdFromUrl, matchExactConversationTabs, validateLocalControllerUrl } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
-import { bindCurrentUserTarget, isPendingRootPromotion } from "./runtime/current-target.js";
-import { createExtensionStateStore, ensureExtensionIdentity } from "./runtime/storage.js";
+import { bindCurrentUserTarget, createStoredTarget, installCurrentTargetTracking, isPendingRootPromotion, pendingDeliveryTargetConflict, resolveCurrentUserTarget } from "./runtime/current-target.js";
+import { createExtensionStateStore, ensureExtensionIdentity, isLegacyBridgeTestDelivery } from "./runtime/storage.js";
 import { clearLegacyTestDelivery } from "./runtime/legacy-cleanup.js";
 import { assertRelaySafeCompletion, assertTurnSessionBinding, assertTurnStateBinding, assertTurnTabBinding, captureTurnBinding, createActiveTurnGate } from "./runtime/turn-guard.js";
 const PROTOCOL_VERSION = 2;
@@ -52,7 +52,7 @@ async function connectionState() {
     tabId: state.tabId,
     conversationUrl: state.conversationUrl,
     bindingStatus: state.bindingStatus,
-    bindingError: state.bindingError, currentDeliveryId: state.currentDeliveryId,
+    bindingError: state.bindingError, currentDeliveryId: state.currentDeliveryId, legacyTestDelivery: isLegacyBridgeTestDelivery(state),
     extensionIdentity: state.extensionIdentity || null, bindingRecovery: bindingRecovery ? { code: bindingRecovery.code, message: bindingRecovery.message, recovered: bindingRecovery.recovered } : null,
     lastError,
   };
@@ -499,7 +499,7 @@ async function prepareBoundSession(payload) {
     const documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: "https://chatgpt.com/", conversationId: null });
     await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
       tabId: root.id, windowId: root.windowId, conversationUrl: "https://chatgpt.com/", conversationId: null,
-      bindingStatus: "ROOT_READY", bindingError: null });
+      bindingStatus: "ROOT_READY", bindingError: null, lastActiveChatGptTarget: createStoredTarget({ tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: "https://chatgpt.com/", conversationId: null }) });
     return { ...documentBinding, sessionId: requested.sessionId, runId: requested.runId, tabId: root.id, windowId: root.windowId,
       conversationUrl: "https://chatgpt.com/", conversationId: null, title: root.title || "ChatGPT",
       lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "ROOT_READY" };
@@ -565,6 +565,8 @@ async function persistBoundTab(tab, requested) {
     tabId: tab.id,
     windowId: tab.windowId,
     bindingStatus: "BOUND",
+    lastActiveChatGptTarget: createStoredTarget({ tabId: tab.id, windowId: tab.windowId, ...documentBinding,
+      conversationUrl: requested.conversationUrl, conversationId: requested.conversationId }),
   });
 }
 async function requireExactBoundTab(expectedTurn = null) {
@@ -632,17 +634,13 @@ async function handlePrompt(message) {
         "Delivery identity does not match the persisted Web session binding.",
       );
     }
-    if (state.currentDeliveryId !== null) {
-      throw new ExtensionOperationError(
-        "RECOVERY_REQUIRED",
-        state.currentDeliveryId === message.requestId
-          ? "This delivery may already have been submitted and will not be sent again automatically."
-          : "A prior delivery remains unacknowledged and must be recovered before another prompt is sent.",
-        { currentDeliveryId: state.currentDeliveryId },
-      );
-    }
-    state = await bindCurrentUserTarget({ tabs: chrome.tabs, store, state,
+    const target = await resolveCurrentUserTarget({ tabs: chrome.tabs, store, state,
       urlPatterns: CHATGPT_URL_PATTERNS, waitForContentScript });
+    if (state.currentDeliveryId !== null) {
+      const conflict = pendingDeliveryTargetConflict(state, target, message.requestId);
+      throw new ExtensionOperationError(conflict.code, conflict.message, conflict.details);
+    }
+    state = await bindCurrentUserTarget({ store, state, target });
     const reservedState = await store.reserveDelivery(message.requestId);
     deliveryReserved = true;
     const bootstrap = reservedState.bindingStatus === "ROOT_READY";
@@ -762,7 +760,10 @@ async function handlePrompt(message) {
     } else if (["MANUAL_INTERVENTION_DETECTED", "TURN_BINDING_CHANGED"].includes(error.code)) {
       await store.update({ bindingStatus: "AMBIGUOUS" });
     }
-    send({ type: "web.prompt.error", requestId: message.requestId, payload: errorPayload(error) });
+    const failure = errorPayload(error);
+    failure.details = { ...(failure.details && typeof failure.details === "object" ? failure.details : {}),
+      dispatchStatus: contentDispatchStarted ? "STARTED_UNCONFIRMED" : "NOT_DISPATCHED", browserDispatchStarted: contentDispatchStarted };
+    send({ type: "web.prompt.error", requestId: message.requestId, payload: failure });
   } finally {
     turnGate.release(reservation);
     broadcastPopupState();
@@ -995,5 +996,5 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     }
   });
 });
-setInterval(() => { if (authenticated) send({ type: "extension.heartbeat", payload: { at: Date.now(), busy: turnGate.active } }); }, 20_000);
+installCurrentTargetTracking({ tabs: chrome.tabs, windows: chrome.windows, store, waitForContentScript, onChange: broadcastPopupState }); setInterval(() => { if (authenticated) send({ type: "extension.heartbeat", payload: { at: Date.now(), busy: turnGate.active } }); }, 20_000);
 void store.read().then(() => connect());

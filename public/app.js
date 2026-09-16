@@ -470,6 +470,8 @@ function renderInitialRequest() {
     : pending ? "ChatGPT 응답을 기다리고 있습니다" : "요청 상태 확인이 필요합니다");
   text("startProgressDetail", pending ? "응답 확인이 끝나면 준비 화면으로 이동합니다."
     : preparation?.error?.message ?? "전송 상태를 확인한 뒤 계속할 수 있습니다.");
+  const activeTabCount = preparation?.error?.details?.activeTabCount;
+  if (!pending && Number.isInteger(activeTabCount)) text("startProgressDetail", `${$("startProgressDetail").textContent} · 감지된 ChatGPT 활성 탭: ${activeTabCount}개`);
   for (const id of ["objective", "startRoot", "conversationUrl"]) {
     $(id).readOnly = initial;
     if (initial) $(id).value = id === "objective" ? preparation.objective : id === "startRoot" ? preparation.targetRoot : (preparation.webSession?.conversationUrl ?? preparation.conversationUrl);
@@ -550,7 +552,7 @@ function renderPreparation() {
       recovery.append(node("p", "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
     }
     if (typeof displayedDelivery.response?.rawText === "string") {
-      const raw = node("details", "");
+      const raw = node("details", "", "session-raw-response");
       raw.append(node("summary", "raw 응답"), node("pre", displayedDelivery.response.rawText));
       recovery.append(raw);
     }
