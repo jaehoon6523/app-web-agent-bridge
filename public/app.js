@@ -507,32 +507,37 @@ function renderPreparation() {
   const recovery = node("details", "", "session-recovery");
   recovery.open = true;
   recovery.append(node("summary", "응답·전송 상태"));
+  const rootReady = session?.bindingState === "ROOT_READY" && Number.isSafeInteger(session?.tabId)
+    && typeof session?.documentId === "string" && session.documentId && session?.frameId === 0;
   const exactBound = session?.bindingState === "BOUND" && diagnostic.exactConversation === true;
+  const bindingConfirmed = exactBound || rootReady;
   const tabId = diagnostic.tabId ?? session?.tabId ?? "확인되지 않음";
   const identity = diagnostic.extensionIdentity ?? session?.extensionIdentity ?? "확인되지 않음";
   recovery.append(node("p",
-    exactBound
-      ? `연결 성공: ChatGPT tab ${tabId} · BOUND · identity: ${identity} · 정확한 conversation 일치`
+    bindingConfirmed
+      ? rootReady
+        ? `연결 성공: ChatGPT tab ${tabId} · ROOT_READY · 새 대화 입력 document 확인됨`
+        : `연결 성공: ChatGPT tab ${tabId} · BOUND · identity: ${identity} · 정확한 conversation 일치`
       : `연결 비활성화: ChatGPT tab ${tabId} · ${session?.bindingState ?? "UNBOUND"} · identity: ${identity} · BOUND 및 정확한 conversation 일치가 확인되지 않음`,
-    exactBound ? "recovery-guidance ok" : "recovery-guidance error"));
-  const activeDelivery = preparation.deliveries?.find(item => item.deliveryId === session?.activeDeliveryId);
-  if (activeDelivery) {
+    bindingConfirmed ? "recovery-guidance ok" : "recovery-guidance error"));
+  const deliveries = preparation.deliveries ?? [];
+  const displayedDelivery = deliveries.find(item => item.deliveryId === session?.activeDeliveryId) ?? deliveries.at(-1);
+  if (displayedDelivery) {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
       RESPONSE_STARTED: "응답 생성 중", RESPONSE_COMPLETED: "응답 수신 · 검증 또는 수신 확인 필요",
       ACKNOWLEDGED: "응답 처리 완료", RECOVERY_REQUIRED: "전송 상태 확인 필요", FAILED: "요청 실패" };
-    const failures = activeDelivery.validation?.checks?.filter(item => !item.passed) ?? [];
+    const failures = displayedDelivery.validation?.checks?.filter(item => !item.passed) ?? [];
     const confidenceFailure = failures.find(item => item.name === "응답 신뢰도");
     const displayedFailures = failures.filter(item => item !== confidenceFailure);
-    const responseSettled = Boolean(activeDelivery.response) && diagnostic.canRecover === true;
-    const status = responseSettled
-      ? "응답 수신·전송 종료 확인됨 · 확장 상태 확인"
-      : activeDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
-        : states[activeDelivery.state] ?? "처리 상태 미확인";
+    const responseSettled = displayedDelivery.processingState === "COMPLETE";
+    const status = responseSettled ? "응답 처리 완료 · 성공 trace 보존됨"
+      : displayedDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
+        : states[displayedDelivery.state] ?? "처리 상태 미확인";
     recovery.append(node("p", status, responseSettled ? "recovery-guidance ok" : "recovery-guidance warn"));
-    const confidenceReason = activeDelivery.response?.confidenceReason
-      ?? activeDelivery.response?.evidence?.confidenceReason
+    const confidenceReason = displayedDelivery.response?.confidenceReason
+      ?? displayedDelivery.response?.evidence?.confidenceReason
       ?? null;
-    const packet = activeDelivery.response?.packet;
+    const packet = displayedDelivery.response?.packet;
     if (packet?.type === "REQUIREMENTS_PROPOSAL") {
       recovery.append(node("p", "내용 해석: 인지됨 · 기존 Git diff 분석 요구사항과 응답 검증 문제의 불일치를 인식하고 범위 전환을 질문함", "recovery-guidance ok"));
       recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${(packet.questions ?? []).length}개`, "diagnostic-row health ok"));
@@ -540,17 +545,22 @@ function renderPreparation() {
     } else if (packet) {
       recovery.append(node("p", `내용 해석: packet은 확인됨 · ${packet.type ?? "알 수 없는 유형"}`, "diagnostic-row health warn"));
       recovery.append(node("p", "packet 양식: 현재 준비 단계에서 기대한 REQUIREMENTS_PROPOSAL이 아님", "diagnostic-row health error"));
-    } else if (activeDelivery.response && !packet) {
+    } else if (displayedDelivery.response && !packet) {
       recovery.append(node("p", "내용 해석: 확인 불가 · 응답 packet을 해석하지 못함", "recovery-guidance error"));
       recovery.append(node("p", "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
     }
-    if (activeDelivery.response?.confidence === "HEURISTIC") {
+    if (typeof displayedDelivery.response?.rawText === "string") {
+      const raw = node("details", "");
+      raw.append(node("summary", "raw 응답"), node("pre", displayedDelivery.response.rawText));
+      recovery.append(raw);
+    }
+    if (displayedDelivery.response?.confidence === "HEURISTIC") {
       recovery.append(node("p", "응답 전달 검증: 확인 불가 · 이번 요청에 대한 응답인지 DOM 순서로 확정하지 못함", "recovery-guidance error"));
       recovery.append(node("p", confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
         ? "DOM 상태: 가상화 또는 DOM 변경 의심 · 사용자 메시지가 현재 DOM에서 사라졌을 가능성"
         : "DOM 상태: 원인 특정 불가 · DOM 변경 또는 확장 상태 확인 필요", "diagnostic-row health error"));
     }
-    if (["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(activeDelivery.state) && !activeDelivery.response) {
+    if (["RECOVERY_REQUIRED", "AMBIGUOUS"].includes(displayedDelivery.state) && !displayedDelivery.response) {
       recovery.append(node("p", "전송 결과가 불명확합니다. 브릿지 연결이 끊겼거나 서버가 재시작되어 확장에 재확인 명령이 전달되지 않았을 수 있습니다. 서버와 확장 연결을 확인한 뒤 상태를 다시 확인하세요.", "recovery-guidance error"));
     }
     if (displayedFailures.length) {
@@ -560,13 +570,30 @@ function renderPreparation() {
       detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(displayedFailures, null, 2)));
       recovery.append(detail);
     }
+    const trace = displayedDelivery.trace ?? displayedDelivery.response?.trace ?? null;
+    const traceDetails = {
+      commandRequestId: displayedDelivery.commandRequestId ?? null,
+      preparationId: displayedDelivery.preparationId ?? preparation.preparationId,
+      sessionId: displayedDelivery.sessionId ?? session?.sessionId ?? null,
+      deliveryId: displayedDelivery.deliveryId,
+      requestId: trace?.requestId ?? null,
+      bindingId: trace?.bindingId ?? null,
+      tabId: trace?.tabId ?? null,
+      documentId: trace?.documentId ?? null,
+      frameId: trace?.frameId ?? null,
+      actionId: trace?.actionId ?? null,
+      result: trace?.result ?? null,
+    };
+    const detail = node("details", "");
+    detail.append(node("summary", "요청→브라우저 성공 trace"), node("pre", JSON.stringify(traceDetails, null, 2)));
+    recovery.append(detail);
   }
   recovery.append(node("h2", "대화 · 전송 상태"));
   const bool = (value) => value === true ? "예" : value === false ? "아니오" : "확인되지 않음";
   for (const [label, value] of [
     ["작업", preparation.objective], ["준비 ID", preparation.preparationId],
     ["대화", session?.conversationUrl], ["대화 ID", session?.conversationId],
-    ["sessionId", session?.sessionId], ["deliveryId", session?.activeDeliveryId],
+    ["sessionId", session?.sessionId], ["deliveryId", displayedDelivery?.deliveryId],
     ["연결 상태", session?.bindingState], ["탭 도달 가능", bool(diagnostic.pageReachable)],
     ["정확한 conversation", bool(diagnostic.exactConversation)],
     ["pageBusy", bool(diagnostic.pageBusy)], ["generating", bool(diagnostic.generating)],
@@ -588,7 +615,7 @@ function renderPreparation() {
     return "";
   };
   for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
-    const button = node("button", action === "web.reconcile" && activeDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
+    const button = node("button", action === "web.reconcile" && displayedDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
     button.dataset.webCommand = action;
     const disabled = !capabilities().has(action) || operations.webTurn !== "IDLE";
     button.disabled = disabled;

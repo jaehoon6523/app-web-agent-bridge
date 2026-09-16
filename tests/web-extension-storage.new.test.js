@@ -106,10 +106,43 @@ test("delivery acknowledgement clears only an exact non-empty persisted ID", asy
   await assert.rejects(store.clearDelivery(""), { code: "INVALID_DELIVERY_ID" });
   await assert.rejects(store.clearDelivery(undefined), { code: "INVALID_DELIVERY_ID" });
   await assert.rejects(store.clearDelivery("delivery-stale"), { code: "DELIVERY_ACK_MISMATCH" });
+  await assert.rejects(store.clearDelivery("delivery-exact", "session-other"), { code: "DELIVERY_ACK_MISMATCH" });
   assert.equal((await store.read()).currentDeliveryId, "delivery-exact");
 
   const cleared = await store.clearDelivery("delivery-exact");
   assert.equal(cleared.currentDeliveryId, null);
+});
+
+test("unresolved deliveries are parked and restored by owning Web session", async () => {
+  const area = new MemoryStorageArea();
+  const store = createExtensionStateStore(area);
+  await store.update({
+    lastBoundSessionId: "session-old",
+    currentDeliveryId: "delivery-old",
+    completedDelivery: { turnId: "delivery-old", text: "done" },
+    lastObservedUserMessageId: "user-old",
+    lastObservedAssistantMessageId: "assistant-old",
+  });
+
+  const fresh = await store.bindSession({
+    lastBoundSessionId: "session-new", lastBoundRunId: "run-new",
+    tabId: 2, windowId: 1, documentId: "document-new", frameId: 0,
+    conversationUrl: "https://chatgpt.com/", conversationId: null, bindingStatus: "ROOT_READY",
+  });
+  assert.equal(fresh.currentDeliveryId, null);
+  assert.equal(fresh.completedDelivery, null);
+  assert.equal(fresh.lastObservedUserMessageId, null);
+  assert.equal(fresh.deliveryScopes["session-old"].currentDeliveryId, "delivery-old");
+
+  const restored = await store.bindSession({
+    lastBoundSessionId: "session-old", lastBoundRunId: "run-old",
+    tabId: 1, windowId: 1, documentId: "document-old", frameId: 0,
+    conversationUrl: "https://chatgpt.com/c/old", conversationId: "old", bindingStatus: "BOUND",
+  });
+  assert.equal(restored.currentDeliveryId, "delivery-old");
+  assert.equal(restored.completedDelivery.turnId, "delivery-old");
+  assert.equal(restored.lastObservedAssistantMessageId, "assistant-old");
+  assert.equal(restored.deliveryScopes["session-old"], undefined);
 });
 
 test("extension HMAC matches the controller HMAC contract", async () => {

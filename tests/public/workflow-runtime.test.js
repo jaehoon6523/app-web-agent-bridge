@@ -88,6 +88,9 @@ function prepared() {
     runs: [], run: null, preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: ["preparation.reply", "web.reconcile"],
   };
 }
+function renderedText(element) {
+  return [element?.textContent ?? "", ...(element?.children ?? []).map(renderedText)].join("\n");
+}
 test("refresh restores preparation and questions, and reply retains preparation identity", async () => {
   const ui = await dashboard(prepared());
   assert.equal(ui.elements.get("projectPanel").hidden, false);
@@ -99,6 +102,45 @@ test("refresh restores preparation and questions, and reply retains preparation 
   await ui.elements.get("reviseRequirements").listeners.click();
   const mutation = ui.calls.find((call) => call.url.endsWith("/reply"));
   assert.deepEqual(mutation, { url: "/api/preparations/p1/reply", body: { content: "채팅", requestId: "request-1" } });
+});
+test("refresh restores the completed root action trace without an active delivery pointer", async () => {
+  const state = prepared();
+  state.preparation.webSession = {
+    sessionId: "s-root", conversationId: "created", conversationUrl: "https://chatgpt.com/c/created",
+    activeDeliveryId: null, bindingState: "BOUND", tabId: 8, windowId: 1,
+    documentId: "document-root", frameId: 0,
+  };
+  state.preparation.diagnostics = { exactConversation: true, tabId: 8, pageReachable: true };
+  state.preparation.deliveries = [{
+    commandRequestId: "command-start", deliveryId: "delivery-root", preparationId: "p1", sessionId: "s-root",
+    state: "ACKNOWLEDGED", processingState: "COMPLETE", validation: { status: "CONFIRMED", checks: [] },
+    trace: { requestId: "delivery-root", actionId: "delivery-root", bindingId: "s-root:p1",
+      tabId: 8, documentId: "document-root", frameId: 0, result: "success" },
+  }];
+  for (let load = 0; load < 2; load++) {
+    const ui = await dashboard(state);
+    const output = renderedText(ui.elements.get("proposalSummary"));
+    assert.match(output, /command-start/);
+    assert.match(output, /document-root/);
+    assert.match(output, /"result": "success"/);
+    assert.match(output, /응답 처리 완료/u);
+  }
+});
+test("a stored response stays visibly unfinished while acknowledgement is pending", async () => {
+  const state = prepared();
+  state.preparation.diagnostics = { exactConversation: true, canRecover: true, tabId: 8, pageReachable: true };
+  state.preparation.deliveries = [{
+    deliveryId: "d1", preparationId: "p1", sessionId: "s1", state: "RESPONSE_COMPLETED",
+    processingState: "ACK_PENDING", response: { rawText: "stored raw response", packet: { type: "REQUIREMENTS_PROPOSAL", questions: [], items: [] } },
+    validation: { status: "CONFIRMED", checks: [] },
+  }];
+  const ui = await dashboard(state);
+  const output = renderedText(ui.elements.get("proposalSummary"));
+  assert.match(output, /응답 검증·저장 완료 · 전송 정리 확인 필요/u);
+  assert.doesNotMatch(output, /응답 처리 완료 · 성공 trace 보존됨/u);
+  assert.doesNotMatch(output, /응답 수신·전송 종료 확인됨/u);
+  assert.match(output, /raw 응답/u);
+  assert.match(output, /stored raw response/u);
 });
 test("reconcile sends exact identity and never follows with a proposal", async () => {
   const ui = await dashboard(prepared());

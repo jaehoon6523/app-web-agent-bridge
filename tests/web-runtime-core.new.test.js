@@ -621,7 +621,7 @@ test("a valid-looking response cannot replace the exact active Web binding", asy
       session: boundSession({ sessionId: "session-other" }),
     },
   });
-  await assert.rejects(turnHandle.completion, { code: "WEB_SUCCESS_TRACE_MISMATCH" });
+  await assert.rejects(turnHandle.completion, { code: "WEB_SESSION_BINDING_MISMATCH" });
   assert.equal(transport.snapshot.binding.sessionId, "session-1");
   assert.equal((await adapter.inspect()).sessionReady, false);
   await assert.rejects(adapter.submitTurn({
@@ -672,7 +672,7 @@ test("manual intervention invalidates readiness and requires explicit recovery",
   await adapter.close();
 });
 
-for (const mutation of ["missing", "request", "action", "document", "frame", "consistent-other-document"]) {
+for (const mutation of ["missing", "request", "action", "document", "frame"]) {
   test(`success trace rejects ${mutation} and preserves the dispatched binding`, async () => {
     const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });
     const socket = new FakeSocket(); transport.attach(socket); authenticate(transport, socket);
@@ -688,10 +688,6 @@ for (const mutation of ["missing", "request", "action", "document", "frame", "co
     if (mutation === "action") trace.actionId = "old";
     if (mutation === "document") trace.documentId = "old";
     if (mutation === "frame") trace.frameId = 1;
-    if (mutation === "consistent-other-document") {
-      session = boundSession({ documentId: "other" });
-      trace.documentId = evidence.documentId = "other";
-    }
     socket.receive({ type: "web.prompt.result", protocolVersion: 2, requestId: turnId,
       payload: { text: controllerResponse(), confidence: "CONFIRMED_BY_UI_STATE", session, evidence,
         trace: mutation === "missing" ? null : trace } });
@@ -701,6 +697,25 @@ for (const mutation of ["missing", "request", "action", "document", "frame", "co
     await adapter.close();
   });
 }
+
+test("an authenticated success trace may replace the locator with the current user target", async () => {
+  const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });
+  const socket = new FakeSocket(); transport.attach(socket); authenticate(transport, socket);
+  const adapter = await readyAdapter(transport, socket);
+  const turnId = "turn-current-target";
+  const turn = await adapter.submitTurn({ turnId, controllerMessageId: turnId, runId: "run-1", text: "Review", timeoutMs: 500 });
+  const session = boundSession({ tabId: 8, documentId: "document-b", conversationUrl: "https://chatgpt.com/c/b", conversationId: "b" });
+  const trace = { requestId: turnId, actionId: turnId, result: "success", tabId: 8,
+    bindingId: "session-1:run-1", documentId: "document-b", frameId: 0 };
+  socket.receive({ type: "web.prompt.result", protocolVersion: 2, requestId: turnId,
+    payload: { text: controllerResponse(), confidence: "CONFIRMED_BY_UI_STATE", session,
+      evidence: { documentId: "document-b", frameId: 0 }, trace } });
+  const response = await turn.completion;
+  assert.equal(response.binding.tabId, 8);
+  assert.equal(response.binding.documentId, "document-b");
+  assert.equal(response.binding.conversationId, "b");
+  await adapter.close();
+});
 
 test("a submitted Web prompt timeout remains ambiguous and blocks resend", async () => {
   const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });

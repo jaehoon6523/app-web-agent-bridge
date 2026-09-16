@@ -31,6 +31,8 @@ function fixture(t) {
         : { type: "REQUIREMENTS_PROPOSAL", summary: "채팅", questions: [], items: [{ statement: "메시지 전송", acceptanceCriteria: "목록에 한 번 표시" }] };
       binding = { ...binding, lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count };
       return { completion: Promise.resolve({ turnId: active, binding, confidence: "CONFIRMED_BY_UI_STATE",
+        trace: { requestId: active, actionId: active, bindingId: `${binding.sessionId}:${binding.runId}`,
+          tabId: binding.tabId, documentId: binding.documentId, frameId: binding.frameId, result: "success" },
         rawText: "<controller_packet>\n" + JSON.stringify(parsed) + "\n</controller_packet>" }) };
     },
     async inspectDelivery() { if (!binding) return { currentDeliveryId: null }; return { currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
@@ -153,7 +155,7 @@ test("ChatGPT start page bootstraps a newly created exact conversation", async (
   assert.equal(f.service.current.webSession.conversationId, "new-conversation");
 });
 
-test("a new root preparation supersedes a prior recovery-required delivery", async (t) => {
+test("a new root preparation preserves a prior recovery-required delivery without inspecting or discarding it", async (t) => {
   const f = fixture(t);
   const submitTurn = f.web.submitTurn;
   f.web.submitTurn = async (input) => {
@@ -170,9 +172,10 @@ test("a new root preparation supersedes a prior recovery-required delivery", asy
   const next = await f.service.execute("preparation.start", {
     requestId: "start-new", objective: "new", targetRoot: f.root, conversationUrl: "https://chatgpt.com/",
   });
-  assert.equal(old.lifecycle, "ABANDONED");
+  assert.equal(old.lifecycle, "ACTIVE");
+  assert.equal(old.webSession.activeDeliveryId, oldDeliveryId);
   assert.equal(f.service.current.preparationId, next.preparationId);
-  assert.equal(f.discarded.currentDeliveryId, oldDeliveryId);
+  assert.equal(f.discarded, null);
 });
 
 test("connection must succeed before entering preparation; absent tab never sends or enables approval", async (t) => {
@@ -260,30 +263,24 @@ test("heuristic response with a valid final controller packet is accepted", asyn
   assert.ok(!f.service.capabilities().includes("preparation.approve"));
 });
 
-for (const recoverable of [true, false]) {
-  test(`old manual delivery recovery gates new submission: ${recoverable}`, async (t) => {
-    const f = fixture(t), resume = f.web.resume, inspect = f.web.inspectDelivery;
-    let attempts = 0, recovered = false;
-    const previous = { currentDeliveryId: "turn_123", runId: "manual_run_123", sessionId: "manual_session_123",
-      conversationUrl: "https://chatgpt.com/c/old", completedDelivery: null };
-    f.web.resume = async (input) => {
-      if (++attempts === 1) throw Object.assign(new Error("blocked"), { code: "REBIND_DURING_ACTIVE_DELIVERY", details: previous });
-      return resume(input);
-    };
-    f.web.recoverDelivery = async (expected) => {
-      assert.deepEqual(expected, previous);
-      if (!recoverable) throw Object.assign(new Error("Old tab missing"), { code: "DELIVERY_RECOVERY_UNCONFIRMED" });
-      recovered = true;
-    };
-    f.web.inspectDelivery = async () => attempts === 1 ? { ...previous, currentDeliveryId: null } : inspect();
-    await f.start(); await settled(f.service);
-    assert.equal(recovered, recoverable);
-    assert.equal(attempts, recoverable ? 2 : 1);
-    assert.equal(f.service.current.state, recoverable ? "DISCUSSING" : "WEB_BLOCKED");
-    assert.deepEqual(f.service.current.previousTestDelivery, previous);
-    if (!recoverable) assert.match(f.service.current.error.message, /https:\/\/chatgpt.com\/c\/old/);
-  });
-}
+test("a new preparation never inspects or recovers another Web session's delivery", async (t) => {
+  const f = fixture(t);
+  const inspections = [];
+  let recovered = 0;
+  const inspect = f.web.inspectDelivery;
+  f.web.inspectDelivery = async (...args) => {
+    const result = await inspect(...args);
+    inspections.push(result);
+    return result;
+  };
+  f.web.recoverDelivery = async () => { recovered++; throw new Error("must not recover another session"); };
+  await f.start(); await settled(f.service);
+  assert.equal(recovered, 0);
+  assert.ok(inspections.length > 0);
+  assert.ok(inspections.every((item) => item.sessionId === f.service.current.webSession.sessionId),
+    "every inspection must belong to the new preparation session");
+  assert.equal(f.service.current.state, "DISCUSSING");
+});
 test("refresh/restart restores same preparation and receipt; approval retry yields one run", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);

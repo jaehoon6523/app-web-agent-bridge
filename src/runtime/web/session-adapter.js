@@ -477,10 +477,10 @@ export class ChatGptWebSessionAdapter {
       const trace = message.payload?.trace;
       const bootstrap = expected?.bindingStatus === "ROOT_READY" && expected?.conversationId === null;
       if (!trace || trace.requestId !== turnId || trace.actionId !== turnId || trace.result !== "success"
-        || trace.tabId !== expected?.tabId || trace.tabId !== returned?.tabId
-        || trace.bindingId !== `${expected?.sessionId}:${expected?.runId}`
-        || (!bootstrap && trace.documentId !== expected?.documentId) || trace.documentId !== returned?.documentId
-        || trace.frameId !== expected?.frameId || trace.frameId !== returned?.frameId
+        || trace.tabId !== returned?.tabId
+        || trace.bindingId !== `${returned?.sessionId}:${returned?.runId}`
+        || trace.documentId !== returned?.documentId
+        || trace.frameId !== returned?.frameId
         || trace.documentId !== message.payload?.evidence?.documentId
         || trace.frameId !== message.payload?.evidence?.frameId) {
         throw new WebProtocolError("Web success trace does not match the dispatched document and action", "WEB_SUCCESS_TRACE_MISMATCH");
@@ -492,7 +492,9 @@ export class ChatGptWebSessionAdapter {
         throw new WebProtocolError("Bootstrap result lacks an exact observed conversation and message pair", "WEB_SESSION_BINDING_MISMATCH");
       }
       const parsed = parseResponse(message.payload.text);
-      this.#acceptReturnedBinding(message.payload?.session, { expectedBinding: expected, allowConversationBootstrap: expected?.bindingStatus === "ROOT_READY" });
+      this.#acceptReturnedBinding(message.payload?.session, {
+        expectedBinding: expected, allowConversationBootstrap: expected?.bindingStatus === "ROOT_READY", allowUserTargetChange: true,
+      });
       this.#emitRuntimeEvent(this.#runtimeEvent("TURN_COMPLETED", turnId, {
         confidence,
         packetType: parsed.packet.type ?? null,
@@ -576,7 +578,8 @@ export class ChatGptWebSessionAdapter {
     if (typeof turnId !== "string" || !turnId) {
       throw new WebProtocolError("turnId is required for delivery acknowledgement", "INVALID_WEB_TURN");
     }
-    this.#transport.send({ type: "web.delivery.ack", requestId: turnId });
+    this.#transport.send({ type: "web.delivery.ack", requestId: turnId,
+      payload: { sessionId: this.#transport.snapshot.binding?.sessionId ?? null } });
   }
 
   async discardDelivery(expected) {
@@ -689,6 +692,7 @@ export class ChatGptWebSessionAdapter {
       expectedBinding = this.#transport.snapshot.binding,
       allowTabRelocation = false,
       allowConversationBootstrap = false,
+      allowUserTargetChange = false,
     } = {},
   ) {
     if (!value) {
@@ -707,7 +711,7 @@ export class ChatGptWebSessionAdapter {
     const next = createWebSessionBinding(value);
     const bootstrap = allowConversationBootstrap
       && (current.conversationUrl === null || current.bindingStatus === "ROOT_READY") && current.conversationId === null;
-    for (const key of ["sessionId", "runId", "conversationUrl", "conversationId"]) {
+    for (const key of ["sessionId", "runId", ...(allowUserTargetChange ? [] : ["conversationUrl", "conversationId"])]) {
       if (bootstrap && (key === "conversationUrl" || key === "conversationId")) continue;
       if (next[key] !== current[key]) {
         throw new WebProtocolError(
@@ -717,7 +721,7 @@ export class ChatGptWebSessionAdapter {
       }
     }
     if (
-      !allowTabRelocation
+      !allowTabRelocation && !allowUserTargetChange
       && (next.tabId !== current.tabId || next.windowId !== current.windowId
         || (!bootstrap && next.documentId !== current.documentId) || next.frameId !== current.frameId)
     ) {

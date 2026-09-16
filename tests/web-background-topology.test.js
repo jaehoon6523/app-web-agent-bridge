@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 import { canonicalChatGptUrl, conversationIdFromUrl } from "../extension/runtime/conversation.js";
+import { isPendingRootPromotion } from "../extension/runtime/current-target.js";
 
 const background = readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
 const topologySource = background.slice(
@@ -25,6 +26,8 @@ test("bound tab topology change emits an AMBIGUOUS manual-intervention event", a
   const context = vm.createContext({
     canonicalChatGptUrl,
     conversationIdFromUrl,
+    isPendingRootPromotion,
+    turnGate: { activeRequestId: null },
     authenticated: true,
     lastError: null,
     store: {

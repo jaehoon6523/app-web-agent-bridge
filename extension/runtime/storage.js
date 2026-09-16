@@ -12,6 +12,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   frameId: null,
   currentDeliveryId: null,
   completedDelivery: null,
+  deliveryScopes: {},
   lastObservedUserMessageId: null,
   lastObservedAssistantMessageId: null,
   bindingError: null,
@@ -38,6 +39,24 @@ function nullableInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+function normalizeDeliveryScopes(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const scopes = {};
+  for (const [sessionId, slot] of Object.entries(value)) {
+    if (!nullableString(sessionId) || !slot || typeof slot !== "object" || Array.isArray(slot)) continue;
+    const currentDeliveryId = nullableString(slot.currentDeliveryId);
+    if (currentDeliveryId === null) continue;
+    scopes[sessionId] = {
+      currentDeliveryId,
+      completedDelivery: slot.completedDelivery && typeof slot.completedDelivery === "object"
+        ? structuredClone(slot.completedDelivery) : null,
+      lastObservedUserMessageId: nullableString(slot.lastObservedUserMessageId),
+      lastObservedAssistantMessageId: nullableString(slot.lastObservedAssistantMessageId),
+    };
+  }
+  return scopes;
+}
+
 export function normalizeExtensionState(value = {}) {
   const state = {
     controllerUrl: typeof value.controllerUrl === "string" && value.controllerUrl.length > 0
@@ -56,6 +75,7 @@ export function normalizeExtensionState(value = {}) {
     currentDeliveryId: nullableString(value.currentDeliveryId),
     completedDelivery: value.completedDelivery && typeof value.completedDelivery === "object"
       ? structuredClone(value.completedDelivery) : null,
+    deliveryScopes: normalizeDeliveryScopes(value.deliveryScopes),
     lastObservedUserMessageId: nullableString(value.lastObservedUserMessageId),
     lastObservedAssistantMessageId: nullableString(value.lastObservedAssistantMessageId),
     bindingError: nullableString(value.bindingError),
@@ -138,17 +158,56 @@ export function createExtensionStateStore(storageArea) {
         return next;
       });
     },
-    async clearDelivery(deliveryId) {
+    async bindSession(patch) {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)
+        || typeof patch.lastBoundSessionId !== "string" || !patch.lastBoundSessionId.trim()
+        || typeof patch.lastBoundRunId !== "string" || !patch.lastBoundRunId.trim()) {
+        throw new ExtensionStateError("INVALID_SESSION_BINDING", "A session and run are required to commit a binding.");
+      }
+      for (const key of Object.keys(patch)) {
+        if (!STORED_KEYS.includes(key)) throw new TypeError(`Unsupported extension state key: ${key}`);
+      }
+      return mutate(async () => {
+        const current = await readStoredState();
+        const deliveryScopes = structuredClone(current.deliveryScopes);
+        const changingSession = current.lastBoundSessionId !== patch.lastBoundSessionId;
+        if (changingSession && current.lastBoundSessionId && current.currentDeliveryId) {
+          deliveryScopes[current.lastBoundSessionId] = {
+            currentDeliveryId: current.currentDeliveryId,
+            completedDelivery: current.completedDelivery,
+            lastObservedUserMessageId: current.lastObservedUserMessageId,
+            lastObservedAssistantMessageId: current.lastObservedAssistantMessageId,
+          };
+        }
+        const nextSlot = changingSession ? deliveryScopes[patch.lastBoundSessionId] ?? null : null;
+        if (changingSession) delete deliveryScopes[patch.lastBoundSessionId];
+        const next = normalizeExtensionState({
+          ...current,
+          ...structuredClone(patch),
+          deliveryScopes,
+          ...(changingSession ? {
+            currentDeliveryId: nextSlot?.currentDeliveryId ?? null,
+            completedDelivery: nextSlot?.completedDelivery ?? null,
+            lastObservedUserMessageId: nextSlot?.lastObservedUserMessageId ?? null,
+            lastObservedAssistantMessageId: nextSlot?.lastObservedAssistantMessageId ?? null,
+          } : {}),
+        });
+        await storageArea.set(next);
+        return next;
+      });
+    },
+    async clearDelivery(deliveryId, sessionId = null) {
       if (typeof deliveryId !== "string" || deliveryId.trim().length === 0) {
         throw new ExtensionStateError("INVALID_DELIVERY_ID", "Delivery ID must be a non-empty string.");
       }
       return mutate(async () => {
         const current = await readStoredState();
-        if (current.currentDeliveryId !== deliveryId) {
+        if (current.currentDeliveryId !== deliveryId
+          || (sessionId !== null && current.lastBoundSessionId !== sessionId)) {
           throw new ExtensionStateError(
             "DELIVERY_ACK_MISMATCH",
             "Delivery acknowledgement does not match the persisted delivery.",
-            { expectedDeliveryId: current.currentDeliveryId },
+            { expectedDeliveryId: current.currentDeliveryId, expectedSessionId: current.lastBoundSessionId },
           );
         }
         const next = normalizeExtensionState({ ...current, currentDeliveryId: null });

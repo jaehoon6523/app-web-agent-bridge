@@ -131,68 +131,6 @@ export class PreparationService {
     if (type === "preparation.start") {
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
-      if (typeof this.web?.inspectDelivery !== "function") {
-        fail("The browser extension cannot inspect delivery state.", "WEB_BLOCKED");
-      }
-      let existingDelivery;
-      try {
-        existingDelivery = await this.web.inspectDelivery();
-      } catch (error) {
-        if (error?.code === "WEB_SESSION_NOT_BOUND") {
-          existingDelivery = null;
-        } else {
-        fail("The browser extension delivery state could not be verified.", "RECOVERY_REQUIRED", {
-          cause: error?.code ?? "INSPECTION_FAILED",
-        });
-        }
-      }
-      // A server restart can leave an ACTIVE preparation behind after the
-      // extension has already lost its delivery reservation. That orphan must
-      // not block an unrelated new preparation; preserve it as evidence and
-      // release only the server-side active pointer.
-      if (this.current?.lifecycle === "ACTIVE" && existingDelivery?.currentDeliveryId == null) {
-        const orphan = this.current;
-        orphan.lifecycle = "ABANDONED";
-        orphan.state = "RECOVERY_REQUIRED";
-        orphan.error = { code: "ORPHANED_PREPARATION", message: "The browser no longer has the active delivery reservation." };
-        orphan.recovery = { kind: "ORPHANED_PREPARATION", at: stamp(), activeDeliveryId: orphan.webSession.activeDeliveryId };
-        orphan.webSession.activeDeliveryId = null;
-        this.touch(orphan);
-      }
-      const startsNewConversation = input.conversationUrl === "https://chatgpt.com/";
-      if (startsNewConversation && this.current?.lifecycle === "ACTIVE"
-        && this.current.state === "RECOVERY_REQUIRED" && existingDelivery?.currentDeliveryId != null) {
-        const superseded = this.current;
-        const delivery = superseded.deliveries.find((item) => item.deliveryId === superseded.webSession.activeDeliveryId);
-        await this.web.discardDelivery({
-          ...existingDelivery,
-          unresolvedResultConfirmed: true,
-          noAutomaticResendConfirmed: true,
-          reason: "Superseded by an explicit new preparation start.",
-        });
-        if (delivery) {
-          delivery.state = "RECOVERY_DISCARDED";
-          delivery.discardedAt = stamp();
-          delivery.discardReason = "Superseded by an explicit new preparation start.";
-        }
-        superseded.webSession.activeDeliveryId = null;
-        superseded.lifecycle = "ABANDONED";
-        superseded.error = { code: "SUPERSEDED_BY_NEW_PREPARATION", message: "An explicit new preparation start superseded this recovery-required preparation." };
-        superseded.recovery = { kind: "RECOVERY_DISCARDED", deliveryId: existingDelivery.currentDeliveryId, at: stamp(), reason: superseded.error.message };
-        this.touch(superseded);
-        existingDelivery = await this.web.inspectDelivery();
-      }
-      if (this.current?.lifecycle === "ACTIVE") fail("Finish or explicitly cancel the current preparation.");
-      if (existingDelivery?.currentDeliveryId !== null && existingDelivery?.currentDeliveryId !== undefined) {
-        fail("An earlier Web delivery is unresolved. Recover or explicitly discard it before starting a new preparation.", "RECOVERY_REQUIRED", {
-          stage: "PREPARATION_START_GUARD",
-          currentDeliveryId: existingDelivery.currentDeliveryId,
-          sessionId: existingDelivery.sessionId ?? null,
-          runId: existingDelivery.runId ?? null,
-          conversationUrl: existingDelivery.conversationUrl ?? null,
-          tabId: existingDelivery.tabId ?? null,
-        });
-      }
       const conversationUrl = typeof input.conversationUrl === "string" ? input.conversationUrl.trim() : "";
       if (typeof input.objective !== "string" || !input.objective.trim()
         || !/^https:\/\/chatgpt\.com\/(?:c\/[^/?#\s]+)?\/?$/u.test(conversationUrl)) fail("Objective and a ChatGPT conversation URL or the ChatGPT start page are required.", "INVALID_INPUT");
@@ -214,7 +152,7 @@ export class PreparationService {
       };
       this.data.currentId = preparationId; this.data.contexts[preparationId] = context;
       console.info("[bridge:preparation:start]", { preparationId, sessionId: context.webSession.sessionId });
-      this.reserve(context, input.objective);
+      this.reserve(context, input.objective, input.requestId);
       return this.snapshot();
     }
     const context = this.context(input);
@@ -223,7 +161,7 @@ export class PreparationService {
     if (type === "preparation.reply") {
       if (!this.capabilities().includes(type)) fail("Reply is unavailable.");
       if (typeof input.content !== "string" || !input.content.trim()) fail("Enter an answer.", "INVALID_INPUT");
-      this.reserve(context, input.content); return this.snapshot();
+      this.reserve(context, input.content, input.requestId); return this.snapshot();
     }
     if (type === "preparation.discard") {
       const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
@@ -297,13 +235,13 @@ export class PreparationService {
     if (type.startsWith("web.")) return this.webCommand(context, type, input);
     fail("Unsupported preparation command.", "INVALID_COMMAND");
   }
-  reserve(context, content) {
+  reserve(context, content, commandRequestId) {
     const session = context.webSession, deliveryId = "delivery_" + randomUUID();
     context.error = null; context.diagnostics = null;
     context.agreement.status = "DISCUSSING"; context.state = "INITIALIZING";
     context.discussion.push({ turnId: "turn_" + randomUUID(), preparationId: context.preparationId,
       sequence: context.discussion.length + 1, actor: "USER", content, deliveryId: null, createdAt: stamp() });
-    context.deliveries.push({ deliveryId, preparationId: context.preparationId, sessionId: session.sessionId,
+    context.deliveries.push({ commandRequestId, deliveryId, preparationId: context.preparationId, sessionId: session.sessionId,
       conversationId: session.conversationId, state: "RESERVED", response: null, createdAt: stamp() });
     session.activeDeliveryId = deliveryId; this.touch(context);
     // No Web response is awaited by the HTTP request. The intent is durable first.
@@ -347,30 +285,7 @@ export class PreparationService {
       lastObservedUserMessageId: session.lastObservedUserMessageId,
       lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
     }) };
-    let binding;
-    try { binding = await this.web.resume(request); }
-    catch (error) {
-      const previous = error.details;
-      if (error.code !== "REBIND_DURING_ACTIVE_DELIVERY"
-        || !/^manual_run_\d+$/.test(previous?.runId ?? "")
-        || !/^manual_session_\d+$/.test(previous?.sessionId ?? "")
-        || !/^turn_\d+$/.test(previous?.currentDeliveryId ?? "")) throw error;
-      // Preserve the old test's evidence before releasing its transport reservation.
-      context.previousTestDelivery = structuredClone(previous); this.touch(context);
-      try {
-        await this.web.recoverDelivery(previous);
-        const observed = await this.web.inspectDelivery();
-        if (observed.currentDeliveryId !== null || observed.sessionId !== previous.sessionId
-          || observed.runId !== previous.runId || observed.conversationUrl !== previous.conversationUrl) {
-          fail("이전 테스트 전송의 정리가 확인되지 않았습니다.", "DELIVERY_RECOVERY_MISMATCH");
-        }
-      } catch (recoveryError) {
-        recoveryError.message = "이전 브릿지 테스트 대화(" + previous.conversationUrl
-          + ")를 브라우저에서 하나만 열고 생성이 끝난 뒤 다시 시작하세요. " + recoveryError.message;
-        throw recoveryError;
-      }
-      binding = await this.web.resume(request);
-    }
+    const binding = await this.web.resume(request);
     if (this.closed) return;
     if (binding.sessionId !== session.sessionId) fail("Web binding changed.");
     if (session.conversationUrl !== null && binding.conversationId !== session.conversationId) fail("Web binding changed.");
@@ -404,17 +319,16 @@ export class PreparationService {
     this.touch(context);
     const response = await handle.completion;
     if (this.closed) return;
-    if (response.binding?.documentId !== session.documentId || response.binding?.frameId !== session.frameId) {
-      fail("Response document changed.");
-    }
-    if (session.bindingState === "ROOT_READY" && response.binding?.sessionId === session.sessionId && response.binding?.runId === runId && response.binding?.tabId === session.tabId && response.binding?.bindingStatus === "BOUND") {
-      Object.assign(session, { conversationUrl: response.binding.conversationUrl, conversationId: response.binding.conversationId, bindingState: "BOUND" });
-      context.conversationUrl = session.conversationUrl;
-      delivery.conversationId = session.conversationId;
-    }
     if (response.turnId !== deliveryId || response.binding?.sessionId !== session.sessionId
-      || response.binding?.runId !== runId || response.binding?.conversationId !== session.conversationId) fail("Response identity changed.");
-    delivery.response = response; delivery.state = "RESPONSE_COMPLETED"; this.touch(context);
+      || response.binding?.runId !== runId || response.binding?.bindingStatus !== "BOUND") fail("Response identity changed.");
+    Object.assign(session, {
+      conversationUrl: response.binding.conversationUrl, conversationId: response.binding.conversationId,
+      tabId: response.binding.tabId, windowId: response.binding.windowId,
+      documentId: response.binding.documentId, frameId: response.binding.frameId, bindingState: "BOUND",
+    });
+    context.conversationUrl = session.conversationUrl;
+    delivery.conversationId = session.conversationId;
+    delivery.response = response; delivery.trace = response.trace; delivery.state = "RESPONSE_COMPLETED"; this.touch(context);
     await this.complete(context, delivery);
   }
   async complete(context, delivery) {
@@ -443,6 +357,13 @@ export class PreparationService {
       check("응답 세션 ID", session.sessionId, response?.binding?.sessionId),
       check("응답 작업 ID", context.preparationId, response?.binding?.runId),
       check("응답 대화 ID", session.conversationId, response?.binding?.conversationId),
+      check("action request ID", delivery.deliveryId, response?.trace?.requestId),
+      check("action ID", delivery.deliveryId, response?.trace?.actionId),
+      check("binding ID", `${session.sessionId}:${context.preparationId}`, response?.trace?.bindingId),
+      check("action tab ID", session.tabId, response?.trace?.tabId),
+      check("action document ID", session.documentId, response?.trace?.documentId),
+      check("action frame ID", session.frameId, response?.trace?.frameId),
+      check("action result", "success", response?.trace?.result),
       check("전송 소유권", true, observed.currentDeliveryId === null || pointerMatches),
       check("생성 종료", false, observed.generating),
       check("페이지 처리 종료", false, observed.pageBusy),

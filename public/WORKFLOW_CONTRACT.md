@@ -162,6 +162,7 @@ conversation에 귀속되어야 한다.
 Delivery 완료에는 conversation 일치, user message 확인, assistant response
 확인, `generating=false`, content worker idle, deliveryId 일치가 모두 필요하다.
 ACK 후에만 active delivery를 비운다.
+대시보드의 종료 확정 표시는 `processingState=COMPLETE`에서만 허용한다. response가 저장됐거나 `canRecover=true`여도 `ACK_PENDING`이면 전송 정리 미확정으로 표시하고 raw 응답은 보존한다.
 
 ## 8. Delivery Recovery
 
