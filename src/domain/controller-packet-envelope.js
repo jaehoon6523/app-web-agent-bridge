@@ -67,6 +67,17 @@ function assertPacketJsonDepth(value, maxDepth) {
   visit(value, 1);
 }
 
+function parsePacketJson(packetText) {
+  try { return JSON.parse(packetText); }
+  catch (cause) {
+    // Models sometimes emit Windows paths as C:\Users\... inside JSON.
+    // Escape only backslashes that cannot begin a valid JSON escape.
+    const repairedText = packetText.replace(/\\(?!["\\/bfnrtu])/gu, "\\\\");
+    if (repairedText === packetText) throw cause;
+    try { return JSON.parse(repairedText); } catch { throw cause; }
+  }
+}
+
 export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth = 20 } = {}) {
   if (typeof rawText !== "string" || rawText.trim() === "") {
     throw new ControllerPacketEnvelopeError(
@@ -117,7 +128,7 @@ export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth =
   const packetText = afterOpening.replace(/^\r?\n/u, "").replace(/\r?\n$/u, "");
   let parsed;
   try {
-    parsed = JSON.parse(packetText);
+    parsed = parsePacketJson(packetText);
   } catch (cause) {
     throw new ControllerPacketEnvelopeError(
       `Controller packet JSON is invalid: ${cause.message}`,
