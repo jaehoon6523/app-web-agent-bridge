@@ -300,6 +300,7 @@ export class PreparationService {
     delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; this.touch(context);
     const text = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n'
     const responseFormatFallback = '중요: 요구사항 제안 packet을 정확히 만들 수 없거나 필요한 정보가 부족하면 <controller_packet>을 추측해서 만들지 말고, 태그가 전혀 없는 평문으로 부족한 정보와 질문만 설명한다. 평문 응답은 오류가 아니라 사용자 확인을 위한 정상적인 대화 응답이다.\n';
+    const jsonPathRule = "\nJSON packet 문자열에 Windows 경로를 넣을 때는 C:/Users/...처럼 슬래시를 사용하거나 백슬래시를 JSON 규칙대로 이스케이프한다. 원시 C:\\Users\\... 형태는 절대 출력하지 않는다.\n";
     const controllerFacts = [
       `컨트롤러 확정 사실(다시 질문하지 말 것): 준비 ID=${context.preparationId}`,
       `프로젝트 루트=${context.targetRoot}`,
@@ -313,7 +314,7 @@ export class PreparationService {
     ].join("\\n") + "\\n";
       + JSON.stringify({ preparationId: context.preparationId, discussion: context.discussion, agreement: context.agreement })
       + "\n사용자의 첫 부탁:\n" + context.objective;
-    const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text: responseFormatFallback + controllerFacts + text,
+    const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text: responseFormatFallback + jsonPathRule + controllerFacts + text,
       parseResponse: (raw) => ({ body: raw, packetText: raw, packet: { type: "PLANNING_RESPONSE" } }) });
     if (delivery.state === "DISPATCHING") delivery.state = "SUBMITTED";
     this.touch(context);
