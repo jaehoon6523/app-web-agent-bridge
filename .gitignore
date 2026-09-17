@@ -10,6 +10,7 @@ npm-debug.log*
 .agent-controller/
 db_temp/
 /files.txt
+/patch.patch
 /node_modules.zip
 /src (2).zip
 .verified-*.log

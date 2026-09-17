@@ -140,3 +140,62 @@ test("ambiguous delivery is never wired to the direct retry command", async () =
   assert.doesNotMatch(source, /command\("(?:run|delivery)\.retry"/u);
   assert.doesNotMatch(source, /\["FAILED",\s*"AMBIGUOUS"\].*delivery\.retry/su);
 });
+
+test("contract: dashboard state preserves canonical workflow identity and versions", () => {
+  const value = normalizeDashboardState({
+    workflow: {
+      stage: "PREPARE", state: "DISCUSSING", preparationId: "prep_1",
+      preparationVersion: 4, runId: null, runVersion: null,
+    },
+    preparation: { preparationId: "prep_1", version: 4 },
+    run: null, sessions: [], deliveries: [], approvals: [], events: [], messages: [],
+    commandCapabilities: ["preparation.reply"],
+  });
+  assert.deepEqual(value.workflow, {
+    stage: "PREPARE", state: "DISCUSSING", preparationId: "prep_1",
+    preparationVersion: 4, runId: null, runVersion: null,
+  });
+});
+
+test("contract: invalid workflow stage/state combinations fail closed", () => {
+  assert.throws(() => normalizeDashboardState({
+    workflow: {
+      stage: "START", state: "DISCUSSING", preparationId: null,
+      preparationVersion: null, runId: null, runVersion: null,
+    },
+    run: null, sessions: [], deliveries: [], approvals: [], events: [], messages: [],
+    commandCapabilities: [],
+  }), /workflow|stage|state|DISCUSSING/i);
+});
+
+test("contract: workflow version projection is mandatory for mutable PREPARE state", () => {
+  assert.throws(() => normalizeDashboardState({
+    workflow: {
+      stage: "PREPARE", state: "DISCUSSING", preparationId: "prep_1",
+      runId: null, runVersion: null,
+    },
+    run: null, sessions: [], deliveries: [], approvals: [], events: [], messages: [],
+    commandCapabilities: [],
+  }), /preparationVersion|version/i);
+});
+
+test("contract: acknowledged delivery is retained while IDLE is not a delivery record state", () => {
+  assert.equal(deliveryState({ state: "ACKNOWLEDGED" }), "ACKNOWLEDGED");
+  assert.equal(deliveryState({ state: "IDLE" }), "UNKNOWN");
+});
+
+test("contract: preparation capabilities remain separate from run capabilities", () => {
+  const value = normalizeDashboardState({
+    workflow: {
+      stage: "PREPARE", state: "AGREEMENT_READY", preparationId: "prep_1",
+      preparationVersion: 9, runId: null, runVersion: null,
+    },
+    preparation: { preparationId: "prep_1", version: 9 },
+    run: null, sessions: [], deliveries: [], approvals: [], events: [], messages: [],
+    commandCapabilities: ["preparation.approve", "web.inspect", "web.stop", "web.reconcile"],
+  });
+  assert.equal(value.commandCapabilities.has("preparation.approve"), true);
+  assert.equal(value.commandCapabilities.has("web.inspect"), true);
+  assert.equal(value.commandCapabilities.has("web.reconcile"), true);
+  assert.equal(value.commandCapabilities.has("run.start"), false);
+});

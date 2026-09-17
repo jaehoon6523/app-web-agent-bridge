@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const domainRoot = path.join(root, "src", "domain");
+const productionRoots = ["src", "public", "extension"].map((name) => path.join(root, name));
 
 function walk(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -31,4 +32,19 @@ test("domain layer does not import application or infrastructure modules", () =>
   }
 
   assert.deepEqual([...new Set(violations)], []);
+});
+
+test("production code cannot read test or incident oracle files", () => {
+  const violations = [];
+  const fixtureReference = /tests[\\/]fixtures|fixtures[\\/]incidents|expected-ui\.txt|expected\.json/u;
+
+  for (const productionRoot of productionRoots) {
+    for (const filename of walk(productionRoot)) {
+      if (fixtureReference.test(fs.readFileSync(filename, "utf8"))) {
+        violations.push(path.relative(root, filename));
+      }
+    }
+  }
+
+  assert.deepEqual(violations, []);
 });

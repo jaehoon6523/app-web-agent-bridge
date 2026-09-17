@@ -5,12 +5,19 @@ import { WebSocketServer } from 'ws';
 import { ChatGptWebSessionAdapter, WebExtensionTransport } from '../../src/runtime/web/index.js';
 
 const extensionRoot = new URL('../../extension/', import.meta.url);
+const publicRoot = new URL('../../public/', import.meta.url);
 const secret = 'browser-fixture-only-0123456789abcdef';
 const identity = 'browser-fixture-extension';
 
 // Real production modules, HMAC, WebSocket and DOM. Only Chrome APIs and the
 // provider page are fixtures; this is not evidence of live ChatGPT behavior.
-export async function extensionBrowser(t, { navigation = 'spa', variant = 'roles', initialUrl = 'https://chatgpt.com/', reply = () => 'Observed fixture reply' } = {}) {
+export async function extensionBrowser(t, {
+  navigation = 'spa',
+  variant = 'roles',
+  initialUrl = 'https://chatgpt.com/',
+  reply = () => 'Observed fixture reply',
+  providerHtml = null,
+} = {}) {
   const browser = await chromium.launch({
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE }
       : { channel: process.env.UI_BROWSER_CHANNEL || 'chrome' }), headless: true,
@@ -56,12 +63,15 @@ export async function extensionBrowser(t, { navigation = 'spa', variant = 'roles
   });
   const tab = () => ({ id: 7, windowId: 3, url: page.url(), title: 'Provider DOM fixture' });
   const commands = [];
+  const contentResults = [];
   await background.exposeBinding('fixtureTabs', async (_source, operation, value) => {
     if (operation === 'query') return [tab()];
     if (operation === 'get' || operation === 'update') return tab();
     if (operation === 'sendMessage') {
       commands.push(value);
-      return sendContent(value);
+      const result = await sendContent(value);
+      contentResults.push({ request: structuredClone(value), result: structuredClone(result) });
+      return result;
     }
     throw new Error(`Unexpected Chrome operation: ${operation}`);
   });
@@ -88,14 +98,35 @@ export async function extensionBrowser(t, { navigation = 'spa', variant = 'roles
       sendMessage: message => fixtureProgress(message),
     } };
   });
+  let dashboardSnapshot = null;
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
+    if (url.hostname === 'dashboard.fixture') {
+      if (url.pathname === '/api/dashboard/session') {
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ token: 'fixture-dashboard-token' }) });
+      }
+      if (url.pathname === '/api/state') {
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify(dashboardSnapshot) });
+      }
+      const asset = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
+      if (!['index.html', 'app.js', 'dashboard-model.js', 'styles.css'].includes(asset)) return route.abort();
+      const contentType = asset.endsWith('.js') ? 'text/javascript'
+        : asset.endsWith('.css') ? 'text/css' : 'text/html';
+      return route.fulfill({ contentType, body: await readFile(new URL(asset, publicRoot), 'utf8') });
+    }
     if (url.hostname === '127.0.0.1') {
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<script type="module" src="/extension/background.js"></script>' });
       if (!/^\/extension\/[a-z0-9/.-]+\.js$/i.test(url.pathname) || url.pathname.includes('..')) throw new Error('Invalid fixture module path');
       return route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(url.pathname.slice('/extension/'.length), extensionRoot), 'utf8') });
     }
     if (url.hostname === 'chatgpt.com') {
+      if (providerHtml !== null) {
+        const injected = scripts.map(source => `<script>${source.replaceAll('</script', '<\\/script')}</script>`).join('');
+        const body = providerHtml.includes('</body>')
+          ? providerHtml.replace('</body>', `${injected}</body>`)
+          : providerHtml + injected;
+        return route.fulfill({ contentType: 'text/html', body });
+      }
       return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Provider DOM fixture</title>
         <main id="messages"></main><textarea id="prompt-textarea"></textarea>
         <button data-testid="send-button">Send</button><script>
@@ -143,8 +174,15 @@ export async function extensionBrowser(t, { navigation = 'spa', variant = 'roles
     const lastError = await background.evaluate(() => globalThis.fixturePopupState?.lastError);
     throw new Error(`Extension authentication failed: ${lastError}; ${errors.join('; ')}; ${diagnostics.join('; ')}; ${error.message}`);
   });
-  return { adapter, transport, page, background, frames, commands, errors, sendContent,
+  return { adapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
     readStorage: () => structuredClone(stored),
+    async openDashboard(snapshot) {
+      dashboardSnapshot = structuredClone(snapshot);
+      const dashboard = await context.newPage();
+      await dashboard.goto('https://dashboard.fixture/');
+      await dashboard.locator('#projectPanel').waitFor({ state: 'visible' });
+      return dashboard;
+    },
     async prepare(runId = 'r1') {
       await adapter.resume({ binding: { sessionId: 's1', runId, tabId: null, windowId: null,
         documentId: null, frameId: null, conversationUrl: null, conversationId: null,

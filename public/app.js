@@ -541,15 +541,23 @@ function renderPreparation() {
       ?? null;
     const packet = displayedDelivery.response?.packet;
     if (packet?.type === "REQUIREMENTS_PROPOSAL") {
-      recovery.append(node("p", "내용 해석: 인지됨 · 기존 Git diff 분석 요구사항과 응답 검증 문제의 불일치를 인식하고 범위 전환을 질문함", "recovery-guidance ok"));
-      recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${(packet.questions ?? []).length}개`, "diagnostic-row health ok"));
-      recovery.append(node("p", "요구사항 상태: 범위 전환 확인 필요 · 아직 구현 범위로 확정하지 않음", "diagnostic-row health warn"));
+      const questionCount = (packet.questions ?? []).length;
+      const requirementCount = (packet.items ?? []).length;
+      recovery.append(node("p", `내용 해석: 요구사항 ${requirementCount}개와 확인 질문 ${questionCount}개를 인지함`, "recovery-guidance ok"));
+      recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${questionCount}개`, "diagnostic-row health ok"));
+      recovery.append(node("p", questionCount === 0
+        ? "요구사항 상태: 요구사항 합의 완료 · 승인 가능"
+        : "요구사항 상태: 추가 합의 필요 · 확인 질문에 답변 필요",
+      questionCount === 0 ? "diagnostic-row health ok" : "diagnostic-row health warn"));
     } else if (packet) {
       recovery.append(node("p", `내용 해석: packet은 확인됨 · ${packet.type ?? "알 수 없는 유형"}`, "diagnostic-row health warn"));
       recovery.append(node("p", "packet 양식: 현재 준비 단계에서 기대한 REQUIREMENTS_PROPOSAL이 아님", "diagnostic-row health error"));
     } else if (displayedDelivery.response && !packet) {
       recovery.append(node("p", "내용 해석: 확인 불가 · 응답 packet을 해석하지 못함", "recovery-guidance error"));
-      recovery.append(node("p", "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
+      const formatError = displayedDelivery.validation?.formatError;
+      recovery.append(node("p", formatError
+        ? `packet 양식: ${formatError.code} · ${formatError.message}`
+        : "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
     }
     if (typeof displayedDelivery.response?.rawText === "string") {
       const raw = node("details", "", "session-raw-response");

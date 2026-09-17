@@ -10,6 +10,24 @@ function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Ob
 const stamp = () => new Date().toISOString();
 const terminal = new Set(["APPLIED", "CANCELLED", "FAILED", "INCONCLUSIVE", "COMPLETE"]);
 const RESULT_STATES = new Set(["AWAITING_APPLY", "APPLIED", "COMPLETE", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
+const PACKET_FORMAT_CODES = new Set([
+  "EMPTY_AGENT_RESPONSE",
+  "CONTROLLER_PACKET_MISSING",
+  "CONTROLLER_PACKET_AMBIGUOUS",
+  "CONTROLLER_PACKET_TOO_DEEP",
+  "INVALID_PACKET_LIMIT",
+  "INVALID_PACKET_JSON",
+]);
+
+function packetFormatError(error) {
+  const code = PACKET_FORMAT_CODES.has(error?.code) ? error.code : "INVALID_CONTROLLER_PACKET";
+  return Object.freeze({
+    code,
+    message: typeof error?.message === "string" && error.message
+      ? error.message
+      : "Controller packet validation failed.",
+  });
+}
 
 function isValidRequirementsProposal(packet) {
   return packet?.type === "REQUIREMENTS_PROPOSAL"
@@ -84,9 +102,16 @@ export class PreparationService {
         response.packet = envelope.parsed;
         response.packetText = envelope.packetText;
         changed = true;
-      } catch {
-        // Keep the original response and let the existing validation state
-        // explain that its packet could not be parsed.
+      } catch (error) {
+        const formatError = packetFormatError(error);
+        delivery.validation ??= { status: "FAILED", checks: [] };
+        if (delivery.validation.format !== "INVALID"
+          || delivery.validation.formatError?.code !== formatError.code
+          || delivery.validation.formatError?.message !== formatError.message) {
+          delivery.validation.format = "INVALID";
+          delivery.validation.formatError = formatError;
+          changed = true;
+        }
       }
     }
     if (changed) this.save();
@@ -298,7 +323,7 @@ export class PreparationService {
     });
     context.conversationUrl = binding.conversationUrl;
     delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; this.touch(context);
-    const text = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n'
+    const instructions = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. packet 내부는 JSON.parse가 성공하는 엄격한 JSON이어야 한다. Windows 경로는 C:/path 형식의 슬래시를 우선 사용하고, 역슬래시를 쓸 때는 JSON 문자열에서 \\\\로 escape한다. 태그에 Markdown escape나 코드 fence를 붙이지 않는다. 출력 직전에 JSON 문자열과 독립된 태그 줄을 스스로 검증한다. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n';
     const responseFormatFallback = '중요: 요구사항 제안 packet을 정확히 만들 수 없거나 필요한 정보가 부족하면 <controller_packet>을 추측해서 만들지 말고, 태그가 전혀 없는 평문으로 부족한 정보와 질문만 설명한다. 평문 응답은 오류가 아니라 사용자 확인을 위한 정상적인 대화 응답이다.\n';
     const jsonPathRule = "\nJSON packet 문자열에 Windows 경로를 넣을 때는 C:/Users/...처럼 슬래시를 사용하거나 백슬래시를 JSON 규칙대로 이스케이프한다. 원시 C:\\Users\\... 형태는 절대 출력하지 않는다.\n";
     const controllerFacts = [
@@ -312,6 +337,7 @@ export class PreparationService {
       "위 사실을 바탕으로 실제 수정 대상 파일·기능처럼 사용자만 결정할 수 있는 정보가 없을 때만 질문한다.",
       "질문은 한 번에 하나만 하며, 이미 제공된 경로·URL·ID·제약을 다시 묻지 않는다.",
     ].join("\\n") + "\\n";
+    const text = instructions
       + JSON.stringify({ preparationId: context.preparationId, discussion: context.discussion, agreement: context.agreement })
       + "\n사용자의 첫 부탁:\n" + context.objective;
     const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text: responseFormatFallback + jsonPathRule + controllerFacts + text,
@@ -391,11 +417,22 @@ export class PreparationService {
         { code: "COMPLETION_EVIDENCE_MISMATCH", details: { checks: failed } });
     }
     if (packetParseError) {
-      delivery.validation.format = "INVALID"; this.touch(context);
+      delivery.validation.format = "INVALID";
+      delivery.validation.formatError = packetFormatError(packetParseError);
+      this.touch(context);
       fail("응답에 준비 제안 형식이 없습니다. 원문은 보존되어 있으며 승인할 수 없습니다.", "INVALID_AGREEMENT");
     }
-    if (!isValidRequirementsProposal(parsed)) fail("Invalid designer response.", "INVALID_AGREEMENT");
+    if (!isValidRequirementsProposal(parsed)) {
+      delivery.validation.format = "INVALID";
+      delivery.validation.formatError = {
+        code: "INVALID_REQUIREMENTS_PROPOSAL",
+        message: "The packet JSON is valid but does not satisfy the requirements proposal contract.",
+      };
+      this.touch(context);
+      fail("Invalid designer response.", "INVALID_AGREEMENT");
+    }
     delivery.validation.format = "CONFIRMED";
+    delete delivery.validation.formatError;
     delivery.processingState = "ACK_PENDING"; this.touch(context);
     if (pointerMatches) {
       await this.web.acknowledgeDelivery({ turnId: delivery.deliveryId });
