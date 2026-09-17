@@ -492,14 +492,11 @@ export class PreparationService {
     }
     if (!this.capabilities().includes(type)) fail("Web operation is unavailable.");
     const pendingDelivery = context.deliveries.find(item => item.deliveryId === session.activeDeliveryId);
-    // A completed response is already durable. Re-running the extension's DOM
-    // recheck here can fail solely because ChatGPT virtualized the original
-    // user message out of the visible DOM, producing AMBIGUOUS_PROMPT_BINDING.
-    // The completion path below parses and validates the stored controller
-    // packet, so only deliveries without a stored response need rechecking.
+    // Reconcile must reread the bound ChatGPT session when a response may be
+    // partial or malformed. ACK_PENDING is already a durable response whose
+    // only remaining work is acknowledgement, so leave that path read-only.
     const refreshCompleted = type === "web.reconcile"
-      && pendingDelivery?.processingState !== "ACK_PENDING"
-      && !pendingDelivery?.response;
+      && pendingDelivery?.processingState !== "ACK_PENDING";
     const observed = await this.web.inspectDelivery({ refreshCompleted });
     this.setDiagnostics(context, observed); this.touch(context);
     const completed = observed.completedDelivery;
