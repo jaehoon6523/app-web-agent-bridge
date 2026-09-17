@@ -1,0 +1,8 @@
+{
+  "rawSha256": "90b3aeba8bb15d7b4af292dd5101fd6c5a3481110977b8e7b37fad1289185c0a",
+  "packetType": "REQUIREMENTS_PROPOSAL",
+  "agreementStatus": "READY",
+  "contextState": "AGREEMENT_READY",
+  "requirementsCount": 10,
+  "summaryIncludes": "시계 앱"
+}

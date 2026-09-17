@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <title>Preparation packet incident fixture</title>
+</head>
+<body>
+  <main id="messages"></main>
+  <textarea id="prompt-textarea"></textarea>
+  <button data-testid="send-button" type="button">Send</button>
+  <script id="incident-response" type="application/json">{"raw":"<controller_packet>\n{\"type\":\"REQUIREMENTS_PROPOSAL\",\"status\":\"READY\",\"summary\":\"프로젝트 루트 C:/Users/User/Desktop/pj에서 웹 기반 시계 앱을 구현한다. 기존 프론트엔드 구조가 있으면 그 구조에 통합하고, 없으면 최소한의 HTML/CSS/JavaScript 구조를 생성한다. 포함 기능은 현재 시각·날짜, 알람, 타이머, 스톱워치이며 로그인·서버·DB·외부 API 연동은 제외한다. 승인 전 저장소 변경은 금지한다. 검증 정책은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\",\"questions\":[],\"items\":[{\"statement\":\"현재 시각과 날짜를 실시간으로 표시한다.\",\"acceptanceCriteria\":\"화면에 시·분·초와 현재 날짜가 표시되고 코드상 1초 주기로 갱신되도록 구현되어 있다.\"},{\"statement\":\"알람을 추가하고 활성화·비활성화 및 삭제할 수 있다.\",\"acceptanceCriteria\":\"사용자가 시각을 지정해 알람을 추가할 수 있고, 등록된 알람의 활성화 상태 변경과 삭제가 가능하며 지정 시각 도달 시 알림을 발생시키는 코드 경로가 존재한다.\"},{\"statement\":\"카운트다운 타이머를 제공한다.\",\"acceptanceCriteria\":\"사용자가 시간·분·초를 설정하고 시작, 일시정지, 재개, 초기화할 수 있으며 0에 도달하면 완료 상태가 표시된다.\"},{\"statement\":\"스톱워치를 제공한다.\",\"acceptanceCriteria\":\"시작, 일시정지, 재개, 초기화 기능이 있고 경과 시간이 지속적으로 갱신되도록 구현되어 있다.\"},{\"statement\":\"주요 기능을 한 화면에서 전환해 사용할 수 있도록 구성한다.\",\"acceptanceCriteria\":\"시계·알람·타이머·스톱워치 영역이 명확히 구분되며 별도 페이지 이동 없이 사용할 수 있다.\"},{\"statement\":\"앱 상태는 서버 없이 브라우저 로컬에서 처리한다.\",\"acceptanceCriteria\":\"외부 API, 서버, DB 의존성이 없으며 필요한 상태는 브라우저 메모리 또는 localStorage에서 처리된다.\"},{\"statement\":\"기존 프로젝트 구조를 불필요하게 변경하지 않는다.\",\"acceptanceCriteria\":\"기존 구조가 있으면 필요한 프론트엔드 파일만 수정하고 관련 없는 백엔드·설정·의존성 파일은 변경하지 않는다.\"},{\"statement\":\"구현 전 저장소 구조를 확인해 실제 수정 파일을 최소 범위로 결정한다.\",\"acceptanceCriteria\":\"C:/Users/User/Desktop/pj의 기존 엔트리 파일과 프론트엔드 구조를 기준으로 기존 파일 수정 또는 최소 신규 파일 생성 방식을 선택하며 중복 앱 구조를 만들지 않는다.\"},{\"statement\":\"코드 스냅샷 기준으로 구현 정합성을 검토한다.\",\"acceptanceCriteria\":\"변경 후 각 기능별 이벤트 흐름, 상태 전이, 시간 계산 로직, DOM 연결 관계를 코드에서 확인하고 실행 테스트를 수행했다고 표현하지 않는다.\"},{\"statement\":\"검증 명령은 프로젝트 구조에 맞게 결정한다.\",\"acceptanceCriteria\":\"package.json이 존재하면 기존 lint, build, test 스크립트 중 변경 범위에 적합한 명령을 식별하고, 존재하지 않으면 HTML과 JavaScript 정적 검토를 기준으로 삼는다. 실제 실행하지 않은 명령은 실행했다고 주장하지 않는다.\"}]}\n</controller_packet>"}</script>
+  <script>
+    const rawResponse = JSON.parse(document.getElementById("incident-response").textContent).raw;
+
+    function appendMessage(role, id, text) {
+      const article = document.createElement("article");
+      article.id = id;
+      article.setAttribute("data-message-author-role", role);
+      const body = document.createElement("div");
+      body.className = "markdown";
+      body.setAttribute("data-message-content", "");
+      body.style.whiteSpace = "pre-wrap";
+      body.textContent = text;
+      article.append(body);
+      document.querySelector("#messages").append(article);
+    }
+
+    document.querySelector("[data-testid='send-button']").addEventListener("click", () => {
+      const composer = document.querySelector("#prompt-textarea");
+      const prompt = composer.value;
+      composer.value = "";
+      history.pushState({}, "", "/c/created");
+      appendMessage("user", "incident-user", prompt);
+      appendMessage("assistant", "incident-assistant", rawResponse);
+    });
+  </script>
+</body>
+</html>

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const domainRoot = path.join(root, "src", "domain");
+const productionRoots = ["src", "public", "extension"].map((name) => path.join(root, name));
 const sourceExtensions = new Set([".js", ".mjs"]);
 
 const prohibitedImports = Object.freeze([
@@ -31,9 +32,20 @@ for (const filename of walk(domainRoot)) {
   }
 }
 
+const fixtureReference = /tests[\\/]fixtures|fixtures[\\/]incidents|expected-ui\.txt|expected\.json/u;
+for (const productionRoot of productionRoots) {
+  for (const filename of walk(productionRoot)) {
+    const relative = path.relative(root, filename);
+    const source = fs.readFileSync(filename, "utf8");
+    if (fixtureReference.test(source)) {
+      failures.push(`${relative}: production code references a test oracle or incident fixture`);
+    }
+  }
+}
+
 if (failures.length > 0) {
   process.stderr.write(`${failures.join("\n")}\n`);
   process.exitCode = 1;
 } else {
-  process.stdout.write(`Architecture boundary PASS: domain files have no prohibited infrastructure imports.\n`);
+  process.stdout.write("Architecture boundary PASS: layer imports and production fixture isolation are valid.\n");
 }

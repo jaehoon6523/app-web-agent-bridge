@@ -168,11 +168,14 @@ npm start
 ```powershell
 npm run check
 npm run test:browser
+npm run check:critical
 npm run test:ui
 ```
 
 자동 검사는 임시 실제 Git 저장소·실제 Node 검증 명령·SQLite와 모의 CLI/Web 응답을 사용합니다. `tests/public/audit-console.test.js`는 배포 UI 스크립트를 DOM/네트워크 대역으로 검사하며 실제 브라우저 검사와 구분합니다. 실제 웹 감사자가 누락을 찾아내는지, 설치된 확장·로그인·OS 권한을 포함한 전체 흐름은 별도 실연동 검증이 필요합니다.
 
 `test:browser`는 실제 Chromium에서 content script와 background 전체를 Web Adapter에 연결하고, 실제 Codex Adapter에 JSONL fixture 프로세스를 연결해 캡처→리뷰→REWORK→새 Worker→PASS를 검사합니다. Reviewer fixture는 캡처된 patch 내용을 읽어 판정하며 호출 횟수로 PASS를 반환하지 않습니다. Chrome API와 제공자 페이지/응답은 대역이므로 실제 Codex·ChatGPT 성공 증거는 아닙니다. 설치된 Chrome이 없으면 실패하며 자동 skip하지 않습니다. `check`에는 브라우저 검사가 포함되지 않으므로 확장 변경 시 두 명령을 모두 실행하세요.
+
+`test:critical`은 고정 장애 HTML과 원문 oracle을 사용해 DOM → content script → Chrome message boundary → background → Web Adapter → PreparationService → SQLite 복원 → 실제 dashboard 렌더링을 모두 통과시킵니다. 원문 SHA-256과 각 경계의 원문 보존, packet·합의·상태·UI를 각각 검사하며 이름·경로·요구사항 수를 바꾼 변형 입력도 실행합니다. production 코드는 `tests/fixtures`를 참조할 수 없습니다. `test:sabotage`는 content 추출, packet 반영, UI 렌더링을 임시 복사본에서 각각 손상시킨 뒤 critical test가 반드시 실패하는지 확인합니다. `check:critical`은 일반 검사와 이 두 gate를 함께 실행합니다.
 
 현재 연결 제안에 대한 검토, 코드 소유 위치와 실제 제공자 검증 순서는 [MIGRATION_PLAN](MIGRATION_PLAN.md)에 있습니다. 저장된 감사의 정합성 검사와 실제 제공자 검증의 차이는 [CERTIFICATION](docs/CERTIFICATION.md)에 명시합니다.
