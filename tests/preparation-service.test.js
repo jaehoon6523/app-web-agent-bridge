@@ -143,6 +143,12 @@ test("start returns server identity before dispatch; question-only reply retains
 
 test("ChatGPT start page bootstraps a newly created exact conversation", async (t) => {
   const f = fixture(t);
+  const resume = f.web.resume;
+  let rootFocus = null;
+  f.web.resume = async (input) => {
+    rootFocus = input.focus;
+    return resume(input);
+  };
   const first = await f.service.execute("preparation.start", {
     requestId: "start-root", objective: "아무거나", targetRoot: f.root,
     conversationUrl: "https://chatgpt.com/",
@@ -150,6 +156,7 @@ test("ChatGPT start page bootstraps a newly created exact conversation", async (
   assert.equal(first.conversationUrl, "https://chatgpt.com/");
   assert.equal(first.webSession.conversationUrl, null);
   await settled(f.service);
+  assert.equal(rootFocus, true);
   assert.equal(f.service.current.state, "DISCUSSING");
   assert.equal(f.service.current.conversationUrl, "https://chatgpt.com/c/new-conversation");
   assert.equal(f.service.current.webSession.conversationId, "new-conversation");

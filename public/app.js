@@ -375,8 +375,8 @@ function render() {
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
     actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 다시 시도할 수 있습니다."
-      : caps.has("run.retry") ? "기존 timeout worktree를 폐기하고 같은 요구사항으로 새 Worker turn을 시작합니다."
-      : "후보 생성 전 Worker timeout만 수동 재시도할 수 있습니다.";
+      : caps.has("run.retry") ? "실패한 임시 worktree를 정리하고 같은 요구사항으로 새 Worker turn을 시작합니다."
+      : "후보 생성 전 Worker 실패가 안전하게 확인된 경우에만 수동 진행할 수 있습니다.";
     actionState("retryRun", (operations.runCommand !== "IDLE") || !caps.has("run.retry"), retryReason, retryReason);
   } else {
     $("abandonRun").disabled = true;
@@ -427,7 +427,15 @@ async function command(type, payload = {}) {
   operations.runCommand = "RUNNING"; lastCommandError = ""; render();
   try {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
-    if (snapshot?.run?.runId === target) text("commandResult", "서버가 명령을 처리했습니다. 실제 상태와 적용 결과를 확인하세요.");
+    if (snapshot?.run?.runId === target) {
+      const successMessage = {
+        "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
+        "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
+        "code.apply": "적용 요청을 처리했습니다. 최신 적용 상태를 확인하세요.",
+        "evidence.export": "감사 기록 요청을 처리했습니다.",
+      }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
+      text("commandResult", successMessage);
+    }
     return result.payload;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }

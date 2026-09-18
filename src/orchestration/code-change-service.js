@@ -19,12 +19,12 @@ const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "
 
 function retryableWorkerTimeout(run) {
   const lastTurn = run?.workerTurns?.at(-1);
+  const timeoutError = "External turn timed out; execution state requires recovery.";
   return run?.schemaVersion === 3
     && run.stage === "RECOVERY_REQUIRED"
     && run.terminationReason === "EXECUTION_UNCERTAIN"
-    && run.error === "External turn timed out; execution state requires recovery."
     && lastTurn?.status === "failed"
-    && lastTurn?.metadata?.error === run.error
+    && lastTurn?.metadata?.error === timeoutError
     && run.candidate == null && run.capture == null && run.application == null
     && (run.candidates?.length ?? 0) === 0
     && (run.reviews?.length ?? 0) === 0;

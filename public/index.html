@@ -89,13 +89,12 @@
       <button id="cancelInitialPreparation" type="button" hidden>요청 취소</button>
     </section>
     <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p></div>
-      <div class="actions"><button id="stopRun" disabled>작업 중단</button></div><p id="stopReason" class="muted"></p><p id="commandResult" role="status"></p>
+      <div class="actions"><button id="stopRun" disabled>작업 중단</button><button id="retryRun" disabled title="복구 가능한 Worker 실패에서 활성화됩니다.">수동 진행</button></div><p id="stopReason" class="muted"></p><p id="commandResult" role="status"></p>
       <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="exportEvidence" disabled>감사 기록 다운로드</button></div><p id="commandReason" class="muted"></p><p class="muted">일시정지·재개·재시도·실행 중 자유입력은 초기 범위에서 보류되어 있습니다.</p></details>
       <section id="recoveryPanel" hidden><h2>복구 확인 후 실행 폐기</h2><p>CLI 프로세스·검증 작업과 ChatGPT 생성을 직접 종료하고 대상 저장소의 변경을 확인하세요. 기록과 작업 사본은 보존되며, 이 실행은 재개하거나 적용할 수 없게 됩니다.</p>
         <label><input id="recoveryExternal" type="checkbox"> 외부 작업이 모두 종료된 것을 확인했습니다.</label>
         <label><input id="recoveryTarget" type="checkbox"> 대상 저장소의 변경 상태를 확인했습니다.</label>
         <label><input id="recoveryDiscard" type="checkbox"> 이 실행을 폐기합니다.</label>
-        <button id="retryRun" disabled>작업 다시 시도</button>
         <button id="abandonRun" disabled>실행 폐기</button>
       </section>
       <div class="tabs" role="group" aria-label="기록 종류"><button id="showAudit" aria-pressed="true">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>

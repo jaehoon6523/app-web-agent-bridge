@@ -301,8 +301,9 @@ export class PreparationService {
     const runId = context.preparationId;
     session.bindingState = "BINDING"; this.touch(context);
     console.info("[bridge:preparation:binding]", { preparationId: runId, sessionId: session.sessionId, deliveryId });
-    // Preparing or recovering a delivery must never steal focus from the user's current tab.
-    const request = { focus: false, binding: createWebSessionBinding({
+    // Exact conversations stay background-safe. Root bootstrap is user-visible:
+    // focus/open ChatGPT so the user does not wait on a page that is not present.
+    const request = { focus: session.conversationUrl === null && session.conversationId === null, binding: createWebSessionBinding({
       sessionId: session.sessionId, runId, title: null, bindingStatus: "NEEDS_REBIND",
       conversationId: session.conversationId, conversationUrl: session.conversationUrl,
       tabId: session.tabId, windowId: session.windowId,

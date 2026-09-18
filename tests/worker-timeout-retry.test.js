@@ -25,8 +25,11 @@ test("settled pre-candidate Worker timeout can be manually retried without chang
     terminationReason: "EXECUTION_UNCERTAIN",
   });
   const beforeTimeout = recovery.policy.turnTimeoutMs;
+  await f.reopen();
+  const restarted = f.service.get(completed.runId);
+  assert.equal(restarted.error, "Server restarted during execution. No automatic resubmission or patch application.");
   assert.ok(f.service.snapshot(completed.runId, {}).commandCapabilities.includes("run.retry"));
-  const result = await f.service.command("run.retry", { runId: completed.runId, expectedVersion: recovery.version });
+  const result = await f.service.command("run.retry", { runId: completed.runId, expectedVersion: restarted.version });
   assert.equal(result.status, "RETRY_ACCEPTED");
   await f.service.jobs.get(completed.runId);
   const retried = f.service.get(completed.runId);

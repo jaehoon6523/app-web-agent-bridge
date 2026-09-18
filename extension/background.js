@@ -475,11 +475,25 @@ async function prepareBoundSession(payload) {
   }
   let matched;
   if (requested.bootstrap) {
-    const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-    const roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+    let tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+    let roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+    if (roots.length === 0 && payload.focus === true) {
+      const created = await chrome.tabs.create({ url: "https://chatgpt.com/", active: true });
+      await focusTab(created);
+      await waitForContentScript(created.id, 30_000, true);
+      const opened = await chrome.tabs.get(created.id);
+      if (canonicalChatGptUrl(opened?.url) !== "https://chatgpt.com/") {
+        throw new ExtensionOperationError("ROOT_NOT_READY", "새로 연 ChatGPT 시작 페이지가 준비되지 않았습니다.", {
+          tabId: opened?.id ?? created.id,
+          observedUrl: canonicalChatGptUrl(opened?.url) ?? null,
+        });
+      }
+      tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+      roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+    }
     if (roots.length === 0) {
       if (sameSession) await store.update({ bindingStatus: "NEEDS_REBIND" });
-      throw new ExtensionOperationError("NEEDS_REBIND", "Open https://chatgpt.com/ in the selected browser tab before starting a new conversation.", {
+      throw new ExtensionOperationError("NEEDS_REBIND", "ChatGPT 시작 페이지를 열 수 없습니다. https://chatgpt.com/ 접근 상태를 확인하세요.", {
         mode: "NEW_CONVERSATION_BOOTSTRAP", rootTabs: [], requestedSessionId: requested.sessionId,
       });
     }
