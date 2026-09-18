@@ -9,6 +9,7 @@ import {
 } from "../extension/runtime/binding-recovery.js";
 import { canonicalChatGptUrl, conversationIdFromUrl } from "../extension/runtime/conversation.js";
 import { diagnosticError } from "../extension/runtime/document-binding.js";
+import { isLegacyBridgeTestDelivery } from "../extension/runtime/storage.js";
 
 const background = readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
 const popup = readFileSync(new URL("../extension/popup.js", import.meta.url), "utf8");
@@ -103,6 +104,7 @@ async function backgroundConnectionState({ currentDeliveryId = null, bindingErro
     canonicalChatGptUrl,
     conversationIdFromUrl,
     classifyStoredAmbiguousRoot,
+    isLegacyBridgeTestDelivery,
     diagnosticError,
     ExtensionOperationError: class extends Error {
       constructor(code, message, details) { super(message); this.code = code; this.details = details; }

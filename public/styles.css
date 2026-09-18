@@ -73,3 +73,34 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
 .is-waiting .waiting-indicator { display:inline-block; animation:waiting-spin 1s linear infinite; }
 @keyframes waiting-spin { to { transform:rotate(360deg); } }
 @media(prefers-reduced-motion:reduce) { .is-waiting .waiting-indicator { animation:none; } }
+/* User-flow hierarchy. Existing palette is intentionally reused. */
+.workflow li.done { border-color:var(--live); color:var(--muted); }
+.workflow li.failed { border-color:var(--error); color:var(--error); font-weight:700; }
+.flow-heading { margin-bottom:18px; }
+.flow-heading h1 { margin-bottom:4px; }
+.flow-card { margin-top:14px; padding:18px 20px; border:1px solid var(--line); background:var(--panel); border-radius:8px; }
+.flow-card > p:first-child { margin-top:0; }
+.flow-card > p:last-child { margin-bottom:0; }
+.flow-status { color:var(--muted); margin:10px 0 0; }
+.flow-band { margin:14px 0; padding:14px 16px; border:1px solid var(--warn); border-left:3px solid var(--warn); background:var(--panel); }
+.flow-band.error { border-color:var(--error); border-left-color:var(--error); }
+.flow-band h2 { margin:0 0 4px; font-size:15px; }
+.flow-band p { margin:0; color:var(--muted); }
+.flow-fold { margin-top:18px; }
+.flow-fold-body { padding:4px 2px 12px; }
+.flow-fold-body label:first-child { margin-top:8px; }
+.quiet-action { color:var(--muted); border-color:transparent; }
+.quiet-action:hover:enabled { color:var(--text); border-color:var(--line); }
+.technical-diagnostics { margin-top:28px; color:var(--muted); }
+.technical-diagnostics > summary { color:var(--muted); }
+.technical-diagnostics .session-recovery { border-color:var(--line); background:transparent; margin:10px 0 0; }
+.technical-diagnostics .session-recovery > summary { color:var(--text); }
+.technical-diagnostics pre { background:var(--bg); }
+.discussion-fold { margin-top:12px; }
+.discussion-fold .record { padding:10px 0; }
+.discussion-fold pre { margin:6px 0 0; }
+@media(max-width:760px) {
+  .workflow { gap:8px; overflow-x:auto; padding-bottom:4px; }
+  .workflow li { min-width:112px; white-space:nowrap; font-size:12px; }
+  .flow-card { padding:15px; }
+}

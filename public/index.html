@@ -11,30 +11,56 @@
 <div class="layout">
   <aside class="history"><h2>실행 기록</h2><button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>미종료 작업 확인 · 중단</button><nav id="runList" aria-label="실행 선택"></nav></aside>
   <main>
-    <ol class="workflow" aria-label="작업 단계"><li id="stepStart">1. 시작</li><li id="stepPrepare">2. 준비</li><li id="stepWork">3. 작업<span id="stepWorkBadge" class="step-badge" hidden aria-label="판단 대기 중"></span></li><li id="stepResult">4. 결과</li></ol>
+    <ol class="workflow" aria-label="작업 단계">
+      <li id="stepCollect">요구사항 정리</li>
+      <li id="stepReview">요구사항 검토</li>
+      <li id="stepStartWork">작업 시작</li>
+      <li id="stepWork">작업 진행<span id="stepWorkBadge" class="step-badge" hidden aria-label="판단 대기 중"></span></li>
+      <li id="stepResult">완료 · 적용</li>
+    </ol>
     <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
     <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
-      <h1 id="projectHeading">준비</h1><p>웹 세션과 대화하며 작업 범위와 완료 기준을 합의하세요. 승인하면 바로 구현·검증을 시작합니다.</p>
+      <div class="flow-heading">
+        <h1 id="projectHeading">요구사항 정리</h1>
+        <p id="projectLead" class="muted">현재 합의 내용과 다음 행동만 먼저 확인하세요.</p>
+      </div>
+      <div id="preparationException" class="flow-band" hidden></div>
       <form id="projectForm" novalidate>
-        <label for="projectRoot">프로젝트 폴더</label><input id="projectRoot" readonly>
-        <label for="planningObjective">첫 부탁</label><textarea id="planningObjective" rows="3" readonly></textarea>
-        <label for="planningUrl">ChatGPT 대화 URL</label><input id="planningUrl" type="url" readonly>
-        <p class="muted">같은 대화에서 질문에 답하고 완료 기준을 조정합니다. 승인 전에는 저장소를 변경하지 않습니다.</p>
+        <details class="flow-fold">
+          <summary>작업 입력 정보</summary>
+          <div class="flow-fold-body">
+            <label for="projectRoot">프로젝트 폴더</label><input id="projectRoot" readonly>
+            <label for="planningObjective">첫 부탁</label><textarea id="planningObjective" rows="3" readonly></textarea>
+            <label for="planningUrl">ChatGPT 대화 URL</label><input id="planningUrl" type="url" readonly>
+          </div>
+        </details>
         <button id="proposeRequirements" type="button" hidden disabled>제안 요청</button>
-        <p id="proposalStatus" role="status"></p><div id="proposalSummary"></div>
-        <label for="proposalFeedback">질문에 대한 답변 · 수정 요청</label>
-        <textarea id="proposalFeedback" rows="3"></textarea>
-        <button id="reviseRequirements" type="button" disabled>답변 보내기</button>
-        <details><summary>합의한 완료 기준</summary><div id="projectRequirements"></div></details>
-        <p class="muted">검증 방식: 코드 스냅샷 검토. 실행 테스트는 포함하지 않습니다. 최대 구현 3회, 전체 30분을 기준으로 진행합니다.</p>
+        <p id="proposalStatus" class="flow-status" role="status"></p>
+        <div id="proposalSummary" class="flow-card"></div>
+        <div id="proposalQuestion" class="flow-card">
+          <label for="proposalFeedback">답변 · 수정 요청</label>
+          <textarea id="proposalFeedback" rows="3" placeholder="확인 질문에 답하거나 합의 내용을 수정하세요."></textarea>
+          <button id="reviseRequirements" type="button" disabled>답변 보내기</button>
+        </div>
+        <details class="flow-fold" id="requirementsFold">
+          <summary>작업 정보 · 합의한 완료 기준</summary>
+          <div class="flow-fold-body">
+            <div id="projectRequirements"></div>
+            <p class="muted">검증 방식: 코드 스냅샷 검토 · 실행 테스트 없음 · 최대 구현 3회 · 전체 30분</p>
+          </div>
+        </details>
         <div class="actions">
           <button id="saveProject" type="submit" class="primary" disabled>합의 승인하고 작업 시작</button>
           <button id="closeProject" type="button" disabled>준비 취소</button>
-          <button id="reloadProject" type="button">상태 다시 확인</button>
+          <button id="reloadProject" type="button" class="quiet-action">상태 다시 확인</button>
         </div>
         <p id="projectStatus" role="status"></p>
-        <p id="preparationPersistence" class="persistence-status" role="status"></p>
+        <details id="preparationDiagnostics" class="technical-diagnostics">
+          <summary>기술 진단</summary>
+          <div id="preparationDiagnosticsBody"></div>
+          <p id="preparationPersistence" class="persistence-status" role="status"></p>
+        </details>
       </form>
     </section>
     <section id="startPanel"><h1>시작</h1>

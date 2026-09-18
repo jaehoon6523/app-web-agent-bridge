@@ -83,7 +83,7 @@ export async function extensionBrowser(t, {
         onMessage: { addListener(listener) { globalThis.fixtureBackgroundListener = listener; } } },
       tabs: { query: () => fixtureTabs('query'), get: () => fixtureTabs('get'), update: () => fixtureTabs('update'),
         sendMessage: (_id, message) => fixtureTabs('sendMessage', message),
-        onCreated: event(), onRemoved: event(), onUpdated: event() },
+        onActivated: event(), onCreated: event(), onRemoved: event(), onUpdated: event() },
       windows: { update: async () => {} },
       scripting: { executeScript: async () => { throw new Error('Fixture content script is not ready'); } },
     };

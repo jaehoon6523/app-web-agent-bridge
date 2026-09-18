@@ -300,8 +300,23 @@ function render() {
     button.addEventListener("click", () => { selected = r.runId; text("commandResult", ""); refresh(); }); list.append(button);
   }
   const resultStage = workflow.stage === "RESULT";
-  const step = { START: "stepStart", PREPARE: "stepPrepare", WORK: "stepWork", RESULT: "stepResult" }[workflow.stage];
-  for (const id of ["stepStart", "stepPrepare", "stepWork", "stepResult"]) $(id).setAttribute("aria-current", id === step ? "step" : "false");
+  const userStep = workflow.stage === "START" ? "stepCollect"
+    : workflow.stage === "PREPARE"
+      ? (workflow.state === "APPROVING" || preparation?.state === "FAILED"
+        ? "stepStartWork"
+        : agreement?.status === "READY" || workflow.state === "AGREEMENT_READY"
+          ? "stepReview"
+          : "stepCollect")
+      : workflow.stage === "WORK" ? "stepWork"
+      : "stepResult";
+  const stepIds = ["stepCollect", "stepReview", "stepStartWork", "stepWork", "stepResult"];
+  const stepIndex = stepIds.indexOf(userStep);
+  for (const [index, id] of stepIds.entries()) {
+    const item = $(id);
+    item.setAttribute("aria-current", id === userStep ? "step" : "false");
+    item.classList.toggle("done", index < stepIndex);
+    item.classList.toggle("failed", id === "stepStartWork" && preparation?.state === "FAILED");
+  }
   // HOLD keeps its run inside the WORK stage (still in progress, not a final result), but it means a human
   // decision is needed, so the step nav gets a small badge to make that state noticeable at a glance.
   $("stepWorkBadge").hidden = !(workflow.stage === "WORK" && workflow.state === "HOLD");
@@ -436,15 +451,17 @@ function proposalControls() {
   const approvalDisabled = !caps.has("preparation.approve") || operations.approval !== "IDLE";
   actionState("saveProject", approvalDisabled,
     !caps.has("preparation.approve")
-      ? `승인 비활성화: 현재 요구사항 상태는 ${agreement?.status ?? "확인되지 않음"}이며 preparation.approve 권한이 없습니다. 요구사항 합의가 READY인지 확인하세요.`
-      : "승인 비활성화: 이전 승인 요청이 아직 처리 중입니다.",
+      ? agreement?.status === "READY"
+        ? "응답 정리 또는 연결 확인이 끝나야 작업을 시작할 수 있습니다."
+        : "확인 질문을 모두 정리해 요구사항 검토 단계가 되어야 작업을 시작할 수 있습니다."
+      : "작업 시작 요청을 처리 중입니다.",
     "현재 요구사항을 승인하고 작업을 시작합니다.");
   const cancelDisabled = !caps.has("preparation.cancel") || operations.preparationStart !== "IDLE";
   actionState("closeProject", cancelDisabled,
-    !connected ? "준비 폐기 비활성화: 서버 연결이 끊겨 저장된 준비를 안전하게 종료할 수 없습니다."
-      : !caps.has("preparation.cancel") ? "준비 폐기 비활성화: 현재 전송의 종료가 확인되지 않아 원문 기록을 보존한 채 폐기를 확정할 수 없습니다."
-        : "준비 폐기 비활성화: 이전 준비 작업이 처리 중입니다.",
-    "저장된 준비를 삭제하지 않고 ‘준비 취소’ 상태로 폐기합니다.");
+    !connected ? "서버 연결을 복구해야 준비를 종료할 수 있습니다."
+      : !caps.has("preparation.cancel") ? "현재 응답 또는 전송 처리가 끝난 뒤 준비를 취소할 수 있습니다."
+        : "이전 준비 작업을 처리 중입니다.",
+    "현재 준비를 종료하고 기록은 보존합니다.");
   const activeDelivery = preparation?.deliveries?.find((item) => item.deliveryId === preparation?.webSession?.activeDeliveryId);
   const discardVisible = Boolean(activeDelivery && (
     ["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(preparation.state)
@@ -461,7 +478,10 @@ function renderInitialRequest() {
   const pending = initial && ["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(preparation.state);
   const recovery = document.querySelector(".session-recovery");
   $("startRecovery").replaceChildren();
-  if (recovery) (initial ? $("startRecovery") : $("proposalSummary")).append(recovery);
+  if (recovery) {
+    const recoveryHost = initial ? $("startRecovery") : ($("preparationDiagnosticsBody") ?? $("proposalSummary"));
+    recoveryHost.append(recovery);
+  }
   $("startRecovery").hidden = !initial || pending;
   $("startProgress").hidden = !initial;
   $("startProgress").classList.toggle("is-waiting", pending);
@@ -488,15 +508,21 @@ function renderPreparation() {
   $("planningUrl").value = preparation.webSession?.conversationUrl ?? preparation.conversationUrl ?? "";
   $("projectRoot").value = preparation.targetRoot;
   const summary = $("proposalSummary"); summary.replaceChildren();
-  summary.append(node("p", agreement?.summary ?? "설계 대화를 준비하고 있습니다."));
-  for (const question of agreement?.unresolvedQuestions ?? []) summary.append(node("p", question));
-  const discussion = node("section", "", "discussion");
-  discussion.append(node("h2", "준비 대화"));
+  const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
+  summary.append(node("h2", heading), node("p", agreement?.summary ?? "요구사항을 정리하고 있습니다."));
+  if ((agreement?.unresolvedQuestions ?? []).length) {
+    summary.append(node("p", "추가 확인 필요", "eyebrow"));
+    for (const question of agreement.unresolvedQuestions) summary.append(node("p", question));
+  }
+  const discussion = node("details", "", "discussion-fold");
+  discussion.append(node("summary", "이전 준비 대화"));
+  const discussionBody = node("div", "");
   for (const turn of preparation.discussion ?? []) {
     const row = node("article", "", "record");
     row.append(node("strong", turn.actor === "USER" ? "사용자" : "웹 설계자"), node("pre", turn.content));
-    discussion.append(row);
+    discussionBody.append(row);
   }
+  discussion.append(discussionBody);
   summary.append(discussion);
   $("projectRequirements").replaceChildren();
   for (const item of agreement?.requirements ?? []) {
@@ -507,7 +533,6 @@ function renderPreparation() {
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
   const recovery = node("details", "", "session-recovery");
-  recovery.open = true;
   recovery.append(node("summary", "응답·전송 상태"));
   const rootReady = session?.bindingState === "ROOT_READY" && Number.isSafeInteger(session?.tabId)
     && typeof session?.documentId === "string" && session.documentId && session?.frameId === 0;
@@ -632,7 +657,8 @@ function renderPreparation() {
     buttonReason(button, disabled ? disabledWebReason(action) : "");
     button.addEventListener("click", () => webSessionCommand(action)); recovery.append(button);
   }
-  summary.append(recovery);
+  const diagnostics = $("preparationDiagnosticsBody");
+  diagnostics.replaceChildren(recovery);
   const error = preparation.error;
   const progress = { INITIALIZING: "ChatGPT 대화에 연결 중입니다.",
     WAITING_WEB_RESPONSE: "웹 요청을 처리 중입니다. 응답 확인 전에는 승인할 수 없습니다.",
@@ -640,7 +666,26 @@ function renderPreparation() {
     AGREEMENT_READY: "웹이 완료 기준을 제안했습니다. 내용을 검토하고 승인하세요.",
     APPROVING: "승인을 처리하고 작업을 생성하고 있습니다. 작업 생성이 확인되면 이동합니다.",
     RECOVERY_REQUIRED: "전송 또는 응답 확인이 끝나지 않았습니다. 상태 확인이 필요합니다." };
-  text("proposalStatus", error ? (error.code ?? "ERROR") + ": " + error.message : progress[workflow.state] ?? workflow.state);
+  text("projectHeading", workflow.state === "AGREEMENT_READY" ? "요구사항 준비 완료"
+    : workflow.state === "APPROVING" ? "작업을 시작하고 있습니다"
+    : preparation.state === "FAILED" ? "작업을 시작하지 못했습니다"
+    : "요구사항 정리 중");
+  text("projectLead", workflow.state === "AGREEMENT_READY"
+    ? "작업 범위, 완료 기준, 검증 방식을 확인한 뒤 승인하세요."
+    : workflow.state === "APPROVING" ? "요구사항은 확정됐고 작업 생성 상태를 확인하고 있습니다."
+    : preparation.state === "FAILED" ? "합의 내용은 보존됩니다. 원인을 확인한 뒤 다음 행동을 선택하세요."
+    : "질문에 답하면서 작업 범위와 완료 기준을 확정합니다.");
+  const exception = $("preparationException");
+  exception.hidden = !error;
+  exception.className = "flow-band" + (error ? " error" : "");
+  exception.replaceChildren();
+  if (error) {
+    exception.append(
+      node("h2", preparation.state === "FAILED" ? "작업 시작에 실패했습니다." : "현재 상태를 확인해야 합니다."),
+      node("p", error.message)
+    );
+  }
+  text("proposalStatus", error ? "" : progress[workflow.state] ?? workflow.state);
 }
 async function preparationMutation(operation, capability, url, payload = {}) {
   if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;

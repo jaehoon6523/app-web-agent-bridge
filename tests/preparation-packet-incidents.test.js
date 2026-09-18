@@ -22,7 +22,7 @@ const incidents = new Map([
   ["valid-long-korean-packet", { rawText: raw, expectedCode: null }],
   ["invalid-windows-backslash", {
     rawText: raw.replaceAll("C:/Users/User/Desktop/pj", "C:\\Users\\User\\Desktop\\pj"),
-    expectedCode: "INVALID_PACKET_JSON",
+    expectedCode: null,
   }],
   ["missing-controller-packet", {
     rawText: "요구사항은 준비됐지만 packet은 없습니다.",

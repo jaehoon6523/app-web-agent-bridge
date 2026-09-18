@@ -119,7 +119,7 @@ test("refresh restores the completed root action trace without an active deliver
   }];
   for (let load = 0; load < 2; load++) {
     const ui = await dashboard(state);
-    const output = renderedText(ui.elements.get("proposalSummary"));
+    const output = renderedText(ui.elements.get("preparationDiagnosticsBody"));
     assert.match(output, /command-start/);
     assert.match(output, /document-root/);
     assert.match(output, /"result": "success"/);
@@ -135,7 +135,7 @@ test("a stored response stays visibly unfinished while acknowledgement is pendin
     validation: { status: "CONFIRMED", checks: [] },
   }];
   const ui = await dashboard(state);
-  const output = renderedText(ui.elements.get("proposalSummary"));
+  const output = renderedText(ui.elements.get("preparationDiagnosticsBody"));
   assert.match(output, /응답 검증·저장 완료 · 전송 정리 확인 필요/u);
   assert.doesNotMatch(output, /응답 처리 완료 · 성공 trace 보존됨/u);
   assert.doesNotMatch(output, /응답 수신·전송 종료 확인됨/u);
@@ -190,7 +190,7 @@ for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"
       assert.equal(ui.elements.get("startPanel").hidden, stage !== "START");
       assert.equal(ui.elements.get("projectPanel").hidden, true);
       assert.equal(ui.elements.get("runPanel").hidden, stage === "START");
-      const step = { START: "stepStart", WORK: "stepWork", RESULT: "stepResult" }[stage];
+      const step = { START: "stepCollect", WORK: "stepWork", RESULT: "stepResult" }[stage];
       assert.equal(ui.elements.get(step).attributes["aria-current"], "step");
       assert.deepEqual(ui.calls.map((call) => call.url), ["/api/dashboard/session", "/api/state"]);
     }
