@@ -65,6 +65,43 @@ export class CodeChangeService {
       })]);
     } finally { clearTimeout(timer); control.signal.removeEventListener("abort", abort); }
   }
+  async waitForWorkerCompletion(id, worker, handle) {
+    this.assertActive(id);
+    const run = this.get(id);
+    const intervalMs = Math.max(250, Math.min(2_000, Math.floor(run.policy.turnTimeoutMs / 20)));
+    let stopped = false, probing = false;
+    const recordProbe = (type, payload) => {
+      const current = this.get(id);
+      if (!current || stopped) return;
+      this.update(id, { events: [...(current.events ?? []), {
+        eventId: `event_${randomUUID()}`, type, createdAt: new Date().toISOString(), payload,
+      }] });
+    };
+    const timer = setInterval(() => {
+      if (stopped || probing) return;
+      probing = true;
+      Promise.resolve(worker.inspect()).then((inspection) => {
+        recordProbe("WORKER_TURN_INSPECTED", {
+          turnId: handle.turnId,
+          runtimeStatus: inspection?.runtimeStatus ?? null,
+          activeTurnId: inspection?.activeTurnId ?? null,
+          lastTerminalTurnId: inspection?.lastTerminalTurnId ?? null,
+          lastTerminalStatus: inspection?.lastTerminalStatus ?? null,
+        });
+      }).catch((error) => {
+        recordProbe("WORKER_TURN_INSPECTION_FAILED", {
+          turnId: handle.turnId,
+          error: redactForEvidence(error.message),
+        });
+      }).finally(() => { probing = false; });
+    }, intervalMs);
+    try {
+      return await this.wait(id, handle.completion);
+    } finally {
+      stopped = true;
+      clearInterval(timer);
+    }
+  }
   recover() {
     for (const run of this.list()) {
       if (run.schemaVersion !== 3) {
@@ -165,9 +202,14 @@ export class CodeChangeService {
         const startedAt = new Date().toISOString();
         const inputRef = this.artifactStore.put(redactForEvidence(text), { mimeType: "text/plain", redacted: true });
         const handle = await this.wait(runId, worker.submitTurn({ text, outputSchema: workerOutputSchema }));
-        this.assertActive(runId); this.update(runId, { workerTurnId: handle.turnId });
+        this.assertActive(runId);
+        const submitted = this.get(runId);
+        this.update(runId, { workerTurnId: handle.turnId, events: [...(submitted.events ?? []), {
+          eventId: `event_${randomUUID()}`, type: "WORKER_TURN_SUBMITTED", createdAt: new Date().toISOString(),
+          payload: { turnId: handle.turnId, provider: this.workerConfig.provider },
+        }] });
         try {
-          completed = await this.wait(runId, handle.completion); this.assertActive(runId);
+          completed = await this.waitForWorkerCompletion(runId, worker, handle); this.assertActive(runId);
           const finishedAt = new Date().toISOString();
           const outputRef = this.artifactStore.put(redactForEvidence(completed.text), { mimeType: "text/plain", redacted: true });
           const current = this.get(runId);
