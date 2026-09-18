@@ -359,14 +359,14 @@ function render() {
   }
   if (recoveryRunId !== run?.runId) {
     recoveryRunId = run?.runId;
-    $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryReason").value = "";
+    $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryDiscard").checked = false;
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
   if (run?.phase === "RECOVERY_REQUIRED") {
     const recoverySteps = [];
     if (!$("recoveryExternal").checked) recoverySteps.push("외부 작업 종료 확인");
     if (!$("recoveryTarget").checked) recoverySteps.push("대상 저장소 상태 확인");
-    if (!$("recoveryReason").value.trim()) recoverySteps.push("확인 내용과 폐기 사유 입력");
+    if (!$("recoveryDiscard").checked) recoverySteps.push("실행 폐기 확인");
     const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || recoverySteps.length > 0;
     const abandonReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
       : !connected ? "서버 연결을 복구해야 실행을 폐기할 수 있습니다."
@@ -374,9 +374,15 @@ function render() {
       : recoverySteps.length ? `다음 항목을 완료하세요: ${recoverySteps.join(", ")}.`
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
     actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
+    const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 다시 시도할 수 있습니다."
+      : caps.has("run.retry") ? "기존 timeout worktree를 폐기하고 같은 요구사항으로 새 Worker turn을 시작합니다."
+      : "후보 생성 전 Worker timeout만 수동 재시도할 수 있습니다.";
+    actionState("retryRun", (operations.runCommand !== "IDLE") || !caps.has("run.retry"), retryReason, retryReason);
   } else {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
+    $("retryRun").disabled = true;
+    $("retryRun").title = "";
   }
   for (const [id, capability] of [["stopRun", "run.stop"], ["applyCode", "code.apply"], ["exportEvidence", "evidence.export"]]) {
     $(id).disabled = !run || operations.runCommand !== "IDLE" || !caps.has(capability);
@@ -763,9 +769,10 @@ $("showUnfinishedRun").addEventListener("click", () => {
   const unfinished = snapshot?.runs?.find((run) => !terminal.has(run.phase));
   if (unfinished) { selected = unfinished.runId; refresh(); }
 });
-for (const id of ["recoveryExternal", "recoveryTarget", "recoveryReason"]) $(id).addEventListener("input", render);
+for (const id of ["recoveryExternal", "recoveryTarget", "recoveryDiscard"]) $(id).addEventListener("input", render);
+$("retryRun").addEventListener("click", () => command("run.retry"));
 $("abandonRun").addEventListener("click", () => {
-  if (!$("abandonRun").disabled) command("run.abandon", { externalTerminationConfirmed:$("recoveryExternal").checked, targetInspected:$("recoveryTarget").checked, reason:$("recoveryReason").value.trim() });
+  if (!$("abandonRun").disabled) command("run.abandon", { externalTerminationConfirmed:$("recoveryExternal").checked, targetInspected:$("recoveryTarget").checked, reason:"USER_CONFIRMED_RECOVERY_DISCARD" });
 });
 $("stopRun").addEventListener("click", () => command("run.stop"));
 $("applyCode").addEventListener("click", () => { const r = snapshot.run; command("code.apply", { candidateId:r.candidate.candidateId, reviewId:r.reviews.at(-1).reviewId, artifactHash:r.capture.artifact.sha256, baseCommit:r.baseCommit }); });

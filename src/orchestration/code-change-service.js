@@ -17,6 +17,19 @@ import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
 
+function retryableWorkerTimeout(run) {
+  const lastTurn = run?.workerTurns?.at(-1);
+  return run?.schemaVersion === 3
+    && run.stage === "RECOVERY_REQUIRED"
+    && run.terminationReason === "EXECUTION_UNCERTAIN"
+    && run.error === "External turn timed out; execution state requires recovery."
+    && lastTurn?.status === "failed"
+    && lastTurn?.metadata?.error === run.error
+    && run.candidate == null && run.capture == null && run.application == null
+    && (run.candidates?.length ?? 0) === 0
+    && (run.reviews?.length ?? 0) === 0;
+}
+
 export class CodeChangeService {
   constructor({ filename, artifactStore, webSession, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
     this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
@@ -305,6 +318,53 @@ export class CodeChangeService {
       return { ...e, ...excerpt(this.artifactStore.read(e.contentRef.sha256).toString("utf8"), payload.startLine, payload.endLine) };
     }
     if (type === "run.reconcile") return this.reconcile(run);
+    if (type === "run.retry") {
+      if (!retryableWorkerTimeout(run) || this.jobs.has(run.runId) || this.workers.has(run.runId)) {
+        throw new Error("Only a settled pre-candidate Worker timeout can be retried.");
+      }
+      const target = GitChangeWorkspace.preflight(run.targetRoot);
+      if (target.baseCommit !== run.baseCommit) {
+        throw new Error("Target HEAD changed after the failed Worker turn; retry is refused.");
+      }
+      if (!run.workspaceRoot || !fs.existsSync(run.workspaceRoot)) {
+        throw new Error("The failed Worker worktree is unavailable; retry cannot prove cleanup.");
+      }
+      const oldWorkspace = new GitChangeWorkspace({
+        workspaceRoot: run.workspaceRoot,
+        baseCommit: run.baseCommit,
+        artifactStore: this.artifactStore,
+        targetRoot: run.targetRoot,
+      });
+      oldWorkspace.cleanup();
+      this.controls.set(run.runId, new AbortController());
+      const previousError = run.error;
+      const previousTurnId = run.workerTurns?.at(-1)?.turnId ?? null;
+      const retryAt = new Date().toISOString();
+      const reset = this.update(run.runId, {
+        stage: "CREATED", workspaceRoot: null, workerThread: null, workerTurnId: null,
+        error: null, terminationReason: null, stopRequested: false,
+        deadlineAt: new Date(Date.now() + run.policy.totalTimeoutMs).toISOString(),
+        recoveryAttempts: [...(run.recoveryAttempts ?? []), {
+          kind: "WORKER_TIMEOUT_RETRY", at: retryAt, previousError, previousTurnId,
+        }],
+      });
+      const totalTimer = setTimeout(() => {
+        const current = this.get(run.runId);
+        if (this.jobs.has(run.runId) && !stopped.has(current.stage)) {
+          void this.terminate(run.runId).catch(() => {});
+          this.update(run.runId, { stage: "RECOVERY_REQUIRED", terminationReason: "TOTAL_TIME_LIMIT", error: "Total time limit reached; verify external termination before recovery." });
+        }
+      }, run.policy.totalTimeoutMs);
+      const job = Promise.resolve().then(() => this.execute(run.runId)).catch(async (error) => {
+        const current = this.get(run.runId);
+        if (!this.closed && !stopped.has(current.stage)) {
+          await this.terminate(run.runId);
+          this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: error.message, terminationReason: Date.now() >= Date.parse(current.deadlineAt) ? "TOTAL_TIME_LIMIT" : "EXECUTION_UNCERTAIN" });
+        }
+      }).finally(() => { clearTimeout(totalTimer); this.jobs.delete(run.runId); });
+      this.jobs.set(run.runId, job);
+      return { runId: reset.runId, status: "RETRY_ACCEPTED" };
+    }
     if (type === "run.abandon") {
       if (run.stage !== "RECOVERY_REQUIRED" || this.jobs.has(run.runId) || this.workers.has(run.runId)) throw new Error("Recovery abandonment requires settled local work; stop active work or restart after checking external termination.");
       if (payload.externalTerminationConfirmed !== true || payload.targetInspected !== true) throw new Error("Confirm external termination and target inspection before abandonment.");
@@ -356,6 +416,7 @@ export class CodeChangeService {
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
+        ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 ? ["code.apply"] : [])] });
   }

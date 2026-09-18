@@ -94,8 +94,9 @@
       <section id="recoveryPanel" hidden><h2>복구 확인 후 실행 폐기</h2><p>CLI 프로세스·검증 작업과 ChatGPT 생성을 직접 종료하고 대상 저장소의 변경을 확인하세요. 기록과 작업 사본은 보존되며, 이 실행은 재개하거나 적용할 수 없게 됩니다.</p>
         <label><input id="recoveryExternal" type="checkbox"> 외부 작업이 모두 종료된 것을 확인했습니다.</label>
         <label><input id="recoveryTarget" type="checkbox"> 대상 저장소의 변경 상태를 확인했습니다.</label>
-        <label for="recoveryReason">확인 내용과 폐기 사유</label><textarea id="recoveryReason" rows="3"></textarea>
-        <button id="abandonRun" disabled>확인 기록 후 실행 폐기</button>
+        <label><input id="recoveryDiscard" type="checkbox"> 이 실행을 폐기합니다.</label>
+        <button id="retryRun" disabled>작업 다시 시도</button>
+        <button id="abandonRun" disabled>실행 폐기</button>
       </section>
       <div class="tabs" role="group" aria-label="기록 종류"><button id="showAudit" aria-pressed="true">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
       <section id="auditPanel"><h2>요구사항별 판정</h2><div id="assessments"></div><h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>후보·검증 증거</h2><div id="evidenceList"></div><details><summary>고정 기준과 후보 상세</summary><pre id="candidateDetails"></pre></details></section>
