@@ -30,66 +30,6 @@ function retryableWorkerTimeout(run) {
     && (run.reviews?.length ?? 0) === 0;
 }
 
-function latestWorkerRuntimeEvent(run) {
-  const events = run?.events ?? [];
-  const workerStage = [...events].reverse().find((event) =>
-    event.type === "STAGE_CHANGED" && event.payload?.stage === "WORKER_RUNNING");
-  const stageAt = workerStage?.createdAt ?? null;
-  return [...events].reverse().find((event) =>
-    event.type === "WORKER_RUNTIME_EVENT"
-      && (!stageAt || String(event.createdAt) >= String(stageAt))) ?? null;
-}
-
-function projectWorkerRuntime(run, preflight) {
-  const configured = preflight?.checks?.codeWorkerExecutableConfigured === true;
-  const latest = latestWorkerRuntimeEvent(run);
-  const runtimeType = latest?.payload?.runtimeType ?? null;
-  const phase = run?.stage ?? null;
-  let processState = configured ? "IDLE" : "UNCONFIGURED";
-  let sessionState = run?.workerThread ? "READY" : "NOT_STARTED";
-  let turnState = run?.workerTurnId ? "ACTIVE" : "NOT_STARTED";
-  let activity = null;
-
-  if (phase === "WORKER_RUNNING") {
-    processState = run?.workerThread ? "RUNNING" : "STARTING";
-    if (runtimeType === "SESSION_READY") sessionState = "READY";
-    if (runtimeType === "TURN_STARTED") turnState = "ACTIVE";
-    if (runtimeType === "TOOL_STARTED") activity = "TOOL_RUNNING";
-    if (runtimeType === "TOOL_COMPLETED") activity = "TOOL_COMPLETED";
-    if (runtimeType === "APPROVAL_REQUESTED") activity = "APPROVAL_WAIT";
-    if (runtimeType === "TURN_FAILED") turnState = "FAILED";
-    if (runtimeType === "TURN_INTERRUPTED") turnState = "INTERRUPTED";
-    if (runtimeType === "SESSION_DISCONNECTED") processState = "DISCONNECTED";
-  } else if (phase === "CANDIDATE_CAPTURE") {
-    processState = "COMPLETE"; turnState = "COMPLETED"; activity = "CANDIDATE_CAPTURE";
-  } else if (phase === "VERIFYING") {
-    processState = "COMPLETE"; turnState = "COMPLETED"; activity = "VERIFYING";
-  } else if (["REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT"].includes(phase)) {
-    processState = "COMPLETE"; turnState = "COMPLETED"; activity = "WEB_AUDIT";
-  } else if (phase === "AWAITING_APPLY") {
-    processState = "COMPLETE"; turnState = "COMPLETED"; activity = "AWAITING_APPLY";
-  } else if (phase === "APPLIED") {
-    processState = "COMPLETE"; turnState = "COMPLETED"; activity = "APPLIED";
-  } else if (phase === "RECOVERY_REQUIRED") {
-    processState = "RECOVERY_REQUIRED"; activity = "RECOVERY_REQUIRED";
-  }
-
-  return Object.freeze({
-    configured,
-    provider: run?.worker?.provider ?? null,
-    model: run?.worker?.model ?? null,
-    processState,
-    sessionState,
-    turnState,
-    activity,
-    toolType: latest?.payload?.toolType ?? null,
-    runtimeType,
-    threadId: latest?.payload?.threadId ?? run?.workerThread?.threadId ?? run?.workerThread ?? null,
-    turnId: latest?.payload?.turnId ?? run?.workerTurnId ?? null,
-    lastActivityAt: latest?.createdAt ?? run?.updatedAt ?? null,
-  });
-}
-
 export class CodeChangeService {
   constructor({ filename, artifactStore, webSession, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
     this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
@@ -124,28 +64,6 @@ export class CodeChangeService {
           Math.min(run.policy.turnTimeoutMs, Math.max(1, Date.parse(run.deadlineAt) - Date.now())));
       })]);
     } finally { clearTimeout(timer); control.signal.removeEventListener("abort", abort); }
-  }
-  recordWorkerRuntimeEvent(id, event) {
-    if (!event || event.type === "TEXT_DELTA") return;
-    const run = this.get(id);
-    if (!run || terminal.has(run.stage)) return;
-    const payload = redactForEvidence({
-      runtimeType: event.type,
-      sourceMethod: event.sourceMethod ?? null,
-      threadId: event.threadId ?? null,
-      turnId: event.turnId ?? null,
-      itemId: event.itemId ?? null,
-      toolType: event.toolType ?? null,
-      status: event.status ?? null,
-      error: event.error ?? null,
-      requestId: event.requestId ?? null,
-    });
-    this.update(id, { events: [...(run.events ?? []), {
-      eventId: `event_${randomUUID()}`,
-      type: "WORKER_RUNTIME_EVENT",
-      createdAt: new Date().toISOString(),
-      payload,
-    }] });
   }
   async waitForWorkerCompletion(id, worker, handle) {
     this.assertActive(id);
@@ -277,12 +195,6 @@ export class CodeChangeService {
       creation.then(async (worker) => { if (this.controls.get(runId)?.signal.aborted || this.closed) await worker.close(); }).catch(() => {});
       const worker = await this.wait(runId, creation);
       this.workers.set(runId, worker);
-      const unsubscribeWorkerEvents = typeof worker.onEvent === "function"
-        ? worker.onEvent((event) => {
-          try { this.recordWorkerRuntimeEvent(runId, event); }
-          catch {}
-        })
-        : null;
       let completed;
       try {
         this.assertActive(runId); await this.wait(runId, worker.start()); this.assertActive(runId);
@@ -333,11 +245,7 @@ export class CodeChangeService {
           }] });
           throw error;
         }
-      } finally {
-        unsubscribeWorkerEvents?.();
-        await worker.close();
-        this.workers.delete(runId);
-      }
+      } finally { await worker.close(); this.workers.delete(runId); }
       this.assertActive(runId);
       if (GitChangeWorkspace.preflight(run.targetRoot).baseCommit !== run.baseCommit) throw new Error("Target changed during implementation; inspect the target before proceeding.");
       const capture = completed.capture;
@@ -550,7 +458,6 @@ export class CodeChangeService {
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
-      workerRuntime: projectWorkerRuntime(record, preflight),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),

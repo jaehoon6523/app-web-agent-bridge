@@ -198,33 +198,6 @@ function runAppearance(phase) {
   if (["WORKER_RUNNING", "CANDIDATE_CAPTURE", "VERIFYING", "REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK", "APPLYING"].includes(phase)) return connected ? "ok running" : "unknown";
   return "unknown";
 }
-function workerRuntimeStatus(runtime) {
-  if (!connected || !runtime) return { state:"unknown", detail:"확인 전" };
-  if (!runtime.configured) return { state:"warn", detail:"경로 설정 필요" };
-  const activityAt = runtime.lastActivityAt ? ` · ${time(runtime.lastActivityAt)}` : "";
-  const toolLabels = {
-    commandExecution:"명령 실행", fileChange:"파일 변경", mcpToolCall:"도구 호출",
-    dynamicToolCall:"도구 호출", collabToolCall:"협업 도구", collabAgentToolCall:"협업 에이전트",
-    webSearch:"웹 검색", imageView:"이미지 확인",
-  };
-  const tool = toolLabels[runtime.toolType] ?? runtime.toolType ?? "도구";
-  if (runtime.processState === "UNCONFIGURED") return { state:"warn", detail:"경로 설정 필요" };
-  if (runtime.processState === "STARTING") return { state:"ok running", detail:"Codex 프로세스 시작 중" };
-  if (runtime.processState === "DISCONNECTED") return { state:"warn", detail:`Codex 연결 끊김${activityAt}` };
-  if (runtime.processState === "RECOVERY_REQUIRED") return { state:"warn", detail:"최근 Worker 상태 복구 필요" };
-  if (runtime.activity === "TOOL_RUNNING") return { state:"ok running", detail:`실행 확인됨 · ${tool} 진행 중${activityAt}` };
-  if (runtime.activity === "TOOL_COMPLETED") return { state:"ok running", detail:`실행 확인됨 · ${tool} 완료${activityAt}` };
-  if (runtime.activity === "APPROVAL_WAIT") return { state:"warn", detail:`실행 확인됨 · Codex 승인 대기${activityAt}` };
-  if (runtime.activity === "CANDIDATE_CAPTURE") return { state:"ok running", detail:"Worker 완료 · 후보 캡처 중" };
-  if (runtime.activity === "VERIFYING") return { state:"ok running", detail:"Worker 완료 · 후보 검증 중" };
-  if (runtime.activity === "WEB_AUDIT") return { state:"ok running", detail:"Worker 완료 · 웹 감사 진행 중" };
-  if (runtime.activity === "AWAITING_APPLY") return { state:"ok", detail:"Worker·웹 감사 완료 · 적용 대기" };
-  if (runtime.activity === "APPLIED") return { state:"ok", detail:"Worker·웹 감사 완료 · 적용됨" };
-  if (runtime.turnState === "ACTIVE") return { state:"ok running", detail:`실행 확인됨 · Worker turn 진행 중${activityAt}` };
-  if (runtime.sessionState === "READY" && runtime.processState === "RUNNING") return { state:"ok running", detail:`Codex 실행 확인 · 세션 준비됨${activityAt}` };
-  if (runtime.processState === "COMPLETE") return { state:"ok", detail:"Worker 실행 완료" };
-  return { state:"ok", detail:"경로 설정됨 · 실행 전" };
-}
 function evidenceLinks(container, refs) {
   const links = node("div", "", "links");
   for (const id of refs ?? []) {
@@ -300,13 +273,14 @@ function render() {
   const checks = preflight?.checks;
   health("apiHealth", "api", connected ? "ok" : "unknown", connected ? "응답 정상" : "응답 확인 필요");
   health("sessionHealth", "session", connected && token ? "ok" : "unknown", connected && token ? "대시보드 인증됨" : "인증 확인 필요");
-  const workerStatus = workerRuntimeStatus(snapshot?.workerRuntime);
-  health("engineHealth", "engine", workerStatus.state, workerStatus.detail);
+  health("engineHealth", "engine", !connected || typeof checks?.codeWorkerExecutableConfigured !== "boolean" ? "unknown" : "warn",
+    !connected || typeof checks?.codeWorkerExecutableConfigured !== "boolean" ? "확인 전" : checks.codeWorkerExecutableConfigured ? "경로 설정됨 · 실제 실행 상태는 확인 전" : "경로 설정 필요");
   health("channelHealth", "channel", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
     !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "확장 인증됨" : "확장 연결 대기");
   signal("serverSignal", "서버", connected ? "ok" : "error", connected ? "연결됨" : "연결 끊김 · npm start 확인 필요");
-  signal("cliSignal", "CLI", connected ? workerStatus.state : "warn",
-    !connected ? "서버 확인 필요" : workerStatus.detail);
+  const cliConfigured = checks?.codeWorkerExecutableConfigured === true;
+  signal("cliSignal", "CLI", connected ? (cliConfigured ? "ok" : "warn") : "warn",
+    !connected ? "서버 확인 필요" : cliConfigured ? "경로 설정됨" : "경로 설정 필요");
   const webAuthenticated = checks?.extensionAuthenticated === true;
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
     !connected ? "서버 확인 필요" : webAuthenticated ? "확장 인증됨" : "확장 연결 대기 · 확장 팝업 확인");
