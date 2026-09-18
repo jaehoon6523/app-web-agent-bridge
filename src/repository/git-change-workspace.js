@@ -105,6 +105,11 @@ export class GitChangeWorkspace {
     requireClean(root);
     return { targetRoot: root, baseCommit: head(root) };
   }
+  static pruneMissingWorktrees(targetRoot) {
+    const root = repositoryRoot(targetRoot);
+    git(root, ["worktree", "prune"]);
+    return { targetRoot: root };
+  }
   static targetApplicationState({ capture, targetRoot, artifactStore }) {
     const root = repositoryRoot(targetRoot);
     artifactStore.verify(capture.artifact.sha256);

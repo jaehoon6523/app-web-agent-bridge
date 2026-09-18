@@ -29,6 +29,10 @@ test("settled pre-candidate Worker timeout can be manually retried without chang
   const restarted = f.service.get(completed.runId);
   assert.equal(restarted.error, "Server restarted during execution. No automatic resubmission or patch application.");
   assert.ok(f.service.snapshot(completed.runId, {}).commandCapabilities.includes("run.retry"));
+  if (restarted.workspaceRoot) {
+    const fs = await import("node:fs");
+    fs.rmSync(restarted.workspaceRoot, { recursive: true, force: true });
+  }
   const result = await f.service.command("run.retry", { runId: completed.runId, expectedVersion: restarted.version });
   assert.equal(result.status, "RETRY_ACCEPTED");
   await f.service.jobs.get(completed.runId);

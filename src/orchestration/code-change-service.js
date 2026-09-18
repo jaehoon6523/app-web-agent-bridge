@@ -143,11 +143,6 @@ export class CodeChangeService {
   async execute(runId) {
     this.assertActive(runId);
     let run = this.update(runId, { stage: "PROVISIONING" });
-    const binding = createWebSessionBinding({ sessionId: `web_${runId}`, runId, tabId: null, windowId: null,
-      conversationUrl: run.conversationUrl, conversationId: run.conversationId, title: null,
-      lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "NEEDS_REBIND" });
-    await this.wait(runId, this.web.resume({ binding }));
-    this.assertActive(runId);
     const root = path.join(path.dirname(run.targetRoot), ".bridge-worktrees");
     fs.mkdirSync(root, { recursive: true });
     const workspace = GitChangeWorkspace.create({ targetRoot: run.targetRoot, workspaceRoot: path.join(root, runId), artifactStore: this.artifactStore });
@@ -230,6 +225,12 @@ export class CodeChangeService {
           evidenceRecord(this.artifactStore, candidateId, "AGENT_CLAIM", report, {}, "AGENT")],
         messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: (completed.provider || this.workerConfig.provider) === "codex" ? "CODEX_AGENT" : "CODE_WORKER", workerProvider: completed.provider || this.workerConfig.provider, content: completed.text, createdAt: new Date().toISOString() }] });
       for (const verification of run.verifications) await performVerification(this, runId, workspace, verification);
+      run = this.get(runId);
+      const binding = createWebSessionBinding({ sessionId: `web_${runId}`, runId, tabId: null, windowId: null,
+        conversationUrl: run.conversationUrl, conversationId: run.conversationId, title: null,
+        lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "NEEDS_REBIND" });
+      await this.wait(runId, this.web.resume({ binding }));
+      this.assertActive(runId);
       await auditCandidate(this, runId, workspace);
       if (this.get(runId).stage !== "REWORK") return;
     }
@@ -326,16 +327,17 @@ export class CodeChangeService {
       if (target.baseCommit !== run.baseCommit) {
         throw new Error("Target HEAD changed after the failed Worker turn; retry is refused.");
       }
-      if (!run.workspaceRoot || !fs.existsSync(run.workspaceRoot)) {
-        throw new Error("The failed Worker worktree is unavailable; retry cannot prove cleanup.");
+      if (run.workspaceRoot && fs.existsSync(run.workspaceRoot)) {
+        const oldWorkspace = new GitChangeWorkspace({
+          workspaceRoot: run.workspaceRoot,
+          baseCommit: run.baseCommit,
+          artifactStore: this.artifactStore,
+          targetRoot: run.targetRoot,
+        });
+        oldWorkspace.cleanup();
+      } else if (run.workspaceRoot) {
+        GitChangeWorkspace.pruneMissingWorktrees(run.targetRoot);
       }
-      const oldWorkspace = new GitChangeWorkspace({
-        workspaceRoot: run.workspaceRoot,
-        baseCommit: run.baseCommit,
-        artifactStore: this.artifactStore,
-        targetRoot: run.targetRoot,
-      });
-      oldWorkspace.cleanup();
       this.controls.set(run.runId, new AbortController());
       const previousError = run.error;
       const previousTurnId = run.workerTurns?.at(-1)?.turnId ?? null;
