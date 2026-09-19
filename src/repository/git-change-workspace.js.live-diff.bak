@@ -146,24 +146,6 @@ export class GitChangeWorkspace {
     this.targetRoot = targetRoot ? repositoryRoot(targetRoot) : null;
   }
 
-  inspectDiff() {
-    if (head(this.root) !== this.baseCommit) throw new Error("Worker changed the base commit.");
-    const candidateTree = tree(this.root, this.baseCommit);
-    const patch = git(this.root, ["diff", "--binary", "--full-index", "--no-ext-diff",
-      "--no-textconv", "--no-renames", this.baseCommit, candidateTree, "--"]);
-    const numstat = git(this.root, ["diff", "--numstat", "-z", "--no-renames",
-      this.baseCommit, candidateTree, "--"]).toString("utf8").split("\0").filter(Boolean);
-    let additions = 0, deletions = 0, binaryFiles = 0;
-    for (const row of numstat) {
-      const firstTab = row.indexOf("\t"), secondTab = row.indexOf("\t", firstTab + 1);
-      if (firstTab < 0 || secondTab < 0) continue;
-      const added = row.slice(0, firstTab), deleted = row.slice(firstTab + 1, secondTab);
-      if (added === "-" || deleted === "-") { binaryFiles += 1; continue; }
-      additions += Number(added) || 0; deletions += Number(deleted) || 0;
-    }
-    return Object.freeze({ changedFiles:numstat.length, additions, deletions, binaryFiles, patchBytes:patch.length });
-  }
-
   cleanup() {
     if (!fs.existsSync(this.root)) return;
     if (!this.targetRoot || this.root === this.targetRoot) throw new Error("Cleanup requires a separate registered worktree.");

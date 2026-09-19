@@ -40,20 +40,9 @@ function latestWorkerRuntimeEvent(run) {
       && (!stageAt || String(event.createdAt) >= String(stageAt))) ?? null;
 }
 
-function latestWorkerInspectionEvent(run) {
-  const events = run?.events ?? [];
-  const workerStage = [...events].reverse().find((event) =>
-    event.type === "STAGE_CHANGED" && event.payload?.stage === "WORKER_RUNNING");
-  const stageAt = workerStage?.createdAt ?? null;
-  return [...events].reverse().find((event) =>
-    event.type === "WORKER_TURN_INSPECTED"
-      && (!stageAt || String(event.createdAt) >= String(stageAt))) ?? null;
-}
-
 function projectWorkerRuntime(run, preflight) {
   const configured = preflight?.checks?.codeWorkerExecutableConfigured === true;
   const latest = latestWorkerRuntimeEvent(run);
-  const inspection = latestWorkerInspectionEvent(run);
   const runtimeType = latest?.payload?.runtimeType ?? null;
   const phase = run?.stage ?? null;
   let processState = configured ? "IDLE" : "UNCONFIGURED";
@@ -95,7 +84,6 @@ function projectWorkerRuntime(run, preflight) {
     activity,
     toolType: latest?.payload?.toolType ?? null,
     runtimeType,
-    diff: inspection?.payload?.diff ?? null,
     threadId: latest?.payload?.threadId ?? run?.workerThread?.threadId ?? run?.workerThread ?? null,
     turnId: latest?.payload?.turnId ?? run?.workerTurnId ?? null,
     lastActivityAt: latest?.createdAt ?? run?.updatedAt ?? null,
@@ -159,7 +147,7 @@ export class CodeChangeService {
       payload,
     }] });
   }
-  async waitForWorkerCompletion(id, worker, handle, workspace) {
+  async waitForWorkerCompletion(id, worker, handle) {
     this.assertActive(id);
     const run = this.get(id);
     const intervalMs = Math.max(250, Math.min(2_000, Math.floor(run.policy.turnTimeoutMs / 20)));
@@ -175,16 +163,12 @@ export class CodeChangeService {
       if (stopped || probing) return;
       probing = true;
       Promise.resolve(worker.inspect()).then((inspection) => {
-        let diff = null;
-        try { diff = workspace?.inspectDiff?.() ?? null; }
-        catch (error) { diff = { error: redactForEvidence(error.message) }; }
         recordProbe("WORKER_TURN_INSPECTED", {
           turnId: handle.turnId,
           runtimeStatus: inspection?.runtimeStatus ?? null,
           activeTurnId: inspection?.activeTurnId ?? null,
           lastTerminalTurnId: inspection?.lastTerminalTurnId ?? null,
           lastTerminalStatus: inspection?.lastTerminalStatus ?? null,
-          diff,
         });
       }).catch((error) => {
         recordProbe("WORKER_TURN_INSPECTION_FAILED", {
@@ -313,7 +297,7 @@ export class CodeChangeService {
           payload: { turnId: handle.turnId, provider: this.workerConfig.provider },
         }] });
         try {
-          completed = await this.waitForWorkerCompletion(runId, worker, handle, workspace); this.assertActive(runId);
+          completed = await this.waitForWorkerCompletion(runId, worker, handle); this.assertActive(runId);
           const finishedAt = new Date().toISOString();
           const outputRef = this.artifactStore.put(redactForEvidence(completed.text), { mimeType: "text/plain", redacted: true });
           const current = this.get(runId);
