@@ -70,17 +70,23 @@ export async function auditCandidate(service, runId, workspace) {
     let run = service.get(runId);
     const requestId = `audit_${randomUUID()}`;
     const context = auditContext(run, requestId);
+    const candidateDiffHash = run.capture?.artifact?.sha256 ?? null;
+    if (!candidateDiffHash || candidateDiffHash !== run.candidate?.patchHash) {
+      throw new Error("Candidate diff artifact does not match candidate patch hash.");
+    }
+    service.artifactStore.verify(candidateDiffHash);
+    const candidateDiff = service.artifactStore.read(candidateDiffHash).toString("utf8");
     const evidence = run.evidence.filter((e) => e.candidateId === context.candidateId).map((e) => {
       try { return { ...e, excerpt: excerpt(service.artifactStore.read(e.contentRef.sha256).toString("utf8"), 1, 80) }; }
       catch (error) { return { ...e, unavailable: error.message }; }
     });
-    const data = { context, objective: run.objective, candidate: run.candidate, evidence,
+    const data = { context, objective: run.objective, candidate: run.candidate, candidateDiff, candidateDiffHash, evidence,
       registeredVerifications: run.verifications.map(({ verificationId, purpose }) => ({ verificationId, purpose })), feedback };
     const prompt = buildCodeReviewPrompt(redactForEvidence(data));
     // Persist intent and exact prompt before any external submission.
     run = service.update(runId, { stage: repairs ? "REPORT_REPAIR" : "REVIEW_RUNNING", reviewTurnId: requestId,
       requests: [...run.requests, { requestId, candidateId: context.candidateId, requirementsRef: context.requirementsRef,
-        status: "INTENT", promptRef: service.artifactStore.put(prompt, { mimeType: "text/plain", redacted: true }), createdAt: new Date().toISOString() }] });
+        patchHash: candidateDiffHash, status: "INTENT", promptRef: service.artifactStore.put(prompt, { mimeType: "text/plain", redacted: true }), createdAt: new Date().toISOString() }] });
     const response = await service.wait(runId, (async () => {
       const handle = await service.web.submitTurn({ runId, turnId: requestId, controllerMessageId: requestId, text: prompt,
         timeoutMs: run.policy.turnTimeoutMs,
@@ -94,6 +100,9 @@ export async function auditCandidate(service, runId, workspace) {
     if (response.turnId !== requestId || response.binding?.runId !== runId || response.binding?.conversationId !== run.conversationId) throw new Error("Review turn binding changed.");
     run = service.get(runId);
     if (run.reviewTurnId !== requestId || run.candidate.candidateId !== context.candidateId) throw new Error("Review request is no longer current.");
+    if (run.capture?.artifact?.sha256 !== candidateDiffHash || run.candidate?.patchHash !== candidateDiffHash) {
+      throw new Error("Review candidate diff changed after submission.");
+    }
     const responseRef = service.artifactStore.put(JSON.stringify(redactForEvidence(response)), { mimeType: "application/json", redacted: true });
     service.update(runId, { requests: run.requests.map((r) => r.requestId === requestId ? { ...r, status: "RECEIVED", responseRef } : r),
       messages: [...run.messages, { messageId: requestId, fromActor: "CHATGPT_WEB_AGENT", content: JSON.stringify(response.packet), createdAt: new Date().toISOString() }] });
@@ -103,8 +112,14 @@ export async function auditCandidate(service, runId, workspace) {
     try {
       validateAuditResponse(response.packet, context);
       if (response.packet.type === "REVIEW_REPORT") result = evaluateCodeReview(response.packet, context);
-    } catch (error) {
-      feedback = { kind: "REPORT_REPAIR", error: error.message, instruction: "Correct the report only; candidate code is unchanged." };
+    } catch (error) {      feedback = {
+        kind: "REPORT_REPAIR",
+        error: error.message,
+        instruction: "Return only a corrected controller packet. Candidate code, candidateDiff and requirements are unchanged.",
+        candidateId: context.candidateId,
+        candidateDiffHash,
+        previousResponse: response.rawText ?? response.body ?? response.packetText ?? JSON.stringify(response.packet),
+      };
       if (repairs++ >= run.policy.maxFormatRepairs) {
         service.update(runId, { stage: "HOLD", auditResult: "HOLD", terminationReason: "REPORT_REPAIR_LIMIT", error: error.message });
         return;
