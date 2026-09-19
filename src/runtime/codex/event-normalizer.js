@@ -49,6 +49,8 @@ export class CodexEventNormalizer {
       return freezeEvent(RuntimeEventType.TOOL_STARTED, {
         ...common,
         toolType: params.item.type,
+        command: params.item.command ?? null,
+        cwd: params.item.cwd ?? null,
       });
     }
     if (method === "item/completed" && TOOL_ITEM_TYPES.has(params.item?.type)) {
@@ -56,6 +58,12 @@ export class CodexEventNormalizer {
         ...common,
         toolType: params.item.type,
         status: params.item.status || null,
+        command: params.item.command ?? null,
+        cwd: params.item.cwd ?? null,
+        exitCode: Number.isInteger(params.item.exitCode) ? params.item.exitCode : null,
+        aggregatedOutput: typeof params.item.aggregatedOutput === "string"
+          ? params.item.aggregatedOutput
+          : null,
       });
     }
     if (method === "turn/completed") {

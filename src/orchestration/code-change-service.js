@@ -31,10 +31,11 @@ function decideWorkerApproval(event, workspaceRoot) {
   if (!["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(event.sourceMethod)) return reject();
   if (event.networkApprovalContext != null) return reject();
 
-  const requestedRoot = event.sourceMethod === "item/commandExecution/requestApproval"
-    ? event.cwd
-    : event.grantRoot;
-  if (!isInsideWorkspace(workspaceRoot, requestedRoot)) return reject();
+  if (event.sourceMethod === "item/commandExecution/requestApproval") {
+    if (!isInsideWorkspace(workspaceRoot, event.cwd)) return reject();
+  } else if (event.grantRoot != null && !isInsideWorkspace(workspaceRoot, event.grantRoot)) {
+    return reject();
+  }
   return offered.has("accept") ? "accept" : reject();
 }
 
@@ -61,20 +62,9 @@ function latestWorkerRuntimeEvent(run) {
       && (!stageAt || String(event.createdAt) >= String(stageAt))) ?? null;
 }
 
-function latestWorkerInspectionEvent(run) {
-  const events = run?.events ?? [];
-  const workerStage = [...events].reverse().find((event) =>
-    event.type === "STAGE_CHANGED" && event.payload?.stage === "WORKER_RUNNING");
-  const stageAt = workerStage?.createdAt ?? null;
-  return [...events].reverse().find((event) =>
-    event.type === "WORKER_TURN_INSPECTED"
-      && (!stageAt || String(event.createdAt) >= String(stageAt))) ?? null;
-}
-
-function projectWorkerRuntime(run, preflight) {
+function projectWorkerRuntime(run, preflight, inspection = null) {
   const configured = preflight?.checks?.codeWorkerExecutableConfigured === true;
   const latest = latestWorkerRuntimeEvent(run);
-  const inspection = latestWorkerInspectionEvent(run);
   const runtimeType = latest?.payload?.runtimeType ?? null;
   const phase = run?.stage ?? null;
   let processState = configured ? "IDLE" : "UNCONFIGURED";
@@ -116,10 +106,11 @@ function projectWorkerRuntime(run, preflight) {
     activity,
     toolType: latest?.payload?.toolType ?? null,
     runtimeType,
-    diff: inspection?.payload?.diff ?? null,
+    diff: inspection?.diff ?? null,
+    inspectionError: inspection?.error ?? null,
     threadId: latest?.payload?.threadId ?? run?.workerThread?.threadId ?? run?.workerThread ?? null,
     turnId: latest?.payload?.turnId ?? run?.workerTurnId ?? null,
-    lastActivityAt: latest?.createdAt ?? run?.updatedAt ?? null,
+    lastActivityAt: inspection?.inspectedAt ?? latest?.createdAt ?? run?.updatedAt ?? null,
   });
 }
 
@@ -128,7 +119,8 @@ export class CodeChangeService {
     this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
     this.project = project; this.workerConfig = workerConfig ?? { provider: "codex", model: null };
     this.createWorker = createWorker;
-    this.jobs = new Map(); this.workers = new Map(); this.controls = new Map(); this.closed = false;
+    this.jobs = new Map(); this.workers = new Map(); this.controls = new Map();
+    this.workerInspections = new Map(); this.closed = false;
     this.recover();
   }
   list() { return this.store.list(); }
@@ -172,6 +164,13 @@ export class CodeChangeService {
       status: event.status ?? null,
       error: event.error ?? null,
       requestId: event.requestId ?? null,
+      reason: event.reason ?? null,
+      command: event.command ?? null,
+      cwd: event.cwd ?? null,
+      grantRoot: event.grantRoot ?? null,
+      availableDecisions: event.availableDecisions ?? null,
+      exitCode: event.exitCode ?? null,
+      aggregatedOutput: event.aggregatedOutput ?? null,
     });
     this.update(id, { events: [...(run.events ?? []), {
       eventId: `event_${randomUUID()}`,
@@ -213,12 +212,13 @@ export class CodeChangeService {
     const run = this.get(id);
     const intervalMs = Math.max(250, Math.min(2_000, Math.floor(run.policy.turnTimeoutMs / 20)));
     let stopped = false, probing = false;
-    const recordProbe = (type, payload) => {
-      const current = this.get(id);
-      if (!current || stopped) return;
-      this.update(id, { events: [...(current.events ?? []), {
-        eventId: `event_${randomUUID()}`, type, createdAt: new Date().toISOString(), payload,
-      }] });
+    const updateInspection = (value) => {
+      if (stopped || !this.get(id)) return;
+      this.workerInspections.set(id, Object.freeze({
+        turnId: handle.turnId,
+        inspectedAt: new Date().toISOString(),
+        ...value,
+      }));
     };
     const timer = setInterval(() => {
       if (stopped || probing) return;
@@ -227,8 +227,7 @@ export class CodeChangeService {
         let diff = null;
         try { diff = workspace?.inspectDiff?.() ?? null; }
         catch (error) { diff = { error: redactForEvidence(error.message) }; }
-        recordProbe("WORKER_TURN_INSPECTED", {
-          turnId: handle.turnId,
+        updateInspection({
           runtimeStatus: inspection?.runtimeStatus ?? null,
           activeTurnId: inspection?.activeTurnId ?? null,
           lastTerminalTurnId: inspection?.lastTerminalTurnId ?? null,
@@ -236,8 +235,7 @@ export class CodeChangeService {
           diff,
         });
       }).catch((error) => {
-        recordProbe("WORKER_TURN_INSPECTION_FAILED", {
-          turnId: handle.turnId,
+        updateInspection({
           error: redactForEvidence(error.message),
         });
       }).finally(() => { probing = false; });
@@ -326,6 +324,7 @@ export class CodeChangeService {
   }
   async execute(runId) {
     this.assertActive(runId);
+    this.workerInspections.delete(runId);
     let run = this.update(runId, { stage: "PROVISIONING" });
     const root = path.join(path.dirname(run.targetRoot), ".bridge-worktrees");
     fs.mkdirSync(root, { recursive: true });
@@ -630,7 +629,7 @@ export class CodeChangeService {
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
-      workerRuntime: projectWorkerRuntime(record, preflight),
+      workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
@@ -642,6 +641,7 @@ export class CodeChangeService {
     this.closed = true;
     for (const id of this.jobs.keys()) await this.terminate(id);
     await Promise.allSettled([...this.jobs.values()]);
+    this.workerInspections.clear();
     this.store.close();
   }
 }

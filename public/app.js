@@ -396,19 +396,16 @@ function render() {
   }
   if (recoveryRunId !== run?.runId) {
     recoveryRunId = run?.runId;
-    $("recoveryExternal").checked = false; $("recoveryTarget").checked = false; $("recoveryDiscard").checked = false;
+    $("recoveryConfirm").checked = false;
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
   if (run?.phase === "RECOVERY_REQUIRED") {
-    const recoverySteps = [];
-    if (!$("recoveryExternal").checked) recoverySteps.push("외부 작업 종료 확인");
-    if (!$("recoveryTarget").checked) recoverySteps.push("대상 저장소 상태 확인");
-    if (!$("recoveryDiscard").checked) recoverySteps.push("실행 폐기 확인");
-    const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || recoverySteps.length > 0;
+    const recoveryConfirmed = $("recoveryConfirm").checked;
+    const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || !recoveryConfirmed;
     const abandonReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
       : !connected ? "서버 연결을 복구해야 실행을 폐기할 수 있습니다."
       : !caps.has("run.abandon") ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
-      : recoverySteps.length ? `다음 항목을 완료하세요: ${recoverySteps.join(", ")}.`
+      : !recoveryConfirmed ? "외부 작업 종료·대상 저장소 상태 확인·실행 폐기를 한 번에 확인하세요."
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
     actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 다시 시도할 수 있습니다."
@@ -434,7 +431,7 @@ function render() {
   const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
     : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
     : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."
-    : run.phase === "RECOVERY_REQUIRED" ? "자동 중단 여부를 확정할 수 없습니다. 아래 복구 확인 3개 항목을 완료한 뒤 ‘확인 기록 후 실행 폐기’를 누르세요."
+    : run.phase === "RECOVERY_REQUIRED" ? "자동 중단 여부를 확정할 수 없습니다. 아래 확인 항목을 체크한 뒤 ‘실행 폐기’를 누르세요."
     : caps.has("run.stop") ? "현재 작업을 중단할 수 있습니다. ‘작업 중단’을 누르면 후속 구현·감사를 멈추고 기록은 보존합니다."
     : run.phase === "APPLYING" ? "코드를 적용 중이라 지금은 중단할 수 없습니다. 적용 결과가 확정된 뒤 다음 행동을 선택하세요."
     : "현재 단계에서는 중단 명령이 비활성입니다. 상태가 바뀌는지 확인하고, 복구 필요 상태가 되면 복구 확인 절차를 진행하세요.";
@@ -814,10 +811,13 @@ $("showUnfinishedRun").addEventListener("click", () => {
   const unfinished = snapshot?.runs?.find((run) => !terminal.has(run.phase));
   if (unfinished) { selected = unfinished.runId; refresh(); }
 });
-for (const id of ["recoveryExternal", "recoveryTarget", "recoveryDiscard"]) $(id).addEventListener("input", render);
+$("recoveryConfirm").addEventListener("input", render);
 $("retryRun").addEventListener("click", () => command("run.retry"));
 $("abandonRun").addEventListener("click", () => {
-  if (!$("abandonRun").disabled) command("run.abandon", { externalTerminationConfirmed:$("recoveryExternal").checked, targetInspected:$("recoveryTarget").checked, reason:"USER_CONFIRMED_RECOVERY_DISCARD" });
+  if (!$("abandonRun").disabled) {
+    const confirmed = $("recoveryConfirm").checked;
+    command("run.abandon", { externalTerminationConfirmed:confirmed, targetInspected:confirmed, reason:"USER_CONFIRMED_RECOVERY_DISCARD" });
+  }
 });
 $("stopRun").addEventListener("click", () => command("run.stop"));
 $("applyCode").addEventListener("click", () => { const r = snapshot.run; command("code.apply", { candidateId:r.candidate.candidateId, reviewId:r.reviews.at(-1).reviewId, artifactHash:r.capture.artifact.sha256, baseCommit:r.baseCommit }); });
