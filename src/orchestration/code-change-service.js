@@ -13,33 +13,10 @@ import { evaluateCodeReview } from "../domain/code-review.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts.js";
+import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
 
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
-
-function isInsideWorkspace(workspaceRoot, candidate) {
-  if (typeof workspaceRoot !== "string" || !workspaceRoot || typeof candidate !== "string" || !candidate) return false;
-  const root = path.resolve(workspaceRoot);
-  const target = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(root, candidate);
-  return target === root || target.startsWith(`${root}${path.sep}`);
-}
-
-function decideWorkerApproval(event, workspaceRoot, fileChanges = null) {
-  const offered = new Set(Array.isArray(event?.availableDecisions) ? event.availableDecisions : []);
-  const reject = () => offered.has("decline") ? "decline" : offered.has("cancel") ? "cancel" : null;
-  if (!event || event.type !== "APPROVAL_REQUESTED") return null;
-  if (!["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(event.sourceMethod)) return reject();
-  if (event.networkApprovalContext != null) return reject();
-
-  if (event.sourceMethod === "item/commandExecution/requestApproval") {
-    if (!isInsideWorkspace(workspaceRoot, event.cwd)) return reject();
-  } else {
-    if (event.grantRoot != null && !isInsideWorkspace(workspaceRoot, event.grantRoot)) return reject();
-    if (!Array.isArray(fileChanges) || fileChanges.length === 0) return reject();
-    if (fileChanges.some((change) => !isInsideWorkspace(workspaceRoot, change?.path))) return reject();
-  }
-  return offered.has("accept") ? "accept" : reject();
-}
 
 function retryableWorkerTimeout(run) {
   const lastTurn = run?.workerTurns?.at(-1);
@@ -182,11 +159,10 @@ export class CodeChangeService {
       payload,
     }] });
   }
-  respondToWorkerApproval(id, worker, workspaceRoot, event, fileChanges = null) {
+  respondToWorkerApproval(id, worker, event, decision) {
     if (typeof worker?.respondToApproval !== "function") {
       throw new Error("Worker approval response capability is unavailable.");
     }
-    const decision = decideWorkerApproval(event, workspaceRoot, fileChanges);
     if (!decision) throw new Error("Worker approval request has no safe supported decision.");
     const response = worker.respondToApproval({
       requestId: event.requestId,
@@ -344,22 +320,14 @@ export class CodeChangeService {
       creation.then(async (worker) => { if (this.controls.get(runId)?.signal.aborted || this.closed) await worker.close(); }).catch(() => {});
       const worker = await this.wait(runId, creation);
       this.workers.set(runId, worker);
-      const fileChangesByItem = new Map();
+      const approvalAuthority = createWorkerApprovalAuthority(workspace.root);
       const unsubscribeWorkerEvents = typeof worker.onEvent === "function"
         ? worker.onEvent((event) => {
           try {
             this.recordWorkerRuntimeEvent(runId, event);
-            if (event?.type === "TOOL_STARTED" && event.toolType === "fileChange" && event.itemId) {
-              fileChangesByItem.set(event.itemId, Array.isArray(event.changes) ? event.changes : []);
-            }
+            approvalAuthority.observe(event);
             if (event?.type === "APPROVAL_REQUESTED") {
-              const fileChanges = event.sourceMethod === "item/fileChange/requestApproval"
-                ? fileChangesByItem.get(event.itemId) ?? null
-                : null;
-              this.respondToWorkerApproval(runId, worker, workspace.root, event, fileChanges);
-            }
-            if (event?.type === "TOOL_COMPLETED" && event.toolType === "fileChange" && event.itemId) {
-              fileChangesByItem.delete(event.itemId);
+              this.respondToWorkerApproval(runId, worker, event, approvalAuthority.decide(event));
             }
           } catch (error) {
             const current = this.get(runId);
@@ -427,6 +395,7 @@ export class CodeChangeService {
         }
       } finally {
         unsubscribeWorkerEvents?.();
+        approvalAuthority.clear();
         await worker.close();
         this.workers.delete(runId);
       }

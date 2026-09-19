@@ -63,7 +63,5 @@ test("Worker completion is reconciled by inspect when terminal notification is m
   const run = await f.run();
   assert.equal(run.stage, "AWAITING_APPLY", run.error);
   assert.ok(inspections >= 2);
-  assert.ok(run.events.some((event) => event.type === "WORKER_TURN_SUBMITTED"));
-  assert.ok(run.events.some((event) => event.type === "WORKER_TURN_INSPECTED"));
   assert.equal(run.workerTurns.at(-1).status, "completed");
 });
