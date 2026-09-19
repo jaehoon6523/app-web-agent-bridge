@@ -67,6 +67,21 @@ function assertPacketJsonDepth(value, maxDepth) {
   visit(value, 1);
 }
 
+const DOM_SAFE_PACKET_OPEN = "CONTROLLER_PACKET_BEGIN";
+const DOM_SAFE_PACKET_CLOSE = "CONTROLLER_PACKET_END";
+const LEGACY_PACKET_OPEN = "<controller_packet>";
+const LEGACY_PACKET_CLOSE = "</controller_packet>";
+
+function packetFraming(trimmedEnd) {
+  if (trimmedEnd.endsWith(DOM_SAFE_PACKET_CLOSE)) {
+    return { opening: DOM_SAFE_PACKET_OPEN, closing: DOM_SAFE_PACKET_CLOSE };
+  }
+  if (trimmedEnd.endsWith(LEGACY_PACKET_CLOSE)) {
+    return { opening: LEGACY_PACKET_OPEN, closing: LEGACY_PACKET_CLOSE };
+  }
+  return null;
+}
+
 function parsePacketJson(packetText) {
   try { return JSON.parse(packetText); }
   catch (cause) {
@@ -86,23 +101,23 @@ export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth =
     );
   }
 
-  const closing = "</controller_packet>";
   const trimmedEnd = rawText.trimEnd();
-  if (!trimmedEnd.endsWith(closing)) {
+  const framing = packetFraming(trimmedEnd);
+  if (!framing) {
     throw new ControllerPacketEnvelopeError(
       "Agent response does not end with a controller packet.",
       "CONTROLLER_PACKET_MISSING",
     );
   }
+  const { opening, closing } = framing;
   const closeOffset = trimmedEnd.length - closing.length;
   if (!lineStart(trimmedEnd, closeOffset) || !outsideMarkdownFence(trimmedEnd, closeOffset)) {
     throw new ControllerPacketEnvelopeError(
-      "The final controller packet closing tag must be an unquoted standalone line.",
+      "The final controller packet closing marker must be an unquoted standalone line.",
       "CONTROLLER_PACKET_AMBIGUOUS",
     );
   }
 
-  const opening = "<controller_packet>";
   let openOffset = trimmedEnd.lastIndexOf(opening, closeOffset - 1);
   while (
     openOffset >= 0
@@ -112,7 +127,7 @@ export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth =
   }
   if (openOffset < 0) {
     throw new ControllerPacketEnvelopeError(
-      "The final controller packet has no unquoted standalone opening tag.",
+      "The final controller packet has no unquoted standalone opening marker.",
       "CONTROLLER_PACKET_AMBIGUOUS",
     );
   }
@@ -120,7 +135,7 @@ export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth =
   const afterOpening = trimmedEnd.slice(openingLineEnd, closeOffset);
   if (!/^\r?\n/u.test(afterOpening)) {
     throw new ControllerPacketEnvelopeError(
-      "The controller packet JSON must start on the line after its opening tag.",
+      "The controller packet JSON must start on the line after its opening marker.",
       "CONTROLLER_PACKET_AMBIGUOUS",
     );
   }
