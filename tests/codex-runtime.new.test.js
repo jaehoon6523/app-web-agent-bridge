@@ -586,6 +586,49 @@ test("approval bridge preserves empty offers and requires the exact proposed exe
   }]);
 });
 
+test("file-change approval defaults decisions only when the server omits the offer list", () => {
+  const responses = [];
+  const bridge = new CodexApprovalBridge({
+    peer: { respond: (id, result) => responses.push({ id, result }) },
+  });
+
+  bridge.capture({
+    id: "file-defaults",
+    method: "item/fileChange/requestApproval",
+    params: {
+      threadId: "thread-file",
+      turnId: "turn-file",
+      itemId: "item-file",
+    },
+  });
+  const pending = bridge.pendingApprovals.find((entry) => entry.requestId === "file-defaults");
+  assert.deepEqual(pending.availableDecisions, ["accept", "acceptForSession", "decline", "cancel"]);
+  bridge.respond({
+    requestId: "file-defaults",
+    threadId: "thread-file",
+    turnId: "turn-file",
+    decision: "accept",
+  });
+  assert.deepEqual(responses, [{ id: "file-defaults", result: { decision: "accept" } }]);
+
+  bridge.capture({
+    id: "file-explicit-empty",
+    method: "item/fileChange/requestApproval",
+    params: {
+      threadId: "thread-file",
+      turnId: "turn-file-empty",
+      itemId: "item-file-empty",
+      availableDecisions: [],
+    },
+  });
+  assert.throws(() => bridge.respond({
+    requestId: "file-explicit-empty",
+    threadId: "thread-file",
+    turnId: "turn-file-empty",
+    decision: "accept",
+  }), { code: "CODEX_APPROVAL_DECISION_NOT_OFFERED" });
+});
+
 test("interrupt RPC is not completion; turn/interrupted confirms the operation", async (t) => {
   const manager = await createManager();
   t.after(() => manager.close());

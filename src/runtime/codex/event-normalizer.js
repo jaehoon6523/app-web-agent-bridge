@@ -51,6 +51,14 @@ export class CodexEventNormalizer {
         toolType: params.item.type,
         command: params.item.command ?? null,
         cwd: params.item.cwd ?? null,
+        changes: params.item.type === "fileChange" && Array.isArray(params.item.changes)
+          ? params.item.changes
+            .filter((change) => typeof change?.path === "string" && change.path !== "")
+            .map((change) => Object.freeze({
+              path: change.path,
+              kind: typeof change.kind === "string" ? change.kind : null,
+            }))
+          : null,
       });
     }
     if (method === "item/completed" && TOOL_ITEM_TYPES.has(params.item?.type)) {

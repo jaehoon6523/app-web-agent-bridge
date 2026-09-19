@@ -147,7 +147,9 @@ export class CodexApprovalBridge extends EventEmitter {
 
     const offered = Array.isArray(params.availableDecisions)
       ? params.availableDecisions.filter((value) => typeof value === "string" && BASE_DECISIONS.has(value))
-      : [];
+      : method === "item/fileChange/requestApproval"
+        ? [...BASE_DECISIONS]
+        : [];
     const availableDecisions = [...new Set(offered)];
     const proposedExecpolicyAmendment = (
       method === "item/commandExecution/requestApproval"

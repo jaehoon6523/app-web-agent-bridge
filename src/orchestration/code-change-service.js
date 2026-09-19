@@ -20,11 +20,11 @@ const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "
 function isInsideWorkspace(workspaceRoot, candidate) {
   if (typeof workspaceRoot !== "string" || !workspaceRoot || typeof candidate !== "string" || !candidate) return false;
   const root = path.resolve(workspaceRoot);
-  const target = path.resolve(candidate);
+  const target = path.isAbsolute(candidate) ? path.resolve(candidate) : path.resolve(root, candidate);
   return target === root || target.startsWith(`${root}${path.sep}`);
 }
 
-function decideWorkerApproval(event, workspaceRoot) {
+function decideWorkerApproval(event, workspaceRoot, fileChanges = null) {
   const offered = new Set(Array.isArray(event?.availableDecisions) ? event.availableDecisions : []);
   const reject = () => offered.has("decline") ? "decline" : offered.has("cancel") ? "cancel" : null;
   if (!event || event.type !== "APPROVAL_REQUESTED") return null;
@@ -33,8 +33,10 @@ function decideWorkerApproval(event, workspaceRoot) {
 
   if (event.sourceMethod === "item/commandExecution/requestApproval") {
     if (!isInsideWorkspace(workspaceRoot, event.cwd)) return reject();
-  } else if (event.grantRoot != null && !isInsideWorkspace(workspaceRoot, event.grantRoot)) {
-    return reject();
+  } else {
+    if (event.grantRoot != null && !isInsideWorkspace(workspaceRoot, event.grantRoot)) return reject();
+    if (!Array.isArray(fileChanges) || fileChanges.length === 0) return reject();
+    if (fileChanges.some((change) => !isInsideWorkspace(workspaceRoot, change?.path))) return reject();
   }
   return offered.has("accept") ? "accept" : reject();
 }
@@ -171,6 +173,7 @@ export class CodeChangeService {
       availableDecisions: event.availableDecisions ?? null,
       exitCode: event.exitCode ?? null,
       aggregatedOutput: event.aggregatedOutput ?? null,
+      changes: event.changes ?? null,
     });
     this.update(id, { events: [...(run.events ?? []), {
       eventId: `event_${randomUUID()}`,
@@ -179,11 +182,11 @@ export class CodeChangeService {
       payload,
     }] });
   }
-  respondToWorkerApproval(id, worker, workspaceRoot, event) {
+  respondToWorkerApproval(id, worker, workspaceRoot, event, fileChanges = null) {
     if (typeof worker?.respondToApproval !== "function") {
       throw new Error("Worker approval response capability is unavailable.");
     }
-    const decision = decideWorkerApproval(event, workspaceRoot);
+    const decision = decideWorkerApproval(event, workspaceRoot, fileChanges);
     if (!decision) throw new Error("Worker approval request has no safe supported decision.");
     const response = worker.respondToApproval({
       requestId: event.requestId,
@@ -341,12 +344,22 @@ export class CodeChangeService {
       creation.then(async (worker) => { if (this.controls.get(runId)?.signal.aborted || this.closed) await worker.close(); }).catch(() => {});
       const worker = await this.wait(runId, creation);
       this.workers.set(runId, worker);
+      const fileChangesByItem = new Map();
       const unsubscribeWorkerEvents = typeof worker.onEvent === "function"
         ? worker.onEvent((event) => {
           try {
             this.recordWorkerRuntimeEvent(runId, event);
+            if (event?.type === "TOOL_STARTED" && event.toolType === "fileChange" && event.itemId) {
+              fileChangesByItem.set(event.itemId, Array.isArray(event.changes) ? event.changes : []);
+            }
             if (event?.type === "APPROVAL_REQUESTED") {
-              this.respondToWorkerApproval(runId, worker, workspace.root, event);
+              const fileChanges = event.sourceMethod === "item/fileChange/requestApproval"
+                ? fileChangesByItem.get(event.itemId) ?? null
+                : null;
+              this.respondToWorkerApproval(runId, worker, workspace.root, event, fileChanges);
+            }
+            if (event?.type === "TOOL_COMPLETED" && event.toolType === "fileChange" && event.itemId) {
+              fileChangesByItem.delete(event.itemId);
             }
           } catch (error) {
             const current = this.get(runId);
