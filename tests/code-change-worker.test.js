@@ -5,15 +5,25 @@ import { bindCodeChangeCapture } from "../src/runtime/code-change-worker.js";
 function fixture({ result = { threadId: "thread", turnId: "turn", status: "completed" }, persist } = {}) {
   const captures = [];
   const persisted = [];
-  const session = { externalSessionId: "thread", submitTurn: async () => ({
-    turnId: "turn", completion: Promise.resolve(result),
-  }) };
+  const approvals = [];
+  const session = {
+    externalSessionId: "thread",
+    respondToApproval: (input) => { approvals.push(input); return input; },
+    submitTurn: async () => ({ turnId: "turn", completion: Promise.resolve(result) }),
+  };
   const worker = bindCodeChangeCapture({ session, workspace: { capture() {
     captures.push(true);
     return { artifact: { sha256: "captured" } };
   } }, persistCapture: persist ?? (async (value) => persisted.push(value)), close: async () => {} });
-  return { worker, captures, persisted };
+  return { worker, captures, persisted, approvals };
 }
+
+test("delegates approval responses through the worker boundary", () => {
+  const { worker, approvals } = fixture();
+  const input = { requestId: "approval_1", turnId: "turn", decision: "accept" };
+  assert.deepEqual(worker.respondToApproval(input), input);
+  assert.deepEqual(approvals, [input]);
+});
 
 test("captures a bound completed turn and waits for Controller persistence", async () => {
   const { worker, captures, persisted } = fixture();

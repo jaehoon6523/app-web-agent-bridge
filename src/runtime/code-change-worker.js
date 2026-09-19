@@ -38,6 +38,7 @@ export function bindCodeChangeCapture({ session, workspace, persistCapture, clos
     resume: (input) => session.resume(input),
     inspect: () => session.inspect(),
     interrupt: (input) => session.interrupt(input),
+    respondToApproval: (input) => session.respondToApproval(input),
     onEvent: (listener) => session.onEvent(listener),
     close: async () => { unavailable = true; await close(); },
     async submitTurn(input) {

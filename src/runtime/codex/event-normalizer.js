@@ -99,6 +99,11 @@ export class CodexEventNormalizer {
       threadId: request.threadId,
       turnId: request.turnId,
       itemId: request.itemId,
+      reason: request.reason ?? null,
+      command: request.command ?? null,
+      cwd: request.cwd ?? null,
+      grantRoot: request.grantRoot ?? null,
+      networkApprovalContext: request.networkApprovalContext ?? null,
       availableDecisions: request.availableDecisions,
       proposedExecpolicyAmendment: request.proposedExecpolicyAmendment,
     });

@@ -17,6 +17,27 @@ import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
 
+function isInsideWorkspace(workspaceRoot, candidate) {
+  if (typeof workspaceRoot !== "string" || !workspaceRoot || typeof candidate !== "string" || !candidate) return false;
+  const root = path.resolve(workspaceRoot);
+  const target = path.resolve(candidate);
+  return target === root || target.startsWith(`${root}${path.sep}`);
+}
+
+function decideWorkerApproval(event, workspaceRoot) {
+  const offered = new Set(Array.isArray(event?.availableDecisions) ? event.availableDecisions : []);
+  const reject = () => offered.has("decline") ? "decline" : offered.has("cancel") ? "cancel" : null;
+  if (!event || event.type !== "APPROVAL_REQUESTED") return null;
+  if (!["item/commandExecution/requestApproval", "item/fileChange/requestApproval"].includes(event.sourceMethod)) return reject();
+  if (event.networkApprovalContext != null) return reject();
+
+  const requestedRoot = event.sourceMethod === "item/commandExecution/requestApproval"
+    ? event.cwd
+    : event.grantRoot;
+  if (!isInsideWorkspace(workspaceRoot, requestedRoot)) return reject();
+  return offered.has("accept") ? "accept" : reject();
+}
+
 function retryableWorkerTimeout(run) {
   const lastTurn = run?.workerTurns?.at(-1);
   const timeoutError = "External turn timed out; execution state requires recovery.";
@@ -159,6 +180,34 @@ export class CodeChangeService {
       payload,
     }] });
   }
+  respondToWorkerApproval(id, worker, workspaceRoot, event) {
+    if (typeof worker?.respondToApproval !== "function") {
+      throw new Error("Worker approval response capability is unavailable.");
+    }
+    const decision = decideWorkerApproval(event, workspaceRoot);
+    if (!decision) throw new Error("Worker approval request has no safe supported decision.");
+    const response = worker.respondToApproval({
+      requestId: event.requestId,
+      turnId: event.turnId,
+      decision,
+    });
+    const run = this.get(id);
+    if (run && !terminal.has(run.stage)) {
+      this.update(id, { events: [...(run.events ?? []), {
+        eventId: `event_${randomUUID()}`,
+        type: "WORKER_APPROVAL_RESPONDED",
+        createdAt: new Date().toISOString(),
+        payload: redactForEvidence({
+          requestId: event.requestId,
+          threadId: event.threadId ?? null,
+          turnId: event.turnId ?? null,
+          sourceMethod: event.sourceMethod ?? null,
+          decision,
+        }),
+      }] });
+    }
+    return response;
+  }
   async waitForWorkerCompletion(id, worker, handle, workspace) {
     this.assertActive(id);
     const run = this.get(id);
@@ -295,8 +344,23 @@ export class CodeChangeService {
       this.workers.set(runId, worker);
       const unsubscribeWorkerEvents = typeof worker.onEvent === "function"
         ? worker.onEvent((event) => {
-          try { this.recordWorkerRuntimeEvent(runId, event); }
-          catch {}
+          try {
+            this.recordWorkerRuntimeEvent(runId, event);
+            if (event?.type === "APPROVAL_REQUESTED") {
+              this.respondToWorkerApproval(runId, worker, workspace.root, event);
+            }
+          } catch (error) {
+            const current = this.get(runId);
+            if (current && !terminal.has(current.stage)) {
+              this.update(runId, { events: [...(current.events ?? []), {
+                eventId: `event_${randomUUID()}`,
+                type: "WORKER_APPROVAL_RESPONSE_FAILED",
+                createdAt: new Date().toISOString(),
+                payload: { error: redactForEvidence(error.message), requestId: event?.requestId ?? null },
+              }] });
+            }
+            this.controls.get(runId)?.abort();
+          }
         })
         : null;
       let completed;
