@@ -56,8 +56,11 @@ test("history remains readable without a configured Codex executable",async(t)=>
   try { assert.equal(runtime.codeChanges.get(run.runId).stage,"AWAITING_APPLY");assert.equal(runtime.manager,undefined); }
   finally { await runtime.close(); }
 });
-test("total deadline stops pending provisioning without dispatching an implementation",async(t)=>{
-  const f=setupAudit(t,{configure(p){p.policy.totalTimeoutMs=200;},resume(){return new Promise(()=>{});}});
+test("total deadline stops pending worker creation without dispatching an implementation",async(t)=>{
+  const f=setupAudit(t,{
+    configure(p){p.policy.totalTimeoutMs=200;},
+    createWorker(){return new Promise(()=>{});},
+  });
   const run=await f.run();assert.equal(run.stage,"RECOVERY_REQUIRED");assert.equal(run.terminationReason,"TOTAL_TIME_LIMIT");assert.equal(f.starts(),0);
 });
 test("requirements cannot change contents under a previously used revision",async(t)=>{

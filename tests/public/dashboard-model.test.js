@@ -137,7 +137,8 @@ test("dashboard starts mutation controls disabled until a canonical state arrive
 test("ambiguous delivery is never wired to the direct retry command", async () => {
   const source = await readFile(path.join(publicDir, "app.js"), "utf8");
   assert.match(source, /자동 재전송하지 않습니다/u);
-  assert.doesNotMatch(source, /command\("(?:run|delivery)\.retry"/u);
+  assert.match(source, /command\("run\.retry"/u);
+  assert.doesNotMatch(source, /command\("delivery\.retry"/u);
   assert.doesNotMatch(source, /\["FAILED",\s*"AMBIGUOUS"\].*delivery\.retry/su);
 });
 

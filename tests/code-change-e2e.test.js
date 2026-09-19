@@ -25,7 +25,14 @@ test("VAL-03: no changes can be audited but never self-declared complete",async(
   const f=setupAudit(t,{worker(){},review(data){return reportFor(data.context,"UNDETERMINED");}});
   const run=await f.run();assert.equal(run.stage,"HOLD",run.error);assert.equal(run.candidate.unchanged,true);assert.equal(run.auditResult,"HOLD");
 });
-test("start returns the accepted ID while Web provisioning is still pending",async(t)=>{
-  let release;const wait=new Promise((r)=>{release=r;});const f=setupAudit(t,{resume(){return wait;}});
-  const started=await f.start();assert.ok(started.runId);assert.equal(f.starts(),0);assert.ok(f.service.get(started.runId));release();await f.service.jobs.get(started.runId);
+test("start returns the accepted ID while Worker execution is still pending",async(t)=>{
+  let release,entered;
+  const reached=new Promise((r)=>{entered=r;});
+  const wait=new Promise((r)=>{release=r;});
+  const f=setupAudit(t,{async worker(){entered();await wait;}});
+  const started=await f.start();
+  assert.ok(started.runId);assert.ok(f.service.get(started.runId));
+  await reached;
+  assert.equal(f.service.get(started.runId).stage,"WORKER_RUNNING");assert.equal(f.starts(),1);
+  release();await f.service.jobs.get(started.runId);
 });
