@@ -15,6 +15,7 @@ import {
   buildCodexSandboxPolicy,
   compileOutputSchema,
   createCodexChildEnvironment,
+  createCodexAgentSessionAdapter,
   resolvePinnedExecutable,
   verifyPinnedExecutable,
 } from "../src/runtime/codex/index.js";
@@ -456,6 +457,34 @@ test("approval bridge requires exact request/thread/turn correlation and never a
   const completed = await turn.completion;
   assert.equal(completed.structuredOutput.approvalDecision, "decline");
   await waitFor(() => session.pendingApprovals.length === 0);
+});
+
+
+test("public Codex agent-session adapter exposes approval responses", async (t) => {
+  const manager = await createManager();
+  t.after(() => manager.close());
+  const session = createCodexAgentSessionAdapter({
+    manager,
+    workspaceRoot: REPOSITORY_ROOT,
+    mode: "DISCUSSION",
+    persistThreadId: async () => {},
+  });
+  t.after(() => session.close());
+  await session.start();
+
+  const events = [];
+  session.onEvent((event) => events.push(event));
+  const turn = await session.submitTurn({ text: "__approval__", outputSchema: OUTPUT_SCHEMA });
+  const approval = await waitFor(() => events.find((event) => event.type === "APPROVAL_REQUESTED"));
+
+  assert.equal(typeof session.respondToApproval, "function");
+  session.respondToApproval({
+    requestId: approval.requestId,
+    turnId: approval.turnId,
+    decision: "decline",
+  });
+  const completed = await turn.completion;
+  assert.equal(completed.structuredOutput.approvalDecision, "decline");
 });
 
 test("unsupported reverse requests receive a fail-closed JSON-RPC error response", async (t) => {

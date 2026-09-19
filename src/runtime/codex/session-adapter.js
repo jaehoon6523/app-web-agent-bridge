@@ -936,6 +936,7 @@ export function createCodexAgentSessionAdapter(options) {
     inspect: (input) => /** @type {any} */ (runtime).inspect(input),
     submitTurn: (input) => runtime.submitTurn(input),
     interrupt: (input) => runtime.interrupt(input),
+    respondToApproval: (input) => runtime.respondToApproval(input),
     steer: (input) => runtime.steer(input),
     close: (input) => /** @type {any} */ (runtime).close(input),
     onEvent: (listener) => runtime.onEvent(listener),
