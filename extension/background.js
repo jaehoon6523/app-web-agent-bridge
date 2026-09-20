@@ -445,7 +445,10 @@ function requireBindingInput(payload) {
 }
 async function prepareBoundSession(payload) {
   const requested = requireBindingInput(payload);
-  const state = await store.read(), sameSession = state.lastBoundSessionId === requested.sessionId;
+  const state = await store.read();
+  const sameSession = state.lastBoundSessionId === requested.sessionId;
+  const sameRun = state.lastBoundRunId === requested.runId;
+  const ownsActiveDelivery = state.currentDeliveryId !== null && sameSession && sameRun;
   const persistedBindingDiffers = (state.lastBoundSessionId !== requested.sessionId
     || state.lastBoundRunId !== requested.runId
     || state.conversationUrl !== requested.conversationUrl
@@ -455,10 +458,11 @@ async function prepareBoundSession(payload) {
     requestedSessionId: requested.sessionId, requestedRunId: requested.runId,
     persistedSessionId: state.lastBoundSessionId, persistedRunId: state.lastBoundRunId,
     currentDeliveryId: state.currentDeliveryId, persistedBindingDiffers,
+    sameSession, sameRun, ownsActiveDelivery,
     sameConversation: state.conversationUrl === requested.conversationUrl,
     completedDeliveryId: state.completedDelivery?.turnId ?? null,
   });
-  if (state.currentDeliveryId !== null && persistedBindingDiffers && sameSession) {
+  if (ownsActiveDelivery && persistedBindingDiffers) {
     const details = await deliveryDetails(state);
     console.warn("[bridge:binding:blocked]", {
       currentDeliveryId: details.currentDeliveryId, sessionId: details.sessionId, runId: details.runId,
@@ -469,7 +473,7 @@ async function prepareBoundSession(payload) {
     });
     throw new ExtensionOperationError(
       "REBIND_DURING_ACTIVE_DELIVERY",
-      "A different Web session cannot replace a persisted binding during an active delivery.",
+      "This Web session owns an unresolved delivery and cannot replace its persisted binding.",
       details,
     );
   }

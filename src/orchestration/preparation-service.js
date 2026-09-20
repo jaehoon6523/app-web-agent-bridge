@@ -29,6 +29,41 @@ function packetFormatError(error) {
   });
 }
 
+function normalizePreparationWebFailure(error, expected) {
+  if (error?.code !== "REBIND_DURING_ACTIVE_DELIVERY") return error;
+  const details = error?.details && typeof error.details === "object" && !Array.isArray(error.details)
+    ? error.details
+    : null;
+  if (!details) return error;
+  const blockingSessionId = typeof details.sessionId === "string" && details.sessionId
+    ? details.sessionId
+    : null;
+  const blockingRunId = typeof details.runId === "string" && details.runId
+    ? details.runId
+    : null;
+  const ownerMismatch = (blockingSessionId !== null && blockingSessionId !== expected.sessionId)
+    || (blockingRunId !== null && blockingRunId !== expected.runId);
+  if (!ownerMismatch) return error;
+  return Object.assign(
+    new Error(
+      "The connected browser extension is running stale session-binding logic. "
+        + "Reload the unpacked extension before retrying; the older delivery was preserved.",
+    ),
+    {
+      code: "EXTENSION_RUNTIME_STALE",
+      details: {
+        ...details,
+        originalCode: error.code,
+        expectedSessionId: expected.sessionId,
+        expectedRunId: expected.runId,
+        blockingSessionId,
+        blockingRunId,
+        reloadRequired: true,
+      },
+    },
+  );
+}
+
 function isValidRequirementsProposal(packet) {
   return packet?.type === "REQUIREMENTS_PROPOSAL"
     && typeof packet.summary === "string"
@@ -271,8 +306,12 @@ export class PreparationService {
     session.activeDeliveryId = deliveryId; this.touch(context);
     // No Web response is awaited by the HTTP request. The intent is durable first.
     const job = new Promise((resolve) => setImmediate(resolve)).then(() => this.generate(context, deliveryId))
-      .catch((error) => {
+      .catch((rawError) => {
         if (this.closed) return;
+        const error = normalizePreparationWebFailure(rawError, {
+          sessionId: session.sessionId,
+          runId: context.preparationId,
+        });
         const delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
         const unsent = delivery.state === "RESERVED" || error.details?.browserDispatchStarted === false;
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";

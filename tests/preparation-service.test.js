@@ -185,6 +185,54 @@ test("a new root preparation preserves a prior recovery-required delivery withou
   assert.equal(f.discarded, null);
 });
 
+test("cross-session active-delivery block is classified as stale extension runtime", async (t) => {
+  const f = fixture(t);
+  let sent = 0;
+  f.web.resume = async ({ binding }) => {
+    assert.ok(binding.sessionId.startsWith("web_prep_"));
+    assert.ok(binding.runId.startsWith("prep_"));
+    throw Object.assign(
+      new Error("A different Web session cannot replace a persisted binding during an active delivery."),
+      {
+        code: "REBIND_DURING_ACTIVE_DELIVERY",
+        details: {
+          currentDeliveryId: "delivery-old",
+          sessionId: "web_prep_old",
+          runId: "prep_old",
+          conversationUrl: "https://chatgpt.com/",
+          bindingStatus: "AMBIGUOUS",
+          extensionBusy: false,
+          pageReachable: false,
+        },
+      },
+    );
+  };
+  f.web.submitTurn = async () => {
+    sent += 1;
+    throw new Error("unexpected send");
+  };
+  await f.service.execute("preparation.start", {
+    requestId: "stale-extension-runtime",
+    objective: "new",
+    targetRoot: f.root,
+    conversationUrl: "https://chatgpt.com/",
+  });
+  await settled(f.service);
+  const context = f.service.current;
+  assert.equal(context.state, "WEB_BLOCKED");
+  assert.equal(context.lifecycle, "ABANDONED");
+  assert.equal(context.webSession.activeDeliveryId, null);
+  assert.equal(context.error.code, "EXTENSION_RUNTIME_STALE");
+  assert.equal(context.error.details.originalCode, "REBIND_DURING_ACTIVE_DELIVERY");
+  assert.equal(context.error.details.expectedSessionId, context.webSession.sessionId);
+  assert.equal(context.error.details.expectedRunId, context.preparationId);
+  assert.equal(context.error.details.blockingSessionId, "web_prep_old");
+  assert.equal(context.error.details.blockingRunId, "prep_old");
+  assert.equal(context.error.details.currentDeliveryId, "delivery-old");
+  assert.equal(context.error.details.reloadRequired, true);
+  assert.equal(sent, 0);
+});
+
 test("connection must succeed before entering preparation; absent tab never sends or enables approval", async (t) => {
   const f = fixture(t);
   let rejectConnection, sent = 0;
