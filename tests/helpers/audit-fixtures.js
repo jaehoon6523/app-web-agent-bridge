@@ -64,7 +64,8 @@ export function setupAudit(t, hooks = {}) {
     }),
     webSession:hooks.webSession ?? {activeTurnId:null,async resume(input){if(hooks.resume) await hooks.resume(input);},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
       async submitTurn({runId,turnId,text,parseResponse}) {
-        this.activeTurnId=turnId; const data=JSON.parse(text.slice(text.indexOf("\n")+1)); prompts.push(data); const number=++reviews;
+        this.activeTurnId=turnId; const firstBreak=text.indexOf("\n"),secondBreak=text.indexOf("\n",firstBreak+1);
+        const data=JSON.parse(text.slice(firstBreak+1,secondBreak)); prompts.push(data); const number=++reviews;
         const defaultVerdict = data.candidateDiff.split(/\r?\n/u).some((line) => line === "+revision 2")
           ? "SATISFIED" : "UNSATISFIED";
         const report = hooks.review

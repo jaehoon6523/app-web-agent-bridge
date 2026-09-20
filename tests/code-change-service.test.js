@@ -8,6 +8,8 @@ test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately appl
   const f=setupAudit(t),run=await f.run();
   assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),2);assert.equal(f.acknowledgements.length,2);
   assert.equal(run.findings[0].status,"RESOLVED");assert.equal(f.briefs[1].unresolvedFindings[0].findingId,run.findings[0].findingId);
+  assert.ok(run.evidence.some((e)=>e.candidateId===run.candidate.candidateId
+    && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));
   assert.equal(fs.readFileSync(path.join(f.target,"file.txt"),"utf8"),"base\n");
   await f.reopen(); const current=f.service.get(run.runId);const payload=f.applyPayload(current);
   await assert.rejects(f.dashboard.execute({type:"code.apply",payload:{...payload,candidateId:"wrong"}}),/candidate/);
@@ -53,6 +55,8 @@ test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues
   assert.equal(held.terminationReason,"REPORT_REPAIR_LIMIT");
   assert.equal(f.starts(),1);
   assert.equal(held.candidates.length,1);
+  assert.ok(held.evidence.some((e)=>e.kind==="CODE_SNAPSHOT"));
+  f.service.update(held.runId,{evidence:held.evidence.filter((e)=>e.kind!=="CODE_SNAPSHOT")});
   const candidateId=held.candidate.candidateId,patchHash=held.candidate.patchHash;
 
   await f.reopen();
@@ -73,5 +77,7 @@ test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues
   assert.equal(resumed.candidates.length,1);
   assert.equal(resumed.candidate.candidateId,candidateId);
   assert.equal(resumed.candidate.patchHash,patchHash);
+  assert.ok(resumed.evidence.some((e)=>e.candidateId===candidateId
+    && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));
   assert.equal(resumed.recoveryAttempts.at(-1).kind,"AUDIT_REPORT_RETRY");
 });

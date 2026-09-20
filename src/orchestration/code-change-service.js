@@ -131,6 +131,30 @@ export class CodeChangeService {
     const run = this.get(id);
     if (this.closed || this.controls.get(id)?.signal.aborted || !run || stopped.has(run.stage)) throw new Error("Run is stopped or requires recovery.");
   }
+  ensureCandidateCodeSnapshots(id) {
+    const run = this.get(id);
+    if (!run?.candidate?.candidateId || !run.capture?.files) return run;
+    const existing = new Set(run.evidence
+      .filter((e) => e.candidateId === run.candidate.candidateId && e.kind === "CODE_SNAPSHOT")
+      .map((e) => e.result?.path)
+      .filter(Boolean));
+    const changed = new Set(run.candidate.changedFiles ?? []);
+    const snapshots = [];
+    for (const file of run.capture.files) {
+      if (!changed.has(file.path) || existing.has(file.path) || !["100644", "100755"].includes(file.mode)) continue;
+      this.artifactStore.verify(file.contentRef.sha256);
+      const content = this.artifactStore.read(file.contentRef.sha256);
+      if (content.includes(0)) continue;
+      snapshots.push(evidenceRecord(this.artifactStore, run.candidate.candidateId, "CODE_SNAPSHOT",
+        content.toString("utf8"), {
+          path: file.path,
+          candidateTree: run.candidate.candidateTree,
+          sourceContentHash: file.contentRef.sha256,
+        }));
+    }
+    if (!snapshots.length) return run;
+    return this.update(id, { evidence: [...run.evidence, ...snapshots] });
+  }
   async wait(id, promise) {
     this.assertActive(id);
     const control = this.controls.get(id), run = this.get(id);
@@ -438,6 +462,7 @@ export class CodeChangeService {
         evidence: [...run.evidence, evidenceRecord(this.artifactStore, candidateId, "PATCH", patch, { unchanged: capture.unchanged }),
           evidenceRecord(this.artifactStore, candidateId, "AGENT_CLAIM", report, {}, "AGENT")],
         messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: (completed.provider || this.workerConfig.provider) === "codex" ? "CODEX_AGENT" : "CODE_WORKER", workerProvider: completed.provider || this.workerConfig.provider, content: completed.text, createdAt: new Date().toISOString() }] });
+      this.ensureCandidateCodeSnapshots(runId);
       for (const verification of run.verifications) await performVerification(this, runId, workspace, verification);
       run = this.get(runId);
       const binding = createWebSessionBinding({ sessionId: `web_${runId}`, runId, tabId: null, windowId: null,
@@ -558,6 +583,7 @@ export class CodeChangeService {
       });
       workspace.assertCandidate(run.capture);
       this.artifactStore.verify(run.capture.artifact.sha256);
+      this.ensureCandidateCodeSnapshots(run.runId);
       this.workerInspections.delete(run.runId);
       this.controls.set(run.runId, new AbortController());
       const retryAt = new Date().toISOString();
