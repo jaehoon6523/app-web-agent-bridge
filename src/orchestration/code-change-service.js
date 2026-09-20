@@ -31,6 +31,21 @@ function retryableWorkerTimeout(run) {
     && (run.reviews?.length ?? 0) === 0;
 }
 
+function retryableAuditReview(run) {
+  return Boolean(run?.schemaVersion === 3
+    && run.stage === "HOLD"
+    && run.terminationReason === "REPORT_REPAIR_LIMIT"
+    && run.auditResult === "HOLD"
+    && run.application == null
+    && run.stopRequested !== true
+    && run.candidate?.candidateId
+    && run.capture?.artifact?.sha256
+    && run.candidate.patchHash === run.capture.artifact.sha256
+    && run.candidate.candidateTree === run.capture.candidateTree
+    && run.candidate.baseCommit === run.baseCommit
+    && run.capture.baseCommit === run.baseCommit);
+}
+
 function latestWorkerRuntimeEvent(run) {
   const events = run?.events ?? [];
   const workerStage = [...events].reverse().find((event) =>
@@ -304,12 +319,16 @@ export class CodeChangeService {
   async execute(runId) {
     this.assertActive(runId);
     this.workerInspections.delete(runId);
-    let run = this.update(runId, { stage: "PROVISIONING" });
+    const run = this.update(runId, { stage: "PROVISIONING" });
     const root = path.join(path.dirname(run.targetRoot), ".bridge-worktrees");
     fs.mkdirSync(root, { recursive: true });
     const workspace = GitChangeWorkspace.create({ targetRoot: run.targetRoot, workspaceRoot: path.join(root, runId), artifactStore: this.artifactStore });
     if (workspace.baseCommit !== run.baseCommit) throw new Error("Target base changed after run acceptance.");
     this.update(runId, { workspaceRoot: workspace.root });
+    return this.executeIterations(runId, workspace);
+  }
+  async executeIterations(runId, workspace) {
+    let run;
     while (true) {
       this.assertActive(runId);
       run = this.get(runId);
@@ -486,6 +505,8 @@ export class CodeChangeService {
     const allowedActions = [];
     if (classification === "RECOVERY_REQUIRED" && run.stage === "RECOVERY_REQUIRED"
       && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("run.abandon");
+    if (classification === "RECOVERABLE" && retryableAuditReview(run)
+      && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("code.review.retry");
     if (classification === "RECOVERABLE" && run.stage === "AWAITING_APPLY") allowedActions.push("code.apply");
     return redactForEvidence({ runId: run.runId, classification, observations, allowedActions, readOnly: true, observedAt: new Date().toISOString() });
   }
@@ -497,7 +518,8 @@ export class CodeChangeService {
       try { await worker.close(); results.push({ actor: "CLI", confirmed: true }); }
       catch (error) { results.push({ actor: "CLI", confirmed: false, reason: error.message }); }
     }
-    if (["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run.stage) || this.web.activeTurnId === run.reviewTurnId && run.reviewTurnId) {
+    if ((["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run.stage) && run.reviewTurnId)
+      || (this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId)) {
       try { await this.web.interrupt({ turnId: run.reviewTurnId }); results.push({ actor: "WEB", confirmed: true }); }
       catch (error) { results.push({ actor: "WEB", confirmed: false, reason: error.message }); }
     }
@@ -514,6 +536,75 @@ export class CodeChangeService {
       return { ...e, ...excerpt(this.artifactStore.read(e.contentRef.sha256).toString("utf8"), payload.startLine, payload.endLine) };
     }
     if (type === "run.reconcile") return this.reconcile(run);
+    if (type === "code.review.retry") {
+      if (!retryableAuditReview(run) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
+        throw new Error("Only a settled REPORT_REPAIR_LIMIT hold can retry the same candidate review.");
+      }
+      const target = GitChangeWorkspace.preflight(run.targetRoot);
+      if (target.baseCommit !== run.baseCommit) {
+        throw new Error("Target HEAD changed after candidate capture; review retry is refused.");
+      }
+      if (!run.workspaceRoot || !fs.existsSync(run.workspaceRoot)) {
+        throw new Error("Candidate worktree is unavailable; review retry is refused.");
+      }
+      if (canonicalJson(requirementsRef(run.requirements)) !== canonicalJson(run.requirementsRef)) {
+        throw new Error("Requirements changed after candidate capture; review retry is refused.");
+      }
+      const workspace = new GitChangeWorkspace({
+        workspaceRoot: run.workspaceRoot,
+        baseCommit: run.baseCommit,
+        artifactStore: this.artifactStore,
+        targetRoot: run.targetRoot,
+      });
+      workspace.assertCandidate(run.capture);
+      this.artifactStore.verify(run.capture.artifact.sha256);
+      this.workerInspections.delete(run.runId);
+      this.controls.set(run.runId, new AbortController());
+      const retryAt = new Date().toISOString();
+      const previousError = run.error;
+      const previousReason = run.terminationReason;
+      const reset = this.update(run.runId, {
+        stage: "REVIEW_RUNNING", reviewTurnId: null, auditResult: null,
+        error: null, terminationReason: null, missingInformation: [], stopRequested: false,
+        deadlineAt: new Date(Date.now() + run.policy.totalTimeoutMs).toISOString(),
+        recoveryAttempts: [...(run.recoveryAttempts ?? []), {
+          kind: "AUDIT_REPORT_RETRY", at: retryAt, previousError, previousReason,
+          candidateId: run.candidate.candidateId, patchHash: run.candidate.patchHash,
+        }],
+      });
+      const totalTimer = setTimeout(() => {
+        const current = this.get(run.runId);
+        if (this.jobs.has(run.runId) && !stopped.has(current.stage)) {
+          void this.terminate(run.runId).catch(() => {});
+          this.update(run.runId, { stage: "RECOVERY_REQUIRED", terminationReason: "TOTAL_TIME_LIMIT", error: "Total time limit reached; verify external termination before recovery." });
+        }
+      }, run.policy.totalTimeoutMs);
+      const job = Promise.resolve().then(async () => {
+        let current = this.get(run.runId);
+        const binding = createWebSessionBinding({
+          sessionId: `web_${run.runId}`, runId: run.runId, tabId: null, windowId: null,
+          conversationUrl: current.conversationUrl, conversationId: current.conversationId, title: null,
+          lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "NEEDS_REBIND",
+        });
+        await this.wait(run.runId, this.web.resume({ binding }));
+        this.assertActive(run.runId);
+        await auditCandidate(this, run.runId, workspace);
+        current = this.get(run.runId);
+        if (current.stage === "REWORK") await this.executeIterations(run.runId, workspace);
+      }).catch(async (error) => {
+        const current = this.get(run.runId);
+        if (!this.closed && !stopped.has(current.stage)) {
+          await this.terminate(run.runId);
+          this.update(run.runId, {
+            stage: "RECOVERY_REQUIRED",
+            error: error.message,
+            terminationReason: Date.now() >= Date.parse(current.deadlineAt) ? "TOTAL_TIME_LIMIT" : "EXECUTION_UNCERTAIN",
+          });
+        }
+      }).finally(() => { clearTimeout(totalTimer); this.jobs.delete(run.runId); });
+      this.jobs.set(run.runId, job);
+      return { runId: reset.runId, status: "REVIEW_RETRY_ACCEPTED", candidateId: run.candidate.candidateId };
+    }
     if (type === "run.retry") {
       if (!retryableWorkerTimeout(run) || this.jobs.has(run.runId) || this.workers.has(run.runId)) {
         throw new Error("Only a settled pre-candidate Worker timeout can be retried.");
@@ -578,7 +669,8 @@ export class CodeChangeService {
       this.update(run.runId, { stage: "STOPPING", stopRequested: true });
       const results = await this.terminate(run.runId);
       if (["PROVISIONING", "RECOVERY_REQUIRED", "VERIFYING", "EVIDENCE_SUPPLEMENT"].includes(run.stage)) results.push({ actor: "EXTERNAL", confirmed: false, reason: "External state cannot be confirmed at stop acceptance." });
-      if (["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run.stage) && !results.some((r) => r.actor === "WEB")) {
+      if (["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run.stage) && run.reviewTurnId
+        && !results.some((r) => r.actor === "WEB")) {
         try { await this.web.interrupt({ turnId: run.reviewTurnId }); results.push({ actor: "WEB", confirmed: true }); }
         catch (error) { results.push({ actor: "WEB", confirmed: false, reason: error.message }); }
       }
@@ -615,6 +707,7 @@ export class CodeChangeService {
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
+        ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["code.review.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 ? ["code.apply"] : [])] });
   }

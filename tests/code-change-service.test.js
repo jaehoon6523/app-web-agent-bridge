@@ -42,3 +42,36 @@ test("VAL-10: command receipts survive restart and conflicting request IDs fail"
   assert.deepEqual(await f.dashboard.executeDurable(command),first);
   await assert.rejects(f.dashboard.executeDurable({...command,type:"run.stop"}),/different command/);
 });
+
+test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues the normal loop",async(t)=>{
+  const f=setupAudit(t,{
+    configure(project){project.policy.maxFormatRepairs=0;},
+    review(data,n){return n===1?{...reportFor(data.context),assessments:[]}:reportFor(data.context);}
+  });
+  const held=await f.run();
+  assert.equal(held.stage,"HOLD",held.error);
+  assert.equal(held.terminationReason,"REPORT_REPAIR_LIMIT");
+  assert.equal(f.starts(),1);
+  assert.equal(held.candidates.length,1);
+  const candidateId=held.candidate.candidateId,patchHash=held.candidate.patchHash;
+
+  await f.reopen();
+  const current=f.service.get(held.runId);
+  assert.ok(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.review.retry"));
+
+  const accepted=await f.dashboard.executeDurable({
+    type:"code.review.retry",requestId:"review-retry-once",
+    payload:{runId:current.runId,expectedVersion:current.version}
+  });
+  assert.equal(accepted.status,"REVIEW_RETRY_ACCEPTED");
+  assert.equal(accepted.candidateId,candidateId);
+  await f.service.jobs.get(current.runId);
+
+  const resumed=f.service.get(current.runId);
+  assert.equal(resumed.stage,"AWAITING_APPLY",resumed.error);
+  assert.equal(f.starts(),1,"format-only retry must not rerun Worker");
+  assert.equal(resumed.candidates.length,1);
+  assert.equal(resumed.candidate.candidateId,candidateId);
+  assert.equal(resumed.candidate.patchHash,patchHash);
+  assert.equal(resumed.recoveryAttempts.at(-1).kind,"AUDIT_REPORT_RETRY");
+});

@@ -399,6 +399,7 @@ function render() {
     $("recoveryConfirm").checked = false;
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
+  $("retryRun").textContent = "수동 진행";
   if (run?.phase === "RECOVERY_REQUIRED") {
     const recoveryConfirmed = $("recoveryConfirm").checked;
     const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || !recoveryConfirmed;
@@ -412,6 +413,14 @@ function render() {
       : caps.has("run.retry") ? "실패한 임시 worktree를 정리하고 같은 요구사항으로 새 Worker turn을 시작합니다."
       : "후보 생성 전 Worker 실패가 안전하게 확인된 경우에만 수동 진행할 수 있습니다.";
     actionState("retryRun", (operations.runCommand !== "IDLE") || !caps.has("run.retry"), retryReason, retryReason);
+  } else if (run?.phase === "HOLD" && caps.has("code.review.retry")) {
+    $("abandonRun").disabled = true;
+    $("abandonRun").title = "";
+    $("retryRun").textContent = "웹 감사 다시 시도";
+    const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 감사를 다시 시도할 수 있습니다."
+      : !webConnected() ? "브라우저 확장 연결과 정확한 ChatGPT 세션을 복구해야 같은 후보의 감사를 다시 시도할 수 있습니다."
+      : "Worker를 다시 실행하지 않고 현재 후보를 같은 요구사항으로 다시 감사합니다. REWORK 판정이면 기존 수정 루프를 이어갑니다.";
+    actionState("retryRun", (operations.runCommand !== "IDLE") || !webConnected(), retryReason, retryReason);
   } else {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
@@ -464,6 +473,7 @@ async function command(type, payload = {}) {
     if (snapshot?.run?.runId === target) {
       const successMessage = {
         "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
+        "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
         "code.apply": "적용 요청을 처리했습니다. 최신 적용 상태를 확인하세요.",
         "evidence.export": "감사 기록 요청을 처리했습니다.",
@@ -812,7 +822,11 @@ $("showUnfinishedRun").addEventListener("click", () => {
   if (unfinished) { selected = unfinished.runId; refresh(); }
 });
 $("recoveryConfirm").addEventListener("input", render);
-$("retryRun").addEventListener("click", () => command("run.retry"));
+$("retryRun").addEventListener("click", () => {
+  const caps = capabilities();
+  if (caps.has("code.review.retry")) command("code.review.retry");
+  else command("run.retry");
+});
 $("abandonRun").addEventListener("click", () => {
   if (!$("abandonRun").disabled) {
     const confirmed = $("recoveryConfirm").checked;
