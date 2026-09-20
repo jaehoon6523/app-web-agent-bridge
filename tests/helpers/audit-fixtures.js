@@ -20,6 +20,27 @@ export function reportFor(context, verdict = "SATISFIED") {
     findingDecisions:context.findings.filter((f) => f.status !== "WITHDRAWN").map((f) => ({ findingId:f.findingId, status:verdict === "SATISFIED" ? "RESOLVED" : "OPEN", evidenceRefs:refs, reason:"Resolution criteria checked on this candidate" })),
     newFindings:verdict === "UNSATISFIED" && !context.findings.length ? [{requirementId:"R1", problem:"Required contents missing", resolutionCriteria:"file.txt contains revision 2", evidenceRefs:refs, required:true}] : [], summary:"Fixture review", score:100 };
 }
+
+export function strictReportFor(context, verdict = "SATISFIED") {
+  if (verdict !== "SATISFIED") return reportFor(context, verdict);
+  const candidateEvidence = context.evidence.filter((evidence) =>
+    evidence.candidateId === context.candidateId && evidence.valid !== false && evidence.producer !== "AGENT");
+  for (const requirement of context.requirements.items) {
+    const missingKinds = requirement.verificationMethod.kinds.filter((kind) =>
+      !candidateEvidence.some((evidence) => evidence.kind === kind));
+    if (missingKinds.length > 0) {
+      throw new Error(`STRICT_REPORT_EVIDENCE_MISSING:${requirement.requirementId}:${missingKinds.join(",")}`);
+    }
+  }
+  const refs = candidateEvidence.map((evidence) => evidence.evidenceId);
+  const report = reportFor(context, verdict);
+  return {
+    ...report,
+    assessments: report.assessments.map((assessment) => ({ ...assessment, evidenceRefs:refs })),
+    findingDecisions: report.findingDecisions.map((decision) => ({ ...decision, evidenceRefs:refs })),
+  };
+}
+
 export function setupAudit(t, hooks = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-audit-")), target = path.join(directory,"target"); fs.mkdirSync(target);
   const git = (...args) => execFileSync("git", ["-C",target,...args], {windowsHide:true});
@@ -33,8 +54,10 @@ export function setupAudit(t, hooks = {}) {
       const number=++starts;
       return { async start(){await persistThreadId({threadId:`worker-${number}`});}, async close(){}, async submitTurn({text}) {
         const brief=JSON.parse(text.slice(text.indexOf("\n")+1)); briefs.push(brief);
-        if (hooks.worker) await hooks.worker({workspace,number,brief}); else fs.writeFileSync(path.join(workspace.root,"file.txt"),`revision ${number}\n`);
-        const capture=workspace.capture({allowUnchanged:true}); await persistCapture({capture,turnId:`worker-turn-${number}`});
+        if (hooks.worker) await hooks.worker({workspace,number,brief});
+        else fs.writeFileSync(path.join(workspace.root,"file.txt"),`revision ${number}\n`);
+        const capture=workspace.capture({allowUnchanged:true});
+        await persistCapture({capture,turnId:`worker-turn-${number}`});
         const report={summary:"Implementation claim",requirementClaims:brief.requirements.items.map((r)=>({requirementId:r.requirementId,claim:"Implemented"})),findingResponses:brief.unresolvedFindings.map((f)=>({findingId:f.findingId,explanation:"Submitted fix"})),unverified:[]};
         return {turnId:`worker-turn-${number}`,completion:Promise.resolve({text:JSON.stringify(report),capture})};
       }};
@@ -42,7 +65,11 @@ export function setupAudit(t, hooks = {}) {
     webSession:hooks.webSession ?? {activeTurnId:null,async resume(input){if(hooks.resume) await hooks.resume(input);},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
       async submitTurn({runId,turnId,text,parseResponse}) {
         this.activeTurnId=turnId; const data=JSON.parse(text.slice(text.indexOf("\n")+1)); prompts.push(data); const number=++reviews;
-        const report = hooks.review ? await hooks.review(data, number, service) : reportFor(data.context,number===1?"UNSATISFIED":"SATISFIED");
+        const defaultVerdict = data.candidateDiff.split(/\r?\n/u).some((line) => line === "+revision 2")
+          ? "SATISFIED" : "UNSATISFIED";
+        const report = hooks.review
+          ? await hooks.review(data, number, service)
+          : strictReportFor(data.context, defaultVerdict);
         this.activeTurnId=null;
         return {turnId,completion:Promise.resolve({turnId,packet:parseResponse(`<controller_packet>\n${JSON.stringify(report)}\n</controller_packet>`).packet,binding:{runId,conversationId:"test"}})};
       }} };

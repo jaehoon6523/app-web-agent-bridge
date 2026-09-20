@@ -13,6 +13,7 @@
     "demo": "DEMO_MODE=true node src/server.js",
     "demo:win": "set DEMO_MODE=true&& node src/server.js",
     "test": "node --test --experimental-test-isolation=none",
+    "test:audit-reality": "node --test --experimental-test-isolation=none tests/audit-fixture-oracle.test.js tests/audit-fuzz.test.js tests/audit-known-regressions.test.js",
     "test:ui": "node scripts/ui-scenarios.mjs",
     "test:browser": "node scripts/browser-extension-suite.mjs && node scripts/preparation-critical-suite.mjs",
     "test:critical": "node scripts/preparation-critical-suite.mjs",
