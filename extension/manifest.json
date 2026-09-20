@@ -23,6 +23,7 @@
         "selectors/send-button-selectors.js",
         "selectors/stop-button-selectors.js",
         "selectors/message-selectors.js",
+        "runtime/manual-followup.js",
         "content.js"
       ],
       "run_at": "document_idle"

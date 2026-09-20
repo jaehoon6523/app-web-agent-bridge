@@ -225,19 +225,33 @@ async function handleControllerMessage(raw) {
             expectedDocumentId: saved.documentId, expectedFrameId: saved.frameId,
             runId: saved.lastBoundRunId, controllerMessageId: completed.turnId,
             userMessageId: completed.evidence?.userMessageId, assistantMessageId: completed.evidence?.assistantMessageId,
+            allowManualFollowup: message.payload?.adoptManualFollowup === true,
           } });
           if (!result?.ok) throw new ExtensionOperationError(result?.code ?? "RESPONSE_RECHECK_FAILED", result?.error ?? "응답 재확인에 실패했습니다.");
           const current = await store.read();
           if (current.currentDeliveryId !== completed.turnId || current.lastBoundSessionId !== saved.lastBoundSessionId) {
             throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "재확인 중 전송 대상이 변경됐습니다.");
           }
-          await store.update({ completedDelivery: {
-            ...completed,
-            rawText: result.text,
-            confidence: result.confidence,
-            confidenceReason: result.confidenceReason ?? null,
-            evidence: result.evidence,
-          } });
+          const adoptedManualFollowup = result.evidence?.responseAssociation === "EXPLICIT_MANUAL_FOLLOWUP";
+          await store.update({
+            ...(adoptedManualFollowup ? {
+              lastObservedUserMessageId: result.evidence.userMessageId,
+              lastObservedAssistantMessageId: result.evidence.assistantMessageId,
+            } : {}),
+            completedDelivery: {
+              ...completed,
+              rawText: result.text,
+              confidence: result.confidence,
+              confidenceReason: result.confidenceReason ?? null,
+              evidence: result.evidence,
+              ...(adoptedManualFollowup ? { adoption: {
+                type: "EXPLICIT_MANUAL_FOLLOWUP",
+                originalAssistantMessageId: result.evidence.originalAssistantMessageId,
+                userMessageId: result.evidence.userMessageId,
+                assistantMessageId: result.evidence.assistantMessageId,
+              } } : {}),
+            },
+          });
         } catch (error) {
           send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
           break;

@@ -1,4 +1,5 @@
 const registry = globalThis.ChatGptBridgeSelectors;
+const manualFollowup = globalThis.ChatGptBridgeManualFollowup;
 const REQUIRED_SELECTOR_GROUPS = Object.freeze([
   "composer",
   "sendButton",
@@ -748,6 +749,83 @@ function cancelCurrentJob(requestId) {
   return true;
 }
 
+async function waitForExplicitManualFollowup(expected) {
+  if (!manualFollowup?.selectExplicitManualFollowup) {
+    throw new ContentContractError("UI_CONTRACT_CHANGED", "Manual follow-up selector is unavailable.");
+  }
+  const deadline = Date.now() + 15_000;
+  let assistantId = null, lastText = "", lastTextChangeAt = Date.now(), lastDomMutationAt = Date.now();
+  const observer = new MutationObserver(() => { lastDomMutationAt = Date.now(); });
+  observer.observe(document.querySelector("main") || document.body, {
+    childList: true, subtree: true, characterData: true,
+  });
+  try {
+    while (Date.now() < deadline) {
+      assertExpectedDocument(expected);
+      assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
+      const page = inspectPageState();
+      if (page.status !== "READY") {
+        throw new ContentContractError(page.status, `ChatGPT page is not ready (${page.status}).`);
+      }
+      const messages = messageSnapshot();
+      const selected = manualFollowup.selectExplicitManualFollowup(messages, expected.assistantMessageId);
+      if (selected.status === "NONE") return null;
+      if (selected.status === "UNAVAILABLE") {
+        throw new ContentContractError("AMBIGUOUS_COMPLETION", "The original assistant response is no longer uniquely visible.");
+      }
+      if (selected.status === "AMBIGUOUS") {
+        throw new ContentContractError("AMBIGUOUS_COMPLETION",
+          "More than one manual follow-up turn exists after the controlled response.");
+      }
+      if (selected.status === "MATCHED") {
+        const assistant = messages.find((message) =>
+          message.role === "assistant" && message.id === selected.assistantMessageId);
+        const text = assistant?.element ? elementText(assistant.element) : "";
+        if (assistantId !== selected.assistantMessageId || text !== lastText) {
+          assistantId = selected.assistantMessageId;
+          lastText = text;
+          lastTextChangeAt = Date.now();
+        }
+        const stopVisible = Boolean(firstVisible("stopButton"));
+        const sendState = sendButtonState();
+        const sendConfirmed = sendState.state === "ENABLED"
+          || sendState.state === "CONFIRMED_EMPTY_COMPOSER";
+        const stable = assistantId && lastText
+          && Date.now() - lastTextChangeAt >= 3500
+          && Date.now() - lastDomMutationAt >= 3500;
+        if (stable && !stopVisible && sendConfirmed) {
+          return {
+            text: lastText,
+            confidence: "CONFIRMED_BY_UI_STATE",
+            confidenceReason: "EXPLICIT_MANUAL_FOLLOWUP",
+            evidence: {
+              documentId: DOCUMENT_ID,
+              frameId: FRAME_ID,
+              userMessageId: selected.userMessageId,
+              assistantMessageId: selected.assistantMessageId,
+              originalAssistantMessageId: expected.assistantMessageId,
+              conversationUrl: canonicalConversationUrl(location.href),
+              conversationId: conversationIdFromUrl(location.href),
+              responseAssociation: "EXPLICIT_MANUAL_FOLLOWUP",
+              stopButtonVisible: stopVisible,
+              sendButtonState: sendState.state,
+              sendButtonEnabled: sendState.state === "ENABLED" ? true
+                : sendState.state === "DISABLED" ? false : null,
+              stableForMs: Math.min(Date.now() - lastTextChangeAt, Date.now() - lastDomMutationAt),
+              ...selectedSelectorEvidence(),
+            },
+          };
+        }
+      }
+      await sleep(250);
+    }
+  } finally {
+    observer.disconnect();
+  }
+  throw new ContentContractError("AMBIGUOUS_COMPLETION",
+    "The explicit manual follow-up was observed but completion could not be confirmed.");
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "agent.ping") {
     let page;
@@ -780,6 +858,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (currentJob) throw new ContentContractError("WEB_SESSION_BUSY", "페이지가 다른 요청을 처리 중입니다.");
       assertExpectedDocument(expected);
       assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
+      if (expected.allowManualFollowup === true) {
+        const manual = await waitForExplicitManualFollowup(expected);
+        if (manual) {
+          contentTrace("manual-followup-adopted", { requestId: expected.controllerMessageId,
+            userMessageId: manual.evidence.userMessageId, assistantMessageId: manual.evidence.assistantMessageId });
+          return manual;
+        }
+      }
       const baseline = messageSnapshot();
       const matches = baseline.filter(item => item.id === expected.userMessageId && isExpectedUser(item, expected));
       if (matches.length !== 1) throw new ContentContractError("AMBIGUOUS_PROMPT_BINDING", "원래 요청 메시지를 확인할 수 없습니다.");

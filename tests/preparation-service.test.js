@@ -363,6 +363,22 @@ test("unacknowledged completed response reconciles without another Web turn", as
   assert.equal(f.service.current.webSession.activeDeliveryId, null);
   assert.equal(f.calls.length, 1);
 });
+
+test("explicit preparation reconcile allows one manual follow-up adoption", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const session = f.service.current.webSession;
+  const identity = { sessionId: session.sessionId, conversationId: session.conversationId,
+    conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId };
+  const originalInspect = f.web.inspectDelivery.bind(f.web);
+  let options = null;
+  f.web.inspectDelivery = async (value = {}) => {
+    if (value.refreshCompleted) options = structuredClone(value);
+    return originalInspect(value);
+  };
+  f.ackFailure(false);
+  await f.command("web.reconcile", identity);
+  assert.deepEqual(options, { refreshCompleted:true, adoptManualFollowup:true });
+});
 test("preparation commands no longer require a version and request IDs remain idempotent", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   await assert.rejects(f.service.execute("preparation.start", { requestId: "start", objective: "different" }), /different command/);

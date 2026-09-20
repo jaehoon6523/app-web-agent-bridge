@@ -538,7 +538,8 @@ export class PreparationService {
     // only remaining work is acknowledgement, so leave that path read-only.
     const refreshCompleted = type === "web.reconcile"
       && pendingDelivery?.processingState !== "ACK_PENDING";
-    const observed = await this.web.inspectDelivery({ refreshCompleted });
+    const observed = await this.web.inspectDelivery({ refreshCompleted,
+      adoptManualFollowup: refreshCompleted && type === "web.reconcile" });
     this.setDiagnostics(context, observed); this.touch(context);
     const completed = observed.completedDelivery;
     if (completed && completed.turnId === session.activeDeliveryId && completed.binding?.sessionId === session.sessionId
