@@ -41,13 +41,27 @@ export function strictReportFor(context, verdict = "SATISFIED") {
   };
 }
 
+// Test-only external provider stimulus. It never derives semantic verdicts from candidate bytes.
+const DEFAULT_REVIEW_VERDICTS = Object.freeze(["UNSATISFIED", "SATISFIED"]);
+
+function fixtureReviewVerdicts(hooks) {
+  if (hooks.review || hooks.webSession) return null;
+  const verdicts = hooks.reviewVerdicts ?? DEFAULT_REVIEW_VERDICTS;
+  if (!Array.isArray(verdicts) || verdicts.length === 0
+    || verdicts.some((verdict) => !["SATISFIED", "UNSATISFIED", "UNDETERMINED"].includes(verdict))) {
+    throw new TypeError("reviewVerdicts must be a non-empty array of REVIEW_REPORT verdicts.");
+  }
+  return verdicts;
+}
+
 export function setupAudit(t, hooks = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-audit-")), target = path.join(directory,"target"); fs.mkdirSync(target);
   const git = (...args) => execFileSync("git", ["-C",target,...args], {windowsHide:true});
   git("init","--quiet"); git("config","core.autocrlf","false"); fs.writeFileSync(path.join(target,"file.txt"),"base\n"); git("add",".");
   git("-c","user.name=Test","-c","user.email=test@example.invalid","-c","core.hooksPath=","commit","--quiet","-m","base");
-  let starts=0, reviews=0, service;
-  const briefs=[], prompts=[], acknowledgements=[];
+  let starts=0, reviews=0, turns=0, service;
+  const briefs=[], prompts=[], reviewPrompts=[], acknowledgements=[];
+  const reviewVerdicts = fixtureReviewVerdicts(hooks);
   const configured = project(target); hooks.configure?.(configured);
   const options = { filename:path.join(directory,"controller.sqlite"), artifactStore:new ArtifactStore(path.join(directory,"artifacts")), codex:{}, project:configured,
     createWorker:hooks.createWorker ?? (async ({workspace,persistThreadId,persistCapture}) => {
@@ -62,23 +76,42 @@ export function setupAudit(t, hooks = {}) {
         return {turnId:`worker-turn-${number}`,completion:Promise.resolve({text:JSON.stringify(report),capture})};
       }};
     }),
-    webSession:hooks.webSession ?? {activeTurnId:null,async resume(input){if(hooks.resume) await hooks.resume(input);},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
+    webSession:hooks.webSession ?? {activeTurnId:null,activeBinding:null,async resume(input){if(hooks.resume) await hooks.resume(input);const b=input.binding;this.activeBinding=b.conversationId?{...b,tabId:1,windowId:1,documentId:`doc-${b.sessionId}`,frameId:0,bindingStatus:"BOUND"}:{...b,tabId:2,windowId:1,documentId:`doc-${b.sessionId}`,frameId:0,conversationUrl:"https://chatgpt.com/",conversationId:null,bindingStatus:"ROOT_READY"};return this.activeBinding;},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);return {currentDeliveryId:null,sessionId:this.activeBinding.sessionId,runId:this.activeBinding.runId,conversationUrl:this.activeBinding.conversationUrl};},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
       async submitTurn({runId,turnId,text,parseResponse}) {
         this.activeTurnId=turnId; const firstBreak=text.indexOf("\n"),secondBreak=text.indexOf("\n",firstBreak+1);
-        const data=JSON.parse(text.slice(firstBreak+1,secondBreak)); prompts.push(data); const number=++reviews;
-        const defaultVerdict = data.candidateDiff.split(/\r?\n/u).some((line) => line === "+revision 2")
-          ? "SATISFIED" : "UNSATISFIED";
-        const report = hooks.review
-          ? await hooks.review(data, number, service)
-          : strictReportFor(data.context, defaultVerdict);
+        const data=JSON.parse(text.slice(firstBreak+1,secondBreak)); const turnNumber=++turns;
+        const reviewNumber=data.context?.auditManifestHash?++reviews:null;
+        if(reviewNumber!==null){reviewPrompts.push(data);if(data.role==="JUDGE"&&data.phase==="ROUND0")prompts.push(data);}
+        const number=reviewNumber??turnNumber;
+        if(this.activeBinding?.conversationId===null)this.activeBinding={...this.activeBinding,conversationUrl:"https://chatgpt.com/c/critic",conversationId:"critic",bindingStatus:"BOUND"};
+        let report;
+        if(data.plan&&data.planHash){
+          report=hooks.planReview?await hooks.planReview(data,number,service):{type:"PLAN_RESPONSE",runId:data.runId,candidateId:data.candidateId,planId:data.planId,planHash:data.planHash,planBasisHash:data.planBasisHash,decision:"ACCEPT"};
+        } else if(data.planId&&data.auditManifestHash&&!data.context){
+          report=hooks.planProposal?await hooks.planProposal(data,number,service):{type:"PLAN_PROPOSAL",runId:data.runId,candidateId:data.candidateId,auditManifestHash:data.auditManifestHash,planBasisHash:data.planBasisHash,planId:data.planId,
+            workItems:[{workItemId:"wi-1",objective:"Resolve all blocking findings without weakening acceptance.",acceptanceCriteria:"All blocking findings satisfy their recorded resolution criteria."}],constraints:["Preserve requirements and tests."]};
+        } else if(data.context?.auditManifestHash){
+          const scriptedVerdict=reviewVerdicts?.[(data.candidate?.iteration??1)-1];
+          if(!hooks.review&&scriptedVerdict===undefined)throw new Error(`AUDIT_FIXTURE_REVIEW_SCRIPT_EXHAUSTED:${data.candidate?.iteration??1}`);
+          const verdict=scriptedVerdict;
+          report=hooks.review?await hooks.review(data,number,service):{type:"REVIEW_ASSERTIONS",runId:data.context.runId,requestId:data.context.requestId,candidateId:data.context.candidateId,auditManifestHash:data.context.auditManifestHash,
+            assessments:data.context.requirements.items.map((r)=>({requirementId:r.requirementId,verdict,evidenceRefs:data.context.evidence.filter((e)=>e.candidateId===data.context.candidateId&&e.kind==="PATCH").map((e)=>e.evidenceId)})),
+            findingDecisions:data.context.findings.filter((f)=>f.status!=="WITHDRAWN").map((f)=>({findingId:f.findingId,status:verdict==="SATISFIED"?"RESOLVED":"OPEN",evidenceRefs:data.context.evidence.filter((e)=>e.candidateId===data.context.candidateId&&e.kind==="PATCH").map((e)=>e.evidenceId)})),
+            newFindings:verdict==="UNSATISFIED"&&!data.context.findings.length?[{requirementId:"R1",problem:"Required contents missing",resolutionCriteria:"file.txt contains revision 2",evidenceRefs:data.context.evidence.filter((e)=>e.kind==="PATCH").map((e)=>e.evidenceId),required:true}]:[]};
+          if(report?.type==="REVIEW_REPORT")report={type:"REVIEW_ASSERTIONS",runId:data.context.runId,requestId:data.context.requestId,candidateId:data.context.candidateId,auditManifestHash:data.context.auditManifestHash,
+            assessments:report.assessments.map(({requirementId,verdict,evidenceRefs,missingInformation})=>({requirementId,verdict,evidenceRefs,...(missingInformation?{missingInformation}:{})})),
+            findingDecisions:report.findingDecisions.map(({findingId,status,evidenceRefs})=>({findingId,status,evidenceRefs})),newFindings:report.newFindings};
+        } else report=hooks.review?await hooks.review(data,number,service):strictReportFor(data.context);
+        const reasoning=hooks.reviewBody?await hooks.reviewBody(data,number,service):"";
         this.activeTurnId=null;
-        return {turnId,completion:Promise.resolve({turnId,packet:parseResponse(`<controller_packet>\n${JSON.stringify(report)}\n</controller_packet>`).packet,binding:{runId,conversationId:"test"}})};
+        const raw=`${reasoning?`${reasoning}\n`:""}<controller_packet>\n${JSON.stringify(report)}\n</controller_packet>`;
+        return {turnId,completion:Promise.resolve({turnId,...parseResponse(raw),binding:{...this.activeBinding,runId}})};
       }} };
   service=new CodeChangeService(options);
   const live={codeChanges:service,store:{listRuns:()=>[],getRun:()=>null}};
   const dashboard=new DashboardController({getRuntime:async()=>live,preflight:()=>({readyForProvisioning:true}),webSession:options.webSession,transport:null});
   t.after(async()=>{await service.close();fs.rmSync(directory,{recursive:true,force:true});});
-  return {target,directory,options,briefs,prompts,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>reviews,get service(){return service;},
+  return {target,directory,options,briefs,prompts,reviewPrompts,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>prompts.length,get service(){return service;},
     async start(){return dashboard.execute({type:"run.start",payload:{mode:"CODE_CHANGE",expectedVersion:0,objective:"Implement required file contents",conversationUrl:"https://chatgpt.com/c/test"}});},
     async run(){const r=await this.start();await service.jobs.get(r.runId);return service.get(r.runId);},
     async reopen(){await service.close();service=new CodeChangeService(options);live.codeChanges=service;},

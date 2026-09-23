@@ -60,7 +60,11 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
           pageReachable: true, pageBusy: false, generating: false, extensionBusy: false, pageStatus: "READY",
           lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count,
         });
-        if (message.type === "web.delivery.ack" && !dropAck) active = null;
+        if (message.type === "web.delivery.ack") {
+          if (!dropAck) active = null;
+          reply("web.delivery.acknowledged", { currentDeliveryId:active, sessionId:binding.sessionId,
+            runId:binding.runId, conversationUrl:binding.conversationUrl, conversationId:binding.conversationId });
+        }
       });
     }
   }

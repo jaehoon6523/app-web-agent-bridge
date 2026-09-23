@@ -4,21 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { reportFor, strictReportFor, setupAudit } from "./helpers/audit-fixtures.js";
 
-test("default audit fixture reviews the captured candidate instead of consuming scenario truth", async (t) => {
-  const f = setupAudit(t);
-  const run = await f.run();
-  assert.equal(run.stage, "AWAITING_APPLY", run.error);
-  assert.equal(run.auditResult, "PASS");
-  assert.equal(run.application, null);
-  assert.equal(f.starts(), 2);
-  assert.equal(f.reviews(), 2);
-  assert.deepEqual(run.reviews.map((review) => review.decision), ["REWORK", "PASS"]);
-  assert.ok(f.prompts[0].candidateDiff.split(/\r?\n/u).includes("+revision 1"));
-  assert.ok(f.prompts[1].candidateDiff.split(/\r?\n/u).includes("+revision 2"));
-});
-
-test("custom worker does not need to return expectedVerdict for the default reviewer", async (t) => {
+test("fixture reviewer is an explicit external script and does not derive verdicts from candidateDiff", async (t) => {
   const f = setupAudit(t, {
+    reviewVerdicts:["UNSATISFIED", "SATISFIED"],
     worker({ workspace }) {
       fs.writeFileSync(path.join(workspace.root, "file.txt"), "revision 2\n");
     },
@@ -27,15 +15,33 @@ test("custom worker does not need to return expectedVerdict for the default revi
   assert.equal(run.stage, "AWAITING_APPLY", run.error);
   assert.equal(run.auditResult, "PASS");
   assert.equal(run.application, null);
-  assert.equal(f.starts(), 1);
-  assert.equal(f.reviews(), 1);
-  assert.equal(run.reviews[0].decision, "PASS");
+  assert.equal(f.starts(), 2);
+  assert.equal(f.reviews(), 2);
+  assert.deepEqual(run.reviews.map((review) => review.decision), ["REWORK", "PASS"]);
+  assert.ok(f.prompts.every((prompt) => prompt.candidateDiff.split(/\r?\n/u).includes("+revision 2")),
+    "The same candidate semantics must not force the fixture reviewer to change its scripted verdict.");
 });
 
-test("persistently bad candidates never become PASS just because review count advances", async (t) => {
+test("fixture reviewer fails closed when its explicit external script is exhausted", async (t) => {
   const f = setupAudit(t, {
+    reviewVerdicts:["UNSATISFIED"],
     worker({ workspace, number }) {
-      fs.writeFileSync(path.join(workspace.root, "file.txt"), `still-wrong-${number}\n`);
+      fs.writeFileSync(path.join(workspace.root, "file.txt"), `candidate-${number}\n`);
+    },
+  });
+  const run = await f.run();
+  assert.equal(run.stage, "RECOVERY_REQUIRED");
+  assert.equal(run.application, null);
+  assert.match(run.error, /AUDIT_FIXTURE_REVIEW_SCRIPT_EXHAUSTED:2/u);
+  assert.equal(f.starts(), 2);
+  assert.equal(f.reviews(), 2);
+});
+
+test("persistently rejected candidates never become PASS because review count advances", async (t) => {
+  const f = setupAudit(t, {
+    reviewVerdicts:["UNSATISFIED", "UNSATISFIED", "UNSATISFIED"],
+    worker({ workspace, number }) {
+      fs.writeFileSync(path.join(workspace.root, "file.txt"), `candidate-${number}\n`);
     },
   });
   const run = await f.run();

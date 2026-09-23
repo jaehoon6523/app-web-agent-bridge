@@ -17,6 +17,9 @@ function fixture(t) {
   const runs = new Map(), calls = [];
   let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {}, discarded = null;
   const web = {
+    async inspect() {
+      return { binding: binding ?? null };
+    },
     async resume(input) {
       validateWebSessionBinding(input.binding);
       binding = input.binding.conversationUrl === null
@@ -362,6 +365,31 @@ test("unacknowledged completed response reconciles without another Web turn", as
   assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
   assert.equal(f.service.current.webSession.activeDeliveryId, null);
   assert.equal(f.calls.length, 1);
+});
+
+test("reconcile restores a missing local adapter binding before acknowledgement", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const session = f.service.current.webSession;
+  const identity = { sessionId: session.sessionId, conversationId: session.conversationId,
+    conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId };
+  f.web.inspect = async () => ({ binding:null });
+  f.ackFailure(false);
+  await f.command("web.reconcile", identity);
+  assert.equal(f.calls.length, 2, "missing local binding must resume exactly once");
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+});
+
+test("reconcile rejects a rebound adapter with different durable identity", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const session = f.service.current.webSession;
+  const identity = { sessionId: session.sessionId, conversationId: session.conversationId,
+    conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId };
+  f.web.inspect = async () => ({ binding:null });
+  f.web.resume = async ({ binding }) => ({ ...binding, runId:"different-run", bindingStatus:"BOUND" });
+  f.ackFailure(false);
+  await assert.rejects(f.command("web.reconcile", identity), { code:"DELIVERY_RECOVERY_MISMATCH" });
+  assert.equal(f.service.current.deliveries[0].state, "RESPONSE_COMPLETED");
+  assert.equal(f.service.current.webSession.activeDeliveryId, identity.deliveryId);
 });
 
 test("explicit preparation reconcile allows one manual follow-up adoption", async (t) => {

@@ -8,10 +8,15 @@ import { evaluateCodeReview, validateAuditResponse } from "../src/domain/code-re
 import { buildCodeReviewPrompt } from "../src/orchestration/code-change-prompts.js";
 
 const ALL_KINDS = ["PATCH", "CODE_SNAPSHOT", "EXECUTION", "ARTIFACT"];
-const GENERATOR_VERSION = "audit-reality-v1";
+const GENERATOR_VERSION = "audit-reality-v2";
 const DEFAULT_SEED = 0x5eedc0de;
 const DEFAULT_DOMAIN_CASES = 200;
 const DEFAULT_FLOW_CASES = 12;
+const DOMAIN_SALTS = Object.freeze({
+  "evidence-binding": 0x00000001,
+  "prompt-literal": 0x000a11ce,
+  "pipeline": 0x00c0ffee,
+});
 
 function integerEnv(name, fallback, max, allowZero = false) {
   const value = process.env[name];
@@ -27,6 +32,14 @@ function seedEnv() {
 function targetCaseEnv() {
   const value = process.env.AUDIT_FUZZ_CASE;
   return value === undefined || value === "" ? null : integerEnv("AUDIT_FUZZ_CASE", 0, 4999, true);
+}
+function targetDomainEnv() {
+  const value = process.env.AUDIT_FUZZ_DOMAIN;
+  if (value === undefined || value === "") return null;
+  if (!Object.hasOwn(DOMAIN_SALTS, value)) {
+    throw new TypeError(`AUDIT_FUZZ_DOMAIN must be one of: ${Object.keys(DOMAIN_SALTS).join(", ")}`);
+  }
+  return value;
 }
 function mix32(value) {
   let x = value >>> 0;
@@ -62,19 +75,29 @@ function subset(rng, values) {
   const selected = values.filter(() => (rng() & 1) === 1);
   return selected.length ? selected : [choose(rng, values)];
 }
-function selectedCase(index, target) { return target === null || index === target; }
-function caseCount(name, fallback, max, target) {
-  const configured = integerEnv(name, fallback, max);
-  return target !== null && target < max ? Math.max(configured, target + 1) : configured;
+function caseIndexes(name, fallback, max, target) {
+  if (target !== null) return [target];
+  const count = integerEnv(name, fallback, max);
+  return Array.from({ length:count }, (_, index) => index);
 }
-function descriptor(seed, index, domain, salt, mutation, details = {}) {
+function enabledDomain(domain, targetDomain) {
+  return targetDomain === null || targetDomain === domain;
+}
+function descriptor(seed, index, domain, mutation, details = {}) {
+  const salt = DOMAIN_SALTS[domain];
   return {
     generatorVersion:GENERATOR_VERSION,
+    scenarioId:`${GENERATOR_VERSION}:${domain}:${seed}:${index}`,
     seed,
     case:index,
     domain,
     caseSeed:caseSeed(seed, index, salt),
     mutation,
+    replay:{
+      AUDIT_FUZZ_DOMAIN:domain,
+      AUDIT_FUZZ_SEED:String(seed),
+      AUDIT_FUZZ_CASE:String(index),
+    },
     ...details,
   };
 }
@@ -139,14 +162,15 @@ function generatedContext(rng, index) {
 test("seeded single-invariant mutations exercise validator threat model", () => {
   const seed = seedEnv();
   const target = targetCaseEnv();
-  const cases = caseCount("AUDIT_FUZZ_CASES", DEFAULT_DOMAIN_CASES, 5000, target);
-  const salt = 0x01;
+  const targetDomain = targetDomainEnv();
+  const domain = "evidence-binding";
+  if (!enabledDomain(domain, targetDomain)) return;
+  const salt = DOMAIN_SALTS[domain];
 
-  for (let index = 0; index < cases; index += 1) {
-    if (!selectedCase(index, target)) continue;
+  for (const index of caseIndexes("AUDIT_FUZZ_CASES", DEFAULT_DOMAIN_CASES, 5000, target)) {
     const rng = random(caseSeed(seed, index, salt));
     const { kinds, context, report } = generatedContext(rng, index);
-    const failure = (mutation) => descriptor(seed, index, "evidence-binding", salt, mutation, {
+    const failure = (mutation) => descriptor(seed, index, domain, mutation, {
       requiredKinds:kinds,
       candidateId:context.candidateId,
     });
@@ -181,8 +205,10 @@ test("seeded single-invariant mutations exercise validator threat model", () => 
 test("seeded reviewer prompt preserves production-shaped literals exactly", () => {
   const seed = seedEnv();
   const target = targetCaseEnv();
-  const cases = caseCount("AUDIT_FUZZ_CASES", DEFAULT_DOMAIN_CASES, 5000, target);
-  const salt = 0xa11ce;
+  const targetDomain = targetDomainEnv();
+  const domain = "prompt-literal";
+  if (!enabledDomain(domain, targetDomain)) return;
+  const salt = DOMAIN_SALTS[domain];
   const literals = [
     "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     "https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
@@ -190,8 +216,7 @@ test("seeded reviewer prompt preserves production-shaped literals exactly", () =
     "C:\\\\Users\\\\User\\\\project\\\\file.js",
     "한글🙂 / JSON \\\"quote\\\" / braces {x} / CRLF\\r\\nnext",
   ];
-  for (let index = 0; index < cases; index += 1) {
-    if (!selectedCase(index, target)) continue;
+  for (const index of caseIndexes("AUDIT_FUZZ_CASES", DEFAULT_DOMAIN_CASES, 5000, target)) {
     const rng = random(caseSeed(seed, index, salt));
     const literal = `${choose(rng, literals)} :: ${rng().toString(16)} :: ${choose(rng, literals)}`;
     const data = {
@@ -200,61 +225,76 @@ test("seeded reviewer prompt preserves production-shaped literals exactly", () =
       evidence:[], registeredVerifications:[], feedback:null,
     };
     const prompt = buildCodeReviewPrompt(data);
-    const decoded = JSON.parse(prompt.slice(prompt.indexOf("\n") + 1));
-    assert.equal(decoded.candidateDiff, literal, failureContext(descriptor(seed, index, "prompt-literal", salt,
+    const firstBreak = prompt.indexOf("\n");
+    const secondBreak = prompt.indexOf("\n", firstBreak + 1);
+    assert.ok(firstBreak >= 0 && secondBreak > firstBreak, "review prompt must keep JSON on the second line");
+    const decoded = JSON.parse(prompt.slice(firstBreak + 1, secondBreak));
+    assert.equal(decoded.candidateDiff, literal, failureContext(descriptor(seed, index, domain,
       "LITERAL_ROUNDTRIP", { requiredKinds:[], candidateId:data.candidate.candidateId, literal })));
   }
 });
 
-test("seeded scenario truth crosses real Git capture, Controller review loop and persisted history", async (t) => {
+test("seeded mutations and explicit external review scripts cross Git capture, Controller state and persisted history", async (t) => {
   const seed = seedEnv();
   const target = targetCaseEnv();
-  const cases = caseCount("AUDIT_FLOW_CASES", DEFAULT_FLOW_CASES, 50, target);
-  const salt = 0xc0ffee;
+  const targetDomain = targetDomainEnv();
+  const domain = "pipeline";
+  if (!enabledDomain(domain, targetDomain)) return;
+  const salt = DOMAIN_SALTS[domain];
 
-  for (let index = 0; index < cases; index += 1) {
-    if (!selectedCase(index, target)) continue;
+  for (const index of caseIndexes("AUDIT_FLOW_CASES", DEFAULT_FLOW_CASES, 50, target)) {
     const rng = random(caseSeed(seed, index, salt));
-    const goodAt = 1 + (rng() % 4);
+    const passAt = 1 + (rng() % 4);
     const noise = choose(rng, [
       "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
       "[looks-like](markdown)",
       "한글🙂",
       "C:\\\\Users\\\\fixture\\\\file.js",
     ]);
+    const reviewVerdicts = passAt <= 3
+      ? [...Array(passAt - 1).fill("UNSATISFIED"), "SATISFIED"]
+      : Array(3).fill("UNSATISFIED");
+    const expectedDecisions = reviewVerdicts.map((verdict) => verdict === "SATISFIED" ? "PASS" : "REWORK");
     const scenario = {
+      mutation(number) {
+        return { content:`case-${index}-candidate-${number}\n${noise}\n` };
+      },
+      externalReview:{ verdicts:reviewVerdicts },
       expected:{
         changedFiles:["file.txt"],
-        decisions:goodAt <= 3
-          ? [...Array(goodAt - 1).fill("REWORK"), "PASS"]
-          : Array(3).fill("REWORK"),
-        terminalStage:goodAt <= 3 ? "AWAITING_APPLY" : "INCONCLUSIVE",
-      },
-      mutation(number) {
-        const satisfied = number >= goodAt;
-        return {
-          content:satisfied ? `revision 2\n${noise}\n` : `wrong-${index}-${number}\n${noise}\n`,
-        };
+        decisions:expectedDecisions,
+        terminalStage:passAt <= 3 ? "AWAITING_APPLY" : "INCONCLUSIVE",
       },
     };
 
     await t.test(`generator=${GENERATOR_VERSION} seed=${seed} flow-case=${index}`, async (st) => {
       const f = setupAudit(st, {
+        reviewVerdicts:scenario.externalReview.verdicts,
         worker({ workspace, number }) {
           const mutation = scenario.mutation(number);
           fs.writeFileSync(path.join(workspace.root, "file.txt"), mutation.content);
         },
       });
       const run = await f.run();
+      const snapshot = f.service.snapshot(run.runId, {});
 
-      const failure = (mutation, extra = {}) => failureContext(descriptor(seed, index, "pipeline", salt, mutation, {
-        requiredKinds:["PATCH"], candidateId:run.candidate?.candidateId ?? null, goodAt, ...extra,
+      const failure = (mutation, extra = {}) => failureContext(descriptor(seed, index, domain, mutation, {
+        requiredKinds:["PATCH"],
+        reviewVerdicts,
+        changedFiles:scenario.expected.changedFiles,
+        noise,
+        ...extra,
       }));
       assert.equal(run.stage, scenario.expected.terminalStage, failure("TERMINAL_STAGE"));
       assert.deepEqual(run.reviews.map((review) => review.decision), scenario.expected.decisions,
         failure("REVIEW_HISTORY"));
       assert.equal(run.application, null, failure("APPLICATION_MUST_BE_NULL"));
+      assert.equal(snapshot.outcome.applicationStatus, "NOT_APPLIED", failure("PROJECTED_APPLICATION_MUST_BE_NULL"));
+      assert.equal(run.events.some((event) =>
+        event.type === "STAGE_CHANGED" && ["APPLYING", "APPLIED"].includes(event.payload?.stage)), false,
+      failure("NO_APPLY_STAGE_BEFORE_EXPLICIT_APPLY"));
       assert.equal(run.reviews.length, run.candidates.length, failure("ONE_REVIEW_PER_CANDIDATE"));
+
       for (let position = 0; position < run.candidates.length; position += 1) {
         const candidate = run.candidates[position];
         const review = run.reviews[position];
@@ -262,6 +302,8 @@ test("seeded scenario truth crosses real Git capture, Controller review loop and
           failure("CHANGED_FILES", { position }));
         assert.equal(review.candidateId, candidate.candidateId,
           failure("REVIEW_CANDIDATE_BINDING", { position }));
+        assert.ok(f.prompts[position].candidateDiff.includes(`case-${index}-candidate-${position + 1}`),
+          failure("MUTATION_TO_CAPTURE", { position }));
         if (review.decision === "REWORK" && position + 1 < run.candidates.length) {
           assert.notEqual(candidate.candidateId, run.candidates[position + 1].candidateId,
             failure("REWORK_MUST_CREATE_NEW_CANDIDATE", { position }));
@@ -274,6 +316,8 @@ test("seeded scenario truth crosses real Git capture, Controller review loop and
         assert.equal(run.auditResult, "PASS", failure("PASS_AUDIT_RESULT"));
         assert.equal(run.reviews.at(-1).candidateId, run.candidate.candidateId,
           failure("PASS_CURRENT_CANDIDATE_BINDING"));
+        assert.equal(snapshot.commandCapabilities.includes("code.apply"), true,
+          failure("PASS_EXPOSES_APPLY_ONLY_AFTER_AUDIT"));
         if (scenario.expected.decisions.includes("REWORK")) {
           const finding = run.findings[0];
           assert.ok(finding, failure("REWORK_FINDING_PERSISTED"));
@@ -287,6 +331,11 @@ test("seeded scenario truth crosses real Git capture, Controller review loop and
       } else {
         assert.equal(run.auditResult, "REWORK", failure("INCONCLUSIVE_AUDIT_RESULT"));
         assert.equal(run.terminationReason, "ITERATION_LIMIT", failure("ITERATION_LIMIT"));
+        assert.equal(snapshot.commandCapabilities.includes("code.apply"), false,
+          failure("INCONCLUSIVE_MUST_NOT_EXPOSE_APPLY"));
+        assert.equal(run.events.some((event) =>
+          event.type === "STAGE_CHANGED" && event.payload?.stage === "AWAITING_APPLY"), false,
+        failure("INCONCLUSIVE_NEVER_REACHED_AWAITING_APPLY"));
         const finding = run.findings[0];
         assert.ok(finding, failure("INCONCLUSIVE_FINDING_PERSISTED"));
         assert.ok(["OPEN", "FIX_SUBMITTED"].includes(finding.status), failure("INCONCLUSIVE_FINDING_NOT_RESOLVED"));

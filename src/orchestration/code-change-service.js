@@ -4,13 +4,15 @@ import { randomUUID } from "node:crypto";
 import { CodeChangeStore } from "../persistence/code-change-store.js";
 import { GitChangeWorkspace } from "../repository/git-change-workspace.js";
 import { createRegisteredCodeWorker } from "../runtime/workers/registry.js";
-import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
+import { canonicalConversationUrl, extractConversationId } from "../runtime/web/binding.js";
 import { validateAuditProject } from "./audit-project.js";
 import { requirementsRef, exactObject, uniqueItems, nonempty } from "../domain/audit-contract.js";
 import { evidenceRecord, excerpt } from "../evidence/candidate-evidence.js";
 import { auditCandidate, auditContext, performVerification } from "./audit-round.js";
 import { evaluateCodeReview } from "../domain/code-review.js";
 import { canonicalJson } from "../domain/canonical-json.js";
+import { auditManifestMatchesRun } from "../domain/audit-manifest.js";
+import { validateAgreedWorkOrder } from "../domain/review-coordination.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts.js";
 import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
@@ -31,11 +33,24 @@ function retryableWorkerTimeout(run) {
     && (run.reviews?.length ?? 0) === 0;
 }
 
+function hasMultiReviewAuthority(run) {
+  const review = run?.reviews?.at(-1);
+  return Boolean(review?.decision === "PASS"
+    && review.auditManifestHash
+    && Array.isArray(review.reviewerRoles)
+    && review.reviewerRoles.length === 2
+    && review.reviewerRoles.includes("JUDGE")
+    && review.reviewerRoles.includes("CRITIC")
+    && (run.auditManifests ?? []).some((item) => item.auditManifestHash === review.auditManifestHash
+      && item.candidateId === run.candidate?.candidateId));
+}
+
 function retryableAuditReview(run) {
-  return Boolean(run?.schemaVersion === 3
-    && run.stage === "HOLD"
-    && run.terminationReason === "REPORT_REPAIR_LIMIT"
-    && run.auditResult === "HOLD"
+  const retryableHold = run?.stage === "HOLD"
+    && ["REPORT_REPAIR_LIMIT","WEB_BINDING_REQUIRED","PLAN_REPAIR_LIMIT","PLAN_CONSENSUS_NOT_REACHED"].includes(run.terminationReason)
+    && run.auditResult === "HOLD";
+  const legacyUpgrade = run?.stage === "AWAITING_APPLY" && !hasMultiReviewAuthority(run);
+  return Boolean(run?.schemaVersion === 3 && (retryableHold || legacyUpgrade)
     && run.application == null
     && run.stopRequested !== true
     && run.candidate?.candidateId
@@ -317,6 +332,8 @@ export class CodeChangeService {
       policy: project.policy, verifications: project.verifications, maxIterations: project.policy.maxIterations,
       conversationUrl, conversationId, iteration: 0, evidenceRounds: 0, captures: [], capture: null, candidate: null,
       candidates: [], evidence: [], findings: [], reviews: [], requests: [], verificationIntents: [], supplementResults: [],
+      conversationBindings: [], auditManifests: [], reviewArtifacts: [], plans: [], agreedWorkOrders: [], coordinationEvents: [],
+      coordination: { phase:"NOT_STARTED", activeRole:null, auditManifestHash:null, activePlanId:null, agreedWorkOrderId:null },
       worker: { provider: this.workerConfig.provider, model: this.workerConfig.model ?? null },
       workerTurns: [],
       messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
@@ -356,6 +373,7 @@ export class CodeChangeService {
     while (true) {
       this.assertActive(runId);
       run = this.get(runId);
+      if (run.stage === "REWORK" && run.iteration > 0) this.assertReworkAuthority(run);
       run = this.update(runId, { stage: "WORKER_RUNNING", iteration: run.iteration + 1, auditResult: null });
       const creation = this.createWorker({ workerConfig: this.workerConfig, workspace, codex: this.codex,
         persistThreadId: async (value) => { this.assertActive(runId); this.update(runId, { workerThread: value }); },
@@ -459,20 +477,40 @@ export class CodeChangeService {
         return response ? { ...f, status: "FIX_SUBMITTED", history: [...f.history, { status: "FIX_SUBMITTED", candidateId, at: new Date().toISOString(), reason: response.explanation }] } : f;
       });
       this.update(runId, { stage: "VERIFYING", candidate, capture, candidates: [...run.candidates, candidate], findings,
+        evidenceRounds: 0,
         evidence: [...run.evidence, evidenceRecord(this.artifactStore, candidateId, "PATCH", patch, { unchanged: capture.unchanged }),
           evidenceRecord(this.artifactStore, candidateId, "AGENT_CLAIM", report, {}, "AGENT")],
         messages: [...run.messages, { messageId: `worker_${run.iteration}`, fromActor: (completed.provider || this.workerConfig.provider) === "codex" ? "CODEX_AGENT" : "CODE_WORKER", workerProvider: completed.provider || this.workerConfig.provider, content: completed.text, createdAt: new Date().toISOString() }] });
       this.ensureCandidateCodeSnapshots(runId);
       for (const verification of run.verifications) await performVerification(this, runId, workspace, verification);
-      run = this.get(runId);
-      const binding = createWebSessionBinding({ sessionId: `web_${runId}`, runId, tabId: null, windowId: null,
-        conversationUrl: run.conversationUrl, conversationId: run.conversationId, title: null,
-        lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "NEEDS_REBIND" });
-      await this.wait(runId, this.web.resume({ binding }));
       this.assertActive(runId);
       await auditCandidate(this, runId, workspace);
       if (this.get(runId).stage !== "REWORK") return;
     }
+  }
+  assertReworkAuthority(run) {
+    const workOrder = run.agreedWorkOrders?.at(-1);
+    validateAgreedWorkOrder(workOrder, { runId:run.runId, baseCandidateId:run.candidate?.candidateId });
+    if (run.coordination?.agreedWorkOrderId !== workOrder.workOrderId) {
+      throw new Error("Current rework is not authorized by the frozen AGREED_WORK_ORDER.");
+    }
+    const plan = (run.plans ?? []).find((item) => item.planId === workOrder.planId
+      && item.planHash === workOrder.planHash && item.planBasisHash === workOrder.planBasisHash);
+    if (!plan) throw new Error("AGREED_WORK_ORDER does not identify a persisted frozen plan.");
+    const control = (run.coordinationEvents ?? []).find((item) => item.controlEventId === workOrder.acceptedControlEventId);
+    if (!control?.packetRef?.sha256 || control.type !== "PLAN_RESPONSE" || control.role !== "CRITIC"
+      || control.bindingId !== workOrder.acceptedByBindingId) {
+      throw new Error("AGREED_WORK_ORDER lacks a durable Critic acceptance event from the accepted binding.");
+    }
+    this.artifactStore.verify(control.packetRef.sha256);
+    const packet = JSON.parse(this.artifactStore.read(control.packetRef.sha256).toString("utf8"));
+    if (packet.type !== "PLAN_RESPONSE" || packet.decision !== "ACCEPT"
+      || packet.runId !== run.runId || packet.candidateId !== run.candidate.candidateId
+      || packet.planId !== workOrder.planId || packet.planHash !== workOrder.planHash
+      || packet.planBasisHash !== workOrder.planBasisHash) {
+      throw new Error("Critic acceptance event does not match AGREED_WORK_ORDER.");
+    }
+    return workOrder;
   }
   validateWorkerReport(report, run) {
     exactObject(report, ["summary", "requirementClaims", "findingResponses", "unverified"]);
@@ -487,11 +525,24 @@ export class CodeChangeService {
   }
   assertApprovalCandidate(run) {
     const review = run.reviews?.at(-1);
+    const manifestRecord = (run.auditManifests ?? []).find((item) =>
+      item.auditManifestHash === review?.auditManifestHash && item.candidateId === run.candidate?.candidateId);
+    let manifest = null;
+    if (manifestRecord?.contentRef?.sha256) {
+      this.artifactStore.verify(manifestRecord.contentRef.sha256);
+      manifest = JSON.parse(this.artifactStore.read(manifestRecord.contentRef.sha256).toString("utf8"));
+    }
     if (run.schemaVersion !== 3 || !review || review.decision !== "PASS" || run.auditResult !== "PASS"
       || review.candidateId !== run.candidate?.candidateId || run.capture.candidateTree !== run.candidate.candidateTree
       || run.capture.artifact.sha256 !== run.candidate.patchHash || run.capture.baseCommit !== run.baseCommit
       || canonicalJson(requirementsRef(run.requirements)) !== canonicalJson(run.requirementsRef)
-      || canonicalJson(review.requirementsRef) !== canonicalJson(run.requirementsRef)) throw new Error("Approval does not identify a valid reviewed candidate.");
+      || canonicalJson(review.requirementsRef) !== canonicalJson(run.requirementsRef)
+      || !manifestRecord || !manifest || manifest.auditManifestHash !== review.auditManifestHash
+      || !auditManifestMatchesRun(manifest, run)
+      || review.reviewerRoles?.length !== 2
+      || !review.reviewerRoles.includes("JUDGE") || !review.reviewerRoles.includes("CRITIC")) {
+      throw new Error("Approval does not identify a valid independently reviewed candidate.");
+    }
     for (const evidence of run.evidence.filter((e) => e.candidateId === run.candidate.candidateId)) this.artifactStore.verify(evidence.contentRef.sha256);
     if (evaluateCodeReview(review.report, auditContext(run, review.requestId)).decision !== "PASS") throw new Error("Required findings or evidence prevent application.");
   }
@@ -532,7 +583,7 @@ export class CodeChangeService {
       && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("run.abandon");
     if (classification === "RECOVERABLE" && retryableAuditReview(run)
       && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("code.review.retry");
-    if (classification === "RECOVERABLE" && run.stage === "AWAITING_APPLY") allowedActions.push("code.apply");
+    if (classification === "RECOVERABLE" && run.stage === "AWAITING_APPLY" && hasMultiReviewAuthority(run)) allowedActions.push("code.apply");
     return redactForEvidence({ runId: run.runId, classification, observations, allowedActions, readOnly: true, observedAt: new Date().toISOString() });
   }
   async terminate(id) {
@@ -563,7 +614,7 @@ export class CodeChangeService {
     if (type === "run.reconcile") return this.reconcile(run);
     if (type === "code.review.retry") {
       if (!retryableAuditReview(run) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
-        throw new Error("Only a settled REPORT_REPAIR_LIMIT hold can retry the same candidate review.");
+        throw new Error("Only a settled review hold or legacy single-review candidate can be re-audited.");
       }
       const target = GitChangeWorkspace.preflight(run.targetRoot);
       if (target.baseCommit !== run.baseCommit) {
@@ -594,7 +645,8 @@ export class CodeChangeService {
         error: null, terminationReason: null, missingInformation: [], stopRequested: false,
         deadlineAt: new Date(Date.now() + run.policy.totalTimeoutMs).toISOString(),
         recoveryAttempts: [...(run.recoveryAttempts ?? []), {
-          kind: "AUDIT_REPORT_RETRY", at: retryAt, previousError, previousReason,
+          kind: run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
+          at: retryAt, previousError, previousReason,
           candidateId: run.candidate.candidateId, patchHash: run.candidate.patchHash,
         }],
       });
@@ -606,16 +658,9 @@ export class CodeChangeService {
         }
       }, run.policy.totalTimeoutMs);
       const job = Promise.resolve().then(async () => {
-        let current = this.get(run.runId);
-        const binding = createWebSessionBinding({
-          sessionId: `web_${run.runId}`, runId: run.runId, tabId: null, windowId: null,
-          conversationUrl: current.conversationUrl, conversationId: current.conversationId, title: null,
-          lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "NEEDS_REBIND",
-        });
-        await this.wait(run.runId, this.web.resume({ binding }));
         this.assertActive(run.runId);
         await auditCandidate(this, run.runId, workspace);
-        current = this.get(run.runId);
+        const current = this.get(run.runId);
         if (current.stage === "REWORK") await this.executeIterations(run.runId, workspace);
       }).catch(async (error) => {
         const current = this.get(run.runId);
@@ -725,7 +770,9 @@ export class CodeChangeService {
       activeActor: record.stage === "WORKER_RUNNING"
         ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
         : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage) ? "CHATGPT_WEB_AGENT" : null },
-      sessions: [], messages: record.messages, deliveries: [], approvals: record.application ? [record.application] : [], events: record.events ?? [],
+      sessions: record.conversationBindings ?? [], messages: record.messages,
+      deliveries: (record.conversationBindings ?? []).filter((item) => item.activeDeliveryId).map((item) => ({ bindingId:item.bindingId, deliveryId:item.activeDeliveryId, role:item.role })),
+      approvals: record.application ? [record.application] : [], events: record.events ?? [],
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
@@ -735,7 +782,7 @@ export class CodeChangeService {
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
         ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["code.review.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
-        ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 ? ["code.apply"] : [])] });
+        ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 && hasMultiReviewAuthority(record) ? ["code.apply"] : [])] });
   }
   async close() {
     if (this.closed) return;

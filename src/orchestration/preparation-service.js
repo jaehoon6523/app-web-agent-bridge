@@ -533,11 +533,9 @@ export class PreparationService {
     }
     if (!this.capabilities().includes(type)) fail("Web operation is unavailable.");
     const pendingDelivery = context.deliveries.find(item => item.deliveryId === session.activeDeliveryId);
-    // Reconcile must reread the bound ChatGPT session when a response may be
-    // partial or malformed. ACK_PENDING is already a durable response whose
-    // only remaining work is acknowledgement, so leave that path read-only.
-    const refreshCompleted = type === "web.reconcile"
-      && pendingDelivery?.processingState !== "ACK_PENDING";
+    // Explicit reconcile is the user-authorized refresh path, including an
+    // ACK_PENDING response that may have one manually completed follow-up.
+    const refreshCompleted = type === "web.reconcile";
     const observed = await this.web.inspectDelivery({ refreshCompleted,
       adoptManualFollowup: refreshCompleted && type === "web.reconcile" });
     this.setDiagnostics(context, observed); this.touch(context);
@@ -563,6 +561,57 @@ export class PreparationService {
     } else if (type === "web.reconcile") {
       const delivery = context.deliveries.find((d) => d.deliveryId === session.activeDeliveryId);
       if (!delivery?.response || this.jobs.has(context.preparationId)) fail("No durable completed response; inspect the conversation. No clear or resend.", "RECOVERY_REQUIRED");
+
+      // The durable preparation owns the conversation identity. Rebind only
+      // when the live adapter cannot prove that it still owns that exact
+      // session/run/conversation binding.
+      const adapterState = typeof this.web.inspect === "function"
+        ? await this.web.inspect()
+        : null;
+      const localBinding = adapterState?.binding ?? null;
+      const hasExactLocalBinding = localBinding !== null
+        && localBinding.sessionId === session.sessionId
+        && localBinding.runId === context.preparationId
+        && localBinding.conversationUrl === session.conversationUrl
+        && localBinding.conversationId === session.conversationId
+        && localBinding.bindingStatus === "BOUND";
+
+      if (!hasExactLocalBinding) {
+        const rebound = await this.web.resume({
+          focus:false,
+          binding:createWebSessionBinding({
+            sessionId:session.sessionId,
+            runId:context.preparationId,
+            tabId:null,
+            windowId:null,
+            documentId:null,
+            frameId:null,
+            conversationUrl:session.conversationUrl,
+            conversationId:session.conversationId,
+            title:null,
+            lastObservedUserMessageId:session.lastObservedUserMessageId,
+            lastObservedAssistantMessageId:session.lastObservedAssistantMessageId,
+            bindingStatus:"NEEDS_REBIND",
+          }),
+        });
+        if (rebound.sessionId !== session.sessionId
+          || rebound.runId !== context.preparationId
+          || rebound.conversationUrl !== session.conversationUrl
+          || rebound.conversationId !== session.conversationId
+          || rebound.bindingStatus !== "BOUND") {
+          fail("Reconcile restored a different Web session binding.", "DELIVERY_RECOVERY_MISMATCH");
+        }
+        Object.assign(session, {
+          tabId:rebound.tabId,
+          windowId:rebound.windowId,
+          documentId:rebound.documentId,
+          frameId:rebound.frameId,
+          bindingState:rebound.bindingStatus,
+          lastObservedUserMessageId:rebound.lastObservedUserMessageId,
+          lastObservedAssistantMessageId:rebound.lastObservedAssistantMessageId,
+        });
+        this.touch(context);
+      }
       await this.complete(context, delivery);
     }
     return this.snapshot();

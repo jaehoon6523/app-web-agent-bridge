@@ -511,6 +511,33 @@ test("submitTurn returns a TurnHandle before Web response and emits only canonic
   await adapter.close();
 });
 
+test("delivery acknowledgement resolves only after exact extension confirmation", async () => {
+  const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });
+  const socket = new FakeSocket();
+  transport.attach(socket);
+  authenticate(transport, socket);
+  const adapter = await readyAdapter(transport, socket);
+  const pending = adapter.acknowledgeDelivery({ turnId:"turn-ack" });
+  const request = socket.sent.at(-1);
+  assert.equal(request.type, "web.delivery.ack");
+  assert.equal(request.requestId, "turn-ack");
+  socket.receive({
+    type:"web.delivery.acknowledged",
+    protocolVersion:2,
+    requestId:"turn-ack",
+    payload:{
+      currentDeliveryId:null,
+      sessionId:"session-1",
+      runId:"run-1",
+      conversationUrl:"https://chatgpt.com/c/conversation-1",
+    },
+  });
+  const result = await pending;
+  assert.equal(result.currentDeliveryId, null);
+  assert.equal(result.sessionId, "session-1");
+  await adapter.close();
+});
+
 test("ambiguous extension output becomes TURN_FAILED rather than canonical completion", async () => {
   const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });
   const socket = new FakeSocket();

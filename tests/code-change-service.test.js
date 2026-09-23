@@ -6,7 +6,8 @@ import { setupAudit, reportFor } from "./helpers/audit-fixtures.js";
 
 test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately apply exactly the reviewed candidate",async(t)=>{
   const f=setupAudit(t),run=await f.run();
-  assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),2);assert.equal(f.acknowledgements.length,2);
+  assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),2);
+  assert.ok(f.acknowledgements.length>=4,"every reviewer/plan delivery must be acknowledged");
   assert.equal(run.findings[0].status,"RESOLVED");assert.equal(f.briefs[1].unresolvedFindings[0].findingId,run.findings[0].findingId);
   assert.ok(run.evidence.some((e)=>e.candidateId===run.candidate.candidateId
     && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));
@@ -26,7 +27,8 @@ test("VAL-14/21: restart reconciles APPLYING and never redispatches active work"
 test("VAL-07: additional code and evidence retrieval stays on the same candidate",async(t)=>{
   const f=setupAudit(t,{review(data,n){const c=data.context;if(n===1)return{type:"EVIDENCE_REQUEST",runId:c.runId,requestId:c.requestId,candidateId:c.candidateId,requirementsRef:c.requirementsRef,requests:[{requestItemId:"code",kind:"CODE",path:"file.txt",purpose:"Check surrounding code"}]};return reportFor(c);}});
   const run=await f.run();assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),1);
-  assert.equal(f.prompts[1].feedback.results[0].content,"revision 1\n");assert.equal(run.candidates.length,1);
+  assert.equal(run.candidates.length,1);
+  assert.ok(f.prompts[1].evidence.some((e)=>e.kind==="CODE_SNAPSHOT"),"manifest restart must expose the supplemented evidence");
   assert.ok(run.evidence.some((e)=>e.kind==="CODE_SNAPSHOT"));
 });
 test("VAL-04: malformed report is repaired without starting another worker",async(t)=>{

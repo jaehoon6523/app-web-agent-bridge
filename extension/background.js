@@ -7,6 +7,9 @@ import { bindCurrentUserTarget, createStoredTarget, installCurrentTargetTracking
 import { createExtensionStateStore, ensureExtensionIdentity, isLegacyBridgeTestDelivery } from "./runtime/storage.js";
 import { clearLegacyTestDelivery } from "./runtime/legacy-cleanup.js";
 import { assertRelaySafeCompletion, assertTurnSessionBinding, assertTurnStateBinding, assertTurnTabBinding, captureTurnBinding, createActiveTurnGate } from "./runtime/turn-guard.js";
+import { createConversationBootstrapTab } from "./runtime/conversation-bootstrap.js";
+import { createBrowserRuntime } from "./runtime/browser-runtime.js";
+import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -15,6 +18,7 @@ let authenticated = false;
 let pendingChallengeId = null;
 let handledChallengeIds = new Set();
 const turnGate = createActiveTurnGate();
+const browserRuntime = createBrowserRuntime(chrome);
 let lastError = null;
 function bridgeLog(event, details = {}) { console.info(`[bridge:trace:${event}]`, { at: new Date().toISOString(), ...details }); }
 class ExtensionOperationError extends Error {
@@ -314,15 +318,8 @@ async function handlePrepare(message, explicitRebind) {
   }
 }
 async function handleDeliveryAcknowledgement(message) {
-  try {
-    turnGate.assertIdle("Delivery acknowledgement");
-    console.info("[bridge:delivery:ack-received]", { deliveryId: message.requestId });
-    await store.clearDelivery(message.requestId, message.payload?.sessionId ?? null);
-    console.info("[bridge:delivery:ack-cleared]", { deliveryId: message.requestId });
-    broadcastPopupState();
-  } catch (error) {
-    send({ type: "web.prompt.error", requestId: message.requestId, payload: errorPayload(error) });
-  }
+  turnGate.assertIdle("Delivery acknowledgement");
+  return acknowledgeDeliveryMessage({ store, message, send, broadcastPopupState });
 }
 async function handleDeliveryDiscard(message) {
   try { turnGate.assertIdle("Delivery discard"); const state = await store.read(), expected = message.payload || {};
@@ -495,6 +492,14 @@ async function prepareBoundSession(payload) {
   if (requested.bootstrap) {
     let tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
     let roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+    if (payload.createNewConversation === true) {
+      const created = await createConversationBootstrapTab(chrome, waitForContentScript);
+      if (!created) {
+        if (sameSession) await store.update({ bindingStatus:"NEEDS_REBIND" });
+        throw new ExtensionOperationError("NEEDS_REBIND", "전용 ChatGPT conversation bootstrap 탭을 만들 수 없습니다.");
+      }
+      roots = [created];
+    }
     if (roots.length === 0) {
       if (sameSession) await store.update({ bindingStatus: "NEEDS_REBIND" });
       throw new ExtensionOperationError("NEEDS_REBIND", "ChatGPT 시작 페이지를 열 수 없습니다. https://chatgpt.com/ 접근 상태를 확인하세요.", {
@@ -842,54 +847,13 @@ async function getSessionInfo(expectedTurn = null) {
   return session;
 }
 async function focusTab(tab) {
-  await chrome.windows.update(tab.windowId, { focused: true });
-  await chrome.tabs.update(tab.id, { active: true });
+  return browserRuntime.focusTab(tab);
 }
 async function focusBoundTab() {
   await focusTab(await requireExactBoundTab());
 }
-function chatGptContentScriptFiles() {
-  const entry = chrome.runtime.getManifest().content_scripts?.find((item) =>
-    Array.isArray(item.matches) && item.matches.includes("https://chatgpt.com/*"),
-  );
-  if (!Array.isArray(entry?.js) || entry.js.length === 0) {
-    throw new ExtensionOperationError("CONTENT_SCRIPT_CONFIG_INVALID", "ChatGPT content script configuration is missing.");
-  }
-  return entry.js;
-}
 async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false) {
-  const deadline = Date.now() + timeoutMs;
-  let contentScriptResponded = false;
-  let injectionAttempted = false;
-  while (Date.now() < deadline) {
-    try {
-      const response = await chrome.tabs.sendMessage(tabId, { type: "agent.ping" });
-      if (response?.ok) contentScriptResponded = true;
-      if (response?.ok && (!requireComposer || response.ready)) return response;
-      if (response?.pageStatus && !["READY", "UI_CONTRACT_CHANGED"].includes(response.pageStatus)) {
-        throw new ExtensionOperationError(response.pageStatus, response.message || response.pageStatus);
-      }
-    } catch (error) {
-      if (error instanceof ExtensionOperationError) throw error;
-      if (!injectionAttempted) {
-        injectionAttempted = true;
-        const tab = await chrome.tabs.get(tabId).catch(() => null);
-        if (canonicalChatGptUrl(tab?.url)) {
-          await chrome.scripting.executeScript({
-            target: { tabId, frameIds: [0] },
-            files: chatGptContentScriptFiles(),
-          }).catch(() => null);
-        }
-      }
-    }
-    await sleep(350);
-  }
-  throw new ExtensionOperationError(
-    contentScriptResponded && requireComposer ? "UI_CONTRACT_CHANGED" : "CONTENT_SCRIPT_UNAVAILABLE",
-    contentScriptResponded && requireComposer
-      ? "ChatGPT composer is unavailable in the bound conversation."
-      : "ChatGPT content script is unavailable in the bound conversation.",
-  );
+  return browserRuntime.waitForContentScript(tabId, timeoutMs, requireComposer);
 }
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "agent.progress") {

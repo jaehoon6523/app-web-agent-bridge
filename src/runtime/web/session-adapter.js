@@ -340,8 +340,8 @@ export class ChatGptWebSessionAdapter {
     }
   }
 
-  /** @param {{binding?: WebSessionBindingValue, focus?: boolean}} [input] */
-  async resume({ binding, focus = false } = {}) {
+  /** @param {{binding?: WebSessionBindingValue, focus?: boolean, createNewConversation?: boolean}} [input] */
+  async resume({ binding, focus = false, createNewConversation = false } = {}) {
     validateWebSessionBinding(binding);
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
@@ -358,7 +358,10 @@ export class ChatGptWebSessionAdapter {
     try {
       const message = await this.#request({
         type: "web.session.prepare",
-        payload: this.#bindingPayload(binding, { focus }),
+        payload: this.#bindingPayload(binding, {
+          focus,
+          ...(createNewConversation ? { createNewConversation: true } : {}),
+        }),
       }, new Set(["web.session.ready", "web.session.error"]), 60_000);
       if (message.type === "web.session.error") throw this.#messageError(message);
       this.#acceptReturnedBinding(message.payload?.session, {
@@ -578,8 +581,19 @@ export class ChatGptWebSessionAdapter {
     if (typeof turnId !== "string" || !turnId) {
       throw new WebProtocolError("turnId is required for delivery acknowledgement", "INVALID_WEB_TURN");
     }
-    this.#transport.send({ type: "web.delivery.ack", requestId: turnId,
-      payload: { sessionId: this.#transport.snapshot.binding?.sessionId ?? null } });
+    const binding = this.#transport.snapshot.binding;
+    const message = await this.#request({
+      type: "web.delivery.ack",
+      payload: { sessionId: binding?.sessionId ?? null },
+    }, new Set(["web.delivery.acknowledged", "web.prompt.error"]), 10_000, turnId);
+    if (message.type === "web.prompt.error") throw this.#messageError(message);
+    if (message.payload?.currentDeliveryId !== null
+      || message.payload?.sessionId !== binding?.sessionId
+      || message.payload?.runId !== binding?.runId
+      || message.payload?.conversationUrl !== binding?.conversationUrl) {
+      throw new WebProtocolError("Delivery acknowledgement identity mismatch", "DELIVERY_ACK_MISMATCH");
+    }
+    return message.payload;
   }
 
   async discardDelivery(expected) {
