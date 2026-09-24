@@ -3,7 +3,7 @@ import { canonicalChatGptUrl, conversationIdFromUrl } from "./conversation.js";
 export async function createConversationBootstrapTab(chromeApi, waitForContentScript) {
   let created;
   try {
-    created = await chromeApi.tabs.create({ url:"https://chatgpt.com/", active:false });
+    created = await chromeApi.tabs.create({ url:"https://chatgpt.com/", active:true });
   } catch {
     return null;
   }
