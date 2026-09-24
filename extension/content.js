@@ -203,14 +203,26 @@ function setNativeValue(element, value) {
 }
 
 function elementText(element) {
+  let best = "";
+  let bestSelector = null;
   for (const selector of registry.groups.messageContent) {
-    const preferred = element.matches?.(selector) ? element : element.querySelector?.(selector);
-    if (preferred instanceof HTMLElement) {
-      selectorTelemetry.set("messageContent", selector);
-      return (preferred.innerText || preferred.textContent || "").trim();
+    const matches = element.matches?.(selector) ? [element] : element.querySelectorAll?.(selector) ?? [];
+    for (const preferred of matches) {
+      if (!(preferred instanceof HTMLElement)) continue;
+      const candidate = (preferred.innerText || preferred.textContent || "").trim();
+      if (candidate.length > best.length) {
+        best = candidate;
+        bestSelector = selector;
+      }
     }
   }
-  return (element.innerText || element.textContent || "").trim();
+  const containerText = (element.innerText || element.textContent || "").trim();
+  if (containerText.includes("CONTROLLER_PACKET_BEGIN") && containerText.length > best.length) {
+    selectorTelemetry.set("messageContent", "messageContainer:packet");
+    return containerText;
+  }
+  if (bestSelector) selectorTelemetry.set("messageContent", bestSelector);
+  return best || containerText;
 }
 
 function messageContainer(roleNode) {
