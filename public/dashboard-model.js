@@ -78,10 +78,11 @@ function normalizeSessions(value) {
   const sessions = new Map();
   for (const session of records) {
     if (!session || !ACTORS.includes(session.actor)) continue;
-    if (sessions.has(session.actor)) {
-      throw new TypeError(`Duplicate session for ${session.actor}.`);
+    const key = session.bindingId ?? session.actor;
+    if (sessions.has(key)) {
+      throw new TypeError(`Duplicate session for ${key}.`);
     }
-    sessions.set(session.actor, Object.freeze({ ...session }));
+    sessions.set(key, Object.freeze({ ...session }));
   }
   return sessions;
 }

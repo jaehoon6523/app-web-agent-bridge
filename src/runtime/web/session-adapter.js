@@ -440,6 +440,7 @@ export class ChatGptWebSessionAdapter {
         payload: {
           controllerMessageId,
           runId,
+          sessionId: binding.sessionId,
           text,
           timeoutMs,
           ...(Number.isSafeInteger(stableMs) ? { stableMs } : {}),

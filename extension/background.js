@@ -3,11 +3,11 @@ import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation } from "./
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import { canonicalChatGptUrl, conversationIdFromUrl, matchExactConversationTabs, validateLocalControllerUrl } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
-import { bindCurrentUserTarget, createStoredTarget, installCurrentTargetTracking, isPendingRootPromotion, pendingDeliveryTargetConflict, resolveCurrentUserTarget } from "./runtime/current-target.js";
+import { bindCurrentUserTarget, createStoredTarget, installCurrentTargetTracking, isPendingRootPromotion, pendingDeliveryTargetConflict, resolveCurrentUserTarget, resolvePreparedSessionTarget } from "./runtime/current-target.js";
 import { createExtensionStateStore, ensureExtensionIdentity, isLegacyBridgeTestDelivery } from "./runtime/storage.js";
 import { clearLegacyTestDelivery } from "./runtime/legacy-cleanup.js";
 import { assertRelaySafeCompletion, assertTurnSessionBinding, assertTurnStateBinding, assertTurnTabBinding, captureTurnBinding, createActiveTurnGate } from "./runtime/turn-guard.js";
-import { createConversationBootstrapTab } from "./runtime/conversation-bootstrap.js";
+import { createConversationBootstrapTab, reopenExactConversationTab } from "./runtime/conversation-bootstrap.js";
 import { createBrowserRuntime } from "./runtime/browser-runtime.js";
 import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
 const PROTOCOL_VERSION = 2;
@@ -492,7 +492,7 @@ async function prepareBoundSession(payload) {
   if (requested.bootstrap) {
     let tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
     let roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
-    if (payload.createNewConversation === true) {
+    if (payload.createNewConversation === true || roots.length === 0) {
       const created = await createConversationBootstrapTab(chrome, waitForContentScript);
       if (!created) {
         if (sameSession) await store.update({ bindingStatus:"NEEDS_REBIND" });
@@ -536,6 +536,10 @@ async function prepareBoundSession(payload) {
     matched = preferred
       ? { status: "BOUND", tab: preferred }
       : matchExactConversationTabs(tabs, requested);
+    if (matched.status === "NEEDS_REBIND") {
+      const reopened = await reopenExactConversationTab(chrome, waitForContentScript, requested);
+      if (reopened) matched = { status: "BOUND", tab: reopened };
+    }
   }
   if (matched.status !== "BOUND") {
     if (sameSession) await store.update({ bindingStatus: matched.status });
@@ -651,14 +655,19 @@ async function handlePrompt(message) {
       || typeof payload.runId !== "string"
       || !payload.runId.trim()
       || payload.runId !== state.lastBoundRunId
+      || (payload.sessionId !== undefined && payload.sessionId !== state.lastBoundSessionId)
     ) {
       throw new ExtensionOperationError(
         "DELIVERY_BINDING_MISMATCH",
         "Delivery identity does not match the persisted Web session binding.",
       );
     }
-    const target = await resolveCurrentUserTarget({ tabs: chrome.tabs, store, state,
-      urlPatterns: CHATGPT_URL_PATTERNS, waitForContentScript });
+    // Controller turns carry a session ID: send only to its prepared tab, even
+    // when the user has focused another ChatGPT conversation in the meantime.
+    const target = payload.sessionId === undefined
+      ? await resolveCurrentUserTarget({ tabs: chrome.tabs, store, state,
+        urlPatterns: CHATGPT_URL_PATTERNS, waitForContentScript })
+      : await resolvePreparedSessionTarget({ tabs: chrome.tabs, state, waitForContentScript });
     if (state.currentDeliveryId !== null) {
       const conflict = pendingDeliveryTargetConflict(state, target, message.requestId);
       throw new ExtensionOperationError(conflict.code, conflict.message, conflict.details);

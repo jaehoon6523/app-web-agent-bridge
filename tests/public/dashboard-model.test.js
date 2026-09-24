@@ -87,6 +87,22 @@ test("dashboard state rejects missing version and duplicate actor sessions", () 
   );
 });
 
+test("dashboard accepts separate Judge and Critic bindings for the same web actor", () => {
+  const sessions = normalizeDashboardState({
+    sessions: [
+      { actor: "CHATGPT_WEB_AGENT", bindingId: "binding_run_1_judge", role: "JUDGE" },
+      { actor: "CHATGPT_WEB_AGENT", bindingId: "binding_run_1_critic", role: "CRITIC" },
+    ],
+  }).sessions;
+  assert.equal(sessions.size, 2);
+  assert.equal(sessions.get("binding_run_1_judge").role, "JUDGE");
+  assert.equal(sessions.get("binding_run_1_critic").role, "CRITIC");
+  assert.throws(() => normalizeDashboardState({ sessions: [
+    { actor: "CHATGPT_WEB_AGENT", bindingId: "binding_run_1_judge" },
+    { actor: "CHATGPT_WEB_AGENT", bindingId: "binding_run_1_judge" },
+  ] }), /Duplicate session/);
+});
+
 test("human input, controller relay, and agent output remain visually distinguishable", () => {
   assert.equal(classifyMessageOrigin({ source: "HUMAN" }).label, "HUMAN INPUT");
   assert.equal(classifyMessageOrigin({ source: "CONTROLLER_RELAY" }).label, "CONTROLLER RELAY");

@@ -90,6 +90,26 @@ export async function resolveCurrentUserTarget({ tabs, store, state, urlPatterns
   return target;
 }
 
+export async function resolvePreparedSessionTarget({ tabs, state, waitForContentScript }) {
+  if (!["BOUND", "ROOT_READY"].includes(state.bindingStatus) || !Number.isSafeInteger(state.tabId)) {
+    throw new CurrentWebTargetError("NEEDS_REBIND", "The requested Web session has no prepared tab.");
+  }
+  const tab = await tabs.get(state.tabId).catch(() => null);
+  if (!tab || canonicalChatGptUrl(tab.url) !== state.conversationUrl
+    || conversationIdFromUrl(tab.url) !== state.conversationId) {
+    throw new CurrentWebTargetError("NEEDS_REBIND", "The prepared ChatGPT tab changed or closed.");
+  }
+  await waitForContentScript(tab.id, 30_000, true);
+  const page = await tabs.sendMessage(tab.id, { type: "agent.ping" });
+  const target = targetFromPage(tab, page);
+  if (!target || !page.ready || page.busy || page.generating
+    || target.conversationUrl !== state.conversationUrl
+    || target.conversationId !== state.conversationId) {
+    throw new CurrentWebTargetError("NEEDS_REBIND", "The prepared ChatGPT document is not ready or changed.");
+  }
+  return target;
+}
+
 export async function bindCurrentUserTarget({ store, state, target }) {
   return store.bindSession({
     lastBoundSessionId: state.lastBoundSessionId, lastBoundRunId: state.lastBoundRunId,
