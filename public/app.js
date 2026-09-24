@@ -17,6 +17,9 @@ const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COM
 const labels = { CREATED:"접수됨", PROVISIONING:"연결 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"후보 캡처 중", VERIFYING:"검증 중", REVIEW_RUNNING:"웹 감사 중", REPORT_REPAIR:"감사 응답 보완 중", EVIDENCE_SUPPLEMENT:"같은 후보 증거 보완 중", REWORK:"수정 대기", HOLD:"판단 보류", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"과거 실행 종료" };
 const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상태를 확인하고 실행을 폐기했습니다. 감사 기록과 작업 사본은 보존됩니다.", ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
 function text(id, value) { $(id).textContent = value ?? ""; }
+function folderName(targetRoot) {
+  return String(targetRoot ?? "").replace(/[\\/]+$/u, "").split(/[\\/]/u).at(-1) || "프로젝트";
+}
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
@@ -380,7 +383,7 @@ function render() {
   const project = preflight?.project;
   const projectContainer = $("projectSummary"); projectContainer.replaceChildren();
   if (project) {
-    projectContainer.append(node("p", `${project.projectId} · ${project.targetRoot}`), node("p", `기준 ${project.requirementsId} / ${project.revision}`));
+    projectContainer.append(node("p", `${folderName(project.targetRoot)} · ${project.targetRoot}`), node("p", `기준 ${project.requirementsId} / ${project.revision}`));
     for (const req of project.requirements.items) projectContainer.append(node("p", `${req.requirementId} · ${req.statement}`, "muted"));
   } else projectContainer.append(node("p", connected ? "사용할 프로젝트가 아직 준비되지 않았습니다." : "연결 후 프로젝트 설정을 확인합니다.", "muted"));
   actionState("planRun", !webConnected() || !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
@@ -445,8 +448,10 @@ function render() {
     $(id).disabled = !run || operations.runCommand !== "IDLE" || !caps.has(capability);
   }
   if (!run) return;
+  $("continueProject").hidden = run.phase !== "APPLIED";
+  $("continueProject").disabled = $("newRun").disabled;
   text("runObjective", run.objective); text("runContext", run.requirements
-    ? `${run.projectRef?.projectId ?? "프로젝트"} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`
+    ? `${folderName(run.projectRef?.targetRoot)} / ${run.objective} / ${labels[run.phase] ?? run.phase} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`
     : `작업 기록 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
@@ -833,6 +838,18 @@ $("chooseFolder").addEventListener("click", async () => {
   finally { operations.folderPicker = "IDLE"; render(); }
 });
 $("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selected = ""; requestedView = "start"; refresh(); } });
+$("continueProject").addEventListener("click", async () => {
+  if ($("continueProject").disabled) return;
+  const root = snapshot?.run?.projectRef?.targetRoot;
+  if (!root || snapshot?.run?.phase !== "APPLIED") return;
+  selected = ""; requestedView = "start";
+  await refresh();
+  if (workflow.stage !== "START") return;
+  $("startRoot").value = root;
+  $("conversationUrl").value = "https://chatgpt.com/";
+  $("objective").value = "";
+  $("objective").focus();
+});
 $("cancelInitialPreparation").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",
   "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/cancel"));
 $("showUnfinishedRun").addEventListener("click", () => {
