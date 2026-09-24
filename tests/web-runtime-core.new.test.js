@@ -288,6 +288,35 @@ test("a heartbeat keeps the authenticated extension; an expired connection can b
   transport.close();
 });
 
+test("expired extension heartbeat disconnects without confirming or replaying an active delivery", async () => {
+  let time = 0;
+  const transport = new WebExtensionTransport({
+    sharedSecret: SECRET,
+    expectedExtensionIdentity: IDENTITY,
+  }, { now: () => time, staleAfterMs: 65_000 });
+  const socket = new FakeSocket();
+  const events = [];
+  transport.onEvent((event) => events.push(event));
+  transport.attach(socket);
+  authenticate(transport, socket);
+  assert.equal(transport.snapshot.responsive, true);
+
+  time = 65_001;
+  assert.equal(transport.snapshot.responsive, false);
+  assert.equal(transport.expireStaleConnection(), true);
+  assert.equal(transport.snapshot.connected, false);
+  assert.equal(socket.closed?.code, 4001);
+  assert.equal(events.filter((event) => event.type === "SESSION_DISCONNECTED").length, 1);
+  assert.equal(transport.expireStaleConnection(), false);
+
+  const nextSocket = new FakeSocket();
+  transport.attach(nextSocket);
+  authenticate(transport, nextSocket);
+  socket.emit("close");
+  assert.equal(transport.snapshot.responsive, true);
+  transport.close();
+});
+
 test("exact conversation binding never falls back to active or latest tabs", () => {
   assert.equal(canonicalConversationUrl("https://chatgpt.com/c/abc?x=1#y"), "https://chatgpt.com/c/abc");
   assert.equal(extractConversationId("https://chatgpt.com/c/abc"), "abc");

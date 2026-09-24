@@ -10,6 +10,8 @@ import { assertRelaySafeCompletion, assertTurnSessionBinding, assertTurnStateBin
 import { createConversationBootstrapTab, reopenExactConversationTab } from "./runtime/conversation-bootstrap.js";
 import { createBrowserRuntime } from "./runtime/browser-runtime.js";
 import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
+import { createReconnectController } from "./runtime/reconnect.js";
+import { validControllerChallenge } from "./runtime/auth-challenge.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -72,7 +74,11 @@ function send(message, { allowUnauthenticated = false } = {}) {
   socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
   return true;
 }
+const reconnect = createReconnectController({ connect, connected: () => Boolean(socket), onError(error) {
+  lastError = error.message; broadcastPopupState();
+} });
 async function connect() {
+  reconnect.cancel();
   const state = await store.read();
   let controllerUrl;
   try {
@@ -125,6 +131,7 @@ async function connect() {
       ? null
       : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`;
     broadcastPopupState();
+    reconnect.schedule(event.code);
   });
   nextSocket.addEventListener("error", () => {
     if (socket !== nextSocket) return;
@@ -133,16 +140,7 @@ async function connect() {
   });
 }
 async function answerAuthenticationChallenge(message) {
-  if (
-    message.protocolVersion !== PROTOCOL_VERSION
-    || typeof message.challengeId !== "string"
-    || typeof message.nonce !== "string"
-    || !/^[0-9a-f]{64}$/.test(message.nonce)
-    || handledChallengeIds.has(message.challengeId)
-  ) {
-    return;
-  }
-  if (typeof message.expiresAt === "string" && Date.parse(message.expiresAt) < Date.now()) return;
+  if (!validControllerChallenge(message, PROTOCOL_VERSION, handledChallengeIds)) return;
   handledChallengeIds.add(message.challengeId);
   pendingChallengeId = message.challengeId;
   const state = await store.read();
@@ -169,6 +167,7 @@ async function handleControllerMessage(raw) {
       && message.challengeId === pendingChallengeId
     ) {
       authenticated = true;
+      reconnect.accepted();
       pendingChallengeId = null;
       lastError = null;
       const state = await store.read();

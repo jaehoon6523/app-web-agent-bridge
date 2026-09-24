@@ -156,7 +156,7 @@ export function createBridgeServer({
       codeWorkerExecutableConfigured,
       discussionCodexExecutableConfigured: runtimeConfig.codex?.executablePath != null,
       extensionConfigured,
-      extensionAuthenticated: Boolean(extensionTransport?.authenticated),
+      extensionAuthenticated: Boolean(extensionTransport?.responsive),
       webAdapterAvailable: webSession !== null,
       commandAuthenticationConfigured: true,
       staticDashboardTokenConfigured: dashboardAuth !== null,
@@ -174,7 +174,7 @@ export function createBridgeServer({
       discussionMissing,
       readyForProvisioning: missing.length === 0,
       readyForDiscussion: discussionMissing.length === 0,
-      lastWebBinding: extensionTransport?.authenticated && extensionTransport.snapshot.binding
+      lastWebBinding: extensionTransport?.responsive && extensionTransport.snapshot.binding
         ? { bindingStatus:extensionTransport.snapshot.binding.bindingStatus,
             conversationUrl:extensionTransport.snapshot.binding.conversationUrl,
             sessionId:extensionTransport.snapshot.binding.sessionId }

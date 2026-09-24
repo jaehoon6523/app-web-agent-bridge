@@ -65,6 +65,7 @@ export class WebExtensionTransport extends EventEmitter {
   #binding = null;
   #socket = null;
   #lastExtensionActivity = null;
+  #activityTimer = null;
   #now;
   #staleAfterMs;
 
@@ -79,10 +80,17 @@ export class WebExtensionTransport extends EventEmitter {
     return this.#authenticationState === WebAuthenticationState.AUTHENTICATED;
   }
 
+  get responsive() {
+    return this.authenticated && socketIsOpen(this.#socket)
+      && this.#lastExtensionActivity !== null
+      && this.#now() - this.#lastExtensionActivity <= this.#staleAfterMs;
+  }
+
   get snapshot() {
     return Object.freeze({
       authenticationState: this.#authenticationState,
       authenticated: this.authenticated,
+      responsive: this.responsive,
       extensionIdentity: this.#authentication?.extensionIdentity ?? null,
       binding: this.#binding,
       connected: socketIsOpen(this.#socket),
@@ -98,8 +106,7 @@ export class WebExtensionTransport extends EventEmitter {
       && this.#socket !== socket
       && this.authenticated
       && socketIsOpen(this.#socket)
-      && (this.#lastExtensionActivity === null
-        || this.#now() - this.#lastExtensionActivity <= this.#staleAfterMs)
+      && this.responsive
     ) {
       this.emit("diagnostic", Object.freeze({
         type: "EXTENSION_CONNECTION_REJECTED",
@@ -115,6 +122,7 @@ export class WebExtensionTransport extends EventEmitter {
       this.#closeSocket(this.#socket, 4001, "Replaced by a newer extension connection");
     }
     this.#socket = socket;
+    this.#clearActivityTimer();
     this.#lastExtensionActivity = null;
     this.#authentication = null;
     this.#authenticationState = WebAuthenticationState.CHALLENGE_SENT;
@@ -153,6 +161,7 @@ export class WebExtensionTransport extends EventEmitter {
   }
 
   close() {
+    this.#clearActivityTimer();
     if (this.#socket) this.#closeSocket(this.#socket, 1000, "Controller closed extension session");
     this.#socket = null;
     this.#lastExtensionActivity = null;
@@ -192,6 +201,7 @@ export class WebExtensionTransport extends EventEmitter {
     }
 
     this.#lastExtensionActivity = this.#now();
+    this.#scheduleActivityCheck();
 
     if (message.type === "extension.auth.response") {
       this.emit("diagnostic", Object.freeze({
@@ -214,6 +224,7 @@ export class WebExtensionTransport extends EventEmitter {
       this.#authentication = this.#authenticator.verifyResponse(message);
       this.#authenticationState = WebAuthenticationState.AUTHENTICATED;
       this.#lastExtensionActivity = this.#now();
+      this.#scheduleActivityCheck();
       this.#sendRaw({
         type: "controller.auth.accepted",
         protocolVersion: WEB_BRIDGE_PROTOCOL_VERSION,
@@ -242,6 +253,7 @@ export class WebExtensionTransport extends EventEmitter {
 
   #onClose(socket) {
     if (socket !== this.#socket) return;
+    this.#clearActivityTimer();
     this.#socket = null;
     this.#lastExtensionActivity = null;
     this.#authentication = null;
@@ -254,6 +266,33 @@ export class WebExtensionTransport extends EventEmitter {
       payload: Object.freeze({ reason: "WEB_SOCKET_CLOSED" }),
     }));
     this.emit("state", this.snapshot);
+  }
+
+  #clearActivityTimer() {
+    if (this.#activityTimer) clearTimeout(this.#activityTimer);
+    this.#activityTimer = null;
+  }
+
+  #scheduleActivityCheck() {
+    this.#clearActivityTimer();
+    if (!this.authenticated || !this.#socket) return;
+    this.#activityTimer = setTimeout(() => this.expireStaleConnection(), this.#staleAfterMs + 1);
+    this.#activityTimer.unref?.();
+  }
+
+  // A dead peer can leave its WebSocket OPEN indefinitely. Closing it also
+  // lets the extension's reconnect handler establish a fresh authenticated peer.
+  expireStaleConnection() {
+    if (!this.#socket || !this.authenticated || this.#lastExtensionActivity === null) return false;
+    if (this.responsive) {
+      this.#scheduleActivityCheck();
+      return false;
+    }
+    const staleSocket = this.#socket;
+    this.emit("diagnostic", Object.freeze({ type: "STALE_EXTENSION_CONNECTION_CLOSED" }));
+    this.#onClose(staleSocket);
+    this.#closeSocket(staleSocket, 4001, "Extension heartbeat expired");
+    return true;
   }
 
   #sendRaw(message) {
