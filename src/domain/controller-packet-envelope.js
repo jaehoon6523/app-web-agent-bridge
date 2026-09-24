@@ -101,7 +101,10 @@ export function parseFinalControllerPacketJsonEnvelope(rawText, { maxJsonDepth =
     );
   }
 
-  const trimmedEnd = rawText.trimEnd();
+  // Plain-text extraction can preserve one leading space and a trailing
+  // escape slash on the final DOM-safe sentinel. Accept that exact shape only.
+  const trimmedEnd = rawText.trimEnd().replace(/(^|\n) {1,3}CONTROLLER_PACKET_END\\$/u,
+    (_, prefix) => `${prefix}CONTROLLER_PACKET_END`);
   const framing = packetFraming(trimmedEnd);
   if (!framing) {
     throw new ControllerPacketEnvelopeError(

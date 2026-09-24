@@ -38,6 +38,13 @@ test("legacy angle-bracket controller packet framing remains accepted", () => {
   assert.deepEqual(parseFinalControllerPacketJsonEnvelope(raw).parsed, packet);
 });
 
+test("escaped DOM-safe closing marker from a review is accepted only at the end", () => {
+  const raw = ["판정 근거", "CONTROLLER_PACKET_BEGIN", JSON.stringify(packet), " CONTROLLER_PACKET_END\\"].join("\n");
+  assert.deepEqual(parseFinalControllerPacketJsonEnvelope(raw).parsed, packet);
+  assert.throws(() => parseFinalControllerPacketJsonEnvelope(raw + "\nother text"),
+    { code: "CONTROLLER_PACKET_MISSING" });
+});
+
 test("DOM-safe closing marker must still be the final standalone unquoted line", () => {
   const trailingProse = [
     "CONTROLLER_PACKET_BEGIN",

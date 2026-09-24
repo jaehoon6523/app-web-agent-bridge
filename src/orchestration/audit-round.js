@@ -235,6 +235,9 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
         content:JSON.stringify(response.packet), createdAt:new Date().toISOString() }] });
     let report;
     try {
+      if (response.packet.type === "INVALID_RESPONSE") {
+        throw new Error(response.packet.error);
+      }
       if (response.packet.type === "EVIDENCE_REQUEST") {
         validateAuditResponse(response.packet, auditContext(run, requestId));
       } else {

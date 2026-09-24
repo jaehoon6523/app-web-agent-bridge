@@ -9,6 +9,8 @@ const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "I
 let preparationSignature = "";
 let requestedView = "";
 const unknownRequests = new Map();
+let autoApprovalPreparationId = null;
+let autoApprovalAttemptedId = null;
 
 const openFindings = new Set();
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
@@ -130,6 +132,18 @@ async function refresh() {
     text("connectionNotice", `로컬 서버 연결이 끊겼습니다. 기본 포트 8787에서 npm start 또는 npm run dev가 실행 중인지 확인하고, 확장 연결을 다시 확인하세요. ${error.message} · 마지막 확인 ${time(lastConfirmed)}`);
   }
   render();
+  if (autoApprovalPreparationId === preparation?.preparationId
+    && autoApprovalAttemptedId !== autoApprovalPreparationId
+    && preparation?.lifecycle === "ACTIVE"
+    && agreement?.status === "READY"
+    && preparation?.deliveries?.length === 1
+    && (agreement.unresolvedQuestions?.length ?? 0) === 0
+    && capabilities().has("preparation.approve")
+    && operations.approval === "IDLE") {
+    autoApprovalAttemptedId = autoApprovalPreparationId;
+    void preparationMutation("approval", "preparation.approve",
+      "/api/preparations/" + encodeURIComponent(autoApprovalPreparationId) + "/approve");
+  }
 }
 function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
 function webConnected() { return connected && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
@@ -779,7 +793,11 @@ async function beginPreparation() {
   if (!objective.trim() || !targetRoot || !/^https:\/\/chatgpt\.com\/(?:c\/[^/?#\s]+)?\/?$/u.test(conversationUrl)) {
     text("startReason", "첫 부탁·프로젝트 폴더·ChatGPT 대화 URL을 모두 입력하세요."); return;
   }
-  await preparationMutation("preparationStart", "preparation.start", "/api/preparations", { objective, targetRoot, conversationUrl });
+  const autoApprove = $("autoApprovePreparation").checked;
+  if (await preparationMutation("preparationStart", "preparation.start", "/api/preparations", { objective, targetRoot, conversationUrl })) {
+    autoApprovalPreparationId = autoApprove ? preparation?.preparationId ?? null : null;
+    autoApprovalAttemptedId = null;
+  }
 }
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
 $("reviseRequirements").addEventListener("click", async () => {
