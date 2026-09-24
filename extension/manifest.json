@@ -24,6 +24,7 @@
         "selectors/stop-button-selectors.js",
         "selectors/message-selectors.js",
         "runtime/manual-followup.js",
+        "runtime/response-text.js",
         "content.js"
       ],
       "run_at": "document_idle"

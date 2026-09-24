@@ -4,10 +4,11 @@ import test from "node:test";
 import vm from "node:vm";
 
 test("assistant extraction selects the full response over a short matching child", () => {
-  const source = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
-  const start = source.indexOf("function elementText(element) {");
-  const end = source.indexOf("\nfunction messageContainer(", start);
-  assert.ok(start >= 0 && end > start);
+  const manifest = JSON.parse(readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"));
+  const scripts = manifest.content_scripts[0].js;
+  assert.ok(scripts.indexOf("runtime/response-text.js") >= 0);
+  assert.ok(scripts.indexOf("runtime/response-text.js") < scripts.indexOf("content.js"));
+  const source = readFileSync(new URL("../extension/runtime/response-text.js", import.meta.url), "utf8");
   class HTMLElement {
     constructor(text = "") { this.innerText = text; this.textContent = text; }
   }
@@ -17,9 +18,12 @@ test("assistant extraction selects the full response over a short matching child
   const container = new HTMLElement(full);
   container.matches = () => false;
   container.querySelectorAll = (selector) => selector === ".markdown" ? [short, long] : [];
-  const context = { HTMLElement, registry:{ groups:{ messageContent:[".markdown"] } }, selectorTelemetry:new Map() };
+  const context = { HTMLElement, selectorTelemetry:new Map() };
   vm.createContext(context);
-  const extract = vm.runInContext(`(${source.slice(start, end)})`, context);
-  assert.equal(extract(container), full);
+  vm.runInContext(source, context, { filename:"extension/runtime/response-text.js" });
+  assert.equal(context.ChatGptBridgeResponseText.elementText(container, [".markdown"], context.selectorTelemetry), full);
   assert.equal(context.selectorTelemetry.get("messageContent"), ".markdown");
+  container.querySelectorAll = () => [short];
+  assert.equal(context.ChatGptBridgeResponseText.elementText(container, [".markdown"], context.selectorTelemetry), full);
+  assert.equal(context.selectorTelemetry.get("messageContent"), "messageContainer:packet");
 });
