@@ -1,9 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { setupAudit, reportFor } from "./helpers/audit-fixtures.js";
+import { setupAudit, assertionsFor } from "./helpers/audit-fixtures.js";
 
 test("Web review receives the complete current candidate diff and a matching hash on every rework iteration", async (t) => {
-  const f = setupAudit(t);
+  const f = setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]});
   const run = await f.run();
 
   assert.equal(run.stage, "AWAITING_APPLY", run.error);
@@ -24,8 +24,8 @@ test("Web review receives the complete current candidate diff and a matching has
 test("REPORT_REPAIR keeps the exact candidate and diff while supplying the previous invalid response", async (t) => {
   const f = setupAudit(t, {
     review(data, number) {
-      if (number === 1) return { ...reportFor(data.context), assessments: [] };
-      return reportFor(data.context);
+      if (number === 1) return { ...assertionsFor(data.context), assessments: [] };
+      return assertionsFor(data.context);
     },
   });
 

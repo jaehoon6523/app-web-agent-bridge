@@ -19,7 +19,7 @@ function certification(snapshot) {
 }
 
 test('persisted audit check accepts an actual fixture run with disconnected providers', async t => {
-  const f = setupAudit(t), completed = await f.run();
+  const f = setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}), completed = await f.run();
   const snapshot = f.service.snapshot(completed.runId, {});
   const { options, paths } = certification(snapshot);
   await main(options);
@@ -27,7 +27,7 @@ test('persisted audit check accepts an actual fixture run with disconnected prov
 });
 
 test('persisted audit check rejects empty proof, candidate drift, missing findings and injected authority', async t => {
-  const f = setupAudit(t), completed = await f.run();
+  const f = setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}), completed = await f.run();
   const saved = f.service.snapshot(completed.runId, {});
   for (const [label, mutate, expected] of [
     ['audit failed', s => { s.run.auditResult = 'HOLD'; }, /auditResult PASS/],

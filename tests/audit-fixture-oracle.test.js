@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { reportFor, strictReportFor, setupAudit } from "./helpers/audit-fixtures.js";
+import { assertionsFor, reportFor, strictReportFor, setupAudit } from "./helpers/audit-fixtures.js";
 
 test("fixture reviewer is an explicit external script and does not derive verdicts from candidateDiff", async (t) => {
   const f = setupAudit(t, {
@@ -20,6 +20,21 @@ test("fixture reviewer is an explicit external script and does not derive verdic
   assert.deepEqual(run.reviews.map((review) => review.decision), ["REWORK", "PASS"]);
   assert.ok(f.prompts.every((prompt) => prompt.candidateDiff.split(/\r?\n/u).includes("+revision 2")),
     "The same candidate semantics must not force the fixture reviewer to change its scripted verdict.");
+});
+
+test("fixture rejects implicit review verdicts", (t) => {
+  assert.throws(() => setupAudit(t), /Set explicit reviewVerdicts or a review provider/u);
+});
+
+test("legacy REVIEW_REPORT remains invalid at the provider boundary", async (t) => {
+  const f = setupAudit(t, {
+    configure(project) { project.policy.maxFormatRepairs = 0; },
+    review(data) { return reportFor(data.context); },
+  });
+  const run = await f.run();
+  assert.notEqual(run.auditResult, "PASS");
+  assert.notEqual(run.stage, "AWAITING_APPLY");
+  assert.equal(run.application, null);
 });
 
 test("fixture reviewer fails closed when its explicit external script is exhausted", async (t) => {
@@ -63,8 +78,8 @@ test("REPORT_REPAIR preserves candidate identity and never reruns Worker", async
     },
     review(data, number) {
       return number === 1
-        ? { ...reportFor(data.context, "SATISFIED"), assessments:[] }
-        : reportFor(data.context, "SATISFIED");
+        ? { ...assertionsFor(data.context, "SATISFIED"), assessments:[] }
+        : assertionsFor(data.context, "SATISFIED");
     },
   });
   const run = await f.run();

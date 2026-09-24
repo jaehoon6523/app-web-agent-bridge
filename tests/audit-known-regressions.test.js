@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { reportFor, reviewContext, setupAudit, strictReportFor } from "./helpers/audit-fixtures.js";
+import { assertionsFor, reportFor, reviewContext, setupAudit } from "./helpers/audit-fixtures.js";
 import { validateAuditResponse } from "../src/domain/code-review.js";
 import { requirementsRef } from "../src/domain/audit-contract.js";
 
@@ -25,7 +25,7 @@ test("regression: generated CODE_SNAPSHOT is bound to the captured candidate blo
       assert.equal(observedSnapshot.producer, "CONTROLLER");
       assert.equal(observedSnapshot.candidateId, data.context.candidateId);
       assert.equal(observedSnapshot.result.candidateTree, data.candidate.candidateTree);
-      return strictReportFor(data.context, "SATISFIED");
+      return assertionsFor(data.context, "SATISFIED", {strict:true});
     },
   });
   const run = await f.run();

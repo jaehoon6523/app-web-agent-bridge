@@ -8,7 +8,7 @@ import { validateRequirements, requirementsRef } from "../src/domain/audit-contr
 import { validateAuditProject } from "../src/orchestration/audit-project.js";
 import { executeVerification } from "../src/evidence/candidate-evidence.js";
 import { ArtifactStore } from "../src/evidence/artifact-store.js";
-import { setupAudit, reviewContext, reportFor } from "./helpers/audit-fixtures.js";
+import { setupAudit, reviewContext, reportFor, assertionsFor } from "./helpers/audit-fixtures.js";
 
 function executionContext() {
   const c = reviewContext();
@@ -45,7 +45,7 @@ test("reference registration, content and explicit authority are mandatory", () 
   assert.notDeepEqual(requirementsRef(c.requirements),before);
 });
 test("project rejects unregistered requirement verification IDs", (t) => {
-  const f=setupAudit(t); const project=structuredClone(f.options.project);
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}); const project=structuredClone(f.options.project);
   project.requirements.items[0].verificationMethod={kinds:["EXECUTION"],description:"check",checks:[{verificationId:"missing",expectedExitCode:0,requiredResultFiles:[]}]};
   assert.throws(()=>validateAuditProject(project),/registered|verification/i);
 });
@@ -72,7 +72,7 @@ test("recovery abandonment requires operator confirmation, survives restart and 
   const next=await f.start();assert.notEqual(next.runId,run.runId);await f.service.jobs.get(next.runId);
 });
 test("old contract approval cannot be applied after upgrade",async(t)=>{
-  const f=setupAudit(t),run=await f.run();f.service.update(run.runId,{schemaVersion:2});await f.reopen();
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();f.service.update(run.runId,{schemaVersion:2});await f.reopen();
   assert.equal(f.service.get(run.runId).stage,"RECOVERY_REQUIRED");
 });
 test("artifact satisfaction requires the named file from the exact successful execution",()=>{
@@ -106,7 +106,7 @@ test("actual verification with bound output passes audit and applies; missing ou
     p.requirements.items[0].verificationMethod={kinds:["EXECUTION","ARTIFACT"],description:"Verify candidate and output",checks:[{verificationId:"check",expectedExitCode:0,requiredResultFiles:["result.txt"]}]};
     p.verifications=[{verificationId:"check",executable:process.execPath,args:["-e","const fs=require('fs');if(!fs.readFileSync('file.txt','utf8').includes('revision'))process.exit(1);fs.writeFileSync(require('path').join(process.env.BRIDGE_RESULT_DIR,'result.txt'),'verified')"],cwd:".",timeoutMs:3000,purpose:"file revision",environmentId:"node",resultFiles:["result.txt"]}];
   };
-  const review=(data)=>{const report=reportFor(data.context);report.assessments[0].evidenceRefs=data.context.evidence.filter(e=>["EXECUTION","ARTIFACT"].includes(e.kind)).map(e=>e.evidenceId);return report;};
+  const review=(data)=>{const report=assertionsFor(data.context);report.assessments[0].evidenceRefs=data.context.evidence.filter(e=>["EXECUTION","ARTIFACT"].includes(e.kind)).map(e=>e.evidenceId);return report;};
   const f=setupAudit(t,{configure,review}),run=await f.run();assert.equal(run.stage,"AWAITING_APPLY",run.error);
   assert.equal((await f.service.command("code.apply",f.applyPayload(run))).stage,"APPLIED");
   const g=setupAudit(t,{configure(p){configure(p);p.verifications[0].args=["-e","process.exit(0)"];},review});

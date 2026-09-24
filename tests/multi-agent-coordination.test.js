@@ -4,7 +4,7 @@ import { validateAgreedWorkOrder } from "../src/domain/review-coordination.js";
 import { setupAudit } from "./helpers/audit-fixtures.js";
 
 test("Judge and Critic use distinct persistent conversations against the same AuditManifest", async (t) => {
-  const f=setupAudit(t);
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]});
   const run=await f.run();
   assert.equal(run.stage,"AWAITING_APPLY",run.error);
   assert.equal(run.conversationBindings.length,2);
@@ -23,7 +23,7 @@ test("Judge and Critic use distinct persistent conversations against the same Au
 });
 
 test("Round 0 is peer-isolated and Round 1 receives actual published review text", async (t) => {
-  const f=setupAudit(t,{reviewBody(data){return `${data.role} says concrete review text for ${data.phase}`;}});
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"],reviewBody(data){return `${data.role} says concrete review text for ${data.phase}`;}});
   const run=await f.run();
   const round0=f.reviewPrompts.filter((item)=>item.phase==="ROUND0");
   assert.ok(round0.length>=2);
@@ -54,7 +54,7 @@ test("finding-only disagreement also triggers cross review", async (t) => {
 });
 
 test("Critic binding failure holds only review coordination and preserves candidate", async (t) => {
-  const f=setupAudit(t,{resume({binding}){
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"],resume({binding}){
     if (binding.sessionId.endsWith("_critic")) throw Object.assign(new Error("critic tab missing"),{code:"NEEDS_REBIND"});
   }});
   const run=await f.run();
@@ -67,7 +67,7 @@ test("Critic binding failure holds only review coordination and preserves candid
 });
 
 test("REWORK is gated by durable Critic acceptance and Worker receives AGREED_WORK_ORDER", async (t) => {
-  const f=setupAudit(t);
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]});
   const run=await f.run();
   assert.equal(run.stage,"AWAITING_APPLY",run.error);
   assert.equal(f.starts(),2);
@@ -88,7 +88,7 @@ test("REWORK is gated by durable Critic acceptance and Worker receives AGREED_WO
 
 test("Critic REJECT issues a new immutable planId before ACCEPT", async (t) => {
   let planReviews=0;
-  const f=setupAudit(t,{planReview(data){
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"],planReview(data){
     planReviews+=1;
     return {type:"PLAN_RESPONSE",runId:data.runId,candidateId:data.candidateId,planId:data.planId,
       planHash:data.planHash,planBasisHash:data.planBasisHash,decision:planReviews===1?"REJECT":"ACCEPT"};
@@ -101,7 +101,7 @@ test("Critic REJECT issues a new immutable planId before ACCEPT", async (t) => {
 
 test("malformed PLAN_RESPONSE is repaired without changing plan identity", async (t) => {
   let responses=0;
-  const f=setupAudit(t,{planReview(data){
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"],planReview(data){
     responses+=1;
     if (responses===1) return {type:"PLAN_RESPONSE",runId:data.runId,candidateId:data.candidateId,
       planId:data.planId,planHash:data.planHash,decision:"ACCEPT"};
@@ -116,14 +116,14 @@ test("malformed PLAN_RESPONSE is repaired without changing plan identity", async
 });
 
 test("AGREED_WORK_ORDER hash rejects tampering", async (t) => {
-  const f=setupAudit(t),run=await f.run();
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
   const order=structuredClone(run.agreedWorkOrders[0]);
   order.workItems[0].objective="tampered";
   assert.throws(()=>validateAgreedWorkOrder(order,{runId:run.runId,baseCandidateId:order.baseCandidateId}),/hash mismatch/);
 });
 
 test("legacy single-review AWAITING_APPLY is re-auditable but cannot directly apply", async (t) => {
-  const f=setupAudit(t),run=await f.run();
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
   const current=f.service.get(run.runId);
   const legacyReview=structuredClone(current.reviews.at(-1));
   delete legacyReview.reviewerRoles; delete legacyReview.auditManifestHash; delete legacyReview.auditManifestId;
@@ -134,7 +134,7 @@ test("legacy single-review AWAITING_APPLY is re-auditable but cannot directly ap
 });
 
 test("final apply authority requires both reviewer roles and current manifest identity", async (t) => {
-  const f=setupAudit(t),run=await f.run();
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
   const current=f.service.get(run.runId);
   const review=structuredClone(current.reviews.at(-1));
   review.auditManifestHash="sha256:"+"0".repeat(64);

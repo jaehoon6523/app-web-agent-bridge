@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { setupAudit } from "./helpers/audit-fixtures.js";
 
 test("settled pre-candidate Worker timeout can be manually retried without changing timeout policy", async (t) => {
-  const f = setupAudit(t);
+  const f = setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]});
   const completed = await f.run();
   const timeoutError = "External turn timed out; execution state requires recovery.";
   const recovery = f.service.update(completed.runId, {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { setupAudit, reportFor } from "./helpers/audit-fixtures.js";
+import { setupAudit, assertionsFor } from "./helpers/audit-fixtures.js";
 
 function deferred() {
   let resolve, reject;
@@ -13,7 +13,7 @@ function deferred() {
 test("Worker completion is reconciled by inspect when terminal notification is missed", async (t) => {
   let inspections = 0;
   const f = setupAudit(t, {
-    review(data) { return reportFor(data.context); },
+    review(data) { return assertionsFor(data.context); },
     createWorker: async ({ workspace, persistThreadId, persistCapture }) => {
       const completion = deferred();
       let turnId = null;

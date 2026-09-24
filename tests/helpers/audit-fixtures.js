@@ -41,27 +41,40 @@ export function strictReportFor(context, verdict = "SATISFIED") {
   };
 }
 
-// Test-only external provider stimulus. It never derives semantic verdicts from candidate bytes.
-const DEFAULT_REVIEW_VERDICTS = Object.freeze(["UNSATISFIED", "SATISFIED"]);
+// Controller-facing tests must explicitly construct the current wire contract.
+// Domain-only REVIEW_REPORT values are never silently upgraded by the provider fixture.
+export function assertionsFor(context, verdict = "SATISFIED", { strict = false } = {}) {
+  const report = strict ? strictReportFor(context, verdict) : reportFor(context, verdict);
+  return {
+    type:"REVIEW_ASSERTIONS", runId:context.runId, requestId:context.requestId,
+    candidateId:context.candidateId, auditManifestHash:context.auditManifestHash,
+    assessments:report.assessments.map(({requirementId, verdict:assessmentVerdict, evidenceRefs, missingInformation}) =>
+      ({requirementId, verdict:assessmentVerdict, evidenceRefs,
+        ...(missingInformation ? {missingInformation} : {})})),
+    findingDecisions:report.findingDecisions.map(({findingId, status, evidenceRefs}) => ({findingId, status, evidenceRefs})),
+    newFindings:report.newFindings,
+  };
+}
 
+// Test-only external provider stimulus. It never derives semantic verdicts from candidate bytes.
 function fixtureReviewVerdicts(hooks) {
   if (hooks.review || hooks.webSession) return null;
-  const verdicts = hooks.reviewVerdicts ?? DEFAULT_REVIEW_VERDICTS;
+  const verdicts = hooks.reviewVerdicts;
   if (!Array.isArray(verdicts) || verdicts.length === 0
     || verdicts.some((verdict) => !["SATISFIED", "UNSATISFIED", "UNDETERMINED"].includes(verdict))) {
-    throw new TypeError("reviewVerdicts must be a non-empty array of REVIEW_REPORT verdicts.");
+    throw new TypeError("Set explicit reviewVerdicts or a review provider in the fixture.");
   }
   return verdicts;
 }
 
 export function setupAudit(t, hooks = {}) {
+  const reviewVerdicts = fixtureReviewVerdicts(hooks);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-audit-")), target = path.join(directory,"target"); fs.mkdirSync(target);
   const git = (...args) => execFileSync("git", ["-C",target,...args], {windowsHide:true});
   git("init","--quiet"); git("config","core.autocrlf","false"); fs.writeFileSync(path.join(target,"file.txt"),"base\n"); git("add",".");
   git("-c","user.name=Test","-c","user.email=test@example.invalid","-c","core.hooksPath=","commit","--quiet","-m","base");
   let starts=0, reviews=0, turns=0, service;
   const briefs=[], prompts=[], reviewPrompts=[], acknowledgements=[];
-  const reviewVerdicts = fixtureReviewVerdicts(hooks);
   const configured = project(target); hooks.configure?.(configured);
   const options = { filename:path.join(directory,"controller.sqlite"), artifactStore:new ArtifactStore(path.join(directory,"artifacts")), codex:{}, project:configured,
     createWorker:hooks.createWorker ?? (async ({workspace,persistThreadId,persistCapture}) => {
@@ -98,10 +111,7 @@ export function setupAudit(t, hooks = {}) {
             assessments:data.context.requirements.items.map((r)=>({requirementId:r.requirementId,verdict,evidenceRefs:data.context.evidence.filter((e)=>e.candidateId===data.context.candidateId&&e.kind==="PATCH").map((e)=>e.evidenceId)})),
             findingDecisions:data.context.findings.filter((f)=>f.status!=="WITHDRAWN").map((f)=>({findingId:f.findingId,status:verdict==="SATISFIED"?"RESOLVED":"OPEN",evidenceRefs:data.context.evidence.filter((e)=>e.candidateId===data.context.candidateId&&e.kind==="PATCH").map((e)=>e.evidenceId)})),
             newFindings:verdict==="UNSATISFIED"&&!data.context.findings.length?[{requirementId:"R1",problem:"Required contents missing",resolutionCriteria:"file.txt contains revision 2",evidenceRefs:data.context.evidence.filter((e)=>e.kind==="PATCH").map((e)=>e.evidenceId),required:true}]:[]};
-          if(report?.type==="REVIEW_REPORT")report={type:"REVIEW_ASSERTIONS",runId:data.context.runId,requestId:data.context.requestId,candidateId:data.context.candidateId,auditManifestHash:data.context.auditManifestHash,
-            assessments:report.assessments.map(({requirementId,verdict,evidenceRefs,missingInformation})=>({requirementId,verdict,evidenceRefs,...(missingInformation?{missingInformation}:{})})),
-            findingDecisions:report.findingDecisions.map(({findingId,status,evidenceRefs})=>({findingId,status,evidenceRefs})),newFindings:report.newFindings};
-        } else report=hooks.review?await hooks.review(data,number,service):strictReportFor(data.context);
+        } else throw new Error("UNEXPECTED_AUDIT_FIXTURE_PROMPT: no matching response contract");
         const reasoning=hooks.reviewBody?await hooks.reviewBody(data,number,service):"";
         this.activeTurnId=null;
         const raw=`${reasoning?`${reasoning}\n`:""}<controller_packet>\n${JSON.stringify(report)}\n</controller_packet>`;
