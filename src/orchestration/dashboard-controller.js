@@ -60,7 +60,8 @@ export class DashboardController {
     const codeRun = codeRuns.find((r) => r.runId === (runId || run?.runId));
     if (codeRun) {
       const snapshot = live.codeChanges.snapshot(codeRun.runId, this.#preflight());
-      snapshot.runs = runs.map(({ runId, objective, phase }) => ({ runId, objective, phase }));
+      snapshot.runs = runs.map(({ runId, objective, phase, projectRef, targetRoot }) =>
+        ({ runId, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null }));
       if (!live.codeChanges.busy() && !this.#jobs.size && !store.listRuns().some((r) => !isTerminalRunPhase(r.phase))
         && this.#preflight().readyForProvisioning) snapshot.commandCapabilities.push("run.start");
       return snapshot;
@@ -88,7 +89,8 @@ export class DashboardController {
     const inputs = run ? store.listAgentTurnInputs(run.runId) : [];
     return {
       run,
-      runs: runs.map(({ runId: id, objective, phase }) => ({ runId: id, objective, phase })),
+      runs: runs.map(({ runId: id, objective, phase, projectRef, targetRoot }) =>
+        ({ runId: id, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null })),
       sessions: sessions.map((session) => ({
         ...session,
         ...(session.actor === "CHATGPT_WEB_AGENT" && this.#transport?.snapshot?.binding?.runId === run.runId

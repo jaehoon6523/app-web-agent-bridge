@@ -8,6 +8,7 @@ import {
   buildCommandEnvelope,
   classifyMessageOrigin,
   deliveryState,
+  groupRunsByProject,
   normalizeDashboardState,
   selectMessagesForActor,
   sessionFieldRows,
@@ -15,6 +16,16 @@ import {
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(dirname, "../../public");
+
+test("history groups runs by exact project root, keeping newest first", () => {
+  const groups = groupRunsByProject([
+    { runId:"a", targetRoot:"C:/work/one" },
+    { runId:"b", targetRoot:"C:/work/two" },
+    { runId:"c", targetRoot:"C:/work/one" },
+  ]);
+  assert.deepEqual(groups.map((group) => [group.targetRoot, group.runs.map((run) => run.runId)]),
+    [["C:/work/one", ["c", "a"]], ["C:/work/two", ["b"]]]);
+});
 
 test("dashboard uses only canonical actor names and removes legacy completion controls", async () => {
   const sources = await Promise.all([

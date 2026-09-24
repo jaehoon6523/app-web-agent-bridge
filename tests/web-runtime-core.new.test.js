@@ -259,6 +259,35 @@ test("unauthenticated candidate socket cannot evict an authenticated active tran
   await adapter.close();
 });
 
+test("a heartbeat keeps the authenticated extension; an expired connection can be replaced", () => {
+  let time = 0;
+  const transport = new WebExtensionTransport({
+    sharedSecret: SECRET,
+    expectedExtensionIdentity: IDENTITY,
+  }, { now: () => time, staleAfterMs: 65_000 });
+  const oldSocket = new FakeSocket();
+  transport.attach(oldSocket);
+  authenticate(transport, oldSocket);
+
+  time = 60_000;
+  oldSocket.receive({ type: "extension.heartbeat", protocolVersion: 2, payload: { at: time } });
+  time = 70_000;
+  const premature = new FakeSocket();
+  transport.attach(premature);
+  assert.equal(premature.closed?.code, 4409);
+  assert.equal(oldSocket.closed, null);
+
+  time = 126_000;
+  const replacement = new FakeSocket();
+  transport.attach(replacement);
+  assert.equal(oldSocket.closed?.code, 4001);
+  authenticate(transport, replacement);
+  oldSocket.emit("close");
+  assert.equal(transport.authenticated, true);
+  assert.equal(transport.snapshot.connected, true);
+  transport.close();
+});
+
 test("exact conversation binding never falls back to active or latest tabs", () => {
   assert.equal(canonicalConversationUrl("https://chatgpt.com/c/abc?x=1#y"), "https://chatgpt.com/c/abc");
   assert.equal(extractConversationId("https://chatgpt.com/c/abc"), "abc");

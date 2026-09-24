@@ -16,6 +16,7 @@ import { validateAgreedWorkOrder } from "../domain/review-coordination.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts.js";
 import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
+import { workerProvenance } from "../domain/worker-provenance.js";
 
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
@@ -426,12 +427,14 @@ export class CodeChangeService {
               provider: completed.provider || this.workerConfig.provider,
               model: completed.model || this.workerConfig.model || null,
               sessionId: completed.sessionId || completed.threadId || current.workerThread || null,
+              provenance:workerProvenance(this.workerConfig, completed),
             },
             workerTurns: [...(current.workerTurns ?? []), {
               turnId: handle.turnId,
               sessionId: completed.sessionId || completed.threadId || current.workerThread || null,
               provider: completed.provider || this.workerConfig.provider,
               model: completed.model || this.workerConfig.model || null,
+              provenance:workerProvenance(this.workerConfig, completed),
               startedAt,
               finishedAt,
               durationMs: Math.max(0, Date.parse(finishedAt) - Date.parse(startedAt)),
@@ -619,7 +622,7 @@ export class CodeChangeService {
       this.workerInspections.delete(run.runId);
       return { runId:run.runId, deleted:true };
     }
-    if (type === "evidence.export") return redactForEvidence(run);
+    if (type === "evidence.export") return redactForEvidence({ ...run, historyProof:this.store.historyProof(run.runId) });
     if (type === "evidence.get") {
       const e = run.evidence?.find((e) => e.evidenceId === payload.evidenceId);
       if (!e) throw new Error("Unknown evidence in this run.");

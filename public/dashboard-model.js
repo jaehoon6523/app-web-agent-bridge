@@ -1,5 +1,16 @@
 export const ACTORS = Object.freeze(["CODEX_AGENT", "CHATGPT_WEB_AGENT"]);
 
+export function groupRunsByProject(runs) {
+  const groups = new Map();
+  for (const run of [...runs].reverse()) {
+    const root = typeof run.targetRoot === "string" && run.targetRoot.trim() ? run.targetRoot : null;
+    const key = root ?? "";
+    if (!groups.has(key)) groups.set(key, { targetRoot:root, runs:[] });
+    groups.get(key).runs.push(run);
+  }
+  return [...groups.values()];
+}
+
 const DELIVERY_STATES = new Set([
   "RESERVED",
   "PENDING",

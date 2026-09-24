@@ -1,4 +1,4 @@
-import { normalizeDashboardState } from "./dashboard-model.js";
+import { groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
@@ -338,6 +338,10 @@ function render() {
   const webAuthenticated = checks?.extensionAuthenticated === true;
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
     !connected ? "서버 확인 필요" : webAuthenticated ? "확장 인증됨" : "확장 연결 대기 · 확장 팝업 확인");
+  const lastBinding = preflight?.lastWebBinding;
+  signal("webBindingSignal", "대화 탭", !connected || !webAuthenticated || !["BOUND", "ROOT_READY"].includes(lastBinding?.bindingStatus) ? "warn" : "ok",
+    !connected ? "서버 확인 필요" : !webAuthenticated ? "확장 연결 대기"
+      : lastBinding ? `마지막 바인딩 ${lastBinding.bindingStatus} · 전송 시 재확인` : "아직 확인된 바인딩 없음 · 새 작업에서 탭 생성");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
@@ -348,10 +352,17 @@ function render() {
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   const list = $("runList"); list.replaceChildren();
-  for (const r of [...snapshot?.runs ?? []].reverse()) {
-    const button = node("button", r.objective, `run-item${workflow.stage !== "START" && r.runId === run?.runId ? " active" : ""}`);
-    button.append(node("small", labels[r.phase] ?? r.phase, `health ${runAppearance(r.phase)}`));
-    button.addEventListener("click", () => { selected = r.runId; text("commandResult", ""); refresh(); }); list.append(button);
+  for (const group of groupRunsByProject(snapshot?.runs ?? [])) {
+    const section = node("section", "", "project-history");
+    const heading = node("h3", group.targetRoot ? folderName(group.targetRoot) : "기타 작업");
+    if (group.targetRoot) heading.title = group.targetRoot;
+    section.append(heading);
+    for (const r of group.runs) {
+      const button = node("button", r.objective, `run-item${workflow.stage !== "START" && r.runId === run?.runId ? " active" : ""}`);
+      button.append(node("small", labels[r.phase] ?? r.phase, `health ${runAppearance(r.phase)}`));
+      button.addEventListener("click", () => { selected = r.runId; text("commandResult", ""); refresh(); }); section.append(button);
+    }
+    list.append(section);
   }
   const resultStage = workflow.stage === "RESULT";
   const userStep = workflow.stage === "START" ? "stepCollect"
@@ -456,6 +467,8 @@ function render() {
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
+  const workerEvidence = run.worker?.provenance;
+  text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
   const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
     : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
     : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."

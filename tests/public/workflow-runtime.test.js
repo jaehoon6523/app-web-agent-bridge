@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { normalizeDashboardState } from "../../public/dashboard-model.js";
+import { groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
 
 export async function dashboard(state, mutate = async () => ({})) {
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
@@ -57,7 +57,7 @@ export async function dashboard(state, mutate = async () => ({})) {
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
   const context = vm.createContext({
-    normalizeDashboardState, Date, Map, Set, JSON, URL, Blob, crypto: { randomUUID: () => "request-1" },
+    groupRunsByProject, normalizeDashboardState, Date, Map, Set, JSON, URL, Blob, crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
     document: {
       getElementById: (id) => elements.get(id),

@@ -64,10 +64,15 @@ export class WebExtensionTransport extends EventEmitter {
   #authenticator;
   #binding = null;
   #socket = null;
+  #lastExtensionActivity = null;
+  #now;
+  #staleAfterMs;
 
-  constructor(authenticationOptions = {}) {
+  constructor(authenticationOptions = {}, { now = Date.now, staleAfterMs = 65_000 } = {}) {
     super();
     this.#authenticator = new WebExtensionAuthenticator(authenticationOptions);
+    this.#now = now;
+    this.#staleAfterMs = staleAfterMs;
   }
 
   get authenticated() {
@@ -93,6 +98,8 @@ export class WebExtensionTransport extends EventEmitter {
       && this.#socket !== socket
       && this.authenticated
       && socketIsOpen(this.#socket)
+      && (this.#lastExtensionActivity === null
+        || this.#now() - this.#lastExtensionActivity <= this.#staleAfterMs)
     ) {
       this.emit("diagnostic", Object.freeze({
         type: "EXTENSION_CONNECTION_REJECTED",
@@ -102,9 +109,13 @@ export class WebExtensionTransport extends EventEmitter {
       return;
     }
     if (this.#socket && this.#socket !== socket) {
+      if (this.authenticated) {
+        this.emit("diagnostic", Object.freeze({ type: "STALE_EXTENSION_CONNECTION_REPLACED" }));
+      }
       this.#closeSocket(this.#socket, 4001, "Replaced by a newer extension connection");
     }
     this.#socket = socket;
+    this.#lastExtensionActivity = null;
     this.#authentication = null;
     this.#authenticationState = WebAuthenticationState.CHALLENGE_SENT;
     socket.on("message", (raw) => this.#onMessage(socket, raw));
@@ -144,6 +155,7 @@ export class WebExtensionTransport extends EventEmitter {
   close() {
     if (this.#socket) this.#closeSocket(this.#socket, 1000, "Controller closed extension session");
     this.#socket = null;
+    this.#lastExtensionActivity = null;
     this.#authentication = null;
     this.#authenticationState = WebAuthenticationState.DISCONNECTED;
     this.emit("state", this.snapshot);
@@ -179,6 +191,8 @@ export class WebExtensionTransport extends EventEmitter {
       return;
     }
 
+    this.#lastExtensionActivity = this.#now();
+
     if (message.type === "extension.auth.response") {
       this.emit("diagnostic", Object.freeze({
         type: "AUTH_REPLAY_IGNORED",
@@ -199,6 +213,7 @@ export class WebExtensionTransport extends EventEmitter {
     try {
       this.#authentication = this.#authenticator.verifyResponse(message);
       this.#authenticationState = WebAuthenticationState.AUTHENTICATED;
+      this.#lastExtensionActivity = this.#now();
       this.#sendRaw({
         type: "controller.auth.accepted",
         protocolVersion: WEB_BRIDGE_PROTOCOL_VERSION,
@@ -228,6 +243,7 @@ export class WebExtensionTransport extends EventEmitter {
   #onClose(socket) {
     if (socket !== this.#socket) return;
     this.#socket = null;
+    this.#lastExtensionActivity = null;
     this.#authentication = null;
     this.#authenticationState = WebAuthenticationState.DISCONNECTED;
     this.emit("runtimeEvent", Object.freeze({

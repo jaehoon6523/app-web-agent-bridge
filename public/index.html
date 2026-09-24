@@ -18,7 +18,7 @@
       <li id="stepWork">작업 진행<span id="stepWorkBadge" class="step-badge" hidden aria-label="판단 대기 중"></span></li>
       <li id="stepResult">완료 · 적용</li>
     </ol>
-    <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
+    <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="webBindingSignal">대화 탭 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
     <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
       <div class="flow-heading">
@@ -89,7 +89,7 @@
       <div id="startRecovery"></div>
       <button id="cancelInitialPreparation" type="button" hidden>요청 취소</button>
     </section>
-    <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p></div>
+    <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p><p id="workerProvenance" class="muted"></p></div>
       <div class="actions"><button id="stopRun" disabled>작업 중단</button><button id="retryRun" disabled title="복구 가능한 Worker 실패에서 활성화됩니다.">수동 진행</button></div><p id="stopReason" class="muted"></p><p id="commandResult" role="status"></p>
       <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="continueProject" type="button" hidden>같은 폴더에서 이어서 작업</button><button id="exportEvidence" disabled>감사 기록 다운로드</button><button id="deleteRun" disabled>종료된 작업 삭제</button></div><p id="commandReason" class="muted"></p><p class="muted">기록은 자동 만료되지 않습니다. 종료된 작업을 삭제하면 실행 기록과 감사 근거를 복구할 수 없습니다. 적용된 프로젝트 코드는 유지됩니다.</p></details>
       <section id="recoveryPanel" hidden><h2>복구 확인 후 실행 폐기</h2><p>CLI 프로세스·검증 작업과 ChatGPT 생성을 직접 종료하고 대상 저장소의 변경을 확인하세요. 기록과 작업 사본은 보존되며, 이 실행은 재개하거나 적용할 수 없게 됩니다.</p>
