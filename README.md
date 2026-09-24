@@ -8,7 +8,7 @@ CLI 구현 → 고정 후보·실행 증거 → 웹 감사 → 지적 → 수정
 
 작업 상태와 웹 연결의 소유권 및 복구 경계는 [state-ownership.md](docs/state-ownership.md)에 기록합니다.
 
-- 주 콘솔은 준비 대화·합의 승인을 거쳐 `CODE_CHANGE`를 시작합니다. 준비 API와 화면 계약은 [WORKFLOW_CONTRACT](public/WORKFLOW_CONTRACT.md), [API_INTEGRATION](public/API_INTEGRATION.md)을 참조하세요. 직접 `POST /api/runs/start`를 호출하는 CODE_CHANGE 경로에는 확정 프로젝트 설정과 정확한 기존 대화 URL이 필요합니다.
+- 주 콘솔은 준비 대화·합의 승인을 거쳐 `CODE_CHANGE`를 시작합니다. 준비 API와 화면 계약은 [WORKFLOW_CONTRACT](public/WORKFLOW_CONTRACT.md), [API_INTEGRATION](public/API_INTEGRATION.md)을 참조하세요. 직접 `POST /api/runs/start`는 410으로 거부합니다.
 - 프로젝트·요구사항·허용 검증·한도는 콘솔의 **프로젝트 설정**에서 입력·저장합니다. 미종료 작업이 없을 때 변경할 수 있고 다음 작업부터 바로 반영됩니다. 기존 런의 기준은 변경하지 않습니다.
 - 한 번에 한 런을 수행하고 과거 런은 조회할 수 있습니다. 중단·별도 적용·기록 다운로드·증거 원문 조회를 지원합니다.
 - HTTP 조회를 사용합니다. CODE_CHANGE의 pause/resume/retry와 실행 중 자유입력은 지원하지 않습니다. 준비 대화의 답변과 기존 DISCUSSION 엔진은 별도 계약입니다.
@@ -162,13 +162,15 @@ Worker의 설정값과 실행 어댑터가 보고한 제공자·모델도 분리
 | `GET /api/health` | 실제 연결·관찰 상태. 실행하지 않은 검증은 `true`로 표시하지 않음 |
 | `GET /api/preflight` | 시작 조건과 고정 프로젝트 설정 요약 |
 | `GET /api/project` | 인증된 사용자의 저장된 프로젝트 설정과 편집 버전 조회 |
-| `PUT /api/project` | 미종료 작업이 없을 때 검증된 프로젝트 설정 저장 (`project`, `expectedVersion`) |
+| `PUT /api/project` | 410. 프로젝트 설정은 준비 합의 승인 흐름에서 저장 |
 | `POST /api/dashboard/session` | 동일 출처 로컬 브라우저의 임시 인증 |
 | `GET /api/state?runId=...` | 인증된 진행·판정·지적·증거·과거 기록 조회 |
-| `POST /api/commands` | `{type, requestId, payload}` 명령. CODE_CHANGE는 `run.start`, `run.stop`, `run.abandon`, `code.apply`, `evidence.get`, `evidence.export` |
-| `POST /api/runs/start` | 목표·URL로 접수. `X-Request-ID` 필수, `202`와 런 ID 반환 |
+| `POST /api/preparations` | 목표·폴더·ChatGPT 대화 URL로 준비 시작 |
+| `POST /api/preparations/:id/approve` | 확정된 준비 합의를 승인하고 작업 시작 |
+| `POST /api/commands` | `{type, requestId, payload}` 명령. CODE_CHANGE는 `run.stop`, `run.abandon`, `run.delete`, `code.apply`, `evidence.get`, `evidence.export` 등 승인 이후 명령 |
+| `POST /api/runs/start` | 410. 작업 시작에는 준비 합의 승인 필요 |
 
-명령은 Bearer 인증과 같은 Origin이 필요합니다. `run.start`의 payload는 `{mode:"CODE_CHANGE", expectedVersion:0, objective, conversationUrl}`입니다. 그 외 명령은 `runId`, `expectedVersion`을 포함합니다. `run.abandon`에는 `externalTerminationConfirmed:true`, `targetInspected:true`, 비어 있지 않은 `reason`을 추가합니다. 적용에는 `candidateId`, `reviewId`, `artifactHash`, `baseCommit`을 추가합니다.
+명령은 Bearer 인증과 같은 Origin이 필요합니다. 직접 `run.start` 명령은 HTTP에서 거부합니다. 작업 시작은 `/api/preparations`와 해당 준비의 `/approve`를 사용합니다. 승인 이후 런 명령은 `runId`, `expectedVersion`을 포함합니다. `run.abandon`에는 `externalTerminationConfirmed:true`, `targetInspected:true`, 비어 있지 않은 `reason`을 추가합니다. 적용에는 `candidateId`, `reviewId`, `artifactHash`, `baseCommit`을 추가합니다.
 
 ## 검증
 

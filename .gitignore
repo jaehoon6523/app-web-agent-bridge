@@ -14,3 +14,5 @@ db_temp/
 /node_modules.zip
 /src (2).zip
 .verified-*.log
+.*-test.log
+*.canonical-runtime.bak
