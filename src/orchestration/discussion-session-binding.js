@@ -103,11 +103,7 @@ export function requireSubmittedDiscussionSession({
       "AGENT_SESSION_TURN_MISMATCH",
     );
   }
-  const expectedRunningBinding = {
-    ...receipt.sessionBinding,
-    version: receipt.sessionBinding.version + 1,
-  };
-  if (!matchesSessionBinding(session, expectedRunningBinding)) {
+  if (!matchesSessionBinding(session, receipt.sessionBinding, { versionOffset: 1 })) {
     throw new DiscussionSessionBindingError(
       `Agent session ${sessionId} changed after turn ${turnId} was submitted.`,
       "AGENT_SESSION_BINDING_CHANGED",

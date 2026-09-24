@@ -4,11 +4,20 @@ This pass is ordered to reduce ambiguity before moving files.
 
 ## Phase 1: establish ownership
 
-- [ ] Review `docs/CANONICAL_OWNERSHIP.md`.
-- [ ] Confirm that run phase legality has exactly one definition.
-- [ ] Confirm that session binding equality has exactly one canonical predicate/API.
+- [x] Review `docs/CANONICAL_OWNERSHIP.md` against the current owners below.
+- [x] Confirm that run phase legality has exactly one definition: `src/domain/run-state-machine.js` owns `ALLOWED_RUN_TRANSITIONS` and `canTransitionRunState`.
+- [x] Confirm that session binding equality has exactly one canonical predicate/API: `src/domain/agent-attribution.js` owns `matchesSessionBinding`; orchestration and persistence both use its `versionOffset` for submitted turns.
 - [ ] Confirm that delivery durable state changes use one persistence primitive.
 - [ ] Confirm that terminal response uniqueness is protected by persistence, not only orchestration checks.
+
+| Responsibility | Current owner | Other boundary checking the rule | Decision |
+|---|---|---|---|
+| Run phase legality | `src/domain/run-state-machine.js` | orchestration requests and store writes | Keep one transition table; leave request preconditions with callers. |
+| Session binding equality | `src/domain/agent-attribution.js` | `discussion-session-binding.js`, `turn-submission-links.js` | Use one predicate with `versionOffset: 1` for the running session. |
+| Delivery claim and transition | `src/persistence/sqlite-store.js` | `claimNextDelivery` and `transitionDelivery` | Inspect both SQL updates and retry limits before merging any mutation path. |
+| Terminal response uniqueness | `agent_messages.input_id` is unique; packet rejection is stored separately | response context and packet rejection integrity checks | Verify cross-table exclusivity before claiming a persistence constraint. |
+
+This pass applies the repository's single-owner rule while evaluating the Forge/OpenBrowser/Kelruno reference patterns; it does not import their code or certify a live provider.
 
 ## Phase 2: measure before refactoring
 
