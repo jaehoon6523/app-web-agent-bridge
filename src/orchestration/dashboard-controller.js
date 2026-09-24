@@ -143,7 +143,19 @@ export class DashboardController {
     const live = await this.#getRuntime();
     if (type === "state.get") return this.snapshot(payload.runId ?? null);
     if (this.#starting) reject("Session provisioning is still in progress.", "RUN_BUSY");
-    if (live.codeChanges?.get(payload.runId)) return live.codeChanges.command(type, payload);
+    if (live.codeChanges?.get(payload.runId)) {
+      if (type !== "run.delete") return live.codeChanges.command(type, payload);
+      const history = live.codeChanges.store.history(payload.runId);
+      const removed = new Set();
+      for (const record of history) preserveArtifactReferences(record, removed);
+      const result = await live.codeChanges.command(type, payload);
+      const remaining = live.store.listArtifactHashes();
+      for (const record of live.codeChanges.store.list()) {
+        for (const version of live.codeChanges.store.history(record.runId)) preserveArtifactReferences(version, remaining);
+      }
+      for (const hash of removed) live.artifactStore?.removeIfUnreferenced?.(hash, remaining);
+      return result;
+    }
     if (type === "run.start") {
       if (this.#starting || this.#jobs.size || live.codeChanges?.busy()) reject("Another run is active.", "RUN_BUSY");
       const preflight = this.#preflight();
@@ -252,7 +264,7 @@ export class DashboardController {
       if (result.error) reject(result.error.message, result.error.code);
       return result.payload;
     }
-    store.beginCommand(command.requestId, hash);
+    store.beginCommand(command.requestId, hash, command.payload?.runId ?? null);
     const promise = this.execute(command).then((payload) => {
       store.finishCommand(command.requestId, { payload: redactForEvidence(payload) }); return payload;
     }, (error) => {

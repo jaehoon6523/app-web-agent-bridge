@@ -605,6 +605,20 @@ export class CodeChangeService {
   async command(type, payload) {
     const run = this.get(payload.runId);
     if (!run || run.version !== payload.expectedVersion) throw Object.assign(new Error("Run changed; refresh."), { code: "RUN_VERSION_CONFLICT" });
+    if (type === "run.delete") {
+      if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
+        || this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId) {
+        throw Object.assign(new Error("Only settled finished runs can be deleted."), { code:"RUN_NOT_TERMINAL" });
+      }
+      if (run.workspaceRoot && fs.existsSync(run.workspaceRoot)) {
+        new GitChangeWorkspace({ workspaceRoot:run.workspaceRoot, baseCommit:run.baseCommit,
+          artifactStore:this.artifactStore, targetRoot:run.targetRoot }).cleanup();
+      }
+      this.store.deleteFinished(run.runId, run.version);
+      this.controls.delete(run.runId);
+      this.workerInspections.delete(run.runId);
+      return { runId:run.runId, deleted:true };
+    }
     if (type === "evidence.export") return redactForEvidence(run);
     if (type === "evidence.get") {
       const e = run.evidence?.find((e) => e.evidenceId === payload.evidenceId);
@@ -778,6 +792,7 @@ export class CodeChangeService {
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
       workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
+        ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.delete"] : []),
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
         ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["code.review.retry"] : []),

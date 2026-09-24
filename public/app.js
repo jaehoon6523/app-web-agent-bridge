@@ -444,7 +444,7 @@ function render() {
     $("retryRun").disabled = true;
     $("retryRun").title = "";
   }
-  for (const [id, capability] of [["stopRun", "run.stop"], ["applyCode", "code.apply"], ["exportEvidence", "evidence.export"]]) {
+  for (const [id, capability] of [["stopRun", "run.stop"], ["applyCode", "code.apply"], ["exportEvidence", "evidence.export"], ["deleteRun", "run.delete"]]) {
     $(id).disabled = !run || operations.runCommand !== "IDLE" || !caps.has(capability);
   }
   if (!run) return;
@@ -496,9 +496,11 @@ async function command(type, payload = {}) {
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
         "code.apply": "적용 요청을 처리했습니다. 최신 적용 상태를 확인하세요.",
         "evidence.export": "감사 기록 요청을 처리했습니다.",
+        "run.delete": "종료된 작업 기록을 삭제했습니다.",
       }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
       text("commandResult", successMessage);
     }
+    if (type === "run.delete") { selected = null; requestedView = "start"; }
     return result.payload;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
@@ -869,6 +871,11 @@ $("abandonRun").addEventListener("click", () => {
   }
 });
 $("stopRun").addEventListener("click", () => command("run.stop"));
+$("deleteRun").addEventListener("click", () => {
+  if (!$("deleteRun").disabled && window.confirm("종료된 작업의 실행 기록·감사 근거·임시 작업 사본을 삭제합니다. 적용된 프로젝트 코드는 유지됩니다. 삭제할까요?")) {
+    command("run.delete");
+  }
+});
 $("applyCode").addEventListener("click", () => { const r = snapshot.run; command("code.apply", { candidateId:r.candidate.candidateId, reviewId:r.reviews.at(-1).reviewId, artifactHash:r.capture.artifact.sha256, baseCommit:r.baseCommit }); });
 $("exportEvidence").addEventListener("click", async () => { const result = await command("evidence.export"); if (!result) return; const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)], { type:"application/json" })); const a = node("a", ""); a.href = url; a.download = `${result.runId ?? "audit"}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
 for (const [id, audit] of [["showAudit",true],["showLog",false]]) $(id).addEventListener("click", () => { $("auditPanel").hidden = !audit; $("logPanel").hidden = audit; $("showAudit").setAttribute("aria-pressed", String(audit)); $("showLog").setAttribute("aria-pressed", String(!audit)); });
