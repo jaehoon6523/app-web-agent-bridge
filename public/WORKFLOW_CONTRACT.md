@@ -210,7 +210,7 @@ status는 `DISCUSSING | READY | APPROVED`다. `AGREEMENT_READY`는 질문이 없
 run.start
 ```
 
-외부 계약을 통합할 때의 목표 API는 다음과 같다.
+현재 외부 API는 다음과 같다.
 
 ```http
 POST /api/preparations/{preparationId}/approve

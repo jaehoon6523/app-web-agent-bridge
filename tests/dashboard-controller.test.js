@@ -116,7 +116,9 @@ test("an unfinished run blocks another start and invalid URL has no persisted ef
 });
 
 test("HTTP dashboard enforces authentication and forbids direct run.start approval bypass", async (t) => {
-  const { live, store } = fixture(t);
+  const { live, store, dashboard } = fixture(t);
+  const advertised = await dashboard.snapshot();
+  assert.equal(advertised.commandCapabilities.includes("run.start"), false);
   const bridge = createBridgeServer({ runtimeConfig: {
     host: "127.0.0.1", port: 0, baseUrl: "http://127.0.0.1:0", demoMode: false,
     codex: { executablePath: process.execPath }, dashboard: { token },

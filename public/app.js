@@ -1,4 +1,4 @@
-import { groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
+import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
@@ -46,41 +46,6 @@ function workerIdentity(run) {
   const provider = worker.provider ?? null;
   const model = worker.model ?? null;
   return [provider, model].filter(Boolean).join(" / ") || "정보 없음";
-}
-function externalEventRecords(run) {
-  if (!run) return [];
-  const workerTurns = (run.workerTurns ?? []).map((turn) => ({
-    at: turn.finishedAt ?? turn.startedAt,
-    title: `WORKER_TURN_${String(turn.status ?? "UNKNOWN").toUpperCase()}`,
-    content: JSON.stringify({
-      provider: turn.provider ?? run.worker?.provider ?? null,
-      model: turn.model ?? run.worker?.model ?? null,
-      sessionId: turn.sessionId ?? null,
-      turnId: turn.turnId ?? null,
-      startedAt: turn.startedAt ?? null,
-      finishedAt: turn.finishedAt ?? null,
-      durationMs: turn.durationMs ?? null,
-      usage: turn.usage ?? null,
-      inputRef: turn.inputRef ?? null,
-      outputRef: turn.outputRef ?? null,
-      metadata: turn.metadata ?? null,
-    }),
-  }));
-  const reviews = (run.reviews ?? []).map((review) => ({
-    at: review.createdAt ?? review.finishedAt ?? review.reviewedAt ?? run.updatedAt,
-    title: "REVIEW_RESULT",
-    content: JSON.stringify({
-      reviewId: review.reviewId ?? null,
-      candidateId: review.candidateId ?? null,
-      decision: review.decision ?? review.report?.decision ?? null,
-      requestId: review.requestId ?? null,
-      requirementsRef: review.requirementsRef ?? null,
-    }),
-  }));
-  const verifications = (snapshot?.evidence ?? []).filter((e) => ["EXECUTION", "ARTIFACT"].includes(e.kind)).map((e) => ({
-    at: e.createdAt, title:`VERIFICATION_${e.kind}`, content:JSON.stringify({ evidenceId:e.evidenceId, candidateId:e.candidateId, producer:e.producer, valid:e.valid, result:e.result }),
-  }));
-  return [...workerTurns, ...reviews, ...verifications];
 }
 async function request(url, options = {}) {
   try {
@@ -304,7 +269,7 @@ function renderLog() {
   const log = $("eventLog"); log.replaceChildren();
   const records = [...(snapshot?.events ?? []).map((e) => ({ at:e.createdAt, title:e.type, content:JSON.stringify(e.payload) })),
     ...(snapshot?.messages ?? []).map((m) => ({ at:m.createdAt, title:m.fromActor ?? "CONTROLLER", content:m.content })),
-    ...externalEventRecords(snapshot?.run)].sort((a,b) => String(a.at).localeCompare(String(b.at)));
+    ...externalEventRecords(snapshot?.run, snapshot?.evidence ?? [])].sort((a,b) => String(a.at).localeCompare(String(b.at)));
   for (const record of records) {
     const row = node("article", "", "record"); row.append(node("time", time(record.at)), node("p", record.title), node("pre", record.content)); log.append(row);
   }

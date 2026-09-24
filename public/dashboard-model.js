@@ -1,3 +1,39 @@
+export function externalEventRecords(run, evidence = []) {
+  if (!run) return [];
+  const workerTurns = (run.workerTurns ?? []).map((turn) => ({
+    at: turn.finishedAt ?? turn.startedAt,
+    title: `WORKER_TURN_${String(turn.status ?? "UNKNOWN").toUpperCase()}`,
+    content: JSON.stringify({
+      provider: turn.provider ?? run.worker?.provider ?? null,
+      model: turn.model ?? run.worker?.model ?? null,
+      sessionId: turn.sessionId ?? null,
+      turnId: turn.turnId ?? null,
+      startedAt: turn.startedAt ?? null,
+      finishedAt: turn.finishedAt ?? null,
+      durationMs: turn.durationMs ?? null,
+      usage: turn.usage ?? null,
+      inputRef: turn.inputRef ?? null,
+      outputRef: turn.outputRef ?? null,
+      metadata: turn.metadata ?? null,
+    }),
+  }));
+  const reviews = (run.reviews ?? []).map((review) => ({
+    at: review.createdAt ?? review.finishedAt ?? review.reviewedAt ?? run.updatedAt,
+    title: "REVIEW_RESULT",
+    content: JSON.stringify({
+      reviewId: review.reviewId ?? null,
+      candidateId: review.candidateId ?? null,
+      decision: review.decision ?? review.report?.decision ?? null,
+      requestId: review.requestId ?? null,
+      requirementsRef: review.requirementsRef ?? null,
+    }),
+  }));
+  const verifications = evidence.filter((e) => ["EXECUTION", "ARTIFACT"].includes(e.kind)).map((e) => ({
+    at: e.createdAt, title:`VERIFICATION_${e.kind}`, content:JSON.stringify({ evidenceId:e.evidenceId, candidateId:e.candidateId, producer:e.producer, valid:e.valid, result:e.result }),
+  }));
+  return [...workerTurns, ...reviews, ...verifications];
+}
+
 export const ACTORS = Object.freeze(["CODEX_AGENT", "CHATGPT_WEB_AGENT"]);
 
 export function groupRunsByProject(runs) {

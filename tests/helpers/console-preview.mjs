@@ -18,7 +18,6 @@ const server=http.createServer(async(req,res)=>{
       const preflight={readyForProvisioning:true,checks:{codexExecutableConfigured:true,extensionAuthenticated:true},missing:[],project:{...fixture.options.project,requirementsId:"fixture-requirements",revision:"1"}};
       const snapshot=runId?fixture.service.snapshot(runId,preflight):{run:null,messages:[],events:[],preflight,commandCapabilities:[]};
       snapshot.runs=runs.map((r)=>({runId:r.runId,objective:`[모의 UI 검증] ${r.objective}`,phase:r.stage}));
-      if(!fixture.service.busy()) snapshot.commandCapabilities.push("run.start");
       return json(200,snapshot);
     }
     if(url.pathname==="/api/commands" && req.method==="POST") {

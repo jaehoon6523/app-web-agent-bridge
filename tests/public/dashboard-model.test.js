@@ -8,6 +8,7 @@ import {
   buildCommandEnvelope,
   classifyMessageOrigin,
   deliveryState,
+  externalEventRecords,
   groupRunsByProject,
   normalizeDashboardState,
   selectMessagesForActor,
@@ -16,6 +17,19 @@ import {
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.resolve(dirname, "../../public");
+
+test("event log projection keeps worker, review and verification records bound to supplied state", () => {
+  const run = { worker:{provider:"codex"}, workerTurns:[{status:"completed", turnId:"turn-1"}],
+    reviews:[{reviewId:"review-1", candidateId:"candidate-1", decision:"PASS"}] };
+  const evidence = [{kind:"EXECUTION", evidenceId:"evidence-1", candidateId:"candidate-1"},
+    {kind:"PATCH", evidenceId:"patch-1"}];
+  const records = externalEventRecords(run, evidence);
+  assert.deepEqual(records.map((item) => item.title), ["WORKER_TURN_COMPLETED", "REVIEW_RESULT", "VERIFICATION_EXECUTION"]);
+  assert.equal(JSON.parse(records[0].content).provider, "codex");
+  assert.equal(JSON.parse(records[1].content).candidateId, "candidate-1");
+  assert.equal(JSON.parse(records[2].content).evidenceId, "evidence-1");
+  assert.deepEqual(externalEventRecords(null, evidence), []);
+});
 
 test("history groups runs by exact project root, keeping newest first", () => {
   const groups = groupRunsByProject([

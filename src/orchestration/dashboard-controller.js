@@ -62,14 +62,10 @@ export class DashboardController {
       const snapshot = live.codeChanges.snapshot(codeRun.runId, this.#preflight());
       snapshot.runs = runs.map(({ runId, objective, phase, projectRef, targetRoot }) =>
         ({ runId, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null }));
-      if (!live.codeChanges.busy() && !this.#jobs.size && !store.listRuns().some((r) => !isTerminalRunPhase(r.phase))
-        && this.#preflight().readyForProvisioning) snapshot.commandCapabilities.push("run.start");
       return snapshot;
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
     const commands = ["state.get", "evidence.export"];
-    if (!this.#starting && !this.#jobs.size && !live.codeChanges?.busy() && !store.listRuns().some((r) => !isTerminalRunPhase(r.phase))
-      && this.#preflight().readyForProvisioning) commands.push("run.start");
     const sessions = run ? store.listAgentSessions(run.runId) : [];
     const runtimes = run ? live.composition.getRuntimeSessions(run.runId) : null;
     if (run && !isTerminalRunPhase(run.phase)) {
