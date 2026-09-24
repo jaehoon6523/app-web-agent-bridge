@@ -137,7 +137,10 @@ test("a failed new root binding leaves the existing session and delivery untouch
 
   await assert.rejects(context.prepareBoundSession({
     sessionId: "session-new", runId: "run-new", conversationUrl: null, conversationId: null, focus: true,
-  }), { code: "NEEDS_REBIND" });
+  }), (error) => error.code === "ROOT_TAB_CREATE_FAILED"
+    && error.details?.flow === "ROOT_BOOTSTRAP_V2"
+    && error.details?.stage === "CREATE"
+    && error.details?.rootCount === 0);
 
   assert.deepEqual(await store.read(), before);
 });

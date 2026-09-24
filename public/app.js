@@ -370,13 +370,13 @@ function render() {
     for (const req of project.requirements.items) projectContainer.append(node("p", `${req.requirementId} · ${req.statement}`, "muted"));
   } else projectContainer.append(node("p", connected ? "사용할 프로젝트가 아직 준비되지 않았습니다." : "연결 후 프로젝트 설정을 확인합니다.", "muted"));
   actionState("planRun", !webConnected() || !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
-    !webConnected() ? "브릿지 확장 연결이 확인돼야 전송할 수 있습니다." : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
-    "지정한 대화 탭을 확인한 뒤 첫 부탁을 전송합니다.");
+    !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다." : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
+    "ChatGPT 탭이 없으면 새 탭을 열고 첫 부탁을 전송합니다.");
   if (workflow.stage === "START") {
     if (workflow.state === "CONNECTING_WEB") {
       text("startReason", "ChatGPT 대화 탭에 연결 중입니다. 아직 메시지를 전송하지 않았습니다.");
     } else if (preparation?.state === "WEB_BLOCKED" && preparation?.error) {
-      text("startReason", "ChatGPT 연결에 실패해 메시지를 전송하지 않았습니다. 대화 탭과 브릿지 연결을 확인한 뒤 다시 시작하세요. "
+      text("startReason", `이전 준비 ${preparation.preparationId}의 전송 실패 기록입니다. 메시지는 전송되지 않았습니다. 새 작업의 연결 상태와는 별개입니다. `
         + preparation.error.code + ": " + preparation.error.message
         + (preparation.error.details ? "\n실패 진단: " + JSON.stringify(preparation.error.details) : ""));
     }
@@ -392,7 +392,7 @@ function render() {
     : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
   if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
     && !preparation?.error && !checks?.extensionAuthenticated) {
-    text("startReason", "입력은 가능합니다. 준비 대화를 시작하려면 브릿지 확장을 연결하세요.");
+    text("startReason", "입력은 가능합니다. 브릿지 확장이 인증되면 준비 대화를 시작할 수 있습니다. ChatGPT 탭은 자동으로 엽니다.");
   }
   if (recoveryRunId !== run?.runId) {
     recoveryRunId = run?.runId;

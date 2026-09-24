@@ -454,6 +454,29 @@ function requireBindingInput(payload) {
     bootstrap,
   };
 }
+function rootBootstrapDetails(stage, extra = {}) {
+  return { flow: "ROOT_BOOTSTRAP_V2", stage, extensionId: chrome.runtime?.id ?? null, extensionVersion: chrome.runtime?.getManifest?.().version ?? null, ...extra };
+}
+function rootBootstrapError(code, message, stage, extra = {}) {
+  return new ExtensionOperationError(code, message, rootBootstrapDetails(stage, extra));
+}
+async function selectRootBootstrapTab(payload, requested) {
+  let tabs;
+  try { tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS }); }
+  catch (error) { throw rootBootstrapError("ROOT_TAB_QUERY_FAILED", error.message, "DISCOVER"); }
+  const roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+  const create = payload.createNewConversation === true || roots.length === 0;
+  console.info("[bridge:root:select]", rootBootstrapDetails("SELECT", { sessionId: requested.sessionId, rootCount: roots.length, action: create ? "CREATE" : "REUSE" }));
+  if (create) {
+    let tab;
+    try { tab = await createConversationBootstrapTab(chrome, waitForContentScript); }
+    catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_CREATE_FAILED", error.message, "CREATE", { rootCount: roots.length }); }
+    if (!tab) throw rootBootstrapError("ROOT_TAB_CREATE_FAILED", "ChatGPT 시작 탭을 만들지 못했습니다.", "CREATE", { rootCount: roots.length });
+    return tab;
+  }
+  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "ChatGPT 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
+  return roots[0];
+}
 async function prepareBoundSession(payload) {
   const requested = requireBindingInput(payload);
   const state = await store.read();
@@ -490,39 +513,24 @@ async function prepareBoundSession(payload) {
   }
   let matched;
   if (requested.bootstrap) {
-    let tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-    let roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
-    if (payload.createNewConversation === true || roots.length === 0) {
-      const created = await createConversationBootstrapTab(chrome, waitForContentScript);
-      if (!created) {
-        if (sameSession) await store.update({ bindingStatus:"NEEDS_REBIND" });
-        throw new ExtensionOperationError("NEEDS_REBIND", "전용 ChatGPT conversation bootstrap 탭을 만들 수 없습니다.");
-      }
-      roots = [created];
-    }
-    if (roots.length === 0) {
-      if (sameSession) await store.update({ bindingStatus: "NEEDS_REBIND" });
-      throw new ExtensionOperationError("NEEDS_REBIND", "ChatGPT 시작 페이지를 열 수 없습니다. https://chatgpt.com/ 접근 상태를 확인하세요.", {
-        mode: "NEW_CONVERSATION_BOOTSTRAP", rootTabs: [], requestedSessionId: requested.sessionId,
-      });
-    }
-    if (roots.length > 1) {
-      if (sameSession) await store.update({ bindingStatus: "AMBIGUOUS" });
-      throw new ExtensionOperationError("AMBIGUOUS", "More than one ChatGPT start page is open; the new conversation source cannot be identified.", {
-        mode: "NEW_CONVERSATION_BOOTSTRAP", rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })),
-      });
-    }
-    const root = roots[0];
-    if (payload.focus) await focusTab(root);
-    await waitForContentScript(root.id, 30_000, true);
-    const page = await chrome.tabs.sendMessage(root.id, { type: "agent.ping" });
+    let root;
+    try { root = await selectRootBootstrapTab(payload, requested); }
+    catch (error) { if (sameSession) await store.update({ bindingStatus: error.code === "AMBIGUOUS" ? "AMBIGUOUS" : "NEEDS_REBIND" }); throw error; }
+    let page;
+    try { if (payload.focus) await focusTab(root); await waitForContentScript(root.id, 30_000, true);
+      page = await chrome.tabs.sendMessage(root.id, { type: "agent.ping" }); }
+    catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_LOAD_FAILED", error.message, "LOAD", { tabId: root.id }); }
     if (!page?.ready || page.busy || page.generating || page.url !== "https://chatgpt.com/") {
-      throw new ExtensionOperationError("ROOT_NOT_READY", "ChatGPT 새 대화 입력창을 사용할 수 없습니다.", page);
+      throw rootBootstrapError("ROOT_NOT_READY", "ChatGPT 새 대화 입력창을 사용할 수 없습니다.", "READY", { tabId: root.id, page });
     }
-    const documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: "https://chatgpt.com/", conversationId: null });
-    await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
-      tabId: root.id, windowId: root.windowId, conversationUrl: "https://chatgpt.com/", conversationId: null,
-      bindingStatus: "ROOT_READY", bindingError: null, lastActiveChatGptTarget: createStoredTarget({ tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: "https://chatgpt.com/", conversationId: null }) });
+    let documentBinding;
+    try {
+      documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: "https://chatgpt.com/", conversationId: null });
+      await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
+        tabId: root.id, windowId: root.windowId, conversationUrl: "https://chatgpt.com/", conversationId: null,
+        bindingStatus: "ROOT_READY", bindingError: null, lastActiveChatGptTarget: createStoredTarget({ tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: "https://chatgpt.com/", conversationId: null }) });
+    } catch (error) { throw rootBootstrapError(error.code ?? "ROOT_BIND_FAILED", error.message, "BIND", { tabId: root.id }); }
+    console.info("[bridge:root:ready]", rootBootstrapDetails("ROOT_READY", { sessionId: requested.sessionId, tabId: root.id }));
     return { ...documentBinding, sessionId: requested.sessionId, runId: requested.runId, tabId: root.id, windowId: root.windowId,
       conversationUrl: "https://chatgpt.com/", conversationId: null, title: root.title || "ChatGPT",
       lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "ROOT_READY" };
