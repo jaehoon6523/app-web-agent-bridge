@@ -34,6 +34,8 @@ test("Round 0 is peer-isolated and Round 1 receives actual published review text
   assert.ok(round1.every((item)=>item.sharedArtifacts.every((artifact)=>
     typeof artifact.content==="string"&&artifact.content.includes("concrete review text")&&artifact.contentHash)));
   assert.ok(run.reviewArtifacts.some((item)=>item.visibility==="SHARED"));
+  assert.ok(run.messages.some((item)=>item.content.includes("concrete review text")));
+  assert.ok(run.messages.every((item)=>!item.content.startsWith('{"type":"REVIEW_ASSERTIONS"')));
 });
 
 test("finding-only disagreement also triggers cross review", async (t) => {

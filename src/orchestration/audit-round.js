@@ -232,7 +232,7 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
       requests:run.requests.map((item) => item.requestId === requestId ? { ...item, status:"RECEIVED",
         responseRef, reviewArtifactId:artifact.reviewArtifactId } : item),
       messages:[...run.messages, { messageId:requestId, fromActor:"CHATGPT_WEB_AGENT", role,
-        content:JSON.stringify(response.packet), createdAt:new Date().toISOString() }] });
+        content:(response.body ?? "").trim() || "(설명 없이 제어 패킷만 제출됨)", createdAt:new Date().toISOString() }] });
     let report;
     try {
       if (response.packet.type === "INVALID_RESPONSE") {

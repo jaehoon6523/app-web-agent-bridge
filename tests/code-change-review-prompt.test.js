@@ -41,3 +41,15 @@ test("REPORT_REPAIR ends with the same framing contract after previousResponse",
   assert.match(parsed.tail, /CONTROLLER_PACKET_BEGIN/u);
   assert.match(parsed.tail, /CONTROLLER_PACKET_END/u);
 });
+
+test("peer review prose is presented as conversation while control packets stay structured", () => {
+  const peer = { role:"JUDGE", kind:"INITIAL_REVIEW", reviewArtifactId:"review_1",
+    content:"R1은 충족하지만 R2의 반응형 스타일을 다시 확인해 주세요.",
+    controlPacket:{ type:"REVIEW_ASSERTIONS", assessments:[] } };
+  const parsed = splitPrompt(buildCodeReviewPrompt({ sharedArtifacts:[peer] }));
+  assert.deepEqual(parsed.data.sharedArtifacts[0].controlPacket, peer.controlPacket);
+  assert.match(parsed.tail, /JUDGE · INITIAL_REVIEW · review_1/u);
+  assert.match(parsed.tail, /R2의 반응형 스타일을 다시 확인해 주세요/u);
+  assert.match(parsed.tail, /Respond to their reasoning in ordinary language/u);
+  assert.match(parsed.tail, /CONTROLLER_PACKET_END/u);
+});
