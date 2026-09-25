@@ -11,7 +11,7 @@
 <div class="layout">
   <aside class="history"><h2>실행 기록</h2><button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>미종료 작업 확인 · 중단</button><nav id="runList" aria-label="실행 선택"></nav></aside>
   <main>
-    <ol class="workflow" aria-label="작업 단계">
+    <ol id="workflow" class="workflow" aria-label="작업 단계">
       <li id="stepCollect">요구사항 정리</li>
       <li id="stepReview">요구사항 검토</li>
       <li id="stepStartWork">작업 시작</li>
@@ -20,6 +20,7 @@
     </ol>
     <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="webBindingSignal">대화 탭 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
     <p id="connectionNotice" role="status">로컬 서버에 연결하고 있습니다.</p>
+    <section id="projectOverview" hidden aria-labelledby="overviewTitle"><h1 id="overviewTitle"></h1><p id="overviewPath" class="muted"></p><p id="overviewSummary"></p><div class="actions"><button id="newProjectTask" type="button" class="primary">이 프로젝트에서 새 작업</button><button id="openProjectBlocker" type="button" hidden>진행 중인 작업 보기</button></div><p id="overviewReason" class="muted" role="status"></p><h2>작업 기록</h2><div id="overviewTasks"></div></section>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
       <div class="flow-heading">
         <h1 id="projectHeading">요구사항 정리</h1>

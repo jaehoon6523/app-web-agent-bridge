@@ -294,6 +294,46 @@ function stateFor(run, capabilities) {
     events: [], messages: [], assessments: [], findings: [], evidence: [] };
 }
 
+test("project view groups tasks, surfaces pending action, and opens the selected task", async () => {
+  const active = { runId:"active", version:4, phase:"AWAITING_APPLY", objective:"Add greeting",
+    projectRef:{ targetRoot:"C:/project" }, createdAt:"2026-09-25T00:00:00Z", updatedAt:"2026-09-25T01:00:00Z" };
+  const state = stateFor(active, ["code.apply"]);
+  state.runs = [
+    { runId:"old", phase:"APPLIED", objective:"Initial app", targetRoot:"C:/project", createdAt:"2026-09-24T00:00:00Z" },
+    { ...active, targetRoot:"C:/project" },
+  ];
+  const storage = new Map();
+  const ui = await dashboard(state, undefined, storage);
+  ui.run('selectProject("C:/project")');
+  assert.equal(ui.elements.get("projectOverview").hidden, false);
+  assert.match(ui.elements.get("overviewSummary").textContent, /기록 2건 · 확인할 작업 1건/);
+  assert.equal(ui.elements.get("newProjectTask").disabled, true);
+  assert.equal(ui.elements.get("openProjectBlocker").hidden, false);
+  assert.match(renderedText(ui.elements.get("overviewTasks")), /통과 후보의 근거를 확인/);
+  assert.equal(storage.get("bridge.project.view"), "C:/project");
+  await ui.elements.get("openProjectBlocker").listeners.click();
+  assert.equal(ui.elements.get("projectOverview").hidden, true);
+  assert.equal(ui.elements.get("runPanel").hidden, false);
+  assert.equal(ui.run("selected"), "active");
+});
+
+test("project action starts a new task in its folder after the previous run closes", async () => {
+  const done = { runId:"done", version:3, phase:"APPLIED", objective:"Initial app",
+    projectRef:{ targetRoot:"C:/project" } };
+  const state = stateFor(done, []);
+  state.runs = [{ runId:"done", phase:"APPLIED", objective:"Initial app", targetRoot:"C:/project" }];
+  const ui = await dashboard(state);
+  ui.run('selectProject("C:/project")');
+  assert.equal(ui.elements.get("newProjectTask").disabled, false);
+  state.workflow = { stage:"START", state:"START_IDLE" }; state.run = null;
+  state.commandCapabilities = ["preparation.start"];
+  await ui.elements.get("newProjectTask").listeners.click();
+  assert.equal(ui.elements.get("projectOverview").hidden, true);
+  assert.equal(ui.elements.get("startPanel").hidden, false);
+  assert.equal(ui.elements.get("startRoot").value, "C:/project");
+  assert.equal(ui.elements.get("objective").value, "");
+});
+
 test("a held reviewer question accepts a human answer with the exact run and question identities", async () => {
   const run = { runId:"run-question", version:4, phase:"HOLD", objective:"Implement greeting",
     terminationReason:"USER_DECISION_REQUIRED", candidate:{ candidateId:"candidate-1" },

@@ -7,6 +7,7 @@ let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readiness
 let decisionSignature = "";
 let agreement = null, preparation = null;
 let projectConversationRoot = null;
+let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
 let requestedView = "";
@@ -22,6 +23,36 @@ function folderName(targetRoot) {
 }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
+function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
+function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
+function renderProjectOverview(group, busyRun) {
+  text("overviewTitle", folderName(group.targetRoot));
+  text("overviewPath", group.targetRoot);
+  const tasks = group.runs;
+  const attention = tasks.filter((r) => ["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"].includes(r.phase));
+  text("overviewSummary", `기록 ${tasks.length}건 · 확인할 작업 ${attention.length}건`);
+  const list = $("overviewTasks"); list.replaceChildren();
+  for (const run of tasks) {
+    const card = node("article", "", "overview-task");
+    card.append(node("h3", run.objective), node("strong", labels[run.phase] ?? run.phase, `health ${runAppearance(run.phase)}`));
+    const guidance = run.phase === "HOLD" ? "감사 질문·판단 대기를 확인하세요."
+      : run.phase === "AWAITING_APPLY" ? "통과 후보의 근거를 확인하고 별도로 적용하세요."
+      : run.phase === "RECOVERY_REQUIRED" ? "진단과 외부 작업 상태를 확인하세요."
+      : terminal.has(run.phase) ? "완료된 기록을 확인할 수 있습니다." : "진행 상태와 기록을 확인하세요.";
+    card.append(node("p", guidance), node("p", `시작 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}`, "muted"));
+    const action = node("button", ["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"].includes(run.phase) ? "확인하고 조치하기" : "작업 기록 보기");
+    action.addEventListener("click", () => openRun(run.runId));
+    card.append(action); list.append(card);
+  }
+  if (!tasks.length) list.append(node("p", "아직 이 프로젝트의 실행 기록이 없습니다.", "muted"));
+  $("newProjectTask").disabled = !connected || $("newRun").disabled;
+  $("openProjectBlocker").hidden = !busyRun;
+  $("openProjectBlocker").disabled = !connected;
+  text("overviewReason", !connected ? "서버에 다시 연결한 뒤 작업을 선택하세요."
+    : busyRun ? `‘${busyRun.objective}’ 작업이 아직 종료되지 않았습니다. 현재 작업을 확인하세요.`
+    : $("newProjectTask").disabled ? "현재 준비 또는 요청이 끝난 뒤 새 작업을 시작할 수 있습니다."
+    : "새 작업은 별도 요구사항 승인과 감사·적용 절차를 거칩니다.");
+}
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   const element = $(id);
   element.disabled = Boolean(disabled);
@@ -320,18 +351,29 @@ function render() {
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   const list = $("runList"); list.replaceChildren();
-  for (const group of groupRunsByProject(snapshot?.runs ?? [])) {
+  const groups = groupRunsByProject(snapshot?.runs ?? []);
+  for (const record of snapshot?.projectConversations ?? []) {
+    if (record.targetRoot && !groups.some((item) => item.targetRoot === record.targetRoot)) groups.push({ targetRoot:record.targetRoot, runs:[] });
+  }
+  if (projectViewRoot && !groups.some((item) => item.targetRoot === projectViewRoot)) {
+    projectViewRoot = null; sessionStorage.setItem("bridge.project.view", "");
+  }
+  for (const group of groups) {
     const section = node("section", "", "project-history");
-    const heading = node("h3", group.targetRoot ? folderName(group.targetRoot) : "기타 작업");
-    if (group.targetRoot) heading.title = group.targetRoot;
+    const heading = group.targetRoot ? node("button", folderName(group.targetRoot), `project-open${projectViewRoot === group.targetRoot ? " active" : ""}`)
+      : node("h3", "기타 작업");
+    if (group.targetRoot) { heading.title = group.targetRoot; heading.addEventListener("click", () => selectProject(group.targetRoot)); }
     section.append(heading);
     for (const r of group.runs) {
       const button = node("button", r.objective, `run-item${workflow.stage !== "START" && r.runId === run?.runId ? " active" : ""}`);
       button.append(node("small", labels[r.phase] ?? r.phase, `health ${runAppearance(r.phase)}`));
-      button.addEventListener("click", () => { selected = r.runId; text("commandResult", ""); refresh(); }); section.append(button);
+      button.addEventListener("click", () => openRun(r.runId)); section.append(button);
     }
     list.append(section);
   }
+  const overviewGroup = projectViewRoot ? groups.find((item) => item.targetRoot === projectViewRoot) : null;
+  $("projectOverview").hidden = !overviewGroup;
+  $("workflow").hidden = Boolean(overviewGroup);
   const resultStage = workflow.stage === "RESULT";
   const userStep = workflow.stage === "START" ? "stepCollect"
     : workflow.stage === "PREPARE"
@@ -354,7 +396,7 @@ function render() {
   // decision is needed, so the step nav gets a small badge to make that state noticeable at a glance.
   $("stepWorkBadge").hidden = !(workflow.stage === "WORK" && workflow.state === "HOLD");
   text("runStageHeading", resultStage ? "결과" : "작업");
-  $("startPanel").hidden = workflow.stage !== "START";
+  $("startPanel").hidden = Boolean(overviewGroup) || workflow.stage !== "START";
   if (workflow.stage !== "START") projectConversationRoot = null;
   if (workflow.stage === "START") {
     const root = $("startRoot").value.trim();
@@ -376,8 +418,8 @@ function render() {
   }
   const preparing = workflow.stage === "PREPARE";
   renderInitialRequest();
-  $("projectPanel").hidden = !preparing;
-  $("runPanel").hidden = !["WORK", "RESULT"].includes(workflow.stage) || !run;
+  $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
+  $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
   const project = preflight?.project;
   const projectContainer = $("projectSummary"); projectContainer.replaceChildren();
   if (project) {
@@ -405,6 +447,7 @@ function render() {
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
     : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
+  if (overviewGroup) renderProjectOverview(overviewGroup, unfinished);
   if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
     && !preparation?.error && !checks?.extensionAuthenticated) {
     text("startReason", "입력은 가능합니다. 브릿지 확장이 인증되면 준비 대화를 시작할 수 있습니다. ChatGPT 탭은 자동으로 엽니다.");
@@ -866,7 +909,27 @@ $("chooseFolder").addEventListener("click", async () => {
   } catch (error) { text("folderStatus", error.message); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
-$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
+$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
+$("newProjectTask").addEventListener("click", async () => {
+  if ($("newProjectTask").disabled || !projectViewRoot) return;
+  const root = projectViewRoot;
+  selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start";
+  await refresh();
+  if (!connected || workflow.stage !== "START") {
+    selectProject(root);
+    text("overviewReason", "시작 화면을 열 수 없습니다. 진행 중인 작업 또는 준비 상태를 확인하세요.");
+    return;
+  }
+  $("startRoot").value = root;
+  $("objective").value = "";
+  $("conversationUrl").value = "";
+  render();
+  $("objective").focus();
+});
+$("openProjectBlocker").addEventListener("click", () => {
+  const pending = snapshot?.runs?.find((item) => !terminal.has(item.phase));
+  if (pending) openRun(pending.runId);
+});
 $("continueProject").addEventListener("click", async () => {
   if ($("continueProject").disabled) return;
   const root = snapshot?.run?.projectRef?.targetRoot;
@@ -883,7 +946,7 @@ $("cancelInitialPreparation").addEventListener("click", () => preparationMutatio
   "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/cancel"));
 $("showUnfinishedRun").addEventListener("click", () => {
   const unfinished = snapshot?.runs?.find((run) => !terminal.has(run.phase));
-  if (unfinished) { selected = unfinished.runId; refresh(); }
+  if (unfinished) openRun(unfinished.runId);
 });
 $("recoveryConfirm").addEventListener("input", render);
 $("reconcileRun").addEventListener("click", async () => {
