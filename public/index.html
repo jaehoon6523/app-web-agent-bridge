@@ -64,11 +64,11 @@
       </form>
     </section>
     <section id="startPanel"><h1>시작</h1>
-      <p class="muted">첫 부탁과 ChatGPT 대화 URL을 입력하세요. 웹의 완료 기준 제안을 대화로 조정하고 승인한 뒤 구현을 시작합니다.</p>
+      <p class="muted">첫 부탁과 프로젝트 폴더를 입력하세요. ChatGPT 대화는 자동으로 시작하며, 기존 대화를 사용하려면 URL을 입력하세요.</p>
       <form id="startForm"><label for="objective">이번에 맡길 작업</label><textarea id="objective" rows="4" required placeholder="예: 채팅 앱에서 메시지를 보낼 수 있게 해 줘."></textarea>
         <label for="startRoot">프로젝트 폴더</label><input id="startRoot" required placeholder="폴더를 선택하거나 경로를 입력하세요"><button id="chooseFolder" disabled type="button">파일 탐색기에서 폴더 선택</button><p id="folderStatus" class="muted" role="status"></p><p class="muted">웹과 합의를 마치고 승인하면 Git 저장소와 첫 커밋을 자동으로 준비합니다.</p>
-        <label for="conversationUrl">ChatGPT 대화 URL</label><input id="conversationUrl" type="url" required placeholder="https://chatgpt.com/c/… 또는 https://chatgpt.com/">
-        <p class="muted">수정 결과를 감사할 ChatGPT 대화의 주소입니다. 브릿지 확장이 연결된 브라우저에서 이 대화의 탭을 하나만 열어 주세요.</p>
+        <label for="conversationUrl">기존 ChatGPT 대화 URL (선택)</label><input id="conversationUrl" type="url" placeholder="비워 두면 새 대화를 엽니다">
+        <p class="muted">비워 두면 확장에서 ChatGPT 시작 탭을 찾아 사용하거나 새 탭을 엽니다. 기존 대화를 지정할 때는 해당 탭을 하나만 열어 주세요.</p>
         <label><input id="autoApprovePreparation" type="checkbox"> 첫 대화에서 확인 질문 없이 요구사항이 준비되면 자동 승인하고 구현 시작</label>
         <details hidden><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div><button id="editProject" type="button">프로젝트 설정</button></details>
         <button id="planRun" disabled type="submit" class="primary">준비 대화 시작</button>

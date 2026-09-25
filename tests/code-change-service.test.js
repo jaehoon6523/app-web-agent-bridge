@@ -36,7 +36,7 @@ test("VAL-04: malformed report is repaired without starting another worker",asyn
   const run=await f.run();assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),1);assert.equal(f.prompts[1].feedback.kind,"REPORT_REPAIR");
 });
 test("VAL-12: iteration and evidence limits retain unresolved work, never success",async(t)=>{
-  const f=setupAudit(t,{configure(p){p.policy.maxIterations=1;}});const run=await f.run();
+  const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED"],configure(p){p.policy.maxIterations=1;}});const run=await f.run();
   assert.equal(run.stage,"INCONCLUSIVE");assert.equal(run.terminationReason,"ITERATION_LIMIT");assert.equal(run.findings[0].status,"OPEN");
   assert.equal(f.service.snapshot(run.runId,{}).run.phase,"INCONCLUSIVE");
 });

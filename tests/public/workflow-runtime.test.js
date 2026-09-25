@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
+import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
 
-export async function dashboard(state, mutate = async () => ({})) {
+export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
   const source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const elements = new Map(), all = [], calls = [];
@@ -57,7 +57,9 @@ export async function dashboard(state, mutate = async () => ({})) {
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
   const context = vm.createContext({
-    groupRunsByProject, normalizeDashboardState, Date, Map, Set, JSON, URL, Blob, crypto: { randomUUID: () => "request-1" },
+    externalEventRecords, groupRunsByProject, normalizeDashboardState, Date, Map, Set, JSON, URL, Blob,
+    sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
+    crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
     document: {
       getElementById: (id) => elements.get(id),
@@ -175,6 +177,34 @@ test("approval is a single mutation carrying the canonical version", async () =>
   assert.deepEqual(ui.calls.filter((call) => call.url.startsWith("/api/preparations")), [
     { url: "/api/preparations/p1/approve", body: { requestId: "request-1" } },
   ]);
+});
+test("blank conversation URL starts at the ChatGPT root and keeps automatic approval intent", async () => {
+  const state = { workflow: { stage: "START", state: "START_IDLE" }, preparation: null,
+    run: null, runs: [], preflight: { checks: { extensionAuthenticated: true } },
+    commandCapabilities: ["preparation.start"] };
+  const ui = await dashboard(state);
+  ui.elements.get("objective").value = "Make a page";
+  ui.elements.get("startRoot").value = "C:/project";
+  ui.elements.get("autoApprovePreparation").checked = true;
+  await ui.run("beginPreparation()");
+  assert.deepEqual(ui.calls.find((call) => call.url === "/api/preparations").body, {
+    objective: "Make a page", targetRoot: "C:/project", conversationUrl: "https://chatgpt.com/",
+    autoApproveOnReady: true, requestId: "request-1",
+  });
+});
+test("automatic approval survives UI reload and does not resend after an attempt", async () => {
+  const state = prepared(), storage = new Map();
+  state.workflow.state = "AGREEMENT_READY";
+  state.preparation.lifecycle = "ACTIVE";
+  state.preparation.autoApproveOnReady = true;
+  state.preparation.agreement = { status: "READY", unresolvedQuestions: [], requirements: [] };
+  state.preparation.deliveries = [{}];
+  state.commandCapabilities = ["preparation.approve"];
+  const first = await dashboard(state, async () => ({}), storage);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(first.calls.filter((call) => call.url.endsWith("/approve")).length, 1);
+  const reloaded = await dashboard(state, async () => ({}), storage);
+  assert.equal(reloaded.calls.filter((call) => call.url.endsWith("/approve")).length, 0);
 });
 
 for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"],

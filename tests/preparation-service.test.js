@@ -154,15 +154,17 @@ test("ChatGPT start page bootstraps a newly created exact conversation", async (
   };
   const first = await f.service.execute("preparation.start", {
     requestId: "start-root", objective: "아무거나", targetRoot: f.root,
-    conversationUrl: "https://chatgpt.com/",
+    conversationUrl: "https://chatgpt.com/", autoApproveOnReady: true,
   });
   assert.equal(first.conversationUrl, "https://chatgpt.com/");
+  assert.equal(first.autoApproveOnReady, true);
   assert.equal(first.webSession.conversationUrl, null);
   await settled(f.service);
   assert.equal(rootFocus, true);
   assert.equal(f.service.current.state, "DISCUSSING");
   assert.equal(f.service.current.conversationUrl, "https://chatgpt.com/c/new-conversation");
   assert.equal(f.service.current.webSession.conversationId, "new-conversation");
+  assert.equal(f.service.current.autoApproveOnReady, true);
 });
 
 test("a new root preparation preserves a prior recovery-required delivery without inspecting or discarding it", async (t) => {

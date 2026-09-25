@@ -66,7 +66,7 @@ try {
  await page.fill('#objective','UI scenario task'); await page.fill('#startRoot',target);
  await page.fill('#conversationUrl','https://example.com/invalid'); await page.click('#planRun');
  assert.equal(fixture.mutations.length,0);
- await page.fill('#conversationUrl','https://chatgpt.com/'); await page.click('#planRun'); await visible('startProgress');
+ await page.fill('#conversationUrl',''); await page.click('#planRun'); await visible('startProgress');
  assert.equal(fixture.mutations[0].body.conversationUrl,'https://chatgpt.com/');
  assert.equal(Object.hasOwn(fixture.mutations[0].body,'expectedVersion'),false);
  assert.equal(typeof fixture.mutations[0].body.requestId,'string');

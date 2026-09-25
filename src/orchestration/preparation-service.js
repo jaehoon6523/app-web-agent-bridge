@@ -201,6 +201,7 @@ export class PreparationService {
       const context = {
         preparationId, version: 1, stage: "PREPARE", state: "INITIALIZING", lifecycle: "ACTIVE",
         objective: input.objective, targetRoot, conversationUrl,
+        autoApproveOnReady: input.autoApproveOnReady === true,
         webSession: { sessionId: "web_" + preparationId,
           conversationId: conversationUrl === "https://chatgpt.com/" ? null : conversationUrl.split("/").at(-1),
           conversationUrl: conversationUrl === "https://chatgpt.com/" ? null : conversationUrl,
