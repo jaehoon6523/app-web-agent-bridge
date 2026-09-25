@@ -87,6 +87,20 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
 
   const context = service.snapshot();
   const delivery = context.deliveries.at(-1);
+  const promptCommands = browser.commands.filter((entry) => entry.type === "agent.prompt");
+  const promptFrames = browser.frames.filter((entry) => entry.type === "web.prompt.result");
+  const promptResults = browser.contentResults.filter((entry) => entry.request.type === "agent.prompt");
+  assert.equal(promptCommands.length, 1, "one preparation may click send only once");
+  assert.equal(promptFrames.length, 1, "one completed delivery must produce one response frame");
+  assert.equal(promptResults.length, 1);
+  assert.equal(promptCommands[0].requestId, delivery.deliveryId);
+  assert.equal(promptResults[0].request.requestId, delivery.deliveryId);
+  assert.equal(promptFrames[0].requestId, delivery.deliveryId);
+  assert.equal(promptFrames[0].payload.session.sessionId, context.webSession.sessionId);
+  assert.equal(promptFrames[0].payload.session.runId, context.preparationId);
+  assert.equal(promptFrames[0].payload.trace.requestId, delivery.deliveryId);
+  assert.equal(await browser.page.locator("[data-message-author-role='user']").count(), 1,
+    "the provider fixture must contain exactly one submitted prompt");
   assert.equal(delivery.response.rawText, rawText);
   assert.equal(delivery.response.packet.type, "REQUIREMENTS_PROPOSAL");
   observed.add("ADAPTER");
@@ -104,6 +118,9 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   const restored = service.snapshot();
   assert.equal(restored.deliveries.at(-1).response.rawText, rawText);
   assert.deepEqual(restored.agreement, context.agreement);
+  assert.equal(restored.deliveries.at(-1).deliveryId, delivery.deliveryId);
+  assert.equal(browser.commands.filter((entry) => entry.type === "agent.prompt").length, 1,
+    "restoring the saved response must not resend the prompt");
   observed.add("PERSISTENCE");
 
   const projection = await service.project({
