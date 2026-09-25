@@ -89,7 +89,19 @@ test('fixture integration: real adapters, subprocess, Git capture and browser re
   const f = setupAudit(t, { createWorker: createFixtureCodexWorker, webSession: web.adapter,
     configure(project) { project.policy.turnTimeoutMs = 15_000; } });
   const run = await f.run();
-  assert.equal(run.stage, 'AWAITING_APPLY', run.error);
+  assert.equal(run.stage, 'AWAITING_APPLY', JSON.stringify({
+    error: run.error, terminationReason: run.terminationReason, iteration: run.iteration,
+    workerTurns: run.workerTurns?.map(turn => ({ turnId: turn.turnId, status: turn.status,
+      error: turn.metadata?.error ?? null })),
+    requests: run.requests?.map(request => ({ requestId: request.requestId,
+      status: request.status, phase: request.phase, role: request.role })),
+    events: run.events?.slice(-8).map(event => event.type),
+    browserCommands: web.commands.map(command => ({ type: command.type, requestId: command.requestId })),
+    browserFrames: web.frames.map(frame => ({ type: frame.type, requestId: frame.requestId,
+      code: frame.payload?.code ?? null })),
+    browserErrors: web.errors,
+    reviewed: reviewed.map(review => ({ candidateId: review.candidateId, verdict: review.verdict })),
+  }));
   assert.deepEqual(run.reviews.map(review => review.decision), ['REWORK', 'PASS']);
   assert.equal(run.workerTurns.length, 2);
   assert.notEqual(run.workerTurns[0].sessionId, run.workerTurns[1].sessionId);
