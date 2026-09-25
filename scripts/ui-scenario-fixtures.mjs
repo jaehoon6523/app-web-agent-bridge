@@ -21,7 +21,8 @@ export function createUiScenarioFixture(targetRoot) {
     const caps = preparation?.lifecycle === 'ACTIVE'
       ? ['preparation.cancel', ...(preparation.state === 'DISCUSSING' ? ['preparation.reply'] : []),
         ...(preparation.state === 'AGREEMENT_READY' ? ['preparation.approve', 'preparation.reply'] : [])]
-      : phase && !terminal ? phase === 'RECOVERY_REQUIRED' ? ['run.reconcile', 'run.abandon'] : ['run.stop']
+      : phase && !terminal ? phase === 'RECOVERY_REQUIRED' ? ['run.reconcile', 'run.abandon']
+        : phase === 'HOLD' ? ['code.review.retry', 'run.stop'] : ['run.stop']
         : ['preparation.start', ...(phase === 'AWAITING_APPLY' && !old ? ['code.apply', 'evidence.get', 'run.stop'] : [])];
     return { workflow, preparation, run: selected, runs: phase ? [{ runId: 'old', phase: 'CANCELLED', objective: 'Previous task' }, run()] : [],
       preflight: { checks: { codeWorkerExecutableConfigured: true, extensionAuthenticated: true } },
@@ -31,6 +32,7 @@ export function createUiScenarioFixture(targetRoot) {
   }
   return {
     mutations,
+    get version() { return version; },
     set offline(value) { offline = value; },
     set phase(value) { phase = value; version++; },
     discuss() {
@@ -70,6 +72,7 @@ export function createUiScenarioFixture(targetRoot) {
             observations: [{ source: 'controller', stage: phase }], allowedActions: ['run.abandon'], readOnly: true } } }); return;
         }
         if (['run.stop', 'run.abandon'].includes(body.type)) phase = 'CANCELLED';
+        else if (body.type === 'code.review.retry') phase = 'REVIEW_RUNNING';
         else if (body.type === 'code.apply') phase = 'APPLIED';
         else if (body.type === 'evidence.get') {
           await route.fulfill({ json: { payload: { kind: 'PATCH', content: 'Verified UI fixture evidence',

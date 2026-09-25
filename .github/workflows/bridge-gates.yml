@@ -1,0 +1,32 @@
+name: Bridge gates
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - run: npm run test:integration
+      - run: npm run test:ui
+      - run: npm run test:browser
+      - run: npm run test:sabotage
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-failure
+          path: .agent-controller/ui-qa/
+          if-no-files-found: ignore

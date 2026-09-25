@@ -116,6 +116,12 @@ try {
  await page.check('#recoveryConfirm');
  await screenshot('08-recovery'); await page.click('#abandonRun'); await enabled('newRun');
  assert.equal(fixture.mutations.at(-1).body.type,'run.abandon');
+ fixture.phase='HOLD'; await page.reload(); await visible('runPanel'); await enabled('retryRun');
+ await page.click('#retryRun');
+ await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='웹 감사 중');
+ assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
+ assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
+ assert.equal(fixture.mutations.at(-1).body.payload.expectedVersion,fixture.version-1);
  fixture.phase='AWAITING_APPLY'; await page.reload(); await stage('stepResult');
  await page.locator('#evidenceList .links button').click(); await visible('evidenceDialog');
  assert.equal(await page.locator('#evidenceContent').textContent(),'Verified UI fixture evidence');
@@ -124,6 +130,14 @@ try {
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='적용됨');
  assert.equal(fixture.mutations.at(-1).body.payload.candidateId,'candidate-qa');
  assert.equal(fixture.mutations.at(-1).body.payload.reviewId,'review-qa');
+ const commands=fixture.mutations.filter(({pathname})=>pathname==='/api/commands').map(({body})=>body);
+ assert.deepEqual(commands.map(({type})=>type),[
+   'run.stop','run.reconcile','run.abandon','code.review.retry','evidence.get','code.apply']);
+ assert.equal(commands.every(({payload})=>payload.runId==='active'&&Number.isSafeInteger(payload.expectedVersion)),true);
+ assert.equal(commands[1].payload.expectedVersion,commands[2].payload.expectedVersion,
+   'read-only reconcile must not change run version');
+ assert.equal(new Set(commands.map(({requestId})=>requestId)).size,commands.length,
+   'commands must each have a unique request identity');
  await screenshot('10-applied');
  await page.setViewportSize({width:390,height:844}); await page.click('#newRun'); await visible('startPanel');
  await page.click('#engineHealth'); const mobile=await page.locator('#engineHealthDetail').boundingBox();

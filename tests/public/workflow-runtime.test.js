@@ -259,3 +259,100 @@ test("recovery diagnosis uses run identity, shows observations, and cannot bypas
   ui.elements.get("recoveryConfirm").listeners.input();
   assert.equal(ui.elements.get("abandonRun").disabled, false);
 });
+
+function stateFor(run, capabilities) {
+  return { workflow: workflowForRun(run), run, runs: [run], preparation: null,
+    preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: capabilities,
+    events: [], messages: [], assessments: [], findings: [], evidence: [] };
+}
+
+test("audit hold → retry → pass → apply: commands use one run and the reviewed candidate", async () => {
+  const run = { runId: "run-trace", version: 4, phase: "HOLD", objective: "Greeting",
+    candidate: { candidateId: "candidate-1" }, capture: { artifact: { sha256: "patch-1" } },
+    reviews: [{ reviewId: "review-1" }], baseCommit: "base-1" };
+  const state = stateFor(run, ["code.review.retry"]);
+  const effects = [];
+  const ui = await dashboard(state, async (url, options) => {
+    assert.equal(url, "/api/commands");
+    const { type, payload, requestId } = JSON.parse(options.body);
+    assert.equal(payload.runId, run.runId);
+    assert.equal(payload.expectedVersion, run.version);
+    assert.equal(typeof requestId, "string");
+    effects.push(type);
+    if (type === "code.review.retry") {
+      assert.equal(run.phase, "HOLD");
+      run.phase = "REVIEW_RUNNING"; run.version++;
+      state.workflow = workflowForRun(run); state.commandCapabilities = ["run.stop"];
+      return { payload: { status: "REVIEW_RETRY_ACCEPTED", candidateId: run.candidate.candidateId } };
+    }
+    if (type === "code.apply") {
+      assert.equal(run.phase, "AWAITING_APPLY");
+      assert.deepEqual(payload, { runId: run.runId, expectedVersion: run.version,
+        candidateId: "candidate-1", reviewId: "review-2", artifactHash: "patch-1", baseCommit: "base-1" });
+      run.phase = "APPLIED"; run.version++;
+      state.workflow = workflowForRun(run); state.commandCapabilities = [];
+      return { payload: { stage: "APPLIED" } };
+    }
+    throw new Error(`Unexpected command ${type}`);
+  });
+  assert.equal(ui.elements.get("retryRun").disabled, false);
+  await ui.elements.get("retryRun").listeners.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(run.phase, "REVIEW_RUNNING");
+  assert.equal(ui.elements.get("applyCode").disabled, true);
+  assert.deepEqual(effects, ["code.review.retry"]);
+
+  // The audit outcome is supplied by the controller snapshot, not inferred from a button click.
+  run.phase = "AWAITING_APPLY"; run.version++; run.reviews.push({ reviewId: "review-2" });
+  state.workflow = workflowForRun(run); state.commandCapabilities = ["code.apply"];
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("applyCode").disabled, false, JSON.stringify({ calls: ui.calls, workflow: ui.run("workflow"), connected: ui.run("connected"), cap: ui.run("[...capabilities()]") }));
+  await ui.elements.get("applyCode").listeners.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ui.elements.get("runStatus").textContent, "적용됨");
+  assert.deepEqual(effects, ["code.review.retry", "code.apply"]);
+  assert.equal(ui.elements.get("applyCode").disabled, true);
+});
+
+test("recovery diagnosis cannot authorize discard and disconnected state sends no command", async () => {
+  const run = { runId: "run-recovery", version: 2, phase: "RECOVERY_REQUIRED", objective: "Greeting" };
+  const state = stateFor(run, ["run.reconcile", "run.abandon"]);
+  let calls = 0;
+  const ui = await dashboard(state, async (url, options) => {
+    assert.equal(url, "/api/commands"); calls++;
+    const body = JSON.parse(options.body);
+    assert.equal(body.type, "run.reconcile");
+    assert.equal(body.payload.expectedVersion, 2);
+    return { payload: { runId: run.runId, classification: "RECOVERY_REQUIRED",
+      observations: [{ source: "controller", localJob: false }], allowedActions: ["run.abandon"], readOnly: true } };
+  });
+  await ui.elements.get("reconcileRun").listeners.click();
+  assert.equal(calls, 1);
+  assert.equal(ui.elements.get("abandonRun").disabled, true);
+  state.commandCapabilities = [];
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("reconcileRun").disabled, true);
+  await ui.elements.get("reconcileRun").listeners.click();
+  assert.equal(calls, 1);
+  assert.equal(ui.elements.get("abandonRun").disabled, true);
+  state.commandCapabilities = ["run.reconcile", "run.abandon"];
+  ui.run("connected = false; render()");
+  assert.equal(ui.elements.get("reconcileRun").disabled, true);
+  await ui.elements.get("reconcileRun").listeners.click();
+  assert.equal(calls, 1);
+});
+
+test("uncertain audit retry is not sent twice without a settled receipt", async () => {
+  const run = { runId: "run-timeout", version: 3, phase: "HOLD", objective: "Greeting" };
+  const state = stateFor(run, ["code.review.retry"]);
+  const ui = await dashboard(state, async () => {
+    throw Object.assign(new Error("request timed out"), { name: "TimeoutError" });
+  });
+  await ui.elements.get("retryRun").listeners.click();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ui.elements.get("retryRun").disabled, true);
+  await ui.elements.get("retryRun").listeners.click();
+  assert.equal(ui.calls.filter(({ url }) => url === "/api/commands").length, 1);
+  assert.ok(ui.calls.some(({ url }) => url === "/api/state?requestId=request-1"), JSON.stringify({ calls: ui.calls, connected: ui.run("connected"), state: ui.run("operations.runCommand") }));
+  assert.match(ui.elements.get("commandResult").textContent, /자동 재전송하지 않습니다/);
+});
