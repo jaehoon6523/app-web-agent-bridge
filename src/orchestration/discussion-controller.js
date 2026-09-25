@@ -220,6 +220,17 @@ export class DiscussionController {
     });
   }
 
+  #completeResponseDelivery(delivery, session, turnId, updatedAt) {
+    this.#store.transitionDelivery({
+      deliveryId: delivery.deliveryId,
+      expectedState: delivery.state,
+      expectedVersion: delivery.version,
+      nextState: DeliveryState.RESPONSE_COMPLETED,
+      updatedAt,
+    });
+    return markDiscussionSessionWaiting(this.#store, session, turnId, updatedAt);
+  }
+
   start({ runId, expectedVersion }) {
     requireNonEmptyString(runId, "runId");
     requirePositiveInteger(expectedVersion, "expectedVersion");
@@ -523,14 +534,7 @@ export class DiscussionController {
         })
         : decision.rejectionEvent;
 
-      this.#store.transitionDelivery({
-        deliveryId,
-        expectedState: delivery.state,
-        expectedVersion: delivery.version,
-        nextState: DeliveryState.RESPONSE_COMPLETED,
-        updatedAt: at,
-      });
-      const waitingSession = markDiscussionSessionWaiting(this.#store, session, turnId, at);
+      const waitingSession = this.#completeResponseDelivery(delivery, session, turnId, at);
       let updatedCounters = this.#store.recordConsecutiveActorFailure({
         runId,
         expectedCounterVersion: counters.counterVersion,
@@ -859,14 +863,7 @@ export class DiscussionController {
         outcome,
         disposition,
       });
-      this.#store.transitionDelivery({
-        deliveryId,
-        expectedState: delivery.state,
-        expectedVersion: delivery.version,
-        nextState: DeliveryState.RESPONSE_COMPLETED,
-        updatedAt: at,
-      });
-      const waitingSession = markDiscussionSessionWaiting(this.#store, session, turnId, at);
+      const waitingSession = this.#completeResponseDelivery(delivery, session, turnId, at);
       this.#store.saveAgentMessage({ inputId: turnInput.inputId, message: plan.message });
       this.#store.saveAgentPacket({
         packetId,
