@@ -50,6 +50,7 @@ test("REPORT_REPAIR keeps the exact candidate and diff while supplying the previ
 
 test("maxIterations still bounds the real Worker/review loop", async (t) => {
   const f = setupAudit(t, {
+    reviewVerdicts: ["UNSATISFIED"],
     configure(project) {
       project.policy.maxIterations = 1;
     },

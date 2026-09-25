@@ -62,7 +62,7 @@ test("verification cannot collect a pre-existing worktree result; new output has
   assert.equal(fs.readFileSync(path.join(root,"result.txt"),"utf8"),"OLD PASS");
 });
 test("recovery abandonment requires operator confirmation, survives restart and unblocks a new run", async(t) => {
-  const f=setupAudit(t,{resume(){throw new Error("Disconnected");}});let run=await f.run();
+  const f=setupAudit(t,{resume(){throw new Error("Disconnected");},review(){throw new Error("Disconnected run must not reach audit.");}});let run=await f.run();
   assert.equal(run.stage,"RECOVERY_REQUIRED");
   await assert.rejects(f.service.command("run.abandon",{runId:run.runId,expectedVersion:run.version,reason:"Checked"}),/confirm/i);
   const command={type:"run.abandon",requestId:"abandon-1",payload:{runId:run.runId,expectedVersion:run.version,externalTerminationConfirmed:true,targetInspected:true,reason:"CLI stopped and remote generation stopped; target inspected"}};
@@ -91,7 +91,7 @@ test("optional improvement suggestions do not become blocking violations",()=>{
   const result=evaluateCodeReview(r,c);assert.equal(result.decision,"PASS");assert.equal(result.findings.length,0);
 });
 test("recovery abandonment preserves dirty target and rejects stale or active commands",async(t)=>{
-  const f=setupAudit(t,{resume(){throw new Error("Disconnected");}}),run=await f.run();
+  const f=setupAudit(t,{resume(){throw new Error("Disconnected");},review(){throw new Error("Disconnected run must not reach audit.");}}),run=await f.run();
   const payload={runId:run.runId,expectedVersion:run.version,externalTerminationConfirmed:true,targetInspected:true,reason:"External work stopped; local changes retained"};
   await assert.rejects(f.service.command("run.abandon",{...payload,expectedVersion:run.version-1}),/changed/);
   f.service.jobs.set(run.runId,Promise.resolve());

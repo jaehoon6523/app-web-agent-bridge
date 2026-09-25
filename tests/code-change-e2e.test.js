@@ -10,7 +10,7 @@ test("VAL-06/08: actual verification collects failure/output and invalidates mut
   assert.match(f.service.artifactStore.read(e.contentRef.sha256).toString(),/actual-output/);assert.equal(e.valid,true);
 });
 test("validation that changes candidate is never attributed to the original candidate",async(t)=>{
-  const f=setupAudit(t,{configure(p){p.verifications=[{verificationId:"mutate",executable:process.execPath,args:["-e","require('fs').writeFileSync('file.txt','weakened')"],cwd:".",timeoutMs:5000,purpose:"Mutation boundary",environmentId:"local-node",resultFiles:[]}];}});
+  const f=setupAudit(t,{configure(p){p.verifications=[{verificationId:"mutate",executable:process.execPath,args:["-e","require('fs').writeFileSync('file.txt','weakened')"],cwd:".",timeoutMs:5000,purpose:"Mutation boundary",environmentId:"local-node",resultFiles:[]}];},review(){throw new Error("Mutated verification must not reach audit.");}});
   const run=await f.run();assert.equal(run.stage,"RECOVERY_REQUIRED",run.error);assert.equal(f.reviews(),0);assert.equal(run.evidence.find((e)=>e.kind==="EXECUTION").valid,false);
 });
 test("VAL-15: stop racing a late reviewer blocks approval and additional workers",async(t)=>{
@@ -29,7 +29,7 @@ test("start returns the accepted ID while Worker execution is still pending",asy
   let release,entered;
   const reached=new Promise((r)=>{entered=r;});
   const wait=new Promise((r)=>{release=r;});
-  const f=setupAudit(t,{async worker(){entered();await wait;}});
+  const f=setupAudit(t,{reviewVerdicts:["UNDETERMINED"],async worker(){entered();await wait;}});
   const started=await f.start();
   assert.ok(started.runId);assert.ok(f.service.get(started.runId));
   await reached;

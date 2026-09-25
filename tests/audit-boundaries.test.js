@@ -60,6 +60,7 @@ test("total deadline stops pending worker creation without dispatching an implem
   const f=setupAudit(t,{
     configure(p){p.policy.totalTimeoutMs=200;},
     createWorker(){return new Promise(()=>{});},
+    review(){throw new Error("The timed-out Worker must not reach audit.");},
   });
   const run=await f.run();assert.equal(run.stage,"RECOVERY_REQUIRED");assert.equal(run.terminationReason,"TOTAL_TIME_LIMIT");assert.equal(f.starts(),0);
 });

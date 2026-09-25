@@ -21,6 +21,17 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run test:integration
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
       - run: npm run test:ui
       - run: npm run test:browser
       - run: npm run test:sabotage
