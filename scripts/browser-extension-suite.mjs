@@ -78,10 +78,12 @@ test('browser fixture: stale document cannot click send', { timeout: 15_000 }, a
 test('fixture integration: real adapters, subprocess, Git capture and browser review drive REWORK then PASS', { timeout: 60_000 }, async t => {
   const reviewed = [];
   const web = await extensionBrowser(t, { initialUrl: 'https://chatgpt.com/c/test', reply(text) {
-    const firstBreak = text.indexOf('\n');
-    const secondBreak = text.indexOf('\n', firstBreak + 1);
-    assert.ok(firstBreak >= 0 && secondBreak > firstBreak, 'Prompt must contain its JSON data line');
-    const data = JSON.parse(text.slice(firstBreak + 1, secondBreak));
+    // The extension prepends controller/run markers before the prompt's
+    // instruction line. The JSON context occupies one line after those markers.
+    const jsonStart = text.indexOf('\n{') + 1;
+    const jsonEnd = text.indexOf('\n', jsonStart);
+    assert.ok(jsonStart > 0 && jsonEnd > jsonStart, 'Prompt must contain its JSON data line');
+    const data = JSON.parse(text.slice(jsonStart, jsonEnd));
     let response;
     if (data.plan && data.planHash) {
       response = { type: 'PLAN_RESPONSE', runId: data.runId, candidateId: data.candidateId,
