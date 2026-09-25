@@ -109,7 +109,11 @@ try {
  assert.equal(fixture.mutations.at(-1).body.type,'run.stop');
  fixture.phase='RECOVERY_REQUIRED'; await page.reload(); await visible('recoveryPanel');
  assert.equal(await page.locator('#abandonRun').isDisabled(),true);
- await page.check('#recoveryExternal'); await page.check('#recoveryTarget'); await page.fill('#recoveryReason','Confirmed fixture termination.');
+ await page.click('#reconcileRun');
+ await page.waitForFunction(()=>document.getElementById('reconcileResult').textContent.includes('RECOVERY_REQUIRED'));
+ assert.equal(fixture.mutations.at(-1).body.type,'run.reconcile');
+ assert.equal(await page.locator('#abandonRun').isDisabled(),true);
+ await page.check('#recoveryConfirm');
  await screenshot('08-recovery'); await page.click('#abandonRun'); await enabled('newRun');
  assert.equal(fixture.mutations.at(-1).body.type,'run.abandon');
  fixture.phase='AWAITING_APPLY'; await page.reload(); await stage('stepResult');

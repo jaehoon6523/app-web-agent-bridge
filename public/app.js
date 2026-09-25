@@ -391,8 +391,10 @@ function render() {
   if (recoveryRunId !== run?.runId) {
     recoveryRunId = run?.runId;
     $("recoveryConfirm").checked = false;
+    text("reconcileResult", "");
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
+  $("reconcileRun").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("run.reconcile");
   $("retryRun").textContent = "수동 진행";
   if (run?.phase === "RECOVERY_REQUIRED") {
     const recoveryConfirmed = $("recoveryConfirm").checked;
@@ -836,6 +838,16 @@ $("showUnfinishedRun").addEventListener("click", () => {
   if (unfinished) { selected = unfinished.runId; refresh(); }
 });
 $("recoveryConfirm").addEventListener("input", render);
+$("reconcileRun").addEventListener("click", async () => {
+  if ($("reconcileRun").disabled) return;
+  const target = snapshot?.run?.runId;
+  text("reconcileResult", "현재 상태를 확인 중입니다.");
+  const result = await command("run.reconcile");
+  if (snapshot?.run?.runId !== target) return;
+  text("reconcileResult", result
+    ? `진단: ${result.classification ?? "미확인"}\n관찰: ${JSON.stringify(result.observations ?? [], null, 2)}\n가능한 조치: ${(result.allowedActions ?? []).join(", ") || "없음"}\n이 진단은 외부 작업 종료를 확인하지 않습니다.`
+    : "진단에 실패했습니다. 위 명령 결과와 연결 상태를 확인하세요.");
+});
 $("retryRun").addEventListener("click", () => {
   const caps = capabilities();
   if (caps.has("code.review.retry")) command("code.review.retry");

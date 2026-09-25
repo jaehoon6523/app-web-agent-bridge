@@ -237,3 +237,25 @@ test("the UI rejects RESULT for recoverable work states", () => {
     /workflow.state is invalid/);
   }
 });
+test("recovery diagnosis uses run identity, shows observations, and cannot bypass discard confirmation", async () => {
+  const run = { runId: "r1", version: 7, phase: "RECOVERY_REQUIRED", objective: "작업" };
+  const state = { workflow: workflowForRun(run), run, runs: [run], preparation: null,
+    preflight: {}, commandCapabilities: ["run.reconcile", "run.abandon"] };
+  const ui = await dashboard(state, async () => ({ payload: {
+    runId: "r1", classification: "RECOVERY_REQUIRED", observations: [{ source: "controller", stage: "RECOVERY_REQUIRED" }],
+    allowedActions: ["run.abandon"], readOnly: true,
+  } }));
+  assert.equal(ui.elements.get("reconcileRun").disabled, false);
+  assert.equal(ui.elements.get("abandonRun").disabled, true);
+  await ui.elements.get("reconcileRun").listeners.click();
+  assert.deepEqual(ui.calls.filter((call) => call.url === "/api/commands"), [{
+    url: "/api/commands", body: { type: "run.reconcile", requestId: "request-1",
+      payload: { runId: "r1", expectedVersion: 7 } },
+  }]);
+  assert.match(ui.elements.get("reconcileResult").textContent, /RECOVERY_REQUIRED/);
+  assert.match(ui.elements.get("reconcileResult").textContent, /controller/);
+  assert.equal(ui.elements.get("abandonRun").disabled, true);
+  ui.elements.get("recoveryConfirm").checked = true;
+  ui.elements.get("recoveryConfirm").listeners.input();
+  assert.equal(ui.elements.get("abandonRun").disabled, false);
+});
