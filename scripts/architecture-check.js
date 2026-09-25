@@ -71,7 +71,11 @@ const htmlScripts = (directory, filename) => [...fs.readFileSync(path.join(direc
   .map(([, source]) => path.join(directory, source));
 const packageScripts = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).scripts;
 const operationalCommands = Object.entries(packageScripts)
+  .filter(([name]) => ["start", "dev", "demo", "demo:win", "doctor", "certify", "projection:rebuild"].includes(name))
   .flatMap(([, command]) => [...command.matchAll(/\b(?:src|scripts)\/[\w./-]+\.(?:mjs|js)\b/gu)]
+    .map(([filename]) => path.join(root, filename)));
+const npmCommandScripts = Object.values(packageScripts)
+  .flatMap((command) => [...command.matchAll(/\b(?:src|scripts)\/[\w./-]+\.(?:mjs|js)\b/gu)]
     .map(([filename]) => path.join(root, filename)));
 const entryPoints = new Set([
   ...htmlScripts(path.join(root, "public"), "index.html"),
@@ -95,8 +99,17 @@ for (const productionRoot of productionRoots) {
     }
   }
 }
+// Test and maintenance commands may own scripts, but must not make a production
+// module reachable merely because they import it.
+const scriptReachable = new Set([...npmCommandScripts, path.join(root, "scripts", "architecture-audit.mjs")]);
+const scriptPending = [...scriptReachable];
+while (scriptPending.length > 0) {
+  for (const imported of imports.get(scriptPending.pop()) ?? []) {
+    if (!scriptReachable.has(imported)) { scriptReachable.add(imported); scriptPending.push(imported); }
+  }
+}
 for (const filename of walk(path.join(root, "scripts"))) {
-  if (!reachable.has(filename)) {
+  if (!scriptReachable.has(filename)) {
     failures.push(`${path.relative(root, filename)}: no npm command or runtime script imports this script`);
   }
 }
