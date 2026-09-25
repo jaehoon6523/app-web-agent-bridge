@@ -20,9 +20,9 @@ function legacyDatabase(t, withRelayData = false) {
     CREATE TABLE run_limits (run_id TEXT PRIMARY KEY);
     CREATE TABLE agent_sessions (session_id TEXT PRIMARY KEY);
     CREATE TABLE relay_messages (message_id TEXT PRIMARY KEY);
-    CREATE TABLE delivery_attempts (delivery_id TEXT PRIMARY KEY);
+    CREATE TABLE delivery_attempts (delivery_id TEXT PRIMARY KEY, run_id TEXT, input_id TEXT);
     CREATE TABLE agent_packets (packet_id TEXT PRIMARY KEY);
-    CREATE TABLE domain_events (event_id TEXT PRIMARY KEY);
+    CREATE TABLE domain_events (event_id TEXT PRIMARY KEY, run_id TEXT, event_type TEXT, payload_json TEXT);
     CREATE TABLE approvals (approval_id TEXT PRIMARY KEY);
     CREATE TABLE run_projections (run_id TEXT PRIMARY KEY);
     CREATE TABLE recovery_operations (operation_id TEXT PRIMARY KEY);
@@ -44,10 +44,10 @@ function version3Database(t) {
     CREATE TABLE run_limits (run_id TEXT PRIMARY KEY);
     CREATE TABLE agent_sessions (session_id TEXT PRIMARY KEY);
     CREATE TABLE agent_turn_inputs (input_id TEXT PRIMARY KEY);
-    CREATE TABLE agent_messages (message_id TEXT PRIMARY KEY);
-    CREATE TABLE delivery_attempts (delivery_id TEXT PRIMARY KEY);
+    CREATE TABLE agent_messages (message_id TEXT PRIMARY KEY, input_id TEXT);
+    CREATE TABLE delivery_attempts (delivery_id TEXT PRIMARY KEY, run_id TEXT, input_id TEXT);
     CREATE TABLE agent_packets (packet_id TEXT PRIMARY KEY);
-    CREATE TABLE domain_events (event_id TEXT PRIMARY KEY);
+    CREATE TABLE domain_events (event_id TEXT PRIMARY KEY, run_id TEXT, event_type TEXT, payload_json TEXT);
     CREATE TABLE approvals (approval_id TEXT PRIMARY KEY);
     CREATE TABLE run_projections (run_id TEXT PRIMARY KEY);
     CREATE TABLE recovery_operations (operation_id TEXT PRIMARY KEY);
@@ -66,11 +66,11 @@ function version4Database(t) {
     CREATE TABLE run_limits (run_id TEXT PRIMARY KEY);
     CREATE TABLE agent_sessions (session_id TEXT PRIMARY KEY);
     CREATE TABLE agent_turn_inputs (input_id TEXT PRIMARY KEY);
-    CREATE TABLE agent_messages (message_id TEXT PRIMARY KEY);
-    CREATE TABLE delivery_attempts (delivery_id TEXT PRIMARY KEY);
+    CREATE TABLE agent_messages (message_id TEXT PRIMARY KEY, input_id TEXT);
+    CREATE TABLE delivery_attempts (delivery_id TEXT PRIMARY KEY, run_id TEXT, input_id TEXT);
     CREATE TABLE agent_packets (packet_id TEXT PRIMARY KEY);
     CREATE TABLE proposal_artifacts (proposal_id TEXT PRIMARY KEY);
-    CREATE TABLE domain_events (event_id TEXT PRIMARY KEY);
+    CREATE TABLE domain_events (event_id TEXT PRIMARY KEY, run_id TEXT, event_type TEXT, payload_json TEXT);
     CREATE TABLE approvals (approval_id TEXT PRIMARY KEY);
     CREATE TABLE run_projections (run_id TEXT PRIMARY KEY);
     CREATE TABLE recovery_operations (operation_id TEXT PRIMARY KEY);
@@ -79,10 +79,10 @@ function version4Database(t) {
   return database;
 }
 
-test("empty schema v2 migrates through AgentTurnInput, proposal, and outcome schema v5", (t) => {
+test("empty schema v2 migrates through AgentTurnInput, proposal, and outcome schema v6", (t) => {
   const database = legacyDatabase(t);
-  assert.equal(initializeSqliteSchema(database), 5);
-  assert.equal(readSqliteSchemaVersion(database), 5);
+  assert.equal(initializeSqliteSchema(database), 6);
+  assert.equal(readSqliteSchemaVersion(database), 6);
   const tables = new Set(database.prepare(`
     SELECT name FROM sqlite_schema WHERE type = 'table'
   `).all().map((row) => row.name));
@@ -97,8 +97,8 @@ test("empty schema v2 migrates through AgentTurnInput, proposal, and outcome sch
 
 test("schema v3 deterministically adds proposal_artifacts and run_outcomes", (t) => {
   const database = version3Database(t);
-  assert.equal(initializeSqliteSchema(database), 5);
-  assert.equal(readSqliteSchemaVersion(database), 5);
+  assert.equal(initializeSqliteSchema(database), 6);
+  assert.equal(readSqliteSchemaVersion(database), 6);
 
   const table = database.prepare(`
     SELECT sql FROM sqlite_schema
@@ -119,11 +119,11 @@ test("schema v3 deterministically adds proposal_artifacts and run_outcomes", (t)
     "run_outcomes",
   );
 
-  assert.equal(initializeSqliteSchema(database), 5);
+  assert.equal(initializeSqliteSchema(database), 6);
   database.close();
 });
 
-test("incomplete schema v3 migration rolls back without claiming v5", (t) => {
+test("incomplete schema v3 migration rolls back without claiming v6", (t) => {
   const database = version3Database(t);
   database.exec("DROP TABLE recovery_operations");
   assert.throws(
@@ -144,15 +144,15 @@ test("incomplete schema v3 migration rolls back without claiming v5", (t) => {
   database.close();
 });
 
-test("schema v4 adds the exact run_outcomes columns and advances to v5", (t) => {
+test("schema v4 adds the exact run_outcomes columns and advances to v6", (t) => {
   const database = version4Database(t);
-  assert.equal(initializeSqliteSchema(database), 5);
-  assert.equal(readSqliteSchemaVersion(database), 5);
+  assert.equal(initializeSqliteSchema(database), 6);
+  assert.equal(readSqliteSchemaVersion(database), 6);
   assert.deepEqual(
     database.prepare("PRAGMA table_info(run_outcomes)").all().map((row) => row.name),
     ["run_id", "outcome_type", "outcome_hash", "outcome_json", "created_at"],
   );
-  assert.equal(initializeSqliteSchema(database), 5);
+  assert.equal(initializeSqliteSchema(database), 6);
   database.close();
 });
 
@@ -192,5 +192,117 @@ test("schema v2 relay data fails closed without changing its version or rows", (
     SELECT name FROM sqlite_schema WHERE type = 'table'
   `).all().map((row) => row.name));
   assert.equal(tables.has("agent_turn_inputs"), false);
+  database.close();
+});
+
+function terminalFixtureDatabase(t) {
+  const directory = mkdtempSync(join(tmpdir(), "agent-bridge-terminal-"));
+  t.after(() => rmSync(directory, { recursive:true, force:true }));
+  const database = new DatabaseSync(join(directory, "controller.sqlite"));
+  initializeSqliteSchema(database);
+  // Direct SQL writes simulate an independent writer; trigger enforcement must
+  // hold even when application checks and foreign keys are bypassed.
+  database.exec("PRAGMA foreign_keys = OFF");
+  database.prepare(`
+    INSERT INTO delivery_attempts
+      (delivery_id, run_id, input_id, idempotency_key, state, created_at, updated_at)
+    VALUES ('delivery-1', 'run-1', 'input-1', 'idempotency-1', 'RESPONSE_COMPLETED', 't0', 't0')
+  `).run();
+  return database;
+}
+
+function insertTerminalMessage(database) {
+  database.prepare(`
+    INSERT INTO agent_messages
+      (message_id, run_id, input_id, sequence, actor, session_id, turn_id,
+       kind, content_hash, message_json, created_at)
+    VALUES ('message-1', 'run-1', 'input-1', 1, 'CODEX_AGENT', 'session-1',
+      'turn-1', 'PROPOSAL', 'hash-1', '{}', 't0')
+  `).run();
+}
+
+function insertTerminalRejection(database) {
+  database.prepare(`
+    INSERT INTO domain_events
+      (run_id, sequence, event_id, event_type, payload_json, event_hash, created_at)
+    VALUES ('run-1', 1, 'event-1', 'AGENT_PACKET_REJECTED',
+      '{"details":{"deliveryId":"delivery-1"}}', 'hash-1', 't0')
+  `).run();
+}
+
+test("schema v6 rejects a message and a rejection for one delivery in either insert order", (t) => {
+  const database = terminalFixtureDatabase(t);
+  insertTerminalMessage(database);
+  assert.throws(() => insertTerminalRejection(database), /terminal response already recorded/u);
+  database.prepare("DELETE FROM agent_messages WHERE message_id = 'message-1'").run();
+  insertTerminalRejection(database);
+  assert.throws(() => insertTerminalMessage(database), /terminal response already rejected/u);
+  assert.equal(database.prepare("SELECT COUNT(*) AS n FROM agent_messages").get().n, 0);
+  database.close();
+});
+
+test("schema v6 also rejects changing an existing record into a conflicting terminal outcome", (t) => {
+  const database = terminalFixtureDatabase(t);
+  insertTerminalMessage(database);
+  database.prepare(`
+    INSERT INTO domain_events
+      (run_id, sequence, event_id, event_type, payload_json, event_hash, created_at)
+    VALUES ('run-1', 1, 'event-1', 'AGENT_PACKET_REJECTED',
+      '{"details":{"deliveryId":"delivery-other"}}', 'hash-1', 't0')
+  `).run();
+  assert.throws(() => database.prepare(`
+    UPDATE domain_events SET payload_json = '{"details":{"deliveryId":"delivery-1"}}'
+    WHERE event_id = 'event-1'
+  `).run(), /terminal response already recorded/u);
+
+  database.prepare("DELETE FROM agent_messages WHERE message_id = 'message-1'").run();
+  database.prepare(`
+    UPDATE domain_events SET payload_json = '{"details":{"deliveryId":"delivery-1"}}'
+    WHERE event_id = 'event-1'
+  `).run();
+  database.prepare(`
+    INSERT INTO agent_messages
+      (message_id, run_id, input_id, sequence, actor, session_id, turn_id,
+       kind, content_hash, message_json, created_at)
+    VALUES ('message-2', 'run-1', 'input-other', 1, 'CODEX_AGENT', 'session-1',
+      'turn-1', 'PROPOSAL', 'hash-1', '{}', 't0')
+  `).run();
+  assert.throws(() => database.prepare(`
+    UPDATE agent_messages SET input_id = 'input-1' WHERE message_id = 'message-2'
+  `).run(), /terminal response already rejected/u);
+  database.close();
+});
+
+test("schema v5 with conflicting terminal records refuses migration without changing its version", (t) => {
+  const database = terminalFixtureDatabase(t);
+  database.exec(`
+    DROP TRIGGER agent_messages_no_rejected_response;
+    DROP TRIGGER agent_messages_no_rejected_response_update;
+    DROP TRIGGER agent_packet_rejection_no_message;
+    DROP TRIGGER agent_packet_rejection_no_message_update;
+    PRAGMA user_version = 5;
+  `);
+  insertTerminalMessage(database);
+  insertTerminalRejection(database);
+  assert.throws(() => initializeSqliteSchema(database), /explicit recovery is required/u);
+  assert.equal(readSqliteSchemaVersion(database), 5);
+  assert.equal(database.prepare("SELECT COUNT(*) AS n FROM agent_messages").get().n, 1);
+  assert.equal(database.prepare("SELECT COUNT(*) AS n FROM domain_events").get().n, 1);
+  database.close();
+});
+
+test("schema v5 with a single terminal outcome migrates and enforces exclusivity", (t) => {
+  const database = terminalFixtureDatabase(t);
+  database.exec(`
+    DROP TRIGGER agent_messages_no_rejected_response;
+    DROP TRIGGER agent_messages_no_rejected_response_update;
+    DROP TRIGGER agent_packet_rejection_no_message;
+    DROP TRIGGER agent_packet_rejection_no_message_update;
+    PRAGMA user_version = 5;
+  `);
+  insertTerminalMessage(database);
+  assert.equal(initializeSqliteSchema(database), 6);
+  assert.throws(() => insertTerminalRejection(database), /terminal response already recorded/u);
+  assert.equal(readSqliteSchemaVersion(database), 6);
   database.close();
 });

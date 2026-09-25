@@ -1,6 +1,6 @@
 import { RunPhase, isVocabularyValue } from "../domain/vocabulary.js";
 
-export const SQLITE_SCHEMA_VERSION = 5;
+export const SQLITE_SCHEMA_VERSION = 6;
 
 export const REQUIRED_TABLES = Object.freeze([
   "runs",
@@ -61,6 +61,64 @@ const RUN_OUTCOMES_SQL = `
     outcome_json TEXT NOT NULL,
     created_at TEXT NOT NULL
   ) STRICT;
+`;
+
+const TERMINAL_RESPONSE_EXCLUSIVITY_SQL = `
+  CREATE TRIGGER agent_messages_no_rejected_response
+  BEFORE INSERT ON agent_messages
+  WHEN EXISTS (
+    SELECT 1 FROM delivery_attempts AS delivery
+    JOIN domain_events AS event ON event.run_id = delivery.run_id
+      AND event.event_type = 'AGENT_PACKET_REJECTED'
+    WHERE delivery.input_id = NEW.input_id
+      AND json_extract(event.payload_json, '$.details.deliveryId') = delivery.delivery_id
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'terminal response already rejected');
+  END;
+
+  CREATE TRIGGER agent_messages_no_rejected_response_update
+  BEFORE UPDATE OF input_id, run_id ON agent_messages
+  WHEN EXISTS (
+    SELECT 1 FROM delivery_attempts AS delivery
+    JOIN domain_events AS event ON event.run_id = delivery.run_id
+      AND event.event_type = 'AGENT_PACKET_REJECTED'
+    WHERE delivery.input_id = NEW.input_id
+      AND json_extract(event.payload_json, '$.details.deliveryId') = delivery.delivery_id
+  )
+  BEGIN
+    SELECT RAISE(ABORT, 'terminal response already rejected');
+  END;
+
+  CREATE TRIGGER agent_packet_rejection_no_message
+  BEFORE INSERT ON domain_events
+  WHEN NEW.event_type = 'AGENT_PACKET_REJECTED'
+  BEGIN
+    SELECT CASE WHEN json_valid(NEW.payload_json) != 1
+      OR json_type(NEW.payload_json, '$.details.deliveryId') != 'text'
+      THEN RAISE(ABORT, 'invalid rejected response payload') END;
+    SELECT RAISE(ABORT, 'terminal response already recorded')
+    WHERE EXISTS (
+      SELECT 1 FROM delivery_attempts AS delivery
+      JOIN agent_messages AS message ON message.input_id = delivery.input_id
+      WHERE delivery.delivery_id = json_extract(NEW.payload_json, '$.details.deliveryId')
+        AND delivery.run_id = NEW.run_id
+    );
+  END;
+
+  CREATE TRIGGER agent_packet_rejection_no_message_update
+  BEFORE UPDATE OF run_id, event_type, payload_json ON domain_events
+  WHEN NEW.event_type = 'AGENT_PACKET_REJECTED'
+    AND json_valid(NEW.payload_json) = 1
+    AND EXISTS (
+      SELECT 1 FROM delivery_attempts AS delivery
+      JOIN agent_messages AS message ON message.input_id = delivery.input_id
+      WHERE delivery.delivery_id = json_extract(NEW.payload_json, '$.details.deliveryId')
+        AND delivery.run_id = NEW.run_id
+    )
+  BEGIN
+    SELECT RAISE(ABORT, 'terminal response already recorded');
+  END;
 `;
 
 const SCHEMA_SQL = `
@@ -381,6 +439,22 @@ function migrateVersion4ToVersion5(database) {
   database.exec(RUN_OUTCOMES_SQL);
 }
 
+function migrateVersion5ToVersion6(database) {
+  const conflict = database.prepare(`
+    SELECT message.input_id AS input_id
+    FROM agent_messages AS message
+    JOIN delivery_attempts AS delivery ON delivery.input_id = message.input_id
+    JOIN domain_events AS event ON event.run_id = delivery.run_id
+      AND event.event_type = 'AGENT_PACKET_REJECTED'
+    WHERE json_extract(event.payload_json, '$.details.deliveryId') = delivery.delivery_id
+    LIMIT 1
+  `).get();
+  if (conflict) {
+    throw new Error(`schema v5 input ${conflict.input_id} has both a message and a rejection; explicit recovery is required`);
+  }
+  database.exec(TERMINAL_RESPONSE_EXCLUSIVITY_SQL);
+}
+
 export function initializeSqliteSchema(database) {
   database.exec("PRAGMA foreign_keys = ON");
   database.exec("PRAGMA busy_timeout = 5000");
@@ -393,9 +467,15 @@ export function initializeSqliteSchema(database) {
   }
   if (version === SQLITE_SCHEMA_VERSION) {
     assertRequiredTables(database);
+    for (const name of ["agent_messages_no_rejected_response", "agent_messages_no_rejected_response_update",
+      "agent_packet_rejection_no_message", "agent_packet_rejection_no_message_update"]) {
+      if (!database.prepare("SELECT 1 FROM sqlite_schema WHERE type = 'trigger' AND name = ?").get(name)) {
+        throw new Error(`database schema is missing required trigger ${name}`);
+      }
+    }
     return version;
   }
-  if (version !== 0 && version !== 2 && version !== 3 && version !== 4) {
+  if (version !== 0 && version !== 2 && version !== 3 && version !== 4 && version !== 5) {
     throw new Error(`no migration exists from database schema version ${version}`);
   }
 
@@ -406,8 +486,9 @@ export function initializeSqliteSchema(database) {
     } else {
       if (version === 2) migrateVersion2ToVersion3(database);
       if (version === 2 || version === 3) migrateVersion3ToVersion4(database);
-      migrateVersion4ToVersion5(database);
+      if (version !== 5) migrateVersion4ToVersion5(database);
     }
+    migrateVersion5ToVersion6(database);
     assertRequiredTables(database);
     database.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);
     database.exec("COMMIT");

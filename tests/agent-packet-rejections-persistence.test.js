@@ -345,12 +345,12 @@ test("a rejected input cannot also own a canonical AgentMessage", (t) => {
     policyHash: responseStored.policyHash,
     createdAt: T2,
   });
-  store.saveAgentMessage({ inputId: "input-rejection", message });
   assert.throws(
-    () => store.getAgentPacketRejectionByDelivery(rejection.deliveryId),
-    /conflicts with canonical AgentMessage/u,
+    () => store.saveAgentMessage({ inputId: "input-rejection", message }),
+    /terminal response already rejected/u,
   );
-  assert.throws(() => store.verifyAgentPacketRejections(), /conflicts with canonical AgentMessage/u);
+  assert.equal(store.getAgentMessageByInput("input-rejection"), null);
+  assert.equal(store.getAgentPacketRejectionByDelivery(rejection.deliveryId).deliveryId, rejection.deliveryId);
   store.close();
 });
 
