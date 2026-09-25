@@ -550,7 +550,7 @@ INV-19 workflow projection은 preparationVersion과 runVersion을 직접 제공�
 | 계약 영역 | 테스트 위치 |
 |---|---|
 | UI projection, 시작 안내, proposal 흐름 | `tests/public/audit-console.test.js` |
-| planning session API와 proposal lifecycle | `tests/planning-session-api.test.js`, `tests/requirements-planner.test.js` |
+| preparation API와 proposal lifecycle | `tests/planning-session-api.test.js`, `tests/preparation-service.test.js` |
 | WebSession, binding, delivery lifecycle | `tests/web-runtime-core.new.test.js`, `tests/web-delivery-recovery.test.js` |
 | Web extension 저장 상태와 turn guard | `tests/web-extension-storage.new.test.js`, `tests/web-extension-turn-guard.new.test.js` |
 | discussion turn/dispatcher/response atomicity | `tests/discussion-loop.test.js`, `tests/discussion-dispatcher.test.js`, `tests/discussion-response-atomicity.test.js`, `tests/discussion-response-links.test.js` |
