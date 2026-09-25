@@ -100,7 +100,8 @@ export class PreparationService {
     this.db = new DatabaseSync(filename);
     this.db.exec("PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT;");
     const row = this.db.prepare("SELECT json FROM preparation_state WHERE id=1").get();
-    this.data = row ? JSON.parse(String(row.json)) : { currentId: null, contexts: {}, receipts: {} };
+    this.data = row ? JSON.parse(String(row.json)) : { currentId: null, contexts: {}, receipts: {}, projectConversations: {} };
+    this.data.projectConversations ??= {};
     for (const context of Object.values(this.data.contexts)) {
       if (context.lifecycle !== "ACTIVE") continue;
       if (context.resultingRunId) continue;
@@ -197,10 +198,18 @@ export class PreparationService {
       if (typeof input.targetRoot !== "string" || !path.isAbsolute(input.targetRoot)) fail("Select an absolute project folder.", "INVALID_INPUT");
       const targetRoot = fs.realpathSync(input.targetRoot);
       if (!fs.statSync(targetRoot).isDirectory() || path.parse(targetRoot).root === targetRoot) fail("Select a project folder.", "INVALID_INPUT");
+      const previousConversation = this.data.projectConversations[targetRoot];
+      if (input.reuseProjectConversation === true && !previousConversation?.conversationId) {
+        fail("No confirmed project conversation is available for this folder. Start a new conversation.", "PROJECT_CONVERSATION_UNAVAILABLE");
+      }
+      if (input.reuseProjectConversation === true && conversationUrl !== previousConversation.conversationUrl) {
+        fail("The selected project conversation changed. Refresh and choose its exact URL again.", "PROJECT_CONVERSATION_CHANGED");
+      }
       const preparationId = "prep_" + randomUUID();
       const context = {
         preparationId, version: 1, stage: "PREPARE", state: "INITIALIZING", lifecycle: "ACTIVE",
         objective: input.objective, targetRoot, conversationUrl,
+        projectConversationSource: input.reuseProjectConversation === true ? previousConversation.preparationId : null,
         autoApproveOnReady: input.autoApproveOnReady === true,
         webSession: { sessionId: "web_" + preparationId,
           conversationId: conversationUrl === "https://chatgpt.com/" ? null : conversationUrl.split("/").at(-1),
@@ -366,6 +375,9 @@ export class PreparationService {
     delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; this.touch(context);
     const instructions = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. packet 내부는 JSON.parse가 성공하는 엄격한 JSON이어야 한다. Windows 경로는 C:/path 형식의 슬래시를 우선 사용하고, 역슬래시를 쓸 때는 JSON 문자열에서 \\\\로 escape한다. 태그에 Markdown escape나 코드 fence를 붙이지 않는다. 출력 직전에 JSON 문자열과 독립된 태그 줄을 스스로 검증한다. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n';
     const responseFormatFallback = '중요: 요구사항 제안 packet을 정확히 만들 수 없거나 필요한 정보가 부족하면 <controller_packet>을 추측해서 만들지 말고, 태그가 전혀 없는 평문으로 부족한 정보와 질문만 설명한다. 평문 응답은 오류가 아니라 사용자 확인을 위한 정상적인 대화 응답이다.\n';
+    const projectConversationBoundary = context.projectConversationSource
+      ? '\n이 메시지는 같은 프로젝트 대화의 새 준비 작업이다. 앞선 대화는 배경 참고만 가능하며, 이전 승인·완료 기준·후보·적용 권한은 새 작업으로 승계되지 않는다. 이번 첫 부탁과 이 준비 ID에서 확인된 항목만 새 요구사항으로 제안하고 모호하면 사용자에게 질문한다.\n'
+      : '';
     const jsonPathRule = "\nJSON packet 문자열에 Windows 경로를 넣을 때는 C:/Users/...처럼 슬래시를 사용하거나 백슬래시를 JSON 규칙대로 이스케이프한다. 원시 C:\\Users\\... 형태는 절대 출력하지 않는다.\n";
     const requirementsScopeRule = "\n중요: requirements items에는 구현 결과의 코드 스냅샷에서 판정 가능한 제품·코드 요구사항만 넣는다. 승인 게이트, 승인 전 저장소 변경 금지, 컨트롤러 상태 전환 같은 실행 절차는 컨트롤러 정책이므로 requirements items로 만들지 않는다.\n";
     const controllerFacts = [
@@ -381,7 +393,7 @@ export class PreparationService {
     ].join("\\n") + "\\n";
     const text = instructions
       + JSON.stringify({ preparationId: context.preparationId, discussion: context.discussion, agreement: context.agreement })
-      + "\n사용자의 첫 부탁:\n" + context.objective + requirementsScopeRule;
+      + projectConversationBoundary + "\n사용자의 첫 부탁:\n" + context.objective + requirementsScopeRule;
     const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text: responseFormatFallback + jsonPathRule + controllerFacts + text,
       parseResponse: (raw) => ({ body: raw, packetText: raw, packet: { type: "PLANNING_RESPONSE" } }) });
     if (delivery.state === "DISPATCHING") delivery.state = "SUBMITTED";
@@ -497,6 +509,10 @@ export class PreparationService {
     Object.assign(session, { activeDeliveryId: null, lastObservedUserMessageId: observed.lastObservedUserMessageId,
       lastObservedAssistantMessageId: observed.lastObservedAssistantMessageId });
     delivery.state = "ACKNOWLEDGED"; delivery.processingState = "COMPLETE"; context.error = null;
+    if (session.conversationId && session.conversationUrl) this.data.projectConversations[context.targetRoot] = {
+      conversationUrl:session.conversationUrl, conversationId:session.conversationId,
+      preparationId:context.preparationId, updatedAt:stamp(),
+    };
     context.state = context.agreement.status === "READY" ? "AGREEMENT_READY" : "DISCUSSING"; this.touch(context);
   }
   setDiagnostics(context, observed) {
@@ -682,6 +698,7 @@ export class PreparationService {
     if (!runId) caps.push(...this.capabilities().filter((c) =>
       c === "preparation.start" ? canStart : !showingRun));
     return { ...snapshot, workflow, preparation: structuredClone(context),
+      projectConversations:Object.entries(this.data.projectConversations).map(([targetRoot, record]) => ({ targetRoot, ...record })),
       run: showingRun ? snapshot.run : null,
       deliveries: showingRun ? snapshot.deliveries : structuredClone(context?.deliveries ?? []),
       commandCapabilities: caps };

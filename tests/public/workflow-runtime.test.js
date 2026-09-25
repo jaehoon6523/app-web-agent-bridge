@@ -190,8 +190,36 @@ test("blank conversation URL starts at the ChatGPT root and keeps automatic appr
   await ui.run("beginPreparation()");
   assert.deepEqual(ui.calls.find((call) => call.url === "/api/preparations").body, {
     objective: "Make a page", targetRoot: "C:/project", conversationUrl: "https://chatgpt.com/",
-    autoApproveOnReady: true, requestId: "request-1",
+    autoApproveOnReady: true, reuseProjectConversation:false, requestId: "request-1",
   });
+});
+test("a saved project conversation is selected for the same folder and can be explicitly replaced", async () => {
+  const state = { workflow:{ stage:"START", state:"START_IDLE" }, preparation:null, run:null, runs:[],
+    preflight:{ checks:{ extensionAuthenticated:true } }, commandCapabilities:["preparation.start"],
+    projectConversations:[{ targetRoot:"C:/project", conversationUrl:"https://chatgpt.com/c/project-thread",
+      conversationId:"project-thread", updatedAt:"2026-09-25T00:00:00Z" }] };
+  const ui = await dashboard(state);
+  ui.elements.get("objective").value = "Next feature";
+  ui.elements.get("startRoot").value = "C:/project";
+  ui.elements.get("startRoot").listeners.input();
+  assert.equal(ui.elements.get("projectConversationPanel").hidden, false);
+  assert.equal(ui.elements.get("reuseProjectConversation").checked, true);
+  assert.equal(ui.elements.get("conversationUrl").value, "https://chatgpt.com/c/project-thread");
+  await ui.run("beginPreparation()");
+  const first = ui.calls.find((item) => item.url === "/api/preparations");
+  assert.equal(first.body.reuseProjectConversation, true);
+  assert.equal(first.body.conversationUrl, "https://chatgpt.com/c/project-thread");
+  ui.elements.get("startRoot").value = "C:/other-project";
+  ui.elements.get("startRoot").listeners.input();
+  assert.equal(ui.elements.get("projectConversationPanel").hidden, true);
+  assert.equal(ui.elements.get("conversationUrl").value, "");
+  ui.elements.get("startRoot").value = "C:/project";
+  ui.elements.get("startRoot").listeners.input();
+  assert.equal(ui.elements.get("reuseProjectConversation").checked, true);
+  ui.elements.get("reuseProjectConversation").checked = false;
+  ui.elements.get("reuseProjectConversation").listeners.input();
+  assert.equal(ui.elements.get("conversationUrl").value, "");
+  assert.equal(ui.elements.get("conversationUrl").readOnly, false);
 });
 test("automatic approval survives UI reload and does not resend after an attempt", async () => {
   const state = prepared(), storage = new Map();

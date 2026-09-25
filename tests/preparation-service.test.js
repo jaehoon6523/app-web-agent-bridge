@@ -14,7 +14,7 @@ async function settled(service) {
 }
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "canonical-preparation-"));
-  const runs = new Map(), calls = [];
+  const runs = new Map(), calls = [], prompts = [];
   let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {}, discarded = null;
   const web = {
     async inspect() {
@@ -28,6 +28,7 @@ function fixture(t) {
       calls.push(binding.sessionId); return binding;
     },
     async submitTurn(input) {
+      prompts.push(input.text);
       if (binding.bindingStatus === "ROOT_READY") binding = { ...binding, conversationUrl: "https://chatgpt.com/c/new-conversation", conversationId: "new-conversation", bindingStatus: "BOUND" };
       active = input.turnId; count++;
       const parsed = count === 1 ? { type: "REQUIREMENTS_PROPOSAL", summary: "무엇을 만들까요?", questions: ["원하는 기능?"], items: [] }
@@ -60,7 +61,7 @@ function fixture(t) {
     } };
   let service = new PreparationService(options);
   t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { root, runs, calls, web, get service() { return service; }, ackFailure(value) { failAck = value; },
+  return { root, runs, calls, prompts, web, get service() { return service; }, ackFailure(value) { failAck = value; },
     get discarded() { return discarded; },
     observe(value) { inspection = value; }, afterAck(value) { afterAck = value; },
     restart() { service.close(); service = new PreparationService(options); },
@@ -165,6 +166,33 @@ test("ChatGPT start page bootstraps a newly created exact conversation", async (
   assert.equal(f.service.current.conversationUrl, "https://chatgpt.com/c/new-conversation");
   assert.equal(f.service.current.webSession.conversationId, "new-conversation");
   assert.equal(f.service.current.autoApproveOnReady, true);
+});
+
+test("confirmed project conversation persists and is reused only for its exact folder and URL", async (t) => {
+  const f = fixture(t);
+  const first = await f.service.execute("preparation.start", {
+    requestId:"project-first", objective:"첫 작업", targetRoot:f.root, conversationUrl:"https://chatgpt.com/",
+  });
+  await settled(f.service);
+  const savedUrl = f.service.current.conversationUrl;
+  assert.equal(savedUrl, "https://chatgpt.com/c/new-conversation");
+  assert.equal(f.service.data.projectConversations[f.root].conversationUrl, savedUrl);
+  await f.command("preparation.cancel");
+  f.restart();
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "project-chat-other-"));
+  t.after(() => fs.rmSync(other, { recursive:true, force:true }));
+  const reuse = (requestId, targetRoot, conversationUrl) => f.service.execute("preparation.start", {
+    requestId, objective:"다음 작업", targetRoot, conversationUrl, reuseProjectConversation:true,
+  });
+  await assert.rejects(reuse("wrong-folder", other, savedUrl), { code:"PROJECT_CONVERSATION_UNAVAILABLE" });
+  await assert.rejects(reuse("wrong-url", f.root, "https://chatgpt.com/"), { code:"PROJECT_CONVERSATION_CHANGED" });
+  const next = await reuse("project-next", f.root, savedUrl);
+  assert.equal(next.projectConversationSource, first.preparationId);
+  assert.equal(next.conversationUrl, savedUrl);
+  assert.equal(next.webSession.conversationId, "new-conversation");
+  assert.equal(f.calls.length, 1, "No second Web turn is sent before exact binding succeeds");
+  await settled(f.service);
+  assert.match(f.prompts.at(-1), /이전 승인·완료 기준·후보·적용 권한은 새 작업으로 승계되지 않는다/);
 });
 
 test("a new root preparation preserves a prior recovery-required delivery without inspecting or discarding it", async (t) => {

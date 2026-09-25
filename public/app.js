@@ -6,6 +6,7 @@ let sequence = 0, lastConfirmed = null, evidencePage = null;
 let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
 let decisionSignature = "";
 let agreement = null, preparation = null;
+let projectConversationRoot = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
 let requestedView = "";
@@ -354,6 +355,25 @@ function render() {
   $("stepWorkBadge").hidden = !(workflow.stage === "WORK" && workflow.state === "HOLD");
   text("runStageHeading", resultStage ? "결과" : "작업");
   $("startPanel").hidden = workflow.stage !== "START";
+  if (workflow.stage !== "START") projectConversationRoot = null;
+  if (workflow.stage === "START") {
+    const root = $("startRoot").value.trim();
+    const saved = snapshot?.projectConversations?.find((item) => item.targetRoot === root && item.conversationId);
+    if (projectConversationRoot !== root) {
+      const previous = snapshot?.projectConversations?.find((item) => item.targetRoot === projectConversationRoot);
+      if ($("reuseProjectConversation").checked || previous?.conversationUrl === $("conversationUrl").value) $("conversationUrl").value = "";
+      projectConversationRoot = root;
+      $("reuseProjectConversation").checked = Boolean(saved);
+      if (saved) $("conversationUrl").value = saved.conversationUrl;
+    }
+    $("projectConversationPanel").hidden = !saved;
+    text("projectConversationDetail", saved ? `저장된 대화: ${saved.conversationUrl} · 마지막 확인 ${time(saved.updatedAt)}` : "");
+    if (saved && /^https:\/\/chatgpt\.com\/c\/[^/?#\s]+\/?$/u.test(saved.conversationUrl)) $("projectConversationLink").href = saved.conversationUrl;
+    else $("projectConversationLink").removeAttribute("href");
+    const reuse = Boolean(saved && $("reuseProjectConversation").checked);
+    if (reuse) $("conversationUrl").value = saved.conversationUrl;
+    $("conversationUrl").readOnly = reuse;
+  }
   const preparing = workflow.stage === "PREPARE";
   renderInitialRequest();
   $("projectPanel").hidden = !preparing;
@@ -751,11 +771,12 @@ function renderPreparation() {
     : workflow.state === "APPROVING" ? "작업을 시작하고 있습니다"
     : preparation.state === "FAILED" ? "작업을 시작하지 못했습니다"
     : "요구사항 정리 중");
-  text("projectLead", workflow.state === "AGREEMENT_READY"
+  text("projectLead", (workflow.state === "AGREEMENT_READY"
     ? "작업 범위, 완료 기준, 검증 방식을 확인한 뒤 승인하세요."
     : workflow.state === "APPROVING" ? "요구사항은 확정됐고 작업 생성 상태를 확인하고 있습니다."
     : preparation.state === "FAILED" ? "합의 내용은 보존됩니다. 원인을 확인한 뒤 다음 행동을 선택하세요."
-    : "질문에 답하면서 작업 범위와 완료 기준을 확정합니다.");
+    : "질문에 답하면서 작업 범위와 완료 기준을 확정합니다.")
+    + (preparation.projectConversationSource ? " 이전 프로젝트 대화를 이어가지만 이번 요구사항은 별도로 승인해야 합니다." : ""));
   const exception = $("preparationException");
   exception.hidden = !error;
   exception.className = "flow-band" + (error ? " error" : "");
@@ -804,9 +825,15 @@ async function beginPreparation() {
   }
   const autoApprove = $("autoApprovePreparation").checked;
   await preparationMutation("preparationStart", "preparation.start", "/api/preparations",
-    { objective, targetRoot, conversationUrl, autoApproveOnReady: autoApprove });
+    { objective, targetRoot, conversationUrl, autoApproveOnReady: autoApprove,
+      reuseProjectConversation:$("reuseProjectConversation").checked && !$("projectConversationPanel").hidden });
 }
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
+$("startRoot").addEventListener("input", render);
+$("reuseProjectConversation").addEventListener("input", () => {
+  if (!$("reuseProjectConversation").checked) $("conversationUrl").value = "";
+  render();
+});
 $("reviseRequirements").addEventListener("click", async () => {
   const content = $("proposalFeedback").value;
   if (!content.trim()) { text("proposalStatus", "답변 또는 수정 요청을 입력하세요."); return; }
@@ -839,7 +866,7 @@ $("chooseFolder").addEventListener("click", async () => {
   } catch (error) { text("folderStatus", error.message); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
-$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selected = ""; requestedView = "start"; refresh(); } });
+$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
 $("continueProject").addEventListener("click", async () => {
   if ($("continueProject").disabled) return;
   const root = snapshot?.run?.projectRef?.targetRoot;
