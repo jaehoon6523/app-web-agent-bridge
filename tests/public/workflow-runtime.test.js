@@ -8,6 +8,7 @@ import { workflowForRun } from "../../src/orchestration/preparation-service.js";
 export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
   const source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
+  const conversationSource = await readFile(new URL("../../public/conversation-view.js", import.meta.url), "utf8");
   const elements = new Map(), all = [], calls = [];
   class Element {
     constructor(tagName = "") {
@@ -75,7 +76,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       return { ok: true, json: async () => body };
     },
   });
-  vm.runInContext(source.replace(/^import .*;\r?\n/, "").replace(/\r?\npoll\(\);\s*$/, ""), context);
+  vm.runInContext(conversationSource.replace("export function", "function") + source.replace(/^(?:import .*;\r?\n)+/, "").replace(/\r?\npoll\(\);\s*$/, ""), context);
   await vm.runInContext("refresh()", context);
   return { elements, calls, context, run: (code) => vm.runInContext(code, context) };
 }
@@ -94,6 +95,38 @@ function prepared() {
 function renderedText(element) {
   return [element?.textContent ?? "", ...(element?.children ?? []).map(renderedText)].join("\n");
 }
+test("task conversation attributes each turn to its role and reviewed candidate after reopening", async () => {
+  const run = { runId:"r1", version:3, phase:"AWAITING_APPLY", objective:"Greeting", candidate:{ candidateId:"candidate-2" },
+    preparationSnapshot:{ preparationId:"prep-1", discussion:[
+      { actor:"USER", content:"인사말을 보여줘", createdAt:"2026-01-01T00:00:00Z" },
+      { actor:"WEB_DESIGNER", content:"인사말 요구사항", createdAt:"2026-01-01T00:01:00Z" },
+    ] },
+    messages:[
+      { fromActor:"CODE_WORKER", content:JSON.stringify({ summary:"구현했다고 보고함" }), candidateId:"candidate-2", createdAt:"2026-01-01T00:02:00Z" },
+      { messageId:"judge-1", fromActor:"CHATGPT_WEB_AGENT", role:"JUDGE", content:"근거 확인 요청", createdAt:"2026-01-01T00:03:00Z" },
+      { messageId:"critic-1", fromActor:"CHATGPT_WEB_AGENT", role:"CRITIC", content:"반례 확인", createdAt:"2026-01-01T00:04:00Z" },
+    ], requests:[
+      { requestId:"judge-1", phase:"ROUND0", candidateId:"candidate-2", auditManifestHash:"manifest-2" },
+      { requestId:"critic-1", phase:"ROUND1", candidateId:"candidate-2", auditManifestHash:"manifest-2" },
+    ], userDecisions:[{ at:"2026-01-01T00:05:00Z", candidateId:"candidate-2", responses:[{ requestItemId:"q1", answer:"이 문구입니다" }] }],
+    reviews:[{ decision:"PASS", candidateId:"candidate-2", auditManifestHash:"manifest-2", createdAt:"2026-01-01T00:06:00Z" }],
+  };
+  const state = { workflow:workflowForRun(run), run, runs:[run], commandCapabilities:[], preflight:{ checks:{} } };
+  const ui = await dashboard(state);
+  const cards = ui.elements.get("conversationTimeline").children;
+  assert.deepEqual(cards.map((card) => card.children[0].textContent),
+    ["사용자 · 요구사항", "웹 설계자 · 요구사항", "구현자 보고", "Judge 의견", "Critic 의견", "사용자 답변", "감사 판정"]);
+  assert.match(renderedText(cards[3]), /ROUND0 · 후보 candidate-2 · 감사 기준 manifest-2/u);
+  assert.match(renderedText(cards[4]), /ROUND1 · 후보 candidate-2/u);
+  assert.match(renderedText(cards[5]), /질문 q1/u);
+  assert.match(renderedText(cards[6]), /판정: PASS/u);
+  assert.doesNotMatch(renderedText(cards[2]), /판정: PASS/u);
+  ui.elements.get("showAudit").listeners.click();
+  assert.equal(ui.elements.get("conversationPanel").hidden, true);
+  assert.equal(ui.elements.get("auditPanel").hidden, false);
+  ui.elements.get("showConversation").listeners.click();
+  assert.equal(ui.elements.get("conversationPanel").hidden, false);
+});
 test("refresh restores preparation and questions, and reply retains preparation identity", async () => {
   const ui = await dashboard(prepared());
   assert.equal(ui.elements.get("projectPanel").hidden, false);

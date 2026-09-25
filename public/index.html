@@ -100,8 +100,9 @@
         <label><input id="recoveryConfirm" type="checkbox"> 외부 작업이 모두 종료되었고 대상 저장소의 변경 상태를 확인했습니다. 이 실행을 폐기합니다.</label>
         <button id="abandonRun" disabled>실행 폐기</button>
       </section>
-      <div class="tabs" role="group" aria-label="기록 종류"><button id="showAudit" aria-pressed="true">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
-      <section id="auditPanel"><h2>요구사항별 판정</h2><div id="assessments"></div><h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>후보·검증 증거</h2><div id="evidenceList"></div><details><summary>고정 기준과 후보 상세</summary><pre id="candidateDetails"></pre></details></section>
+      <div class="tabs" role="group" aria-label="기록 종류"><button id="showConversation" aria-pressed="true">작업 대화·결정</button><button id="showAudit" aria-pressed="false">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
+      <section id="conversationPanel"><h2>작업 대화와 판단 기록</h2><p class="muted">구현자 보고와 검토자 의견은 기록입니다. 적용 가능 여부는 감사 판정과 별도 적용 상태에서 확인하세요.</p><div id="conversationTimeline"></div></section>
+      <section id="auditPanel" hidden><h2>요구사항별 판정</h2><div id="assessments"></div><h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>후보·검증 증거</h2><div id="evidenceList"></div><details><summary>고정 기준과 후보 상세</summary><pre id="candidateDetails"></pre></details></section>
       <section id="logPanel" hidden><div id="eventLog" role="log" aria-label="실제 진행 기록"></div></section>
     </section>
   </main>

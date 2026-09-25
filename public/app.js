@@ -1,3 +1,4 @@
+import { renderConversation } from "./conversation-view.js";
 import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
@@ -544,7 +545,7 @@ function render() {
   actionState("exportEvidence", (operations.runCommand !== "IDLE") || !caps.has("evidence.export"), exportReason, exportReason);
   text("commandReason", `적용: ${applyReason} · 감사 기록: ${exportReason}`);
   const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
-  if (renderedRecords !== signature) { renderedRecords = signature; renderAudit(); renderLog(); }
+  if (renderedRecords !== signature) { renderedRecords = signature; renderConversation(run, $("conversationTimeline"), node, time); renderAudit(); renderLog(); }
 }
 async function command(type, payload = {}) {
   if (operations.runCommand !== "IDLE" || !capabilities().has(type)) return;
@@ -984,7 +985,14 @@ $("deleteRun").addEventListener("click", () => {
 });
 $("applyCode").addEventListener("click", () => { const r = snapshot.run; command("code.apply", { candidateId:r.candidate.candidateId, reviewId:r.reviews.at(-1).reviewId, artifactHash:r.capture.artifact.sha256, baseCommit:r.baseCommit }); });
 $("exportEvidence").addEventListener("click", async () => { const result = await command("evidence.export"); if (!result) return; const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)], { type:"application/json" })); const a = node("a", ""); a.href = url; a.download = `${result.runId ?? "audit"}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
-for (const [id, audit] of [["showAudit",true],["showLog",false]]) $(id).addEventListener("click", () => { $("auditPanel").hidden = !audit; $("logPanel").hidden = audit; $("showAudit").setAttribute("aria-pressed", String(audit)); $("showLog").setAttribute("aria-pressed", String(!audit)); });
+for (const [button, panel] of [["showConversation", "conversationPanel"], ["showAudit", "auditPanel"], ["showLog", "logPanel"]]) {
+  $(button).addEventListener("click", () => {
+    for (const [otherButton, otherPanel] of [["showConversation", "conversationPanel"], ["showAudit", "auditPanel"], ["showLog", "logPanel"]]) {
+      $(otherPanel).hidden = otherPanel !== panel;
+      $(otherButton).setAttribute("aria-pressed", String(otherButton === button));
+    }
+  });
+}
 $("closeEvidence").addEventListener("click", () => $("evidenceDialog").close());
 $("nextEvidence").addEventListener("click", () => { if (evidencePage?.target === snapshot?.run?.runId) openEvidence(evidencePage.id, evidencePage.next); });
 async function poll() { await refresh(); setTimeout(poll, 2500); }

@@ -232,7 +232,8 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
     service.update(runId, { reviewArtifacts:[...(run.reviewArtifacts ?? []), artifact],
       requests:run.requests.map((item) => item.requestId === requestId ? { ...item, status:"RECEIVED",
         responseRef, reviewArtifactId:artifact.reviewArtifactId } : item),
-      messages:[...run.messages, { messageId:requestId, fromActor:"CHATGPT_WEB_AGENT", role,
+      messages:[...run.messages, { messageId:requestId, fromActor:"CHATGPT_WEB_AGENT", role, phase,
+        candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash,
         content:(response.body ?? "").trim() || "(설명 없이 제어 패킷만 제출됨)", createdAt:new Date().toISOString() }] });
     let report;
     try {
@@ -465,7 +466,7 @@ export async function auditCandidate(service, runId, workspace) {
     }
     run = service.get(runId);
     service.update(runId, { findings:result.findings, auditResult:result.decision,
-      reviews:[...run.reviews, { ...result, candidateId:context.candidateId, requirementsRef:context.requirementsRef,
+      reviews:[...run.reviews, { ...result, createdAt:new Date().toISOString(), candidateId:context.candidateId, requirementsRef:context.requirementsRef,
         requestId:context.requestId, auditManifestId:auditManifest.auditManifestId,
         auditManifestHash:auditManifest.auditManifestHash, reviewerRoles:[...REVIEW_ROLES] }],
       captures:[...run.captures, { capture:run.capture, review:result.report, reviewId:result.reviewId, decision:result.decision }],
