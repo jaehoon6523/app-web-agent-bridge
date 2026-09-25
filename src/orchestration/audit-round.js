@@ -207,6 +207,7 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
       catch (error) { return { ...item, unavailable:error.message }; }
     });
     const data = { role, phase, context, auditManifest, objective:run.objective, candidate:run.candidate,
+      userDecisions:(run.userDecisions ?? []).filter((item) => item.candidateId === context.candidateId),
       candidateDiff, candidateDiffHash, evidence, sharedArtifacts,
       registeredVerifications:run.verifications.map(({ verificationId,purpose }) => ({ verificationId,purpose })), feedback };
     const prompt = buildCodeReviewPrompt(redactForEvidence(data));

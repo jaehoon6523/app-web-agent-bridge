@@ -7,6 +7,29 @@ import { GitChangeWorkspace } from "../src/repository/git-change-workspace.js";
 import { createLiveDiscussionRuntime } from "../src/runtime/live-discussion-runtime.js";
 
 function request(c, requests) { return {type:"EVIDENCE_REQUEST",runId:c.runId,requestId:c.requestId,candidateId:c.candidateId,requirementsRef:c.requirementsRef,requests}; }
+test("a reviewer question waits for a human answer and re-reviews the same candidate under a new manifest", async (t) => {
+  const f = setupAudit(t, { worker({workspace}) { fs.writeFileSync(path.join(workspace.root, "file.txt"), "revision 2\n"); }, review(data) {
+    return data.userDecisions?.length ? assertionsFor(data.context) : request(data.context, [
+      { requestItemId:"scope-question", kind:"QUESTION", question:"Does the agreed wording include the greeting?", purpose:"Clarify the frozen acceptance wording" },
+    ]);
+  } });
+  const held = await f.run();
+  assert.equal(held.stage, "HOLD");
+  assert.equal(held.terminationReason, "USER_DECISION_REQUIRED");
+  assert.deepEqual(f.service.snapshot(held.runId, {}).commandCapabilities.filter((item) => item.includes("decision") || item.includes("review.retry")), ["code.decision.reply"]);
+  const payload = { runId:held.runId, expectedVersion:held.version };
+  await assert.rejects(f.service.command("code.review.retry", payload), /requires a user answer/);
+  await assert.rejects(f.service.command("code.decision.reply", { ...payload, responses:[] }), /Answer every pending/);
+  await f.service.command("code.decision.reply", { ...payload, responses:[{ requestItemId:"scope-question", answer:"Yes, the existing wording includes the greeting." }] });
+  await f.service.jobs.get(held.runId);
+  const reviewed = f.service.get(held.runId);
+  assert.equal(reviewed.stage, "AWAITING_APPLY", reviewed.error);
+  assert.equal(reviewed.candidate.candidateId, held.candidate.candidateId);
+  assert.equal(reviewed.requirementsRef.hash, held.requirementsRef.hash);
+  assert.notEqual(reviewed.reviews.at(-1).auditManifestHash, held.auditManifests.at(-1).auditManifestHash);
+  assert.deepEqual(reviewed.reviews.at(-1).reviewerRoles, ["JUDGE", "CRITIC"]);
+  assert.equal(f.prompts.at(-1).userDecisions[0].responses[0].answer, "Yes, the existing wording includes the greeting.");
+});
 test("VAL-08/09: arbitrary commands and escaping code paths return unavailable without execution",async(t)=>{
   const f=setupAudit(t,{review(data,n){return n===1?request(data.context,[
     {requestItemId:"bad-code",kind:"CODE",path:"../outside",purpose:"Boundary check"},

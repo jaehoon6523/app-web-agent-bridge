@@ -42,7 +42,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       const descendants = [];
       const visit = (element) => {
         for (const child of element.children) {
-          if (selector === "p" && child.tagName === "P") descendants.push(child);
+          if (selector.toUpperCase() === child.tagName) descendants.push(child);
           visit(child);
         }
       };
@@ -265,6 +265,25 @@ function stateFor(run, capabilities) {
     preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: capabilities,
     events: [], messages: [], assessments: [], findings: [], evidence: [] };
 }
+
+test("a held reviewer question accepts a human answer with the exact run and question identities", async () => {
+  const run = { runId:"run-question", version:4, phase:"HOLD", objective:"Implement greeting",
+    terminationReason:"USER_DECISION_REQUIRED", candidate:{ candidateId:"candidate-1" },
+    missingInformation:[{ requestItemId:"question-1", status:"NEEDS_USER_DECISION", reason:"Which greeting?" }] };
+  const state = stateFor(run, ["code.decision.reply"]);
+  const ui = await dashboard(state, async () => ({ payload:{ status:"USER_DECISION_ACCEPTED" } }));
+  assert.equal(ui.elements.get("decisionPanel").hidden, false);
+  assert.equal(ui.elements.get("submitDecision").disabled, true);
+  const answer = ui.elements.get("decisionQuestions").querySelectorAll("textarea")[0];
+  assert.equal(answer.dataset.requestItemId, "question-1");
+  answer.value = "Use the greeting already specified in R1.";
+  answer.listeners.input();
+  await ui.elements.get("submitDecision").listeners.click();
+  const mutation = ui.calls.find((item) => item.url === "/api/commands");
+  assert.equal(mutation.body.type, "code.decision.reply");
+  assert.deepEqual(mutation.body.payload, { runId:"run-question", expectedVersion:4,
+    responses:[{ requestItemId:"question-1", answer:"Use the greeting already specified in R1." }] });
+});
 
 test("audit hold → retry → pass → apply: commands use one run and the reviewed candidate", async () => {
   const run = { runId: "run-trace", version: 4, phase: "HOLD", objective: "Greeting",

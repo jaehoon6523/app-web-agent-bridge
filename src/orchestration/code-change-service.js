@@ -48,7 +48,7 @@ function hasMultiReviewAuthority(run) {
 
 function retryableAuditReview(run) {
   const retryableHold = run?.stage === "HOLD"
-    && ["REPORT_REPAIR_LIMIT","WEB_BINDING_REQUIRED","PLAN_REPAIR_LIMIT","PLAN_CONSENSUS_NOT_REACHED"].includes(run.terminationReason)
+    && ["REPORT_REPAIR_LIMIT","WEB_BINDING_REQUIRED","PLAN_REPAIR_LIMIT","PLAN_CONSENSUS_NOT_REACHED","USER_DECISION_REQUIRED"].includes(run.terminationReason)
     && run.auditResult === "HOLD";
   const legacyUpgrade = run?.stage === "AWAITING_APPLY" && !hasMultiReviewAuthority(run);
   return Boolean(run?.schemaVersion === 3 && (retryableHold || legacyUpgrade)
@@ -337,7 +337,7 @@ export class CodeChangeService {
       coordination: { phase:"NOT_STARTED", activeRole:null, auditManifestHash:null, activePlanId:null, agreedWorkOrderId:null },
       worker: { provider: this.workerConfig.provider, model: this.workerConfig.model ?? null },
       workerTurns: [],
-      messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
+      userDecisions: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
       auditResult: null, application: null, terminationReason: null, missingInformation: [], error: null, createdAt,
       deadlineAt: new Date(Date.now() + project.policy.totalTimeoutMs).toISOString() });
     this.controls.set(runId, new AbortController());
@@ -629,9 +629,25 @@ export class CodeChangeService {
       return { ...e, ...excerpt(this.artifactStore.read(e.contentRef.sha256).toString("utf8"), payload.startLine, payload.endLine) };
     }
     if (type === "run.reconcile") return this.reconcile(run);
-    if (type === "code.review.retry") {
+    if (type === "code.review.retry" || type === "code.decision.reply") {
+      const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
+      if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
       if (!retryableAuditReview(run) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
         throw new Error("Only a settled review hold or legacy single-review candidate can be re-audited.");
+      }
+      let decision = null;
+      if (needsDecision) {
+        const questions = (run.missingInformation ?? []).filter((item) => item.status === "NEEDS_USER_DECISION");
+        if (!questions.length || questions.length > 20 || !Array.isArray(payload.responses)
+          || payload.responses.length !== questions.length
+          || new Set(payload.responses.map((item) => item?.requestItemId)).size !== questions.length
+          || questions.some((question) => !payload.responses.some((item) => item.requestItemId === question.requestItemId))
+          || payload.responses.some((item) => typeof item.answer !== "string" || !item.answer.trim() || item.answer.length > 4000)) {
+          throw new Error("Answer every pending reviewer question once (up to 4000 characters each).");
+        }
+        decision = { decisionId:`decision_${randomUUID()}`, candidateId:run.candidate.candidateId,
+          requirementsRef:run.requirementsRef, responses:payload.responses.map((item) => ({ requestItemId:item.requestItemId, answer:item.answer.trim() })),
+          at:new Date().toISOString() };
       }
       const target = GitChangeWorkspace.preflight(run.targetRoot);
       if (target.baseCommit !== run.baseCommit) {
@@ -660,9 +676,10 @@ export class CodeChangeService {
       const reset = this.update(run.runId, {
         stage: "REVIEW_RUNNING", reviewTurnId: null, auditResult: null,
         error: null, terminationReason: null, missingInformation: [], stopRequested: false,
+        userDecisions:decision ? [...(run.userDecisions ?? []), decision] : run.userDecisions ?? [],
         deadlineAt: new Date(Date.now() + run.policy.totalTimeoutMs).toISOString(),
         recoveryAttempts: [...(run.recoveryAttempts ?? []), {
-          kind: run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
+          kind: decision ? "USER_DECISION_REVIEW" : run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
           at: retryAt, previousError, previousReason,
           candidateId: run.candidate.candidateId, patchHash: run.candidate.patchHash,
         }],
@@ -691,7 +708,7 @@ export class CodeChangeService {
         }
       }).finally(() => { clearTimeout(totalTimer); this.jobs.delete(run.runId); });
       this.jobs.set(run.runId, job);
-      return { runId: reset.runId, status: "REVIEW_RETRY_ACCEPTED", candidateId: run.candidate.candidateId };
+      return { runId: reset.runId, status: decision ? "USER_DECISION_ACCEPTED" : "REVIEW_RETRY_ACCEPTED", candidateId: run.candidate.candidateId };
     }
     if (type === "run.retry") {
       if (!retryableWorkerTimeout(run) || this.jobs.has(run.runId) || this.workers.has(run.runId)) {
@@ -798,7 +815,8 @@ export class CodeChangeService {
         ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.delete"] : []),
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
-        ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["code.review.retry"] : []),
+        ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId)
+          ? [record.terminationReason === "USER_DECISION_REQUIRED" ? "code.decision.reply" : "code.review.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 && hasMultiReviewAuthority(record) ? ["code.apply"] : [])] });
   }

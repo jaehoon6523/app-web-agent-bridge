@@ -4,6 +4,7 @@ let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
 let sequence = 0, lastConfirmed = null, evidencePage = null;
 let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
+let decisionSignature = "";
 let agreement = null, preparation = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
@@ -394,6 +395,25 @@ function render() {
     text("reconcileResult", "");
   }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
+  const decisionQuestions = run?.phase === "HOLD" && run?.terminationReason === "USER_DECISION_REQUIRED"
+    ? (run.missingInformation ?? []).filter((item) => item.status === "NEEDS_USER_DECISION") : [];
+  $("decisionPanel").hidden = !(run?.phase === "HOLD" && run?.terminationReason === "USER_DECISION_REQUIRED");
+  text("decisionStatus", decisionQuestions.length ? "" : "확인 질문이 기록에 없습니다. 진행 기록을 확인하고 이 실행을 중단한 뒤 새 작업으로 요청하세요.");
+  const questionSignature = JSON.stringify([run?.runId, run?.candidate?.candidateId, decisionQuestions]);
+  if (decisionSignature !== questionSignature) {
+    decisionSignature = questionSignature;
+    const container = $("decisionQuestions"); container.replaceChildren();
+    for (const question of decisionQuestions) {
+      const label = node("label", question.reason ?? "감사자의 질문");
+      const answer = node("textarea", ""); answer.rows = 3; answer.maxLength = 4000;
+      answer.dataset.requestItemId = question.requestItemId;
+      answer.placeholder = "이 질문에 대한 결정을 자연어로 적으세요.";
+      answer.addEventListener("input", render);
+      label.append(answer); container.append(label);
+    }
+  }
+  $("submitDecision").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("code.decision.reply")
+    || !decisionQuestions.length || [...$("decisionQuestions").querySelectorAll("textarea")].some((item) => !item.value.trim());
   $("reconcileRun").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("run.reconcile");
   $("retryRun").textContent = "수동 진행";
   if (run?.phase === "RECOVERY_REQUIRED") {
@@ -472,6 +492,7 @@ async function command(type, payload = {}) {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
     if (snapshot?.run?.runId === target) {
       const successMessage = {
+        "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
         "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
         "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
@@ -852,6 +873,12 @@ $("retryRun").addEventListener("click", () => {
   const caps = capabilities();
   if (caps.has("code.review.retry")) command("code.review.retry");
   else command("run.retry");
+});
+$("submitDecision").addEventListener("click", () => {
+  if ($("submitDecision").disabled) return;
+  const responses = [...$("decisionQuestions").querySelectorAll("textarea")]
+    .map((item) => ({ requestItemId:item.dataset.requestItemId, answer:item.value.trim() }));
+  command("code.decision.reply", { responses });
 });
 $("abandonRun").addEventListener("click", () => {
   if (!$("abandonRun").disabled) {

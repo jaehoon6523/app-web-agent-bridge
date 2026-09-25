@@ -48,6 +48,13 @@ function verificationRefs(run) {
     .sort((a, b) => a.verificationId.localeCompare(b.verificationId));
 }
 
+function decisionRefs(run, candidateId) {
+  return (run.userDecisions ?? []).filter((item) => item.candidateId === candidateId)
+    .map((item) => ({ decisionId:requireString(item.decisionId, "decisionId"),
+      contentHash:recordHash({ responses:item.responses, candidateId:item.candidateId, requirementsRef:item.requirementsRef }) }))
+    .sort((a, b) => a.decisionId.localeCompare(b.decisionId));
+}
+
 export function createAuditManifest(run) {
   if (!run || typeof run !== "object" || Array.isArray(run)) throw new TypeError("AuditManifest requires a run.");
   const candidate = run.candidate;
@@ -65,6 +72,7 @@ export function createAuditManifest(run) {
     },
     requirementsRef: cloneJson(run.requirementsRef),
     evidenceRefs: evidenceRefs(run, candidateId),
+    ...(decisionRefs(run, candidateId).length ? { decisionRefs:decisionRefs(run, candidateId) } : {}),
     priorFindingRefs: findingRefs(run),
     verificationRefs: verificationRefs(run),
   };
@@ -91,6 +99,7 @@ export function auditManifestMatchesRun(manifest, run) {
     },
     requirementsRef: cloneJson(run.requirementsRef),
     evidenceRefs: evidenceRefs(run, run.candidate.candidateId),
+    ...(decisionRefs(run, run.candidate.candidateId).length ? { decisionRefs:decisionRefs(run, run.candidate.candidateId) } : {}),
     verificationRefs: verificationRefs(run),
   };
   const stableManifest = {
@@ -99,6 +108,7 @@ export function auditManifestMatchesRun(manifest, run) {
     candidate: manifest.candidate,
     requirementsRef: manifest.requirementsRef,
     evidenceRefs: manifest.evidenceRefs,
+    ...(manifest.decisionRefs?.length ? { decisionRefs:manifest.decisionRefs } : {}),
     verificationRefs: manifest.verificationRefs,
   };
   if (canonicalJson(stableCurrent) !== canonicalJson(stableManifest)) return false;
