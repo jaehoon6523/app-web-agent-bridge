@@ -6,7 +6,7 @@ let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
 let sequence = 0, lastConfirmed = null, evidencePage = null;
 let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
-let decisionSignature = "";
+let decisionSignature = "", interventionRunId = null;
 let agreement = null, preparation = null;
 let projectConversationRoot = null;
 let followUpSource = null;
@@ -462,6 +462,34 @@ function render() {
     $("recoveryConfirm").checked = false;
     text("reconcileResult", "");
   }
+  if (interventionRunId !== run?.runId) {
+    interventionRunId = run?.runId ?? null;
+    $("workerInterventionKind").value = "GUIDANCE";
+    $("workerInterventionText").value = "";
+    text("workerInterventionStatus", "");
+  }
+  if (!$("workerInterventionKind").value) $("workerInterventionKind").value = "GUIDANCE";
+  const interventionActive = run?.phase === "WORKER_RUNNING";
+  const interventionKind = $("workerInterventionKind").value;
+  const interventionText = $("workerInterventionText").value.trim();
+  const interventionTurnId = snapshot?.workerRuntime?.turnId ?? run?.workerTurnId ?? null;
+  const scopeChange = interventionKind === "REQUIREMENTS_CHANGE";
+  $("workerInterventionPanel").hidden = !interventionActive;
+  $("sendWorkerIntervention").disabled = !interventionActive || !connected || operations.runCommand !== "IDLE"
+    || !caps.has("code.worker.intervene") || !interventionTurnId || !interventionText || scopeChange;
+  if (!interventionActive) {
+    text("workerInterventionStatus", "");
+  } else if (scopeChange) {
+    text("workerInterventionStatus", "요구사항이나 완료 기준을 바꾸는 내용은 현재 승인 범위를 우회할 수 없습니다. 작업을 중단한 뒤 새 작업에서 다시 합의·승인하세요.");
+  } else if (!connected) {
+    text("workerInterventionStatus", "서버 연결을 복구해야 Worker에 전달할 수 있습니다.");
+  } else if (!interventionTurnId || !caps.has("code.worker.intervene")) {
+    text("workerInterventionStatus", "활성 Worker turn의 실시간 전달 capability가 아직 확인되지 않았습니다. turn 시작을 기다리거나 현재 Worker 제공자의 지원 여부를 확인하세요.");
+  } else if (operations.runCommand !== "IDLE") {
+    text("workerInterventionStatus", "현재 명령 처리가 끝난 뒤 전달할 수 있습니다.");
+  } else {
+    text("workerInterventionStatus", "질문·참고는 현재 Worker turn에만 전달되며 승인된 요구사항 자체는 바뀌지 않습니다. 전송 실패 시 자동 재전송하지 않습니다.");
+  }
   $("recoveryPanel").hidden = run?.phase !== "RECOVERY_REQUIRED";
   const decisionQuestions = run?.phase === "HOLD" && run?.terminationReason === "USER_DECISION_REQUIRED"
     ? (run.missingInformation ?? []).filter((item) => item.status === "NEEDS_USER_DECISION") : [];
@@ -564,6 +592,7 @@ async function command(type, payload = {}) {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
     if (snapshot?.run?.runId === target) {
       const successMessage = {
+        "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
         "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
         "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
@@ -959,6 +988,19 @@ $("submitDecision").addEventListener("click", () => {
   const responses = [...$("decisionQuestions").querySelectorAll("textarea")]
     .map((item) => ({ requestItemId:item.dataset.requestItemId, answer:item.value.trim() }));
   command("code.decision.reply", { responses });
+});
+$("workerInterventionKind").addEventListener("change", render);
+$("workerInterventionText").addEventListener("input", render);
+$("sendWorkerIntervention").addEventListener("click", async () => {
+  if ($("sendWorkerIntervention").disabled) return;
+  const textValue = $("workerInterventionText").value.trim();
+  const kind = $("workerInterventionKind").value;
+  const turnId = snapshot?.workerRuntime?.turnId ?? snapshot?.run?.workerTurnId ?? null;
+  const result = await command("code.worker.intervene", { kind, text:textValue, turnId });
+  if (result?.status === "DELIVERED" && $("workerInterventionText").value.trim() === textValue) {
+    $("workerInterventionText").value = "";
+    render();
+  }
 });
 $("abandonRun").addEventListener("click", () => {
   if (!$("abandonRun").disabled) {

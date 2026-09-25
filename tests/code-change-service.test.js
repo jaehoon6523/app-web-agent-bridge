@@ -47,6 +47,57 @@ test("VAL-10: command receipts survive restart and conflicting request IDs fail"
   await assert.rejects(f.dashboard.executeDurable({...command,type:"run.stop"}),/different command/);
 });
 
+test("active code Worker accepts bounded natural-language intervention and rejects requirement changes",async(t)=>{
+  let releaseTurn;
+  const gate=new Promise((resolve)=>{releaseTurn=resolve;});
+  const steers=[];
+  const f=setupAudit(t,{reviewVerdicts:["SATISFIED"],createWorker:async({workspace,persistThreadId,persistCapture})=>({
+    async start(){await persistThreadId({threadId:"worker-live"});},
+    async inspect(){return{};},
+    async interrupt(){},
+    async close(){},
+    async steer(input){steers.push(input);return{accepted:true};},
+    async submitTurn({text}){
+      const brief=JSON.parse(text.slice(text.indexOf("\n")+1));
+      return{turnId:"worker-turn-live",completion:gate.then(async()=>{
+        fs.writeFileSync(path.join(workspace.root,"file.txt"),"revision 2\n");
+        const capture=workspace.capture({allowUnchanged:true});
+        await persistCapture({capture,turnId:"worker-turn-live"});
+        const report={summary:"Implementation claim",
+          requirementClaims:brief.requirements.items.map((r)=>({requirementId:r.requirementId,claim:"Implemented"})),
+          findingResponses:brief.unresolvedFindings.map((finding)=>({findingId:finding.findingId,explanation:"Submitted fix"})),
+          unverified:[]};
+        return{turnId:"worker-turn-live",threadId:"worker-live",sessionId:"worker-live",status:"completed",text:JSON.stringify(report),capture};
+      })};
+    },
+  })});
+  const started=await f.start();
+  for(let i=0;i<100&&!f.service.get(started.runId)?.workerTurnId;i++) await new Promise((resolve)=>setTimeout(resolve,1));
+  let current=f.service.get(started.runId);
+  assert.equal(current.stage,"WORKER_RUNNING");
+  assert.equal(current.workerTurnId,"worker-turn-live");
+  assert.ok(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.worker.intervene"));
+
+  await assert.rejects(f.dashboard.executeDurable({type:"code.worker.intervene",requestId:"scope-change",
+    payload:{runId:current.runId,expectedVersion:current.version,turnId:current.workerTurnId,kind:"REQUIREMENTS_CHANGE",text:"Add another feature"}}),
+  /new preparation/);
+  current=f.service.get(started.runId);
+  const accepted=await f.dashboard.executeDurable({type:"code.worker.intervene",requestId:"guidance",
+    payload:{runId:current.runId,expectedVersion:current.version,turnId:current.workerTurnId,kind:"GUIDANCE",text:"Reuse the existing helper if it already fits."}});
+  assert.equal(accepted.status,"DELIVERED");
+  assert.equal(steers.length,1);
+  assert.equal(steers[0].turnId,"worker-turn-live");
+  assert.match(steers[0].text,/does not modify approved requirements or acceptance criteria/u);
+  assert.match(steers[0].text,/Reuse the existing helper if it already fits\./u);
+  current=f.service.get(started.runId);
+  assert.equal(current.userInterventions.at(-1).status,"DELIVERED");
+  assert.equal(current.userInterventions.at(-1).kind,"GUIDANCE");
+
+  releaseTurn();
+  await f.service.jobs.get(started.runId);
+  assert.equal(f.service.get(started.runId).stage,"AWAITING_APPLY");
+});
+
 test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues the normal loop",async(t)=>{
   const f=setupAudit(t,{
     configure(project){project.policy.maxFormatRepairs=0;},

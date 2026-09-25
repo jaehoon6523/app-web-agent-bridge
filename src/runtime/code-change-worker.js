@@ -37,6 +37,7 @@ export function bindCodeChangeCapture({ session, workspace, persistCapture, clos
     start: () => session.start(),
     resume: (input) => session.resume(input),
     inspect: () => session.inspect(),
+    steer: (input) => session.steer(input),
     interrupt: (input) => session.interrupt(input),
     respondToApproval: (input) => session.respondToApproval(input),
     onEvent: (listener) => session.onEvent(listener),

@@ -17,6 +17,11 @@ export function renderConversation(run, timeline, node, time) {
     add(turn.createdAt, turn.actor === "USER" ? "사용자 · 요구사항" : "웹 설계자 · 요구사항",
       turn.content, `준비 대화 · ${run.preparationSnapshot?.preparationId ?? "ID 없음"}`);
   }
+  for (const intervention of run.userInterventions ?? []) {
+    const role = intervention.kind === "QUESTION" ? "사용자 · 구현 질문" : "사용자 · 구현 참고";
+    const status = intervention.status === "DELIVERED" ? "전달 확인" : intervention.status === "FAILED" ? "전달 실패" : "전달 확인 중";
+    add(intervention.createdAt, role, intervention.text, `Worker turn ${intervention.turnId ?? "확인 전"} · ${status}`, "decision");
+  }
   for (const message of run.messages ?? []) {
     const request = (run.requests ?? []).find((item) => item.requestId === message.messageId);
     const candidateId = message.candidateId ?? request?.candidateId;

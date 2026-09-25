@@ -128,6 +128,37 @@ test("task conversation attributes each turn to its role and reviewed candidate 
   ui.elements.get("showConversation").listeners.click();
   assert.equal(ui.elements.get("conversationPanel").hidden, false);
 });
+
+test("implementation intervention sends only bounded guidance and keeps requirement changes outside the active run", async () => {
+  const run = { runId:"worker-live", version:4, phase:"WORKER_RUNNING", objective:"Greeting",
+    workerTurnId:"turn-1", projectRef:{ targetRoot:"C:/project" } };
+  const state = { workflow:workflowForRun(run), run, runs:[run], commandCapabilities:["code.worker.intervene","run.stop"],
+    workerRuntime:{ turnId:"turn-1" }, preflight:{ checks:{ extensionAuthenticated:true } } };
+  const ui = await dashboard(state, async () => ({ payload:{ status:"DELIVERED", interventionId:"intervention-1", turnId:"turn-1" } }));
+  assert.equal(ui.elements.get("workerInterventionPanel").hidden, false);
+  assert.equal(ui.elements.get("workerInterventionKind").value, "GUIDANCE");
+  assert.equal(ui.elements.get("sendWorkerIntervention").disabled, true);
+
+  ui.elements.get("workerInterventionText").value = "Reuse the existing helper before adding another one.";
+  ui.elements.get("workerInterventionText").listeners.input();
+  assert.equal(ui.elements.get("sendWorkerIntervention").disabled, false);
+  await ui.elements.get("sendWorkerIntervention").listeners.click();
+  const mutation = ui.calls.find((call) => call.url === "/api/commands" && call.body.type === "code.worker.intervene");
+  assert.deepEqual(mutation.body.payload, { runId:"worker-live", expectedVersion:4, turnId:"turn-1", kind:"GUIDANCE",
+    text:"Reuse the existing helper before adding another one." });
+  assert.equal(ui.elements.get("workerInterventionText").value, "");
+
+  const commandCount = ui.calls.filter((call) => call.url === "/api/commands").length;
+  ui.elements.get("workerInterventionKind").value = "REQUIREMENTS_CHANGE";
+  ui.elements.get("workerInterventionKind").listeners.change();
+  ui.elements.get("workerInterventionText").value = "Also add account settings.";
+  ui.elements.get("workerInterventionText").listeners.input();
+  assert.equal(ui.elements.get("sendWorkerIntervention").disabled, true);
+  assert.match(ui.elements.get("workerInterventionStatus").textContent, /새 작업에서 다시 합의·승인/u);
+  await ui.elements.get("sendWorkerIntervention").listeners.click();
+  assert.equal(ui.calls.filter((call) => call.url === "/api/commands").length, commandCount);
+});
+
 test("refresh restores preparation and questions, and reply retains preparation identity", async () => {
   const ui = await dashboard(prepared());
   assert.equal(ui.elements.get("projectPanel").hidden, false);

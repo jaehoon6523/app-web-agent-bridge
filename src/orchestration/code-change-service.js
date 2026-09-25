@@ -338,7 +338,7 @@ export class CodeChangeService {
       coordination: { phase:"NOT_STARTED", activeRole:null, auditManifestHash:null, activePlanId:null, agreedWorkOrderId:null },
       worker: { provider: this.workerConfig.provider, model: this.workerConfig.model ?? null },
       workerTurns: [],
-      userDecisions: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
+      userDecisions: [], userInterventions: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
       auditResult: null, application: null, terminationReason: null, missingInformation: [], error: null, createdAt,
       deadlineAt: new Date(Date.now() + project.policy.totalTimeoutMs).toISOString() });
     this.controls.set(runId, new AbortController());
@@ -630,6 +630,54 @@ export class CodeChangeService {
       return { ...e, ...excerpt(this.artifactStore.read(e.contentRef.sha256).toString("utf8"), payload.startLine, payload.endLine) };
     }
     if (type === "run.reconcile") return this.reconcile(run);
+    if (type === "code.worker.intervene") {
+      if (payload.kind === "REQUIREMENTS_CHANGE") {
+        throw Object.assign(new Error("Requirements or acceptance criteria cannot be changed inside an active implementation turn. Stop this run and start a new preparation."), {
+          code: "INTERVENTION_REQUIRES_NEW_PREPARATION",
+        });
+      }
+      if (!["GUIDANCE", "QUESTION"].includes(payload.kind)) {
+        throw Object.assign(new Error("Worker intervention kind must be GUIDANCE or QUESTION."), { code:"INTERVENTION_KIND_INVALID" });
+      }
+      if (typeof payload.text !== "string" || !payload.text.trim() || payload.text.length > 4000) {
+        throw Object.assign(new Error("Worker intervention text must contain 1–4000 characters."), { code:"INTERVENTION_TEXT_INVALID" });
+      }
+      const worker = this.workers.get(run.runId);
+      if (run.stage !== "WORKER_RUNNING" || !worker || typeof worker.steer !== "function" || !run.workerTurnId) {
+        throw Object.assign(new Error("The active Worker turn does not support live intervention right now."), { code:"WORKER_INTERVENTION_UNAVAILABLE" });
+      }
+      if (payload.turnId !== run.workerTurnId) {
+        throw Object.assign(new Error("The Worker turn changed; refresh before sending the intervention."), { code:"WORKER_TURN_CHANGED" });
+      }
+      const interventionId = `intervention_${randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      const intervention = {
+        interventionId, actor:"LOCAL_AUTHENTICATED_USER", kind:payload.kind, text:payload.text.trim(),
+        turnId:run.workerTurnId, status:"PENDING", createdAt, updatedAt:createdAt,
+      };
+      this.update(run.runId, { userInterventions:[...(run.userInterventions ?? []), intervention] });
+      try {
+        const steerText = `[USER_INTERVENTION:${intervention.kind}]\nThis message may clarify the current implementation, but it does not modify approved requirements or acceptance criteria. If it conflicts with the approved requirements, keep the approved requirements and report the conflict.\nUser text:\n${intervention.text}`;
+        await worker.steer({ turnId:run.workerTurnId, text:steerText });
+        const current = this.get(run.runId), deliveredAt = new Date().toISOString();
+        this.update(run.runId, {
+          userInterventions:(current.userInterventions ?? []).map((item) => item.interventionId === interventionId
+            ? { ...item, status:"DELIVERED", updatedAt:deliveredAt } : item),
+          events:[...(current.events ?? []), { eventId:`event_${randomUUID()}`, type:"WORKER_INTERVENTION_DELIVERED", createdAt:deliveredAt,
+            payload:{ interventionId, turnId:intervention.turnId, kind:intervention.kind } }],
+        });
+        return { runId:run.runId, interventionId, turnId:intervention.turnId, status:"DELIVERED" };
+      } catch (error) {
+        const current = this.get(run.runId), failedAt = new Date().toISOString();
+        this.update(run.runId, {
+          userInterventions:(current.userInterventions ?? []).map((item) => item.interventionId === interventionId
+            ? { ...item, status:"FAILED", error:redactForEvidence(error.message), updatedAt:failedAt } : item),
+          events:[...(current.events ?? []), { eventId:`event_${randomUUID()}`, type:"WORKER_INTERVENTION_FAILED", createdAt:failedAt,
+            payload:{ interventionId, turnId:intervention.turnId, kind:intervention.kind, error:redactForEvidence(error.message) } }],
+        });
+        throw Object.assign(new Error(`Worker intervention was not confirmed: ${error.message}`), { code:"WORKER_INTERVENTION_FAILED" });
+      }
+    }
     if (type === "code.review.retry" || type === "code.decision.reply") {
       const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
       if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
@@ -814,6 +862,9 @@ export class CodeChangeService {
       workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
         ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.delete"] : []),
+        ...(record.stage === "WORKER_RUNNING" && typeof record.workerTurnId === "string" && record.workerTurnId
+          && typeof this.workers.get(runId)?.steer === "function"
+          ? ["code.worker.intervene"] : []),
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
         ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId)
