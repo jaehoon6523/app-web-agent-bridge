@@ -70,6 +70,34 @@ function fixture(t) {
     command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), preparationId: service.current.preparationId, ...extras }); },
   };
 }
+test("follow-up preparation binds an applied task in the same folder and keeps a new approval boundary", async (t) => {
+  const f = fixture(t);
+  f.runs.set("applied-1", { runId:"applied-1", phase:"APPLIED", projectRef:{ targetRoot:f.root },
+    objective:"첫 인사", candidate:{ candidateId:"candidate-1" },
+    requirements:{ items:[{ statement:"인사 표시", acceptanceCriteria:"화면에 표시" }] } });
+  await f.service.execute("preparation.start", { requestId:"follow-up", objective:"인사를 바꿔줘",
+    targetRoot:f.root, conversationUrl:"https://chatgpt.com/c/test", followUpRunId:"applied-1" });
+  await settled(f.service);
+  assert.equal(f.service.current.followUp.runId, "applied-1");
+  assert.equal(f.service.current.agreement.status, "DISCUSSING");
+  assert.match(f.prompts[0], /이전 적용 작업/u);
+  assert.match(f.prompts[0], /인사 표시/u);
+  assert.match(f.prompts[0], /이전 요구사항·승인·감사 PASS는 새 작업에 적용되지 않는다/u);
+  f.restart();
+  assert.equal(f.service.current.followUp.candidateId, "candidate-1");
+});
+test("follow-up rejects unavailable, unfinished, and different-folder tasks before web dispatch", async (t) => {
+  const f = fixture(t);
+  const attempt = (id, requestId) => f.service.execute("preparation.start", { requestId,
+    objective:"다음 작업", targetRoot:f.root, conversationUrl:"https://chatgpt.com/c/test", followUpRunId:id });
+  await assert.rejects(attempt("deleted", "deleted"), { code:"FOLLOW_UP_UNAVAILABLE" });
+  f.runs.set("pending", { runId:"pending", phase:"AWAITING_APPLY", projectRef:{ targetRoot:f.root } });
+  await assert.rejects(attempt("pending", "pending"), { code:"FOLLOW_UP_UNAVAILABLE" });
+  f.runs.set("other", { runId:"other", phase:"APPLIED", projectRef:{ targetRoot:"/another-project" } });
+  await assert.rejects(attempt("other", "other"), { code:"FOLLOW_UP_PROJECT_MISMATCH" });
+  assert.equal(f.service.current, null);
+  assert.equal(f.prompts.length, 0);
+});
 test("unresolved delivery can be explicitly discarded with confirmations and remains auditable", async (t) => {
   const f = fixture(t);
   await f.start();

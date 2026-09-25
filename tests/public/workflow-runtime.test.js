@@ -9,6 +9,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
   const source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const conversationSource = await readFile(new URL("../../public/conversation-view.js", import.meta.url), "utf8");
+  const preparationSource = await readFile(new URL("../../public/preparation-view.js", import.meta.url), "utf8");
   const elements = new Map(), all = [], calls = [];
   class Element {
     constructor(tagName = "") {
@@ -76,7 +77,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       return { ok: true, json: async () => body };
     },
   });
-  vm.runInContext(conversationSource.replace("export function", "function") + source.replace(/^(?:import .*;\r?\n)+/, "").replace(/\r?\npoll\(\);\s*$/, ""), context);
+  vm.runInContext(conversationSource.replace("export function", "function") + preparationSource.replace("export function", "function") + source.replace(/^(?:import .*;\r?\n)+/, "").replace(/\r?\npoll\(\);\s*$/, ""), context);
   await vm.runInContext("refresh()", context);
   return { elements, calls, context, run: (code) => vm.runInContext(code, context) };
 }
@@ -365,6 +366,45 @@ test("project action starts a new task in its folder after the previous run clos
   assert.equal(ui.elements.get("startPanel").hidden, false);
   assert.equal(ui.elements.get("startRoot").value, "C:/project");
   assert.equal(ui.elements.get("objective").value, "");
+});
+test("continue applied task sends its identity and shows the new approval boundary", async () => {
+  const done = { runId:"applied-1", version:4, phase:"APPLIED", objective:"Initial app",
+    projectRef:{ targetRoot:"C:/project" } };
+  const state = stateFor(done, []);
+  const ui = await dashboard(state);
+  assert.equal(ui.elements.get("continueProject").disabled, false);
+  const navigating = ui.elements.get("continueProject").listeners.click();
+  state.workflow = { stage:"START", state:"START_IDLE" }; state.run = null;
+  state.commandCapabilities = ["preparation.start"];
+  await navigating;
+  assert.equal(ui.run("followUpSource?.runId"), "applied-1");
+  assert.match(ui.elements.get("followUpSource").textContent, /Initial app · 새 부탁과 요구사항은 다시 승인/u);
+  ui.elements.get("objective").value = "Add settings";
+  ui.elements.get("startForm").listeners.submit({ preventDefault() {} });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const sent = ui.calls.find((call) => call.url === "/api/preparations");
+  assert.equal(sent.body.followUpRunId, "applied-1");
+  assert.equal(sent.body.targetRoot, "C:/project");
+});
+test("reopened follow-up preparation shows its source and still requires fresh approval", async () => {
+  const state = prepared();
+  state.preparation.followUp = { runId:"applied-1", objective:"Initial app", candidateId:"candidate-1" };
+  const ui = await dashboard(state);
+  assert.match(ui.elements.get("planningFollowUp").textContent, /Initial app · 요구사항은 이번에 다시 승인/u);
+  assert.equal(ui.elements.get("saveProject").disabled, true);
+});
+test("follow-up task can reopen its available source; deleted source stays labelled", async () => {
+  const run = { runId:"next", version:2, phase:"APPLIED", objective:"Settings",
+    projectRef:{ targetRoot:"C:/project" }, followUp:{ runId:"first", objective:"Initial app" } };
+  const state = stateFor(run, []);
+  const ui = await dashboard(state);
+  assert.equal(ui.elements.get("openFollowUp").disabled, true);
+  assert.match(ui.elements.get("runFollowUp").textContent, /first/u);
+  state.runs.push({ runId:"first", phase:"APPLIED", objective:"Initial app", targetRoot:"C:/project" });
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("openFollowUp").disabled, false);
+  await ui.elements.get("openFollowUp").listeners.click();
+  assert.equal(ui.run("selected"), "first");
 });
 
 test("a held reviewer question accepts a human answer with the exact run and question identities", async () => {

@@ -1,3 +1,4 @@
+import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 const $ = (id) => document.getElementById(id);
@@ -8,6 +9,7 @@ let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readiness
 let decisionSignature = "";
 let agreement = null, preparation = null;
 let projectConversationRoot = null;
+let followUpSource = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
@@ -398,6 +400,8 @@ function render() {
   $("stepWorkBadge").hidden = !(workflow.stage === "WORK" && workflow.state === "HOLD");
   text("runStageHeading", resultStage ? "결과" : "작업");
   $("startPanel").hidden = Boolean(overviewGroup) || workflow.stage !== "START";
+  $("followUpSource").hidden = !followUpSource;
+  text("followUpSource", followUpSource ? `이어서 작업: ${followUpSource.objective} · 새 부탁과 요구사항은 다시 승인합니다.${$("startRoot").value !== followUpSource.targetRoot ? " 폴더가 달라졌습니다. 원래 프로젝트를 선택하세요." : ""}` : "");
   if (workflow.stage !== "START") projectConversationRoot = null;
   if (workflow.stage === "START") {
     const root = $("startRoot").value.trim();
@@ -418,7 +422,7 @@ function render() {
     $("conversationUrl").readOnly = reuse;
   }
   const preparing = workflow.stage === "PREPARE";
-  renderInitialRequest();
+  renderInitialRequest(workflow, preparation, $, text, document, capabilities().has("preparation.cancel"));
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
   const project = preflight?.project;
@@ -513,6 +517,10 @@ function render() {
   if (!run) return;
   $("continueProject").hidden = run.phase !== "APPLIED";
   $("continueProject").disabled = $("newRun").disabled;
+  text("runFollowUp", run.followUp ? `이전 적용 작업: ${run.followUp.objective} · ${run.followUp.runId}` : "");
+  $("openFollowUp").hidden = !run.followUp;
+  $("openFollowUp").disabled = !snapshot?.runs?.some((item) => item.runId === run.followUp?.runId);
+  $("openFollowUp").title = $("openFollowUp").disabled ? "이전 작업 기록이 삭제되어 열 수 없습니다." : "이전 적용 작업의 기록을 엽니다.";
   text("runObjective", run.objective); text("runContext", run.requirements
     ? `${folderName(run.projectRef?.targetRoot)} / ${run.objective} / ${labels[run.phase] ?? run.phase} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`
     : `작업 기록 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`);
@@ -618,32 +626,6 @@ function proposalControls() {
     || !$("discardUnresolved").checked || !$("discardNoResend").checked || $("discardReason").value.trim().length < 3;
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
 }
-function renderInitialRequest() {
-  const initial = workflow.stage === "START" && preparation?.lifecycle === "ACTIVE";
-  const pending = initial && ["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(preparation.state);
-  const recovery = document.querySelector(".session-recovery");
-  $("startRecovery").replaceChildren();
-  if (recovery) {
-    const recoveryHost = initial ? $("startRecovery") : ($("preparationDiagnosticsBody") ?? $("proposalSummary"));
-    recoveryHost.append(recovery);
-  }
-  $("startRecovery").hidden = !initial || pending;
-  $("startProgress").hidden = !initial;
-  $("startProgress").classList.toggle("is-waiting", pending);
-  $("startProgress").setAttribute("aria-busy", String(pending));
-  text("startProgressTitle", preparation?.state === "INITIALIZING" ? "ChatGPT 대화에 연결하고 있습니다"
-    : pending ? "ChatGPT 응답을 기다리고 있습니다" : "요청 상태 확인이 필요합니다");
-  text("startProgressDetail", pending ? "응답 확인이 끝나면 준비 화면으로 이동합니다."
-    : preparation?.error?.message ?? "전송 상태를 확인한 뒤 계속할 수 있습니다.");
-  const activeTabCount = preparation?.error?.details?.activeTabCount;
-  if (!pending && Number.isInteger(activeTabCount)) text("startProgressDetail", `${$("startProgressDetail").textContent} · 감지된 ChatGPT 활성 탭: ${activeTabCount}개`);
-  for (const id of ["objective", "startRoot", "conversationUrl"]) {
-    $(id).readOnly = initial;
-    if (initial) $(id).value = id === "objective" ? preparation.objective : id === "startRoot" ? preparation.targetRoot : (preparation.webSession?.conversationUrl ?? preparation.conversationUrl);
-  }
-  $("cancelInitialPreparation").hidden = !initial;
-  $("cancelInitialPreparation").disabled = !capabilities().has("preparation.cancel");
-}
 function renderPreparation() {
   if (!preparation) { preparationSignature = ""; return; }
   const signature = JSON.stringify(preparation);
@@ -651,6 +633,8 @@ function renderPreparation() {
   preparationSignature = signature;
   $("planningObjective").value = preparation.objective;
   $("planningUrl").value = preparation.webSession?.conversationUrl ?? preparation.conversationUrl ?? "";
+  $("planningFollowUp").hidden = !preparation.followUp;
+  text("planningFollowUp", preparation.followUp ? `이전 적용 작업: ${preparation.followUp.objective} · 요구사항은 이번에 다시 승인합니다.` : "");
   $("projectRoot").value = preparation.targetRoot;
   const summary = $("proposalSummary"); summary.replaceChildren();
   const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
@@ -870,6 +854,7 @@ async function beginPreparation() {
   const autoApprove = $("autoApprovePreparation").checked;
   await preparationMutation("preparationStart", "preparation.start", "/api/preparations",
     { objective, targetRoot, conversationUrl, autoApproveOnReady: autoApprove,
+      ...(followUpSource ? { followUpRunId:followUpSource.runId } : {}),
       reuseProjectConversation:$("reuseProjectConversation").checked && !$("projectConversationPanel").hidden });
 }
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
@@ -910,10 +895,11 @@ $("chooseFolder").addEventListener("click", async () => {
   } catch (error) { text("folderStatus", error.message); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
-$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
+$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
 $("newProjectTask").addEventListener("click", async () => {
   if ($("newProjectTask").disabled || !projectViewRoot) return;
   const root = projectViewRoot;
+  followUpSource = null;
   selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start";
   await refresh();
   if (!connected || workflow.stage !== "START") {
@@ -935,6 +921,7 @@ $("continueProject").addEventListener("click", async () => {
   if ($("continueProject").disabled) return;
   const root = snapshot?.run?.projectRef?.targetRoot;
   if (!root || snapshot?.run?.phase !== "APPLIED") return;
+  followUpSource = { runId:snapshot.run.runId, objective:snapshot.run.objective, targetRoot:root };
   selected = ""; requestedView = "start";
   await refresh();
   if (workflow.stage !== "START") return;
@@ -942,7 +929,9 @@ $("continueProject").addEventListener("click", async () => {
   $("conversationUrl").value = "https://chatgpt.com/";
   $("objective").value = "";
   $("objective").focus();
+  render();
 });
+$("openFollowUp").addEventListener("click", () => { if (!$("openFollowUp").disabled) openRun(snapshot.run.followUp.runId); });
 $("cancelInitialPreparation").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",
   "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/cancel"));
 $("showUnfinishedRun").addEventListener("click", () => {

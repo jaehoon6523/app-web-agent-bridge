@@ -34,6 +34,7 @@
             <label for="projectRoot">프로젝트 폴더</label><input id="projectRoot" readonly>
             <label for="planningObjective">첫 부탁</label><textarea id="planningObjective" rows="3" readonly></textarea>
             <label for="planningUrl">ChatGPT 대화 URL</label><input id="planningUrl" type="url" readonly>
+            <p id="planningFollowUp" class="muted" hidden></p>
           </div>
         </details>
         <button id="proposeRequirements" type="button" hidden disabled>제안 요청</button>
@@ -73,7 +74,7 @@
         <p class="muted">비워 두면 확장에서 ChatGPT 시작 탭을 찾아 사용하거나 새 탭을 엽니다. 기존 대화를 지정할 때는 해당 탭을 하나만 열어 주세요.</p>
         <label><input id="autoApprovePreparation" type="checkbox"> 첫 대화에서 확인 질문 없이 요구사항이 준비되면 자동 승인하고 구현 시작</label>
         <details hidden><summary>대상 프로젝트 · 감사 기준</summary><div id="projectSummary"></div><button id="editProject" type="button">프로젝트 설정</button></details>
-        <button id="planRun" disabled type="submit" class="primary">준비 대화 시작</button>
+        <button id="planRun" disabled type="submit" class="primary">준비 대화 시작</button><p id="followUpSource" class="muted" hidden></p>
         <button id="startRun" hidden type="button" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
       </form>
       <section id="startProgress" hidden aria-live="polite" aria-atomic="true">
@@ -91,7 +92,7 @@
       <div id="startRecovery"></div>
       <button id="cancelInitialPreparation" type="button" hidden>요청 취소</button>
     </section>
-    <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p><p id="workerProvenance" class="muted"></p></div>
+    <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><p id="runFollowUp" class="muted"></p><button id="openFollowUp" type="button" hidden>이전 적용 작업 보기</button><strong id="runStatus"></strong><p id="runReason"></p><p id="runTime" class="muted"></p><p id="workerProvenance" class="muted"></p></div>
       <div class="actions"><button id="stopRun" disabled>작업 중단</button><button id="retryRun" disabled title="복구 가능한 Worker 실패에서 활성화됩니다.">수동 진행</button></div><p id="stopReason" class="muted"></p><p id="commandResult" role="status"></p>
       <section id="decisionPanel" class="flow-band" hidden><h2>감사자의 확인 질문</h2><p>답변은 현재 후보에 대한 재검토 자료로 기록됩니다. 요구사항이나 완료 기준을 바꾸려면 이 실행을 중단하고 새 작업으로 합의하세요.</p><div id="decisionQuestions"></div><button id="submitDecision" type="button" disabled>답변 보내고 독립 검토 재개</button><p id="decisionStatus" role="status"></p></section>
       <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="continueProject" type="button" hidden>같은 폴더에서 이어서 작업</button><button id="exportEvidence" disabled>감사 기록 다운로드</button><button id="deleteRun" disabled>종료된 작업 삭제</button></div><p id="commandReason" class="muted"></p><p class="muted">기록은 자동 만료되지 않습니다. 종료된 작업을 삭제하면 실행 기록과 감사 근거를 복구할 수 없습니다. 적용된 프로젝트 코드는 유지됩니다.</p></details>

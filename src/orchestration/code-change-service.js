@@ -326,6 +326,7 @@ export class CodeChangeService {
     const runId = preparation?.reservedRunId ?? `code_${randomUUID()}`, createdAt = new Date().toISOString();
     this.store.save({ schemaVersion: 3, runId, mode: "CODE_CHANGE", stage: "CREATED", objective: input.objective,
       preparationId: preparation?.preparationId ?? null, preparationSnapshot: preparation,
+      followUp: preparation?.followUp ?? null,
       projectRef: { projectId: project.projectId, targetRoot: target.targetRoot }, ...target,
       workspaceRoot: null, requirements: project.requirements, requirementsRef: ref,
       requirementsChange: earlier.at(-1)?.requirementsRef && earlier.at(-1).requirementsRef.hash !== ref.hash
