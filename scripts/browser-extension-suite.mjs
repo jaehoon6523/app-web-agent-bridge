@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { extensionBrowser } from '../tests/helpers/extension-browser.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
-import { setupAudit, reportFor } from '../tests/helpers/audit-fixtures.js';
+import { setupAudit, assertionsFor } from '../tests/helpers/audit-fixtures.js';
 import { createFixtureCodexWorker } from '../tests/helpers/codex-worker-fixture.js';
 
 for (const variant of ['roles', 'classes', 'headings']) {
@@ -78,13 +78,32 @@ test('browser fixture: stale document cannot click send', { timeout: 15_000 }, a
 test('fixture integration: real adapters, subprocess, Git capture and browser review drive REWORK then PASS', { timeout: 60_000 }, async t => {
   const reviewed = [];
   const web = await extensionBrowser(t, { initialUrl: 'https://chatgpt.com/c/test', reply(text) {
-    const data = JSON.parse(text.slice(text.indexOf('\n{') + 1));
-    const patch = data.evidence.find(e => e.kind === 'PATCH')?.excerpt?.content;
-    assert.equal(typeof patch, 'string');
-    // This reviewer fixture reads captured bytes. It does not choose PASS by call count.
-    const verdict = patch.includes('+revision 2') ? 'SATISFIED' : 'UNSATISFIED';
-    reviewed.push({ candidateId: data.context.candidateId, patch, verdict });
-    return `<controller_packet>\n${JSON.stringify(reportFor(data.context, verdict))}\n</controller_packet>`;
+    const firstBreak = text.indexOf('\n');
+    const secondBreak = text.indexOf('\n', firstBreak + 1);
+    assert.ok(firstBreak >= 0 && secondBreak > firstBreak, 'Prompt must contain its JSON data line');
+    const data = JSON.parse(text.slice(firstBreak + 1, secondBreak));
+    let response;
+    if (data.plan && data.planHash) {
+      response = { type: 'PLAN_RESPONSE', runId: data.runId, candidateId: data.candidateId,
+        planId: data.planId, planHash: data.planHash, planBasisHash: data.planBasisHash, decision: 'ACCEPT' };
+    } else if (data.planId && data.auditManifestHash && !data.context) {
+      response = { type: 'PLAN_PROPOSAL', runId: data.runId, candidateId: data.candidateId,
+        auditManifestHash: data.auditManifestHash, planBasisHash: data.planBasisHash, planId: data.planId,
+        workItems: [{ workItemId: 'wi-1', objective: 'Resolve all blocking findings without weakening acceptance.',
+          acceptanceCriteria: 'All blocking findings satisfy their recorded resolution criteria.' }],
+        constraints: ['Preserve requirements and tests.'] };
+    } else {
+      assert.ok(data.context?.auditManifestHash, 'Unexpected audit fixture prompt');
+      const patch = data.evidence.find(e => e.kind === 'PATCH')?.excerpt?.content;
+      assert.equal(typeof patch, 'string');
+      // Both reviewer roles decide from captured bytes, independent of invocation order.
+      const verdict = patch.includes('+revision 2') ? 'SATISFIED' : 'UNSATISFIED';
+      if (data.role === 'JUDGE' && data.phase === 'ROUND0') {
+        reviewed.push({ candidateId: data.context.candidateId, patch, verdict });
+      }
+      response = assertionsFor(data.context, verdict);
+    }
+    return `Fixture response.\nCONTROLLER_PACKET_BEGIN\n${JSON.stringify(response)}\nCONTROLLER_PACKET_END`;
   } });
   const f = setupAudit(t, { createWorker: createFixtureCodexWorker, webSession: web.adapter,
     configure(project) { project.policy.turnTimeoutMs = 15_000; } });
@@ -112,7 +131,9 @@ test('fixture integration: real adapters, subprocess, Git capture and browser re
   assert.equal(run.findings[0].status, 'RESOLVED');
   assert.equal(fs.readFileSync(path.join(f.target, 'file.txt'), 'utf8'), 'base\n');
   assert.equal(run.application, null);
-  assert.equal(web.commands.filter(m => m.type === 'agent.prompt').length, 2);
+  const prompts = web.commands.filter(command => command.type === 'agent.prompt');
+  assert.equal(prompts.length, run.requests.length);
+  assert.equal(new Set(prompts.map(command => command.requestId)).size, prompts.length);
   assert.ok(run.requests.every(request => request.status === 'PROCESSED' && request.promptRef && request.responseRef));
   await f.reopen();
   assert.equal(f.service.get(run.runId).stage, 'AWAITING_APPLY');

@@ -47,13 +47,14 @@ export async function extensionBrowser(t, {
     sharedSecret: secret, extensionIdentity: identity };
   const page = await context.newPage();
   const background = await context.newPage();
+  const pages = new Map([[7, page]]);
+  let nextTabId = 8;
   const errors = [];
   const diagnostics = [];
   background.on('console', message => { if (message.type() === 'error') diagnostics.push(message.text()); });
   background.on('requestfailed', request => diagnostics.push(`${request.url()}: ${request.failure()?.errorText}`));
-  page.on('pageerror', error => errors.push(error.message));
   background.on('pageerror', error => errors.push(error.message));
-  const sendContent = message => page.evaluate(message => new Promise(resolve => {
+  const sendContent = (message, target = page) => target.evaluate(message => new Promise(resolve => {
     const asyncReply = globalThis.fixtureContentListener(message, {}, resolve);
     if (!asyncReply && message.type !== 'agent.ping' && message.type !== 'agent.cancel') resolve(null);
   }), message);
@@ -61,16 +62,27 @@ export async function extensionBrowser(t, {
     if (operation === 'set') stored = { ...stored, ...structuredClone(value) };
     return structuredClone(stored);
   });
-  const tab = () => ({ id: 7, windowId: 3, url: page.url(), title: 'Provider DOM fixture' });
+  const tab = id => ({ id, windowId: 3, url: pages.get(id).url(), title: 'Provider DOM fixture' });
   const commands = [];
   const contentResults = [];
   await background.exposeBinding('fixtureTabs', async (_source, operation, value) => {
-    if (operation === 'query') return [tab()];
-    if (operation === 'get' || operation === 'update') return tab();
+    if (operation === 'query') return [...pages.keys()].map(tab);
+    if (operation === 'get') return pages.has(value) ? tab(value) : null;
+    if (operation === 'update') return tab(value.id);
+    if (operation === 'create') {
+      const id = nextTabId++;
+      const created = await context.newPage();
+      pages.set(id, created);
+      await configureProviderPage(created, id);
+      await created.goto(value.url);
+      return tab(id);
+    }
     if (operation === 'sendMessage') {
-      commands.push(value);
-      const result = await sendContent(value);
-      contentResults.push({ request: structuredClone(value), result: structuredClone(result) });
+      commands.push(value.message);
+      const target = pages.get(value.id);
+      if (!target) throw new Error(`Unknown fixture tab: ${value.id}`);
+      const result = await sendContent(value.message, target);
+      contentResults.push({ request: structuredClone(value.message), result: structuredClone(result) });
       return result;
     }
     throw new Error(`Unexpected Chrome operation: ${operation}`);
@@ -81,23 +93,29 @@ export async function extensionBrowser(t, {
       storage: { local: { get: () => fixtureStorage('get'), set: value => fixtureStorage('set', value) } },
       runtime: { getManifest: () => manifest, sendMessage: async message => { globalThis.fixturePopupState = message.payload; },
         onMessage: { addListener(listener) { globalThis.fixtureBackgroundListener = listener; } } },
-      tabs: { query: () => fixtureTabs('query'), get: () => fixtureTabs('get'), update: () => fixtureTabs('update'),
-        sendMessage: (_id, message) => fixtureTabs('sendMessage', message),
+      tabs: { query: () => fixtureTabs('query'), get: id => fixtureTabs('get', id),
+        update: (id, options) => fixtureTabs('update', { id, options }),
+        create: options => fixtureTabs('create', options),
+        sendMessage: (id, message) => fixtureTabs('sendMessage', { id, message }),
         onActivated: event(), onCreated: event(), onRemoved: event(), onUpdated: event() },
       windows: { update: async () => {} },
       scripting: { executeScript: async () => { throw new Error('Fixture content script is not ready'); } },
     };
   }, { manifest });
-  await page.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(message => {
-    globalThis.fixtureBackgroundListener?.(message, { tab: { id: 7 }, frameId: 0 }, () => {});
-  }, message));
-  await page.exposeBinding('fixtureReply', (_source, text) => reply(text));
-  await page.addInitScript(() => {
-    globalThis.chrome = { runtime: {
-      onMessage: { addListener(listener) { globalThis.fixtureContentListener = listener; } },
-      sendMessage: message => fixtureProgress(message),
-    } };
-  });
+  async function configureProviderPage(providerPage, id) {
+    providerPage.on('pageerror', error => errors.push(error.message));
+    await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id }) => {
+      globalThis.fixtureBackgroundListener?.(message, { tab: { id }, frameId: 0 }, () => {});
+    }, { message, id }));
+    await providerPage.exposeBinding('fixtureReply', (_source, text) => reply(text));
+    await providerPage.addInitScript(() => {
+      globalThis.chrome = { runtime: {
+        onMessage: { addListener(listener) { globalThis.fixtureContentListener = listener; } },
+        sendMessage: message => fixtureProgress(message),
+      } };
+    });
+  }
+  await configureProviderPage(page, 7);
   let dashboardSnapshot = null;
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
