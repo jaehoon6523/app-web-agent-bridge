@@ -58,6 +58,11 @@ const imports = new Map(sources.map((filename) => {
       if (sourceSet.has(candidate)) { targets.add(candidate); break; }
     }
   }
+  // CLI wrappers can launch another script by path without importing it.
+  for (const [, script] of source.matchAll(/["'](scripts\/[\w./-]+\.(?:mjs|js))["']/gu)) {
+    const target = path.join(root, script);
+    if (sourceSet.has(target)) targets.add(target);
+  }
   return [filename, targets];
 }));
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "extension", "manifest.json"), "utf8"));
@@ -66,7 +71,6 @@ const htmlScripts = (directory, filename) => [...fs.readFileSync(path.join(direc
   .map(([, source]) => path.join(directory, source));
 const packageScripts = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).scripts;
 const operationalCommands = Object.entries(packageScripts)
-  .filter(([name]) => ["start", "dev", "demo", "demo:win", "doctor", "certify", "projection:rebuild"].includes(name))
   .flatMap(([, command]) => [...command.matchAll(/\b(?:src|scripts)\/[\w./-]+\.(?:mjs|js)\b/gu)]
     .map(([filename]) => path.join(root, filename)));
 const entryPoints = new Set([
@@ -89,6 +93,11 @@ for (const productionRoot of productionRoots) {
     if (!reachable.has(filename)) {
       failures.push(`${path.relative(root, filename)}: no runtime, browser, or CLI entry point imports this module`);
     }
+  }
+}
+for (const filename of walk(path.join(root, "scripts"))) {
+  if (!reachable.has(filename)) {
+    failures.push(`${path.relative(root, filename)}: no npm command or runtime script imports this script`);
   }
 }
 
