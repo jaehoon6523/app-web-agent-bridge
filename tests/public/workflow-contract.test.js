@@ -13,10 +13,10 @@ const source = async (name) => readFile(path.join(publicDir, name), "utf8");
 // implementation and GREEN only after the canonical workflow contract exists.
 
 const allowed = new Map([
-  ["START", new Set(["START_IDLE", "VALIDATING"])],
+  ["START", new Set(["START_IDLE", "VALIDATING", "CONNECTING_WEB", "WAITING_WEB_RESPONSE", "RECOVERY_REQUIRED", "WEB_BLOCKED", "FAILED"])],
   ["PREPARE", new Set(["INITIALIZING", "WAITING_WEB_RESPONSE", "DISCUSSING", "AGREEMENT_READY", "APPROVING", "WEB_BLOCKED", "RECOVERY_REQUIRED", "FAILED"])],
-  ["WORK", new Set(["RUN_CREATED", "PROVISIONING", "WORKER_RUNNING", "VERIFYING", "REVIEW_RUNNING", "REWORK", "APPLYING"])],
-  ["RESULT", new Set(["AWAITING_APPLY", "APPLIED", "HOLD", "RECOVERY_REQUIRED", "CANCELLED", "INCONCLUSIVE", "FAILED"])],
+  ["WORK", new Set(["RUN_CREATED", "PROVISIONING", "WORKER_RUNNING", "VERIFYING", "REVIEW_RUNNING", "REWORK", "APPLYING", "STOPPING", "HOLD", "RECOVERY_REQUIRED"])],
+  ["RESULT", new Set(["AWAITING_APPLY", "APPLIED", "COMPLETE", "CANCELLED", "INCONCLUSIVE", "FAILED"])],
 ]);
 
 function assertValidWorkflow(workflow) {
@@ -66,7 +66,8 @@ test("CONTRACT-01: stage/state is a discriminated union", () => {
       assert.doesNotThrow(() => assertValidWorkflow(workflow));
     }
   }
-  assert.throws(() => assertValidWorkflow({ stage: "START", state: "WAITING_WEB_RESPONSE" }));
+  assert.throws(() => assertValidWorkflow({ stage: "START", state: "AGREEMENT_READY" }));
+  assert.throws(() => assertValidWorkflow({ stage: "RESULT", state: "HOLD", runId: "run_1", runVersion: 1 }));
   assert.throws(() => assertValidWorkflow({ stage: "WORK", state: "AGREEMENT_READY", runId: "run_1", runVersion: 1 }));
 });
 

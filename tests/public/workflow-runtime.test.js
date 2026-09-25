@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
+import { workflowForRun } from "../../src/orchestration/preparation-service.js";
 
 export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
@@ -208,10 +209,13 @@ test("automatic approval survives UI reload and does not resend after an attempt
 });
 
 for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"],
-  ["RESULT", "HOLD"], ["RESULT", "AWAITING_APPLY"]]) {
+  ["WORK", "HOLD"], ["WORK", "RECOVERY_REQUIRED"], ["RESULT", "AWAITING_APPLY"]]) {
   test(`fresh UI restores ${stage}/${state} using only the server snapshot`, async () => {
     const run = stage === "START" ? null : { runId: "r1", version: 7, phase: state, objective: "테스트 작업" };
-    const snapshot = { workflow: { stage, state, runId: run?.runId ?? null, runVersion: run?.version ?? null },
+    const workflow = run ? workflowForRun(run) : { stage: "START", state: "START_IDLE" };
+    assert.equal(workflow.stage, stage);
+    assert.equal(workflow.state, state);
+    const snapshot = { workflow,
       preparation: null, run, runs: run ? [run] : [], preflight: {}, commandCapabilities: [] };
     // Each load has a new VM and no retained selection, draft or local storage.
     for (let load = 0; load < 2; load++) {
@@ -226,3 +230,10 @@ for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"
     }
   });
 }
+test("the UI rejects RESULT for recoverable work states", () => {
+  for (const phase of ["HOLD", "RECOVERY_REQUIRED"]) {
+    assert.throws(() => normalizeDashboardState({ workflow: { stage: "RESULT", state: phase },
+      run: { runId: "r1", version: 1, phase }, runs: [], commandCapabilities: [] }),
+    /workflow.state is invalid/);
+  }
+});
