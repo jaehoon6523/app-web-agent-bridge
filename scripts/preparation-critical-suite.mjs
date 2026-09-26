@@ -138,6 +138,7 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   const dashboard = await browser.openDashboard(projection);
   await dashboard.locator("#requirementsFold").evaluate((element) => { element.open = true; });
   await dashboard.locator("#preparationDiagnostics").evaluate((element) => { element.open = true; });
+  await dashboard.locator(".session-recovery").evaluate((element) => { element.open = true; });
   const rendered = await dashboard.locator("body").innerText();
   assert.match(rendered, new RegExp(context.agreement.summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   for (const line of expectedUi) assert.ok(rendered.includes(line), `Dashboard did not render: ${line}`);
