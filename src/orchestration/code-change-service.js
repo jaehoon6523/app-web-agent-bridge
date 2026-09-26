@@ -57,7 +57,8 @@ function hasReviewerIndependenceAuthority(review) {
     && judge.sessionId !== critic.sessionId
     && typeof judge.conversationId === "string" && judge.conversationId
     && typeof critic.conversationId === "string" && critic.conversationId
-    && judge.conversationId !== critic.conversationId);
+    && ((judge.provider ?? null) !== (critic.provider ?? null)
+      || judge.conversationId !== critic.conversationId));
 }
 
 function hasMultiReviewAuthority(run) {
@@ -155,8 +156,12 @@ function projectWorkerRuntime(run, preflight, inspection = null) {
 }
 
 export class CodeChangeService {
-  constructor({ filename, artifactStore, webSession, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
+  constructor({ filename, artifactStore, webSession, reviewerWebSessions = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
     this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
+    this.reviewerWebSessions = {
+      JUDGE:reviewerWebSessions?.JUDGE ?? webSession,
+      CRITIC:reviewerWebSessions?.CRITIC ?? webSession,
+    };
     this.project = project; this.workerConfig = workerConfig ?? { provider: "codex", model: null };
     this.createWorker = createWorker;
     this.jobs = new Map(); this.workers = new Map(); this.controls = new Map();
@@ -166,6 +171,28 @@ export class CodeChangeService {
   list() { return this.store.list(); }
   get(id) { return this.store.get(id); }
   busy() { return this.jobs.size > 0 || this.list().some((r) => !terminal.has(r.stage)); }
+  reviewerWeb(role, expectedProvider = null) {
+    if (!["JUDGE","CRITIC"].includes(role)) throw new TypeError("Reviewer role must be JUDGE or CRITIC.");
+    const adapter = this.reviewerWebSessions?.[role] ?? null;
+    if (!adapter) throw new Error(`${role} Web reviewer adapter is unavailable.`);
+    const actualProvider = adapter.runtimeIdentity?.provider ?? null;
+    if (expectedProvider !== null && actualProvider !== expectedProvider) {
+      throw Object.assign(new Error(`${role} reviewer provider changed from ${expectedProvider} to ${actualProvider ?? "unknown"}; the persisted conversation binding cannot be reused.`), {
+        code:"REVIEWER_PROVIDER_MISMATCH",
+      });
+    }
+    return adapter;
+  }
+  reviewerWebAdapters() {
+    return [...new Set(["JUDGE","CRITIC"].map((role) => this.reviewerWebSessions?.[role]).filter(Boolean))];
+  }
+  reviewerWebBusy() {
+    return this.reviewerWebAdapters().some((adapter) => Boolean(adapter.activeTurnId));
+  }
+  reviewerWebForTurn(turnId) {
+    if (typeof turnId !== "string" || !turnId) return null;
+    return this.reviewerWebAdapters().find((adapter) => adapter.activeTurnId === turnId) ?? null;
+  }
   update(id, changes) {
     const run = this.get(id);
     const at = new Date().toISOString();
@@ -630,8 +657,10 @@ export class CodeChangeService {
       catch (error) { results.push({ actor: "CLI", confirmed: false, reason: error.message }); }
     }
     if ((["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run.stage) && run.reviewTurnId)
-      || (this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId)) {
-      try { await this.web.interrupt({ turnId: run.reviewTurnId }); results.push({ actor: "WEB", confirmed: true }); }
+      || (this.reviewerWebForTurn(run.reviewTurnId))) {
+      const role = ["JUDGE","CRITIC"].includes(run.coordination?.activeRole) ? run.coordination.activeRole : null;
+      const reviewer = this.reviewerWebForTurn(run.reviewTurnId) ?? (role ? this.reviewerWeb(role) : this.web);
+      try { await reviewer.interrupt({ turnId: run.reviewTurnId }); results.push({ actor: "WEB", confirmed: true }); }
       catch (error) { results.push({ actor: "WEB", confirmed: false, reason: error.message }); }
     }
     if (run.stage === "PROVISIONING") results.push({ actor: "WEB_PROVISIONING", confirmed: false, reason: "Provisioning cancellation cannot be confirmed." });
@@ -642,7 +671,7 @@ export class CodeChangeService {
     if (!run || run.version !== payload.expectedVersion) throw Object.assign(new Error("Run changed; refresh."), { code: "RUN_VERSION_CONFLICT" });
     if (type === "run.archive" || type === "run.unarchive") {
       if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
-        || this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId) {
+        || this.reviewerWebForTurn(run.reviewTurnId)) {
         throw Object.assign(new Error("Only settled finished runs can be archived or restored."), { code:"RUN_NOT_TERMINAL" });
       }
       const archiving = type === "run.archive";
@@ -661,7 +690,7 @@ export class CodeChangeService {
     }
     if (type === "code.review.rebind") {
       if (run.stage !== "HOLD" || run.terminationReason !== "WEB_BINDING_REQUIRED"
-        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId
+        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()
         || !["JUDGE","CRITIC"].includes(payload.role)
         || !Number.isSafeInteger(payload.selectedTabId)) {
         throw Object.assign(new Error("Reviewer tab recovery is unavailable or the selected tab is invalid."), {
@@ -679,7 +708,7 @@ export class CodeChangeService {
     }
     if (type === "run.delete") {
       if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
-        || this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId) {
+        || this.reviewerWebForTurn(run.reviewTurnId)) {
         throw Object.assign(new Error("Only settled finished runs can be deleted."), { code:"RUN_NOT_TERMINAL" });
       }
       if (run.workspaceRoot && fs.existsSync(run.workspaceRoot)) {
@@ -773,7 +802,7 @@ export class CodeChangeService {
     }
     if (type === "code.review.discuss") {
       if (!["HOLD","AWAITING_APPLY"].includes(run.stage) || !run.candidate?.candidateId
-        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
+        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
         throw Object.assign(new Error("Reviewer discussion is available only for a settled frozen candidate."), { code:"REVIEW_DISCUSSION_UNAVAILABLE" });
       }
       if (!["JUDGE","CRITIC"].includes(payload.role)) {
@@ -836,7 +865,7 @@ export class CodeChangeService {
       const discussion = (run.reviewDiscussions ?? []).find((item) =>
         item.discussionId === payload.discussionId && item.status === "UNCONFIRMED");
       if (!discussion || !["HOLD","AWAITING_APPLY"].includes(run.stage)
-        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
+        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
         throw Object.assign(new Error("No settled unconfirmed reviewer discussion is available to discard."), { code:"REVIEW_DISCUSSION_DISCARD_UNAVAILABLE" });
       }
       if (payload.unresolvedResultConfirmed !== true || payload.noAutomaticResendConfirmed !== true
@@ -846,7 +875,7 @@ export class CodeChangeService {
       const binding = (run.conversationBindings ?? []).find((item) =>
         item.role === discussion.role && item.activeDeliveryId === discussion.discussionId);
       if (!binding) throw Object.assign(new Error("Reviewer discussion delivery identity changed."), { code:"DELIVERY_RECOVERY_MISMATCH" });
-      await this.web.discardDelivery({
+      await this.reviewerWeb(discussion.role, binding.provider ?? null).discardDelivery({
         currentDeliveryId:discussion.discussionId,
         sessionId:binding.sessionId,
         runId:run.runId,
@@ -869,7 +898,7 @@ export class CodeChangeService {
     if (type === "code.review.retry" || type === "code.decision.reply") {
       const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
       if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
-      if (!retryableAuditReview(run) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
+      if (!retryableAuditReview(run) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
         throw new Error("Only a settled review hold or legacy single-review candidate can be re-audited.");
       }
       let decision = null;
@@ -1013,7 +1042,9 @@ export class CodeChangeService {
       if (["PROVISIONING", "RECOVERY_REQUIRED", "VERIFYING", "EVIDENCE_SUPPLEMENT"].includes(run.stage)) results.push({ actor: "EXTERNAL", confirmed: false, reason: "External state cannot be confirmed at stop acceptance." });
       if (["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run.stage) && run.reviewTurnId
         && !results.some((r) => r.actor === "WEB")) {
-        try { await this.web.interrupt({ turnId: run.reviewTurnId }); results.push({ actor: "WEB", confirmed: true }); }
+        const role = ["JUDGE","CRITIC"].includes(run.coordination?.activeRole) ? run.coordination.activeRole : null;
+        const reviewer = this.reviewerWebForTurn(run.reviewTurnId) ?? (role ? this.reviewerWeb(role) : this.web);
+        try { await reviewer.interrupt({ turnId: run.reviewTurnId }); results.push({ actor: "WEB", confirmed: true }); }
         catch (error) { results.push({ actor: "WEB", confirmed: false, reason: error.message }); }
       }
       const uncertain = results.some((r) => !r.confirmed) || (this.jobs.has(run.runId) && !this.workers.has(run.runId) && run.stage === "WORKER_RUNNING");
@@ -1037,38 +1068,48 @@ export class CodeChangeService {
   }
   snapshot(runId, preflight) {
     const record = this.get(runId);
+    const reviewerRuntime = (role) => {
+      const identity = this.reviewerWeb(role)?.runtimeIdentity;
+      return identity ? {
+        actor:identity.actor ?? null,
+        provider:identity.provider ?? null,
+        providerEvidence:identity.providerEvidence ?? "UNAVAILABLE",
+        model:identity.model ?? null,
+        modelEvidence:identity.modelEvidence ?? "UNOBSERVED",
+      } : { actor:null, provider:null, providerEvidence:"UNAVAILABLE", model:null, modelEvidence:"UNOBSERVED" };
+    };
+    const reviewerRuntimes = { JUDGE:reviewerRuntime("JUDGE"), CRITIC:reviewerRuntime("CRITIC") };
     return redactForEvidence({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
       activeActor: record.stage === "WORKER_RUNNING"
         ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
-        : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage) ? "CHATGPT_WEB_AGENT" : null },
+        : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage)
+          ? (["JUDGE","CRITIC"].includes(record.coordination?.activeRole)
+            ? reviewerRuntimes[record.coordination.activeRole].actor ?? "WEB_REVIEWER_AGENT" : "WEB_REVIEWER_AGENT")
+          : null },
       sessions: record.conversationBindings ?? [], messages: record.messages,
       deliveries: (record.conversationBindings ?? []).filter((item) => item.activeDeliveryId).map((item) => ({ bindingId:item.bindingId, deliveryId:item.activeDeliveryId, role:item.role })),
       approvals: record.application ? [record.application] : [], events: record.events ?? [],
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
-      reviewerRuntime: this.web?.runtimeIdentity ? {
-        actor:this.web.runtimeIdentity.actor ?? null,
-        provider:this.web.runtimeIdentity.provider ?? null,
-        providerEvidence:this.web.runtimeIdentity.providerEvidence ?? "UNAVAILABLE",
-        model:this.web.runtimeIdentity.model ?? null,
-        modelEvidence:this.web.runtimeIdentity.modelEvidence ?? "UNOBSERVED",
-      } : { actor:null, provider:null, providerEvidence:"UNAVAILABLE", model:null, modelEvidence:"UNOBSERVED" },
+      reviewerRuntime:reviewerRuntimes.JUDGE, reviewerRuntimes,
       workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile", "run.note.add",
         ...(["HOLD","AWAITING_APPLY"].includes(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
-          && !this.web.activeTurnId
+          && !this.reviewerWebBusy()
           && (record.reviewDiscussions ?? []).some((item) => item.status === "UNCONFIRMED")
           ? ["code.review.discuss.discard"] : []),
         ...(["HOLD","AWAITING_APPLY"].includes(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
-          && !this.web.activeTurnId
+          && !this.reviewerWebBusy()
           && !(record.reviewDiscussions ?? []).some((item) => item.status === "UNCONFIRMED")
           && (record.conversationBindings ?? []).some((item) =>
             ["JUDGE","CRITIC"].includes(item.role) && item.conversationUrl && item.conversationId && item.activeDeliveryId === null)
           ? ["code.review.discuss"] : []),
         ...(record.stage === "HOLD" && record.terminationReason === "WEB_BINDING_REQUIRED"
-          && !this.jobs.has(runId) && !this.workers.has(runId) && !this.web.activeTurnId
-          && (record.coordination?.bindingCandidates?.length ?? 0) > 0 && typeof this.web?.rebind === "function"
+          && !this.jobs.has(runId) && !this.workers.has(runId) && !this.reviewerWebBusy()
+          && (record.coordination?.bindingCandidates?.length ?? 0) > 0
+          && ["JUDGE","CRITIC"].includes(record.coordination?.activeRole)
+          && typeof this.reviewerWeb(record.coordination.activeRole)?.rebind === "function"
           ? ["code.review.rebind"] : []),
         ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
           ? ["run.delete", record.archivedAt ? "run.unarchive" : "run.archive"]

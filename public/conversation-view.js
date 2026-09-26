@@ -46,7 +46,7 @@ export function renderConversation(run, timeline, node, time) {
       (message.auditManifestHash ?? request?.auditManifestHash) && `감사 기준 ${message.auditManifestHash ?? request?.auditManifestHash}`].filter(Boolean).join(" · ");
     if (message.fromActor === "CODEX_AGENT" || message.fromActor === "CODE_WORKER") {
       add(message.createdAt, "구현자 보고", workerReport(message.content), provenance || "후보 정보 없음", "worker");
-    } else if (message.fromActor === "CHATGPT_WEB_AGENT") {
+    } else if (message.role === "JUDGE" || message.role === "CRITIC") {
       add(message.createdAt, `${message.role === "JUDGE" ? "Judge" : message.role === "CRITIC" ? "Critic" : message.role ?? request?.role ?? "감사자"} 의견`, message.content,
         provenance || "후보 정보 없음");
     }

@@ -48,8 +48,8 @@ function roleSessionId(runId, role) {
   return role === "JUDGE" ? `web_${runId}` : `web_${runId}_${role.toLowerCase()}`;
 }
 
-function reviewerRuntimeIdentity(service) {
-  const identity = service?.web?.runtimeIdentity;
+function reviewerRuntimeIdentity(service, role) {
+  const identity = service.reviewerWeb(role)?.runtimeIdentity;
   return {
     actor:typeof identity?.actor === "string" && identity.actor ? identity.actor : "CHATGPT_WEB_AGENT",
     provider:typeof identity?.provider === "string" && identity.provider ? identity.provider : null,
@@ -75,14 +75,22 @@ function initialBinding(run, role, at, runtimeIdentity) {
   };
 }
 
-function ensureBindings(run, at, runtimeIdentity) {
+function sameReviewerConversation(left, right) {
+  return Boolean(left?.conversationId && right?.conversationId
+    && (left.provider ?? null) === (right.provider ?? null)
+    && left.conversationId === right.conversationId);
+}
+
+function ensureBindings(service, run, at) {
   const bindings = [...(run.conversationBindings ?? [])];
-  for (const role of REVIEW_ROLES) if (!bindings.some((item) => item.role === role)) bindings.push(initialBinding(run, role, at, runtimeIdentity));
+  for (const role of REVIEW_ROLES) if (!bindings.some((item) => item.role === role)) {
+    bindings.push(initialBinding(run, role, at, reviewerRuntimeIdentity(service, role)));
+  }
   const judge = bindings.find((item) => item.role === "JUDGE");
   const critic = bindings.find((item) => item.role === "CRITIC");
   if (!judge || !critic) throw new Error("Required reviewer bindings are unavailable.");
-  if (judge.conversationId && critic.conversationId && judge.conversationId === critic.conversationId) {
-    throw new Error("Judge and Critic must use different ChatGPT conversations.");
+  if (sameReviewerConversation(judge, critic)) {
+    throw new Error("Judge and Critic must use different reviewer conversations.");
   }
   return bindings;
 }
@@ -125,8 +133,8 @@ function reviewerIndependenceSnapshot(run) {
     contractVersion:1,
     roleSeparation:"VERIFIED",
     sessionSeparation:judge?.sessionId && critic?.sessionId && judge.sessionId !== critic.sessionId ? "VERIFIED" : "FAILED",
-    conversationSeparation:judge?.conversationId && critic?.conversationId && judge.conversationId !== critic.conversationId
-      ? "VERIFIED" : "FAILED",
+    conversationSeparation:judge?.conversationId && critic?.conversationId
+      && !sameReviewerConversation(judge, critic) ? "VERIFIED" : "FAILED",
     providerSeparation:providerSeparated ? "VERIFIED" : "NOT_ENFORCED",
     modelIdentity:"UNOBSERVED",
     accountIsolation:"UNVERIFIED",
@@ -148,9 +156,10 @@ function reviewerIndependenceSnapshot(run) {
 async function activateRole(service, runId, role) {
   let run = service.get(runId);
   const record = bindingForRole(run, role);
+  const web = service.reviewerWeb(role, record.provider ?? null);
   let returned;
   try {
-    returned = await service.wait(runId, service.web.resume({
+    returned = await service.wait(runId, web.resume({
       binding:webBinding(record),
       createNewConversation:role === "CRITIC" && record.conversationId === null,
     }));
@@ -187,12 +196,13 @@ export async function rebindReviewRole(service, runId, { role, tabId }) {
       code:"DELIVERY_RECOVERY_MISMATCH",
     });
   }
-  if (typeof service.web?.rebind !== "function") {
+  const record = bindingForRole(run, role);
+  const web = service.reviewerWeb(role, record.provider ?? null);
+  if (typeof web?.rebind !== "function") {
     throw Object.assign(new Error("The Web adapter does not support explicit reviewer tab selection."), {
       code:"WEB_REBIND_UNAVAILABLE",
     });
   }
-  const record = bindingForRole(run, role);
   if (!record.conversationUrl || !record.conversationId) {
     throw Object.assign(new Error(`${role} does not have an exact conversation identity to recover.`), {
       code:"REVIEW_BINDING_RECOVERY_UNAVAILABLE",
@@ -200,7 +210,7 @@ export async function rebindReviewRole(service, runId, { role, tabId }) {
   }
   const requested = { ...record, tabId:null, windowId:null, documentId:null, frameId:null,
     bindingStatus:"NEEDS_REBIND", activeDeliveryId:null };
-  const returned = await service.web.rebind({ binding:webBinding(requested), tabId:selected.tabId, focus:true });
+  const returned = await web.rebind({ binding:webBinding(requested), tabId:selected.tabId, focus:true });
   if (returned.sessionId !== record.sessionId || returned.runId !== runId
     || returned.conversationUrl !== record.conversationUrl || returned.conversationId !== record.conversationId
     || returned.bindingStatus !== "BOUND") {
@@ -211,8 +221,8 @@ export async function rebindReviewRole(service, runId, { role, tabId }) {
   const next = recordFromReturned(record, returned, new Date().toISOString(), null);
   const bindings = replaceBinding(run.conversationBindings, next);
   const other = bindings.find((item) => item.role !== role && REVIEW_ROLES.includes(item.role));
-  if (other?.conversationId && other.conversationId === next.conversationId) {
-    throw Object.assign(new Error("Judge and Critic cannot resolve to the same ChatGPT conversation."), {
+  if (sameReviewerConversation(other, next)) {
+    throw Object.assign(new Error("Judge and Critic cannot resolve to the same reviewer conversation."), {
       code:"DELIVERY_RECOVERY_MISMATCH",
     });
   }
@@ -269,11 +279,12 @@ function workerPosition(service, run) {
 async function submitRoleTurn(service, runId, role, requestId, prompt, parseResponse = parseControl) {
   let run = service.get(runId);
   let binding = await activateRole(service, runId, role);
+  const web = service.reviewerWeb(role, binding.provider ?? null);
   const active = { ...binding, activeDeliveryId:requestId, updatedAt:new Date().toISOString() };
   service.update(runId, { conversationBindings:replaceBinding(service.get(runId).conversationBindings, active) });
   let handle;
   try {
-    handle = await service.web.submitTurn({ runId, turnId:requestId, controllerMessageId:requestId, text:prompt,
+    handle = await web.submitTurn({ runId, turnId:requestId, controllerMessageId:requestId, text:prompt,
       timeoutMs:run.policy.turnTimeoutMs, parseResponse });
   } catch (error) {
     run = service.get(runId); binding = bindingForRole(run, role);
@@ -291,11 +302,11 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
   const returned = recordFromReturned(current, response.binding, new Date().toISOString(), requestId);
   const bindings = replaceBinding(run.conversationBindings, returned);
   const judge = bindings.find((item) => item.role === "JUDGE"), critic = bindings.find((item) => item.role === "CRITIC");
-  if (judge?.conversationId && critic?.conversationId && judge.conversationId === critic.conversationId) {
-    throw new Error("Judge and Critic resolved to the same ChatGPT conversation.");
+  if (sameReviewerConversation(judge, critic)) {
+    throw new Error("Judge and Critic resolved to the same reviewer conversation.");
   }
   service.update(runId, { conversationBindings:bindings });
-  const acknowledgement = await service.wait(runId, service.web.acknowledgeDelivery({ turnId:requestId }));
+  const acknowledgement = await service.wait(runId, web.acknowledgeDelivery({ turnId:requestId }));
   if (acknowledgement?.currentDeliveryId !== null
     || acknowledgement?.sessionId !== returned.sessionId
     || acknowledgement?.runId !== runId
@@ -335,9 +346,10 @@ async function activateSettledRole(service, runId, role) {
       code:"REVIEW_DISCUSSION_BINDING_REQUIRED",
     });
   }
+  const web = service.reviewerWeb(role, record.provider ?? null);
   let returned;
   try {
-    returned = await waitSettledReviewTurn(service, runId, service.web.resume({
+    returned = await waitSettledReviewTurn(service, runId, web.resume({
       binding:webBinding(record),
       createNewConversation:false,
     }));
@@ -361,6 +373,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
   const run = service.get(runId);
   if (!run?.candidate?.candidateId) throw Object.assign(new Error("A frozen candidate is required for reviewer discussion."), { code:"REVIEW_DISCUSSION_UNAVAILABLE" });
   let binding = await activateSettledRole(service, runId, role);
+  const web = service.reviewerWeb(role, binding.provider ?? null);
   const active = { ...binding, activeDeliveryId:discussionId, updatedAt:new Date().toISOString() };
   service.update(runId, { conversationBindings:replaceBinding(service.get(runId).conversationBindings, active) });
   const current = service.get(runId);
@@ -383,7 +396,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
   const prompt = buildReviewDiscussionPrompt(redactForEvidence(data));
   let handle;
   try {
-    handle = await service.web.submitTurn({
+    handle = await web.submitTurn({
       runId, turnId:discussionId, controllerMessageId:discussionId, text:prompt,
       timeoutMs:current.policy.turnTimeoutMs,
       parseResponse:(raw) => ({ body:raw, packetText:"", packet:{ type:"REVIEW_DISCUSSION_TEXT" } }),
@@ -406,7 +419,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
     let latest = service.get(runId), record = bindingForRole(latest, role);
     const returned = recordFromReturned(record, response.binding, new Date().toISOString(), discussionId);
     service.update(runId, { conversationBindings:replaceBinding(latest.conversationBindings, returned) });
-    const acknowledgement = await waitSettledReviewTurn(service, runId, service.web.acknowledgeDelivery({ turnId:discussionId }));
+    const acknowledgement = await waitSettledReviewTurn(service, runId, web.acknowledgeDelivery({ turnId:discussionId }));
     if (acknowledgement?.currentDeliveryId !== null
       || acknowledgement?.sessionId !== returned.sessionId
       || acknowledgement?.runId !== runId
@@ -467,14 +480,15 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
     const responseRef = service.artifactStore.put(redactForEvidence(response.rawText ?? `${response.body}\n${response.packetText}`), { mimeType:"text/plain", redacted:true });
     const reasoningRef = service.artifactStore.put(redactForEvidence(response.body ?? ""), { mimeType:"text/plain", redacted:true });
     const packetRef = service.artifactStore.put(canonicalJson(redactForEvidence(response.packet)), { mimeType:"application/json", redacted:true });
+    const reviewerBinding = bindingForRole(run, role);
     const artifact = { reviewArtifactId:`review_artifact_${randomUUID()}`, requestId, candidateId:context.candidateId,
       auditManifestId:auditManifest.auditManifestId, auditManifestHash:auditManifest.auditManifestHash,
-      bindingId:bindingForRole(run, role).bindingId, role, phase, kind:phase === "ROUND0" ? "INITIAL_REVIEW" : "CROSS_REVIEW",
+      bindingId:reviewerBinding.bindingId, role, phase, kind:phase === "ROUND0" ? "INITIAL_REVIEW" : "CROSS_REVIEW",
       visibility:"PRIVATE", contentRef:reasoningRef, packetRef, responseRef, createdAt:new Date().toISOString() };
     service.update(runId, { reviewArtifacts:[...(run.reviewArtifacts ?? []), artifact],
       requests:run.requests.map((item) => item.requestId === requestId ? { ...item, status:"RECEIVED",
         responseRef, reviewArtifactId:artifact.reviewArtifactId } : item),
-      messages:[...run.messages, { messageId:requestId, fromActor:"CHATGPT_WEB_AGENT", role, phase,
+      messages:[...run.messages, { messageId:requestId, fromActor:reviewerBinding.actor ?? "WEB_REVIEWER_AGENT", role, phase,
         candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash,
         content:(response.body ?? "").trim() || "(설명 없이 제어 패킷만 제출됨)", createdAt:new Date().toISOString() }] });
     let report;
@@ -666,8 +680,7 @@ export async function auditCandidate(service, runId, workspace) {
   service.assertActive(runId);
   let run = service.get(runId);
   const now = new Date().toISOString();
-  const runtimeIdentity = reviewerRuntimeIdentity(service);
-  const bindings = ensureBindings(run, now, runtimeIdentity);
+  const bindings = ensureBindings(service, run, now);
   if (canonicalJson(bindings) !== canonicalJson(run.conversationBindings ?? [])) run = service.update(runId, { conversationBindings:bindings });
   let auditManifest = createAuditManifest(run);
   const manifestRef = service.artifactStore.put(canonicalJson(auditManifest), { mimeType:"application/json", redacted:true });
