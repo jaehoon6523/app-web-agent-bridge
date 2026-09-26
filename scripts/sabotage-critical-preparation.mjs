@@ -10,9 +10,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sabotages = [
   {
     name: "content extraction returns an empty response",
-    file: "extension/content.js",
-    find: "return (preferred.innerText || preferred.textContent || \"\").trim();",
-    replace: "return \"\";",
+    file: "extension/runtime/response-text.js",
+    find: "function elementText(element, selectors, selectorTelemetry) {",
+    replace: "function elementText(element, selectors, selectorTelemetry) {\n    return \"\";",
   },
   {
     name: "preparation bypasses the parsed controller packet",
