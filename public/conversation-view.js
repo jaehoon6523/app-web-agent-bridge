@@ -22,6 +22,18 @@ export function renderConversation(run, timeline, node, time) {
     const status = intervention.status === "DELIVERED" ? "전달 확인" : intervention.status === "FAILED" ? "전달 실패" : "전달 확인 중";
     add(intervention.createdAt, role, intervention.text, `Worker turn ${intervention.turnId ?? "확인 전"} · ${status}`, "decision");
   }
+  for (const discussion of run.reviewDiscussions ?? []) {
+    const status = discussion.status === "DELIVERED" ? "답변 확인"
+      : discussion.status === "UNCONFIRMED" ? "전송 결과 미확인"
+      : discussion.status === "DISCARDED" ? "미확정 전송 폐기"
+      : discussion.status === "FAILED" ? "전송 실패" : "전송 확인 중";
+    add(discussion.createdAt, `사용자 → ${discussion.role}`, discussion.text,
+      `후보 ${discussion.candidateId ?? "정보 없음"} · ${status}`, "decision");
+    if (typeof discussion.response === "string" && discussion.response.trim()) {
+      add(discussion.updatedAt, `${discussion.role} · 자유 대화`, discussion.response,
+        `후보 ${discussion.candidateId ?? "정보 없음"} · 감사 상태 변경 없음`);
+    }
+  }
   for (const message of run.messages ?? []) {
     const request = (run.requests ?? []).find((item) => item.requestId === message.messageId);
     const candidateId = message.candidateId ?? request?.candidateId;

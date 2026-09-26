@@ -74,7 +74,7 @@ export function setupAudit(t, hooks = {}) {
   git("init","--quiet"); git("config","core.autocrlf","false"); fs.writeFileSync(path.join(target,"file.txt"),"base\n"); git("add",".");
   git("-c","user.name=Test","-c","user.email=test@example.invalid","-c","core.hooksPath=","commit","--quiet","-m","base");
   let starts=0, reviews=0, turns=0, service;
-  const briefs=[], prompts=[], reviewPrompts=[], acknowledgements=[];
+  const briefs=[], prompts=[], reviewPrompts=[], discussionPrompts=[], discussionDiscards=[], acknowledgements=[];
   const configured = project(target); hooks.configure?.(configured);
   const options = { filename:path.join(directory,"controller.sqlite"), artifactStore:new ArtifactStore(path.join(directory,"artifacts")), codex:{}, project:configured,
     createWorker:hooks.createWorker ?? (async ({workspace,persistThreadId,persistCapture}) => {
@@ -89,10 +89,25 @@ export function setupAudit(t, hooks = {}) {
         return {turnId:`worker-turn-${number}`,completion:Promise.resolve({text:JSON.stringify(report),capture})};
       }};
     }),
-    webSession:hooks.webSession ?? {activeTurnId:null,activeBinding:null,async resume(input){if(hooks.resume) await hooks.resume(input);const b=input.binding;this.activeBinding=b.conversationId?{...b,tabId:1,windowId:1,documentId:`doc-${b.sessionId}`,frameId:0,bindingStatus:"BOUND"}:{...b,tabId:2,windowId:1,documentId:`doc-${b.sessionId}`,frameId:0,conversationUrl:"https://chatgpt.com/",conversationId:null,bindingStatus:"ROOT_READY"};return this.activeBinding;},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);return {currentDeliveryId:null,sessionId:this.activeBinding.sessionId,runId:this.activeBinding.runId,conversationUrl:this.activeBinding.conversationUrl};},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
+    webSession:hooks.webSession ?? {activeTurnId:null,activeBinding:null,async resume(input){if(hooks.resume) await hooks.resume(input);const b=input.binding;this.activeBinding=b.conversationId?{...b,tabId:1,windowId:1,documentId:`doc-${b.sessionId}`,frameId:0,bindingStatus:"BOUND"}:{...b,tabId:2,windowId:1,documentId:`doc-${b.sessionId}`,frameId:0,conversationUrl:"https://chatgpt.com/",conversationId:null,bindingStatus:"ROOT_READY"};return this.activeBinding;},async acknowledgeDelivery({turnId}){acknowledgements.push(turnId);return {currentDeliveryId:null,sessionId:this.activeBinding.sessionId,runId:this.activeBinding.runId,conversationUrl:this.activeBinding.conversationUrl};},async discardDelivery(expected){discussionDiscards.push(structuredClone(expected));this.activeBinding={...this.activeBinding,bindingStatus:"NEEDS_REBIND"};return{...expected,result:"discarded"};},async interrupt(){ if(hooks.interrupt) await hooks.interrupt(); },
       async submitTurn({runId,turnId,text,parseResponse}) {
         this.activeTurnId=turnId; const firstBreak=text.indexOf("\n"),secondBreak=text.indexOf("\n",firstBreak+1);
         const data=JSON.parse(text.slice(firstBreak+1,secondBreak)); const turnNumber=++turns;
+        if(data.kind==="REVIEW_DISCUSSION"){
+          discussionPrompts.push(data);
+          if(hooks.reviewDiscussionCompletionError){
+            this.activeTurnId=null;
+            const error=hooks.reviewDiscussionCompletionError instanceof Error
+              ? hooks.reviewDiscussionCompletionError
+              : Object.assign(new Error("discussion completion lost"),{code:"WEB_RESPONSE_TIMEOUT"});
+            return{turnId,completion:Promise.reject(error)};
+          }
+          const answer=hooks.reviewDiscussion
+            ? await hooks.reviewDiscussion(data,turnNumber,service)
+            : `Discussion answer from ${data.role}`;
+          this.activeTurnId=null;
+          return{turnId,completion:Promise.resolve({turnId,...parseResponse(answer),binding:{...this.activeBinding,runId}})};
+        }
         const reviewNumber=data.context?.auditManifestHash?++reviews:null;
         if(reviewNumber!==null){reviewPrompts.push(data);if(data.role==="JUDGE"&&data.phase==="ROUND0")prompts.push(data);}
         const number=reviewNumber??turnNumber;
@@ -121,7 +136,7 @@ export function setupAudit(t, hooks = {}) {
   const live={codeChanges:service,store:{listRuns:()=>[],getRun:()=>null}};
   const dashboard=new DashboardController({getRuntime:async()=>live,preflight:()=>({readyForProvisioning:true}),webSession:options.webSession,transport:null});
   t.after(async()=>{await service.close();fs.rmSync(directory,{recursive:true,force:true});});
-  return {target,directory,options,briefs,prompts,reviewPrompts,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>prompts.length,get service(){return service;},
+  return {target,directory,options,briefs,prompts,reviewPrompts,discussionPrompts,discussionDiscards,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>prompts.length,get service(){return service;},
     async start(){return dashboard.execute({type:"run.start",payload:{mode:"CODE_CHANGE",expectedVersion:0,objective:"Implement required file contents",conversationUrl:"https://chatgpt.com/c/test"}});},
     async run(){const r=await this.start();await service.jobs.get(r.runId);return service.get(r.runId);},
     async reopen(){await service.close();service=new CodeChangeService(options);live.codeChanges=service;},

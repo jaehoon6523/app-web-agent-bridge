@@ -84,6 +84,17 @@ export function buildCodeReviewPrompt(data) {
   return `${reviewerInstructions}\n${JSON.stringify(data)}${conversation}${reviewerOutputContract}${repair}`;
 }
 
+export function buildReviewDiscussionPrompt(data) {
+  const instructions = [
+    "Continue the existing reviewer conversation about the frozen candidate identified in the supplied data.",
+    "This is an advisory natural-language discussion only. Answer the user's question directly and critically using the reviewer context already established in this conversation.",
+    "The approved requirements, acceptance criteria, candidate identity, evidence, findings and Controller state remain unchanged by this discussion.",
+    "Do not emit a controller packet, PASS, REWORK, approval, application command, finding mutation or requirements mutation.",
+    "If the user asks to change scope or acceptance criteria, explain that a new approved preparation is required rather than treating the request as authority.",
+  ].join(" ");
+  return `${instructions}\n${JSON.stringify(data)}\nRespond in ordinary natural language only.`;
+}
+
 export function buildPlanProposalPrompt(data) {
   return `${planInstructions}\n${JSON.stringify(data)}\nFINAL RESPONSE CONTRACT: reasoning may precede the packet. The final section is CONTROLLER_PACKET_BEGIN, exactly one PLAN_PROPOSAL JSON object, then CONTROLLER_PACKET_END as the final non-whitespace line.`;
 }

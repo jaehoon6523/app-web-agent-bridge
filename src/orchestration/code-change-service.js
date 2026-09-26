@@ -8,7 +8,7 @@ import { canonicalConversationUrl, extractConversationId } from "../runtime/web/
 import { validateAuditProject } from "./audit-project.js";
 import { requirementsRef, exactObject, uniqueItems, nonempty } from "../domain/audit-contract.js";
 import { evidenceRecord, excerpt } from "../evidence/candidate-evidence.js";
-import { auditCandidate, auditContext, performVerification } from "./audit-round.js";
+import { auditCandidate, auditContext, discussReviewRole, performVerification } from "./audit-round.js";
 import { evaluateCodeReview } from "../domain/code-review.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { auditManifestMatchesRun } from "../domain/audit-manifest.js";
@@ -338,7 +338,7 @@ export class CodeChangeService {
       coordination: { phase:"NOT_STARTED", activeRole:null, auditManifestHash:null, activePlanId:null, agreedWorkOrderId:null },
       worker: { provider: this.workerConfig.provider, model: this.workerConfig.model ?? null },
       workerTurns: [],
-      userDecisions: [], userInterventions: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
+      userDecisions: [], userInterventions: [], reviewDiscussions: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
       auditResult: null, application: null, terminationReason: null, missingInformation: [], error: null, createdAt,
       deadlineAt: new Date(Date.now() + project.policy.totalTimeoutMs).toISOString() });
     this.controls.set(runId, new AbortController());
@@ -678,6 +678,101 @@ export class CodeChangeService {
         throw Object.assign(new Error(`Worker intervention was not confirmed: ${error.message}`), { code:"WORKER_INTERVENTION_FAILED" });
       }
     }
+    if (type === "code.review.discuss") {
+      if (!["HOLD","AWAITING_APPLY"].includes(run.stage) || !run.candidate?.candidateId
+        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
+        throw Object.assign(new Error("Reviewer discussion is available only for a settled frozen candidate."), { code:"REVIEW_DISCUSSION_UNAVAILABLE" });
+      }
+      if (!["JUDGE","CRITIC"].includes(payload.role)) {
+        throw Object.assign(new Error("Reviewer role must be JUDGE or CRITIC."), { code:"REVIEW_DISCUSSION_ROLE_INVALID" });
+      }
+      if (typeof payload.text !== "string" || !payload.text.trim() || payload.text.length > 4000) {
+        throw Object.assign(new Error("Reviewer discussion text must contain 1–4000 characters."), { code:"REVIEW_DISCUSSION_TEXT_INVALID" });
+      }
+      if ((run.reviewDiscussions ?? []).some((item) => item.status === "UNCONFIRMED")) {
+        throw Object.assign(new Error("A previous reviewer discussion delivery is unconfirmed. Discard or recover it before sending another message."), {
+          code:"REVIEW_DISCUSSION_RECOVERY_REQUIRED",
+        });
+      }
+      const binding = (run.conversationBindings ?? []).find((item) =>
+        item.role === payload.role && item.conversationUrl && item.conversationId && item.activeDeliveryId === null);
+      if (!binding) {
+        throw Object.assign(new Error(`${payload.role} does not have an exact settled conversation binding.`), { code:"REVIEW_DISCUSSION_BINDING_REQUIRED" });
+      }
+      const discussionId = `review_discussion_${randomUUID()}`;
+      const createdAt = new Date().toISOString();
+      const discussion = {
+        discussionId, actor:"LOCAL_AUTHENTICATED_USER", role:payload.role,
+        candidateId:run.candidate.candidateId,
+        auditManifestHash:run.coordination?.auditManifestHash ?? run.reviews?.at(-1)?.auditManifestHash ?? null,
+        text:payload.text.trim(), response:null, status:"PENDING", createdAt, updatedAt:createdAt,
+      };
+      this.update(run.runId, { reviewDiscussions:[...(run.reviewDiscussions ?? []), discussion] });
+      try {
+        const result = await discussReviewRole(this, run.runId, {
+          role:discussion.role, discussionId, text:discussion.text,
+        });
+        const current = this.get(run.runId), deliveredAt = new Date().toISOString();
+        this.update(run.runId, {
+          reviewDiscussions:(current.reviewDiscussions ?? []).map((item) => item.discussionId === discussionId
+            ? { ...item, status:"DELIVERED", response:result.response, updatedAt:deliveredAt } : item),
+          events:[...(current.events ?? []), { eventId:`event_${randomUUID()}`, type:"REVIEW_DISCUSSION_DELIVERED", createdAt:deliveredAt,
+            payload:{ discussionId, role:discussion.role, candidateId:discussion.candidateId } }],
+        });
+        return { runId:run.runId, discussionId, role:discussion.role, status:"DELIVERED", response:result.response };
+      } catch (error) {
+        const current = this.get(run.runId), failedAt = new Date().toISOString();
+        const uncertain = error.discussionDispatchStarted === true;
+        this.update(run.runId, {
+          reviewDiscussions:(current.reviewDiscussions ?? []).map((item) => item.discussionId === discussionId
+            ? { ...item, status:uncertain ? "UNCONFIRMED" : "FAILED",
+              response:error.discussionResponse ?? null, error:redactForEvidence(error.message), updatedAt:failedAt } : item),
+          events:[...(current.events ?? []), { eventId:`event_${randomUUID()}`,
+            type:uncertain ? "REVIEW_DISCUSSION_UNCONFIRMED" : "REVIEW_DISCUSSION_FAILED", createdAt:failedAt,
+            payload:{ discussionId, role:discussion.role, candidateId:discussion.candidateId,
+              error:redactForEvidence(error.message) } }],
+        });
+        throw Object.assign(new Error(uncertain
+          ? "Reviewer discussion delivery outcome is unconfirmed. It will not be resent automatically."
+          : `Reviewer discussion was not sent: ${error.message}`), {
+          code:uncertain ? "REVIEW_DISCUSSION_UNCONFIRMED" : (error.code ?? "REVIEW_DISCUSSION_FAILED"),
+        });
+      }
+    }
+    if (type === "code.review.discuss.discard") {
+      const discussion = (run.reviewDiscussions ?? []).find((item) =>
+        item.discussionId === payload.discussionId && item.status === "UNCONFIRMED");
+      if (!discussion || !["HOLD","AWAITING_APPLY"].includes(run.stage)
+        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId) {
+        throw Object.assign(new Error("No settled unconfirmed reviewer discussion is available to discard."), { code:"REVIEW_DISCUSSION_DISCARD_UNAVAILABLE" });
+      }
+      if (payload.unresolvedResultConfirmed !== true || payload.noAutomaticResendConfirmed !== true
+        || typeof payload.reason !== "string" || payload.reason.trim().length < 3) {
+        throw Object.assign(new Error("Confirm the unknown result, no automatic resend, and provide a discard reason."), { code:"DISCARD_CONFIRMATION_REQUIRED" });
+      }
+      const binding = (run.conversationBindings ?? []).find((item) =>
+        item.role === discussion.role && item.activeDeliveryId === discussion.discussionId);
+      if (!binding) throw Object.assign(new Error("Reviewer discussion delivery identity changed."), { code:"DELIVERY_RECOVERY_MISMATCH" });
+      await this.web.discardDelivery({
+        currentDeliveryId:discussion.discussionId,
+        sessionId:binding.sessionId,
+        runId:run.runId,
+        conversationUrl:binding.conversationUrl,
+        unresolvedResultConfirmed:true,
+        noAutomaticResendConfirmed:true,
+        reason:payload.reason.trim(),
+      });
+      const current = this.get(run.runId), discardedAt = new Date().toISOString();
+      this.update(run.runId, {
+        reviewDiscussions:(current.reviewDiscussions ?? []).map((item) => item.discussionId === discussion.discussionId
+          ? { ...item, status:"DISCARDED", discardReason:payload.reason.trim(), updatedAt:discardedAt } : item),
+        conversationBindings:(current.conversationBindings ?? []).map((item) => item.bindingId === binding.bindingId
+          ? { ...item, activeDeliveryId:null, bindingStatus:"NEEDS_REBIND", updatedAt:discardedAt } : item),
+        events:[...(current.events ?? []), { eventId:`event_${randomUUID()}`, type:"REVIEW_DISCUSSION_DISCARDED", createdAt:discardedAt,
+          payload:{ discussionId:discussion.discussionId, role:discussion.role } }],
+      });
+      return { runId:run.runId, discussionId:discussion.discussionId, status:"DISCARDED" };
+    }
     if (type === "code.review.retry" || type === "code.decision.reply") {
       const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
       if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
@@ -861,6 +956,16 @@ export class CodeChangeService {
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
       workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
+        ...(["HOLD","AWAITING_APPLY"].includes(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
+          && !this.web.activeTurnId
+          && (record.reviewDiscussions ?? []).some((item) => item.status === "UNCONFIRMED")
+          ? ["code.review.discuss.discard"] : []),
+        ...(["HOLD","AWAITING_APPLY"].includes(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
+          && !this.web.activeTurnId
+          && !(record.reviewDiscussions ?? []).some((item) => item.status === "UNCONFIRMED")
+          && (record.conversationBindings ?? []).some((item) =>
+            ["JUDGE","CRITIC"].includes(item.role) && item.conversationUrl && item.conversationId && item.activeDeliveryId === null)
+          ? ["code.review.discuss"] : []),
         ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.delete"] : []),
         ...(record.stage === "WORKER_RUNNING" && typeof record.workerTurnId === "string" && record.workerTurnId
           && typeof this.workers.get(runId)?.steer === "function"

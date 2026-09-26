@@ -8,7 +8,7 @@ let sequence = 0, lastConfirmed = null, evidencePage = null;
 let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
 let decisionSignature = "", interventionRunId = null;
 let agreement = null, preparation = null;
-let projectConversationRoot = null;
+let projectConversationRoot = null, reviewDiscussionRunId = null;
 let followUpSource = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
@@ -482,6 +482,47 @@ function render() {
     $("workerInterventionText").value = "";
     text("workerInterventionStatus", "");
   }
+  if (reviewDiscussionRunId !== run?.runId) {
+    reviewDiscussionRunId = run?.runId ?? null;
+    $("reviewDiscussionRole").value = "JUDGE";
+    $("reviewDiscussionText").value = "";
+    $("reviewDiscussionUnresolved").checked = false;
+    $("reviewDiscussionNoResend").checked = false;
+    $("reviewDiscussionDiscardReason").value = "";
+    text("reviewDiscussionStatus", "");
+  }
+  if (!$("reviewDiscussionRole").value) $("reviewDiscussionRole").value = "JUDGE";
+  const discussionActive = ["HOLD","AWAITING_APPLY"].includes(run?.phase) && Boolean(run?.candidate?.candidateId);
+  const unresolvedDiscussion = [...(run?.reviewDiscussions ?? [])].reverse().find((item) => item.status === "UNCONFIRMED") ?? null;
+  const discussionRole = $("reviewDiscussionRole").value;
+  const discussionBinding = (run?.conversationBindings ?? []).find((item) =>
+    item.role === discussionRole && item.conversationUrl && item.conversationId && item.activeDeliveryId === null);
+  const discussionText = $("reviewDiscussionText").value.trim();
+  $("reviewDiscussionPanel").hidden = !discussionActive;
+  $("sendReviewDiscussion").disabled = !discussionActive || !connected || operations.runCommand !== "IDLE"
+    || !caps.has("code.review.discuss") || !discussionBinding || !discussionText || Boolean(unresolvedDiscussion);
+  $("reviewDiscussionRecovery").hidden = !unresolvedDiscussion;
+  text("reviewDiscussionRecoveryDetail", unresolvedDiscussion
+    ? `${unresolvedDiscussion.role} · ${unresolvedDiscussion.discussionId} · 전송 결과 미확인. 자동 재전송하지 않습니다.`
+    : "");
+  $("discardReviewDiscussion").disabled = !unresolvedDiscussion || !caps.has("code.review.discuss.discard")
+    || operations.runCommand !== "IDLE" || !$("reviewDiscussionUnresolved").checked
+    || !$("reviewDiscussionNoResend").checked || $("reviewDiscussionDiscardReason").value.trim().length < 3;
+  if (!discussionActive) {
+    text("reviewDiscussionStatus", "");
+  } else if (unresolvedDiscussion) {
+    text("reviewDiscussionStatus", "이전 감사자 대화 전송 결과가 미확인이라 새 질문을 보내지 않습니다. 아래에서 결과 미확인과 자동 재전송 금지를 확인한 뒤 폐기할 수 있습니다.");
+  } else if (!discussionBinding) {
+    text("reviewDiscussionStatus", `${discussionRole}의 정확한 기존 ChatGPT 대화가 아직 확인되지 않았습니다. 다른 역할을 선택하거나 감사 세션 상태를 확인하세요.`);
+  } else if (!connected) {
+    text("reviewDiscussionStatus", "서버 연결을 복구해야 감사자에게 질문할 수 있습니다.");
+  } else if (!caps.has("code.review.discuss")) {
+    text("reviewDiscussionStatus", "현재 감사 작업이 진행 중이거나 아직 자유 대화를 받을 수 있는 정지 상태가 아닙니다.");
+  } else {
+    text("reviewDiscussionStatus", run?.phase === "AWAITING_APPLY"
+      ? "이 대화는 이미 계산된 PASS와 적용 권한을 변경하지 않습니다. 답변을 확인한 뒤 적용 여부를 별도로 결정하세요."
+      : "답변은 기록되며, 이후 ‘웹 감사 다시 시도’를 실행하면 참고자료로 전달됩니다. 대화만으로 감사 판정은 바뀌지 않습니다.");
+  }
   if (!$("workerInterventionKind").value) $("workerInterventionKind").value = "GUIDANCE";
   const interventionActive = run?.phase === "WORKER_RUNNING";
   const interventionKind = $("workerInterventionKind").value;
@@ -608,6 +649,8 @@ async function command(type, payload = {}) {
       const successMessage = {
         "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
+        "code.review.discuss": "감사자 답변을 기록했습니다. 현재 감사 판정과 적용 권한은 변경되지 않았습니다.",
+        "code.review.discuss.discard": "미확정 감사 대화 전송을 폐기했습니다. 자동 재전송하지 않습니다.",
         "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
         "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
@@ -1041,6 +1084,38 @@ $("submitDecision").addEventListener("click", () => {
   const responses = [...$("decisionQuestions").querySelectorAll("textarea")]
     .map((item) => ({ requestItemId:item.dataset.requestItemId, answer:item.value.trim() }));
   command("code.decision.reply", { responses });
+});
+$("reviewDiscussionRole").addEventListener("change", render);
+$("reviewDiscussionText").addEventListener("input", render);
+$("reviewDiscussionUnresolved").addEventListener("input", render);
+$("reviewDiscussionNoResend").addEventListener("input", render);
+$("reviewDiscussionDiscardReason").addEventListener("input", render);
+$("sendReviewDiscussion").addEventListener("click", async () => {
+  if ($("sendReviewDiscussion").disabled) return;
+  const textValue = $("reviewDiscussionText").value.trim();
+  const role = $("reviewDiscussionRole").value;
+  const result = await command("code.review.discuss", { role, text:textValue });
+  if (result?.status === "DELIVERED" && $("reviewDiscussionText").value.trim() === textValue) {
+    $("reviewDiscussionText").value = "";
+    render();
+  }
+});
+$("discardReviewDiscussion").addEventListener("click", async () => {
+  if ($("discardReviewDiscussion").disabled) return;
+  const discussion = [...(snapshot?.run?.reviewDiscussions ?? [])].reverse().find((item) => item.status === "UNCONFIRMED");
+  if (!discussion) return;
+  const result = await command("code.review.discuss.discard", {
+    discussionId:discussion.discussionId,
+    unresolvedResultConfirmed:$("reviewDiscussionUnresolved").checked,
+    noAutomaticResendConfirmed:$("reviewDiscussionNoResend").checked,
+    reason:$("reviewDiscussionDiscardReason").value.trim(),
+  });
+  if (result?.status === "DISCARDED") {
+    $("reviewDiscussionUnresolved").checked = false;
+    $("reviewDiscussionNoResend").checked = false;
+    $("reviewDiscussionDiscardReason").value = "";
+    render();
+  }
 });
 $("workerInterventionKind").addEventListener("change", render);
 $("workerInterventionText").addEventListener("input", render);

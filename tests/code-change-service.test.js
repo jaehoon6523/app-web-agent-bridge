@@ -134,3 +134,68 @@ test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues
     && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));
   assert.equal(resumed.recoveryAttempts.at(-1).kind,"AUDIT_REPORT_RETRY");
 });
+
+test("settled reviewer discussion stays advisory and is carried into an explicit re-audit",async(t)=>{
+  const f=setupAudit(t,{
+    configure(project){project.policy.maxFormatRepairs=0;},
+    review(data,n){return n===1?{...assertionsFor(data.context),assessments:[]}:assertionsFor(data.context);},
+    reviewDiscussion(data){return `Answer about ${data.candidateId} without changing audit state.`;}
+  });
+  const held=await f.run();
+  assert.equal(held.stage,"HOLD");
+  assert.equal(held.terminationReason,"REPORT_REPAIR_LIMIT");
+  assert.ok(f.service.snapshot(held.runId,{}).commandCapabilities.includes("code.review.discuss"));
+  const beforeFindings=structuredClone(held.findings);
+  const result=await f.dashboard.executeDurable({type:"code.review.discuss",requestId:"review-chat-1",
+    payload:{runId:held.runId,expectedVersion:held.version,role:"JUDGE",text:"Explain the blocking concern in plain language."}});
+  assert.equal(result.status,"DELIVERED");
+  const discussed=f.service.get(held.runId);
+  assert.equal(discussed.stage,"HOLD");
+  assert.equal(discussed.auditResult,"HOLD");
+  assert.deepEqual(discussed.findings,beforeFindings);
+  assert.equal(discussed.reviewDiscussions.at(-1).role,"JUDGE");
+  assert.equal(discussed.reviewDiscussions.at(-1).status,"DELIVERED");
+  assert.match(discussed.reviewDiscussions.at(-1).response,/without changing audit state/u);
+  assert.equal(f.discussionPrompts.length,1);
+
+  const accepted=await f.dashboard.executeDurable({type:"code.review.retry",requestId:"review-after-chat",
+    payload:{runId:discussed.runId,expectedVersion:discussed.version}});
+  assert.equal(accepted.status,"REVIEW_RETRY_ACCEPTED");
+  await f.service.jobs.get(discussed.runId);
+  const resumed=f.service.get(discussed.runId);
+  assert.equal(resumed.stage,"AWAITING_APPLY",resumed.error);
+  assert.ok(f.reviewPrompts.slice(1).some((prompt)=>
+    prompt.userReviewDiscussions?.some((item)=>item.discussionId===discussed.reviewDiscussions.at(-1).discussionId
+      && item.role==="JUDGE"&&/blocking concern/u.test(item.text))));
+});
+
+test("uncertain reviewer discussion is never resent and can be explicitly discarded",async(t)=>{
+  const f=setupAudit(t,{
+    configure(project){project.policy.maxFormatRepairs=0;},
+    review(data,n){return n===1?{...assertionsFor(data.context),assessments:[]}:assertionsFor(data.context);},
+    reviewDiscussionCompletionError:true,
+  });
+  const held=await f.run();
+  await assert.rejects(f.dashboard.executeDurable({type:"code.review.discuss",requestId:"review-chat-lost",
+    payload:{runId:held.runId,expectedVersion:held.version,role:"JUDGE",text:"Explain this result."}}),
+  (error)=>error.code==="REVIEW_DISCUSSION_UNCONFIRMED");
+  let current=f.service.get(held.runId);
+  const discussion=current.reviewDiscussions.at(-1);
+  assert.equal(discussion.status,"UNCONFIRMED");
+  let caps=f.service.snapshot(current.runId,{}).commandCapabilities;
+  assert.ok(!caps.includes("code.review.discuss"));
+  assert.ok(caps.includes("code.review.discuss.discard"));
+
+  const discarded=await f.dashboard.executeDurable({type:"code.review.discuss.discard",requestId:"review-chat-discard",
+    payload:{runId:current.runId,expectedVersion:current.version,discussionId:discussion.discussionId,
+      unresolvedResultConfirmed:true,noAutomaticResendConfirmed:true,reason:"response outcome could not be verified"}});
+  assert.equal(discarded.status,"DISCARDED");
+  current=f.service.get(held.runId);
+  assert.equal(current.reviewDiscussions.at(-1).status,"DISCARDED");
+  assert.equal(f.discussionDiscards.length,1);
+  assert.equal(f.discussionDiscards[0].currentDeliveryId,discussion.discussionId);
+  assert.equal(current.conversationBindings.find((item)=>item.role==="JUDGE").activeDeliveryId,null);
+  assert.equal(current.conversationBindings.find((item)=>item.role==="JUDGE").bindingStatus,"NEEDS_REBIND");
+  caps=f.service.snapshot(current.runId,{}).commandCapabilities;
+  assert.ok(caps.includes("code.review.discuss"));
+});

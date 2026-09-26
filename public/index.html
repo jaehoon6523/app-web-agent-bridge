@@ -117,6 +117,21 @@
         <p id="workerInterventionStatus" class="muted" role="status"></p>
       </section>
       <section id="decisionPanel" class="flow-band" hidden><h2>감사자의 확인 질문</h2><p>답변은 현재 후보에 대한 재검토 자료로 기록됩니다. 요구사항이나 완료 기준을 바꾸려면 이 실행을 중단하고 새 작업으로 합의하세요.</p><div id="decisionQuestions"></div><button id="submitDecision" type="button" disabled>답변 보내고 독립 검토 재개</button><p id="decisionStatus" role="status"></p></section>
+      <section id="reviewDiscussionPanel" class="flow-band" hidden>
+        <h2>감사자와 자유 대화</h2>
+        <p>현재 고정된 후보에 대해 Judge 또는 Critic에게 질문합니다. 이 대화는 기록과 다음 재감사의 참고자료일 뿐이며 감사 판정·요구사항·적용 권한을 직접 바꾸지 않습니다.</p>
+        <label for="reviewDiscussionRole">대화 상대</label><select id="reviewDiscussionRole"><option value="JUDGE">Judge</option><option value="CRITIC">Critic</option></select>
+        <label for="reviewDiscussionText">질문 · 의견</label><textarea id="reviewDiscussionText" rows="3" maxlength="4000" placeholder="현재 후보나 감사 의견에 대해 자유롭게 질문하세요."></textarea>
+        <button id="sendReviewDiscussion" type="button" disabled>감사자에게 보내기</button>
+        <p id="reviewDiscussionStatus" class="muted" role="status"></p>
+        <div id="reviewDiscussionRecovery" hidden class="recovery-panel">
+          <p id="reviewDiscussionRecoveryDetail" class="muted"></p>
+          <label><input id="reviewDiscussionUnresolved" type="checkbox"> 원래 감사자 응답 결과를 확인하지 못했습니다.</label>
+          <label><input id="reviewDiscussionNoResend" type="checkbox"> 이 질문을 자동 재전송하지 않겠습니다.</label>
+          <label for="reviewDiscussionDiscardReason">폐기 사유</label><textarea id="reviewDiscussionDiscardReason" rows="2"></textarea>
+          <button id="discardReviewDiscussion" type="button" disabled>미확정 감사 대화 폐기</button>
+        </div>
+      </section>
       <details id="intervention"><summary>개입 · 결과 확인</summary><div class="actions"><button id="applyCode" disabled>감사 통과 후보 적용</button><button id="continueProject" type="button" hidden>같은 폴더에서 이어서 작업</button><button id="exportEvidence" disabled>감사 기록 다운로드</button><button id="deleteRun" disabled>종료된 작업 삭제</button></div><p id="commandReason" class="muted"></p><p class="muted">기록은 자동 만료되지 않습니다. 종료된 작업을 삭제하면 실행 기록과 감사 근거를 복구할 수 없습니다. 적용된 프로젝트 코드는 유지됩니다.</p></details>
       <section id="recoveryPanel" hidden><h2>복구 확인 후 실행 폐기</h2><p>CLI 프로세스·검증 작업과 ChatGPT 생성을 직접 종료하고 대상 저장소의 변경을 확인하세요. 기록과 작업 사본은 보존되며, 이 실행은 재개하거나 적용할 수 없게 됩니다.</p>
         <button id="reconcileRun" type="button" disabled>현재 실행 상태 진단</button><pre id="reconcileResult" role="status" aria-live="polite"></pre>

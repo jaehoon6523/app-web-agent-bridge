@@ -516,6 +516,33 @@ test("a held reviewer question accepts a human answer with the exact run and que
     responses:[{ requestItemId:"question-1", answer:"Use the greeting already specified in R1." }] });
 });
 
+test("settled audit exposes free-form Judge/Critic discussion without changing audit controls", async () => {
+  const run = { runId:"run-chat", version:5, phase:"HOLD", objective:"Implement greeting",
+    terminationReason:"REPORT_REPAIR_LIMIT", candidate:{ candidateId:"candidate-1" },
+    conversationBindings:[
+      { role:"JUDGE", conversationUrl:"https://chatgpt.com/c/judge", conversationId:"judge", activeDeliveryId:null },
+      { role:"CRITIC", conversationUrl:"https://chatgpt.com/c/critic", conversationId:"critic", activeDeliveryId:null },
+    ], reviewDiscussions:[] };
+  const state = stateFor(run, ["code.review.discuss","code.review.retry","run.stop"]);
+  const ui = await dashboard(state, async (url, options) => {
+    const body=JSON.parse(options.body);
+    if(body.type==="code.review.discuss")return{payload:{status:"DELIVERED",discussionId:"discussion-1",role:body.payload.role,response:"Answer"}};
+    return{payload:{}};
+  });
+  assert.equal(ui.elements.get("reviewDiscussionPanel").hidden,false);
+  assert.equal(ui.elements.get("sendReviewDiscussion").disabled,true);
+  ui.elements.get("reviewDiscussionRole").value="CRITIC";
+  ui.elements.get("reviewDiscussionRole").listeners.change();
+  ui.elements.get("reviewDiscussionText").value="What evidence is still weak?";
+  ui.elements.get("reviewDiscussionText").listeners.input();
+  assert.equal(ui.elements.get("sendReviewDiscussion").disabled,false);
+  await ui.elements.get("sendReviewDiscussion").listeners.click();
+  const mutation=ui.calls.find((item)=>item.url==="/api/commands"&&item.body.type==="code.review.discuss");
+  assert.deepEqual(mutation.body.payload,{runId:"run-chat",expectedVersion:5,role:"CRITIC",text:"What evidence is still weak?"});
+  assert.equal(ui.elements.get("retryRun").disabled,false);
+  assert.match(ui.elements.get("reviewDiscussionStatus").textContent,/대화만으로 감사 판정은 바뀌지 않습니다/u);
+});
+
 test("audit hold → retry → pass → apply: commands use one run and the reviewed candidate", async () => {
   const run = { runId: "run-trace", version: 4, phase: "HOLD", objective: "Greeting",
     candidate: { candidateId: "candidate-1" }, capture: { artifact: { sha256: "patch-1" } },

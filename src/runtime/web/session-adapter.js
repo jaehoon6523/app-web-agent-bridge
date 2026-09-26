@@ -694,6 +694,7 @@ export class ChatGptWebSessionAdapter {
     const message = await this.#request({ type: "web.delivery.discard", payload: expected },
       new Set(["web.delivery.discarded", "web.session.error"]), 10_000);
     if (message.type === "web.session.error") throw this.#messageError(message);
+    if (this.#ambiguousTurnId === expected?.currentDeliveryId) this.#ambiguousTurnId = null;
     return message.payload;
   }
 
