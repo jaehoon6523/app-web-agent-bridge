@@ -127,7 +127,7 @@ export async function extensionBrowser(t, {
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify(dashboardSnapshot) });
       }
       const asset = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (!['index.html', 'app.js', 'dashboard-model.js', 'styles.css'].includes(asset)) return route.abort();
+      if (!['index.html', 'app.js', 'dashboard-model.js', 'preparation-view.js', 'conversation-view.js', 'styles.css'].includes(asset)) return route.abort();
       const contentType = asset.endsWith('.js') ? 'text/javascript'
         : asset.endsWith('.css') ? 'text/css' : 'text/html';
       return route.fulfill({ contentType, body: await readFile(new URL(asset, publicRoot), 'utf8') });

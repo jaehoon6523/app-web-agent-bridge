@@ -198,48 +198,17 @@ for (const variant of process.env.CRITICAL_GOLDEN_ONLY === "1" ? [] : metamorphi
   });
 }
 
-if (process.env.CRITICAL_GOLDEN_ONLY !== "1") test("invalid Windows backslashes survive the full path and expose INVALID_PACKET_JSON", { timeout: 45_000 }, async (t) => {
+if (process.env.CRITICAL_GOLDEN_ONLY !== "1") test("Windows backslashes are repaired without changing raw response bytes", { timeout: 45_000 }, async (t) => {
   const invalidRaw = baseRaw.replaceAll("C:/Users/User/Desktop/pj", "C:\\Users\\User\\Desktop\\pj");
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-critical-invalid-packet-"));
-  const browser = await extensionBrowser(t, { reply: () => invalidRaw });
-  const options = {
-    filename: path.join(root, "preparation.sqlite"),
-    web: browser.adapter,
-    available: () => true,
-    assertStart: async () => {},
-    approve: async () => { throw new Error("Invalid output must never be approved."); },
-    findRun: async () => null,
-  };
-  const service = new PreparationService(options);
-  t.after(() => {
-    service.close();
-    fs.rmSync(root, { recursive: true, force: true });
-  });
-
-  await service.execute("preparation.start", {
-    requestId: `invalid-${crypto.randomUUID()}`,
+  const result = await runFullPath(t, {
+    rawText: invalidRaw,
     objective: "시계 앱",
-    targetRoot: root,
-    conversationUrl: "https://chatgpt.com/",
+    expectedUi: ["시계 앱", "요구사항 합의 완료"],
   });
-  await settle(service);
-
-  const context = service.snapshot();
-  const delivery = context.deliveries.at(-1);
-  assert.equal(delivery.response.rawText, invalidRaw);
-  assert.equal(delivery.response.packet?.type, "REQUIREMENTS_PROPOSAL");
-  assert.equal(delivery.validation.format, "INVALID");
-  assert.equal(delivery.validation.formatError.code, "INVALID_PACKET_JSON");
-  assert.equal(context.state, "RECOVERY_REQUIRED");
-  assert.equal(context.error.code, "INVALID_AGREEMENT");
-
-  const projection = await service.project({
-    run: null, runs: [], sessions: [], messages: [], deliveries: [], approvals: [], events: [],
-    outcome: null, commandCapabilities: [], preflight: { checks: { extensionAuthenticated: true } },
-  });
-  const dashboard = await browser.openDashboard(projection);
-  const rendered = await dashboard.locator("body").innerText();
-  assert.match(rendered, /INVALID_PACKET_JSON/u);
-  assert.match(rendered, /Controller packet JSON is invalid/u);
-  assert.deepEqual(browser.errors, []);
+  assert.equal(result.delivery.response.rawText, invalidRaw);
+  assert.equal(result.delivery.response.packet?.type, "REQUIREMENTS_PROPOSAL");
+  assert.equal(result.delivery.validation.format, "CONFIRMED");
+  assert.equal(result.context.state, "AGREEMENT_READY");
+  assert.equal(result.context.agreement.status, "READY");
+  assert.match(result.context.agreement.summary, /C:\\Users\\User\\Desktop\\pj/u);
 });
