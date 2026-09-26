@@ -683,6 +683,25 @@ function render() {
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
+  let reviewIndependenceStatus = $("reviewIndependenceStatus");
+  if (!reviewIndependenceStatus) {
+    reviewIndependenceStatus = node("p", "", "muted");
+    reviewIndependenceStatus.id = "reviewIndependenceStatus";
+    $("workerProvenance")?.after(reviewIndependenceStatus);
+  }
+  const independence = run.reviews?.at(-1)?.reviewerIndependence ?? null;
+  if (independence) {
+    const providers = (independence.bindings ?? []).map((item) => item.provider ?? "미확인");
+    const providerText = independence.providerSeparation === "VERIFIED"
+      ? `provider 분리 확인 (${providers.join(" / ")})`
+      : `provider 분리 미보장 (${providers.join(" / ")})`;
+    text("reviewIndependenceStatus",
+      `감사자 독립성: 역할·세션·대화 분리 확인 · ${providerText} · model identity 관측 불가 · 계정 격리 미검증 · Round 0 peer artifact 없음, 교차검토는 공개 artifact만 전달`);
+  } else {
+    text("reviewIndependenceStatus", run.phase === "AWAITING_APPLY"
+      ? "감사자 독립성: 이 PASS에는 현재 독립성 계약이 없습니다. 같은 후보를 다시 감사해야 적용 권한을 얻을 수 있습니다."
+      : "감사자 독립성: 아직 고정된 감사 결과가 없습니다.");
+  }
   const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
     : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
     : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."

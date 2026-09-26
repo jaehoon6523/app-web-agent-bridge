@@ -523,6 +523,26 @@ test("a held reviewer question accepts a human answer with the exact run and que
     responses:[{ requestItemId:"question-1", answer:"Use the greeting already specified in R1." }] });
 });
 
+test("reviewer independence status states verified and unverified boundaries without claiming model diversity",async()=>{
+  const run={runId:"run-independence",version:7,phase:"AWAITING_APPLY",objective:"Greeting",
+    worker:{provider:"codex"},reviews:[{reviewId:"review-1",reviewerIndependence:{
+      contractVersion:1,roleSeparation:"VERIFIED",sessionSeparation:"VERIFIED",conversationSeparation:"VERIFIED",
+      providerSeparation:"NOT_ENFORCED",modelIdentity:"UNOBSERVED",accountIsolation:"UNVERIFIED",
+      round0PeerArtifacts:"NONE",crossReviewPeerArtifacts:"PUBLISHED_ONLY",
+      bindings:[
+        {role:"JUDGE",bindingId:"binding-judge",sessionId:"session-judge",conversationId:"judge",provider:"CHATGPT_WEB"},
+        {role:"CRITIC",bindingId:"binding-critic",sessionId:"session-critic",conversationId:"critic",provider:"CHATGPT_WEB"},
+      ],
+    }}]};
+  const state=stateFor(run,["code.apply"]);
+  const ui=await dashboard(state);
+  const status=ui.elements.get("reviewIndependenceStatus");
+  assert.match(status.textContent,/역할·세션·대화 분리 확인/u);
+  assert.match(status.textContent,/provider 분리 미보장/u);
+  assert.match(status.textContent,/model identity 관측 불가/u);
+  assert.match(status.textContent,/계정 격리 미검증/u);
+});
+
 test("settled audit exposes free-form Judge/Critic discussion without changing audit controls", async () => {
   const run = { runId:"run-chat", version:5, phase:"HOLD", objective:"Implement greeting",
     terminationReason:"REPORT_REPAIR_LIMIT", candidate:{ candidateId:"candidate-1" },

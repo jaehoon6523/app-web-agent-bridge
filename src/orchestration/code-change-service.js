@@ -34,6 +34,32 @@ function retryableWorkerTimeout(run) {
     && (run.reviews?.length ?? 0) === 0;
 }
 
+function hasReviewerIndependenceAuthority(review) {
+  const contract = review?.reviewerIndependence;
+  if (contract?.contractVersion !== 1
+    || contract.roleSeparation !== "VERIFIED"
+    || contract.sessionSeparation !== "VERIFIED"
+    || contract.conversationSeparation !== "VERIFIED"
+    || !["VERIFIED","NOT_ENFORCED"].includes(contract.providerSeparation)
+    || contract.modelIdentity !== "UNOBSERVED"
+    || contract.accountIsolation !== "UNVERIFIED"
+    || contract.round0PeerArtifacts !== "NONE"
+    || contract.crossReviewPeerArtifacts !== "PUBLISHED_ONLY"
+    || !Array.isArray(contract.bindings) || contract.bindings.length !== 2) return false;
+  const judge = contract.bindings.find((item) => item.role === "JUDGE");
+  const critic = contract.bindings.find((item) => item.role === "CRITIC");
+  return Boolean(judge && critic
+    && typeof judge.bindingId === "string" && judge.bindingId
+    && typeof critic.bindingId === "string" && critic.bindingId
+    && judge.bindingId !== critic.bindingId
+    && typeof judge.sessionId === "string" && judge.sessionId
+    && typeof critic.sessionId === "string" && critic.sessionId
+    && judge.sessionId !== critic.sessionId
+    && typeof judge.conversationId === "string" && judge.conversationId
+    && typeof critic.conversationId === "string" && critic.conversationId
+    && judge.conversationId !== critic.conversationId);
+}
+
 function hasMultiReviewAuthority(run) {
   const review = run?.reviews?.at(-1);
   return Boolean(review?.decision === "PASS"
@@ -42,6 +68,7 @@ function hasMultiReviewAuthority(run) {
     && review.reviewerRoles.length === 2
     && review.reviewerRoles.includes("JUDGE")
     && review.reviewerRoles.includes("CRITIC")
+    && hasReviewerIndependenceAuthority(review)
     && (run.auditManifests ?? []).some((item) => item.auditManifestHash === review.auditManifestHash
       && item.candidateId === run.candidate?.candidateId));
 }
@@ -547,7 +574,8 @@ export class CodeChangeService {
       || !manifestRecord || !manifest || manifest.auditManifestHash !== review.auditManifestHash
       || !auditManifestMatchesRun(manifest, run)
       || review.reviewerRoles?.length !== 2
-      || !review.reviewerRoles.includes("JUDGE") || !review.reviewerRoles.includes("CRITIC")) {
+      || !review.reviewerRoles.includes("JUDGE") || !review.reviewerRoles.includes("CRITIC")
+      || !hasReviewerIndependenceAuthority(review)) {
       throw new Error("Approval does not identify a valid independently reviewed candidate.");
     }
     for (const evidence of run.evidence.filter((e) => e.candidateId === run.candidate.candidateId)) this.artifactStore.verify(evidence.contentRef.sha256);

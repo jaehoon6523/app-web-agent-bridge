@@ -101,6 +101,32 @@ function replaceBinding(bindings, next) {
   return bindings.map((item) => item.bindingId === next.bindingId ? next : item);
 }
 
+function reviewerIndependenceSnapshot(run) {
+  const bindings = REVIEW_ROLES.map((role) => bindingForRole(run, role));
+  const judge = bindings.find((item) => item.role === "JUDGE");
+  const critic = bindings.find((item) => item.role === "CRITIC");
+  const providerSeparated = Boolean(judge?.provider && critic?.provider && judge.provider !== critic.provider);
+  return {
+    contractVersion:1,
+    roleSeparation:"VERIFIED",
+    sessionSeparation:judge?.sessionId && critic?.sessionId && judge.sessionId !== critic.sessionId ? "VERIFIED" : "FAILED",
+    conversationSeparation:judge?.conversationId && critic?.conversationId && judge.conversationId !== critic.conversationId
+      ? "VERIFIED" : "FAILED",
+    providerSeparation:providerSeparated ? "VERIFIED" : "NOT_ENFORCED",
+    modelIdentity:"UNOBSERVED",
+    accountIsolation:"UNVERIFIED",
+    round0PeerArtifacts:"NONE",
+    crossReviewPeerArtifacts:"PUBLISHED_ONLY",
+    bindings:bindings.map((item) => ({
+      role:item.role,
+      bindingId:item.bindingId,
+      sessionId:item.sessionId,
+      conversationId:item.conversationId,
+      provider:item.provider ?? null,
+    })),
+  };
+}
+
 async function activateRole(service, runId, role) {
   let run = service.get(runId);
   const record = bindingForRole(run, role);
@@ -663,10 +689,12 @@ export async function auditCandidate(service, runId, workspace) {
       await planRework(service, runId, auditManifest, shared, result.findings.filter((item) => ["OPEN","FIX_SUBMITTED"].includes(item.status)));
     }
     run = service.get(runId);
+    const reviewerIndependence = reviewerIndependenceSnapshot(run);
     service.update(runId, { findings:result.findings, auditResult:result.decision,
       reviews:[...run.reviews, { ...result, createdAt:new Date().toISOString(), candidateId:context.candidateId, requirementsRef:context.requirementsRef,
         requestId:context.requestId, auditManifestId:auditManifest.auditManifestId,
-        auditManifestHash:auditManifest.auditManifestHash, reviewerRoles:[...REVIEW_ROLES] }],
+        auditManifestHash:auditManifest.auditManifestHash, reviewerRoles:[...REVIEW_ROLES],
+        reviewerIndependence }],
       captures:[...run.captures, { capture:run.capture, review:result.report, reviewId:result.reviewId, decision:result.decision }],
       coordination:{ phase:result.decision === "PASS" ? "ACCEPTED" : result.decision === "REWORK" ? "READY_TO_EXECUTE" : "BLOCKED",
         activeRole:null, auditManifestHash:auditManifest.auditManifestHash,

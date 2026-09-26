@@ -8,6 +8,18 @@ test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately appl
   const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
   assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),2);
   assert.ok(f.acknowledgements.length>=4,"every reviewer/plan delivery must be acknowledged");
+  const independence=run.reviews.at(-1).reviewerIndependence;
+  assert.equal(independence.roleSeparation,"VERIFIED");
+  assert.equal(independence.sessionSeparation,"VERIFIED");
+  assert.equal(independence.conversationSeparation,"VERIFIED");
+  assert.equal(independence.providerSeparation,"NOT_ENFORCED");
+  assert.equal(independence.modelIdentity,"UNOBSERVED");
+  assert.equal(independence.accountIsolation,"UNVERIFIED");
+  assert.equal(independence.round0PeerArtifacts,"NONE");
+  assert.equal(independence.crossReviewPeerArtifacts,"PUBLISHED_ONLY");
+  assert.equal(independence.bindings.length,2);
+  assert.notEqual(independence.bindings[0].sessionId,independence.bindings[1].sessionId);
+  assert.notEqual(independence.bindings[0].conversationId,independence.bindings[1].conversationId);
   assert.equal(run.findings[0].status,"RESOLVED");assert.equal(f.briefs[1].unresolvedFindings[0].findingId,run.findings[0].findingId);
   assert.ok(run.evidence.some((e)=>e.candidateId===run.candidate.candidateId
     && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));
@@ -18,6 +30,21 @@ test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately appl
   assert.equal(fs.readFileSync(path.join(f.target,"file.txt"),"utf8"),"revision 2\n");
   await assert.rejects(f.dashboard.execute({type:"code.apply",payload}),/changed/);
 });
+
+test("apply authority rejects a PASS whose recorded reviewer independence contract is weakened",async(t)=>{
+  const f=setupAudit(t,{reviewVerdicts:["SATISFIED"]});
+  let run=await f.run();
+  assert.equal(run.stage,"AWAITING_APPLY");
+  const review=run.reviews.at(-1);
+  const weakened={...review,reviewerIndependence:{...review.reviewerIndependence,conversationSeparation:"FAILED"}};
+  run=f.service.update(run.runId,{reviews:[...run.reviews.slice(0,-1),weakened]});
+  const caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(!caps.includes("code.apply"));
+  assert.ok(caps.includes("code.review.retry"),"same frozen candidate can be re-audited to regain authority");
+  await assert.rejects(f.dashboard.execute({type:"code.apply",payload:f.applyPayload(run)}),
+    /valid independently reviewed candidate/u);
+});
+
 test("VAL-14/21: restart reconciles APPLYING and never redispatches active work",async(t)=>{
   const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
   await f.dashboard.execute({type:"code.apply",payload:f.applyPayload(run)});f.service.update(run.runId,{stage:"APPLYING"});
