@@ -3,7 +3,7 @@ import {
   defaultWebTargetProviderRegistry,
 } from "./provider-target.js";
 
-export { CHATGPT_WEB_TARGET_PROVIDER, createWebTargetProviderRegistry } from "./provider-target.js";
+export { CHATGPT_WEB_TARGET_PROVIDER, createWebTargetProviderRegistry, resolveWebTargetProvider } from "./provider-target.js";
 
 export function canonicalChatGptUrl(value) {
   return defaultWebTargetProviderRegistry.canonicalize(value, CHATGPT_WEB_TARGET_PROVIDER.provider);

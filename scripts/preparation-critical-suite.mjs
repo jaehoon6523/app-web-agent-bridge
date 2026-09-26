@@ -227,7 +227,7 @@ if (process.env.CRITICAL_GOLDEN_ONLY !== "1") test("invalid Windows backslashes 
   const context = service.snapshot();
   const delivery = context.deliveries.at(-1);
   assert.equal(delivery.response.rawText, invalidRaw);
-  assert.equal(delivery.response.packet?.type, "PLANNING_RESPONSE");
+  assert.equal(delivery.response.packet?.type, "REQUIREMENTS_PROPOSAL");
   assert.equal(delivery.validation.format, "INVALID");
   assert.equal(delivery.validation.formatError.code, "INVALID_PACKET_JSON");
   assert.equal(context.state, "RECOVERY_REQUIRED");

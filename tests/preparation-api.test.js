@@ -38,7 +38,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
           protocolVersion: 2, challengeId: message.challengeId, extensionIdentity: "test", hmacSha256: computeWebChallengeHmac(message.nonce, secret) }));
         if (message.type === "web.session.prepare") {
           binding = { ...message.payload, tabId: 1, windowId: 1, documentId: "document-1", frameId: 0, title: "Test", bindingStatus: "BOUND", lastObservedUserMessageId: null, lastObservedAssistantMessageId: null };
-          delete binding.focus; reply("web.session.ready", { session: binding });
+          delete binding.focus; delete binding.provider; reply("web.session.ready", { session: binding });
         }
         if (message.type === "web.prompt") {
           active = message.requestId; count++;

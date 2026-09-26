@@ -432,12 +432,12 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
       historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,
         lastObservedAssistantMessageId:response.binding.lastObservedAssistantMessageId },
     }) });
-    return { discussionId, role, response:(response.rawText ?? response.text ?? "").trim() };
+    return { discussionId, role, response:(response.rawText ?? response.text ?? response.body ?? "").trim() };
   } catch (error) {
     throw Object.assign(new Error(error.message), {
       code:error.code ?? "REVIEW_DISCUSSION_FAILED",
       discussionDispatchStarted:true,
-      discussionResponse:response?.rawText ?? response?.text ?? null,
+      discussionResponse:response?.rawText ?? response?.text ?? response?.body ?? null,
     });
   }
 }

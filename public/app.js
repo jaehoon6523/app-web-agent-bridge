@@ -80,7 +80,7 @@ function ensureOperatorNoteControls() {
 ensureOperatorNoteControls();
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
-function renderProjectOverview(group, busyRun) {
+function renderProjectOverview(group, busyRun, allRuns) {
   const allProjectRuns = allRuns.filter((item) =>
     (item.targetRoot ?? item.projectRef?.targetRoot ?? null) === group.targetRoot);
   const lineageFor = (runId) => {
@@ -551,7 +551,7 @@ function render() {
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
     : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
-  if (overviewGroup) renderProjectOverview(overviewGroup, unfinished);
+  if (overviewGroup) renderProjectOverview(overviewGroup, unfinished, allRuns);
   if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
     && !preparation?.error && !checks?.extensionAuthenticated) {
     text("startReason", "입력은 가능합니다. 브릿지 확장이 인증되면 준비 대화를 시작할 수 있습니다. ChatGPT 탭은 자동으로 엽니다.");
