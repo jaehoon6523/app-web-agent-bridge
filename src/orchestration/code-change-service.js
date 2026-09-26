@@ -8,7 +8,7 @@ import { canonicalConversationUrl, extractConversationId } from "../runtime/web/
 import { validateAuditProject } from "./audit-project.js";
 import { requirementsRef, exactObject, uniqueItems, nonempty } from "../domain/audit-contract.js";
 import { evidenceRecord, excerpt } from "../evidence/candidate-evidence.js";
-import { auditCandidate, auditContext, discussReviewRole, performVerification } from "./audit-round.js";
+import { auditCandidate, auditContext, discussReviewRole, performVerification, rebindReviewRole } from "./audit-round.js";
 import { evaluateCodeReview } from "../domain/code-review.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { auditManifestMatchesRun } from "../domain/audit-manifest.js";
@@ -50,6 +50,9 @@ function retryableAuditReview(run) {
   const retryableHold = run?.stage === "HOLD"
     && ["REPORT_REPAIR_LIMIT","WEB_BINDING_REQUIRED","PLAN_REPAIR_LIMIT","PLAN_CONSENSUS_NOT_REACHED","USER_DECISION_REQUIRED"].includes(run.terminationReason)
     && run.auditResult === "HOLD";
+  const reviewerTabSelectionPending = run?.terminationReason === "WEB_BINDING_REQUIRED"
+    && (run?.coordination?.bindingCandidates?.length ?? 0) > 0;
+  if (reviewerTabSelectionPending) return false;
   const legacyUpgrade = run?.stage === "AWAITING_APPLY" && !hasMultiReviewAuthority(run);
   return Boolean(run?.schemaVersion === 3 && (retryableHold || legacyUpgrade)
     && run.application == null
@@ -628,6 +631,24 @@ export class CodeChangeService {
         }],
       });
     }
+    if (type === "code.review.rebind") {
+      if (run.stage !== "HOLD" || run.terminationReason !== "WEB_BINDING_REQUIRED"
+        || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.web.activeTurnId
+        || !["JUDGE","CRITIC"].includes(payload.role)
+        || !Number.isSafeInteger(payload.selectedTabId)) {
+        throw Object.assign(new Error("Reviewer tab recovery is unavailable or the selected tab is invalid."), {
+          code:"REVIEW_BINDING_RECOVERY_UNAVAILABLE",
+        });
+      }
+      const eligible = (run.coordination?.bindingCandidates ?? []).some((candidate) =>
+        candidate.tabId === payload.selectedTabId);
+      if (!eligible) {
+        throw Object.assign(new Error("The selected ChatGPT tab is not one of the recorded reviewer recovery candidates."), {
+          code:"DELIVERY_RECOVERY_MISMATCH",
+        });
+      }
+      return rebindReviewRole(this, run.runId, { role:payload.role, tabId:payload.selectedTabId });
+    }
     if (type === "run.delete") {
       if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
         || this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId) {
@@ -985,6 +1006,10 @@ export class CodeChangeService {
           && (record.conversationBindings ?? []).some((item) =>
             ["JUDGE","CRITIC"].includes(item.role) && item.conversationUrl && item.conversationId && item.activeDeliveryId === null)
           ? ["code.review.discuss"] : []),
+        ...(record.stage === "HOLD" && record.terminationReason === "WEB_BINDING_REQUIRED"
+          && !this.jobs.has(runId) && !this.workers.has(runId) && !this.web.activeTurnId
+          && (record.coordination?.bindingCandidates?.length ?? 0) > 0 && typeof this.web?.rebind === "function"
+          ? ["code.review.rebind"] : []),
         ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
           ? ["run.delete", record.archivedAt ? "run.unarchive" : "run.archive"]
           : []),

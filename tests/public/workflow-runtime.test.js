@@ -550,6 +550,31 @@ test("settled audit exposes free-form Judge/Critic discussion without changing a
   assert.match(ui.elements.get("reviewDiscussionStatus").textContent,/대화만으로 감사 판정은 바뀌지 않습니다/u);
 });
 
+test("ambiguous reviewer binding offers only controller-recorded tab choices before retry",async()=>{
+  const run={runId:"run-rebind",version:6,phase:"HOLD",objective:"Greeting",
+    terminationReason:"WEB_BINDING_REQUIRED",candidate:{candidateId:"candidate-1"},
+    coordination:{phase:"WAITING_FOR_ROLE_BINDING",activeRole:"JUDGE",bindingCode:"AMBIGUOUS",
+      bindingCandidates:[{tabId:41,windowId:1,url:"https://chatgpt.com/c/judge"},{tabId:42,windowId:2,url:"https://chatgpt.com/c/judge"}]},
+    conversationBindings:[
+      {role:"JUDGE",conversationUrl:"https://chatgpt.com/c/judge",conversationId:"judge",activeDeliveryId:null},
+      {role:"CRITIC",conversationUrl:"https://chatgpt.com/c/critic",conversationId:"critic",activeDeliveryId:null},
+    ],reviewDiscussions:[]};
+  const state=stateFor(run,["code.review.rebind","run.stop"]);
+  const ui=await dashboard(state,async(url,options)=>{
+    const body=JSON.parse(options.body);
+    if(body.type==="code.review.rebind")return{payload:{status:"REBOUND",role:"JUDGE",tabId:body.payload.selectedTabId}};
+    return{payload:{}};
+  });
+  assert.equal(ui.elements.get("reviewBindingRecoveryPanel").hidden,false);
+  assert.equal(ui.elements.get("retryRun").disabled,true);
+  const buttons=ui.elements.get("reviewBindingRecoveryCandidates").children;
+  assert.equal(buttons.length,2);
+  assert.match(buttons[0].textContent,/tab 41/u);
+  await buttons[0].listeners.click();
+  const mutation=ui.calls.find((item)=>item.url==="/api/commands"&&item.body.type==="code.review.rebind");
+  assert.deepEqual(mutation.body.payload,{runId:"run-rebind",expectedVersion:6,role:"JUDGE",selectedTabId:41});
+});
+
 test("audit hold → retry → pass → apply: commands use one run and the reviewed candidate", async () => {
   const run = { runId: "run-trace", version: 4, phase: "HOLD", objective: "Greeting",
     candidate: { candidateId: "candidate-1" }, capture: { artifact: { sha256: "patch-1" } },

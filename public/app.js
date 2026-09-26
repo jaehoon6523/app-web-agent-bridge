@@ -46,6 +46,17 @@ function ensureArchiveControls() {
   }
 }
 ensureArchiveControls();
+function ensureReviewerBindingRecoveryControls() {
+  if ($("reviewBindingRecoveryPanel")) return;
+  const panel = node("section", "", "flow-band");
+  panel.id = "reviewBindingRecoveryPanel"; panel.hidden = true;
+  panel.append(node("h2", "감사 대화 탭 복구"));
+  const status = node("p", "", "muted"); status.id = "reviewBindingRecoveryStatus"; status.setAttribute("role", "status");
+  const candidates = node("div", ""); candidates.id = "reviewBindingRecoveryCandidates";
+  panel.append(status, candidates);
+  $("reviewDiscussionPanel")?.after(panel);
+}
+ensureReviewerBindingRecoveryControls();
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function renderProjectOverview(group, busyRun) {
@@ -549,6 +560,35 @@ function render() {
       ? "이 대화는 이미 계산된 PASS와 적용 권한을 변경하지 않습니다. 답변을 확인한 뒤 적용 여부를 별도로 결정하세요."
       : "답변은 기록되며, 이후 ‘웹 감사 다시 시도’를 실행하면 참고자료로 전달됩니다. 대화만으로 감사 판정은 바뀌지 않습니다.");
   }
+  const reviewerBindingHold = run?.phase === "HOLD" && run?.terminationReason === "WEB_BINDING_REQUIRED"
+    && ["JUDGE","CRITIC"].includes(run?.coordination?.activeRole);
+  const reviewerRole = reviewerBindingHold ? run.coordination.activeRole : null;
+  const reviewerBinding = reviewerRole
+    ? (run.conversationBindings ?? []).find((item) => item.role === reviewerRole) ?? null
+    : null;
+  const reviewerCandidates = reviewerBindingHold ? run?.coordination?.bindingCandidates ?? [] : [];
+  $("reviewBindingRecoveryPanel").hidden = !reviewerBindingHold;
+  const reviewerCandidateList = $("reviewBindingRecoveryCandidates"); reviewerCandidateList.replaceChildren();
+  if (reviewerBindingHold) {
+    if (run.coordination?.phase === "ROLE_BINDING_RECOVERED") {
+      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화 탭을 다시 연결했습니다. 기존 후보·요구사항은 그대로입니다. ‘웹 감사 다시 시도’를 눌러 감사를 재개하세요.`);
+    } else if (reviewerCandidates.length) {
+      text("reviewBindingRecoveryStatus", `${reviewerRole}의 정확한 대화와 일치하는 탭이 여러 개입니다. 사용할 탭 하나를 선택하세요. 선택만으로 감사가 재실행되지는 않습니다.`);
+      for (const candidate of reviewerCandidates) {
+        const button = node("button", `tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`}`);
+        button.type = "button"; button.title = candidate.url ?? reviewerBinding?.conversationUrl ?? "";
+        button.disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("code.review.rebind");
+        button.addEventListener("click", () => {
+          if (!button.disabled) command("code.review.rebind", { role:reviewerRole, selectedTabId:candidate.tabId });
+        });
+        reviewerCandidateList.append(button);
+      }
+    } else {
+      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화를 자동 복구하지 못했습니다. 정확한 대화 ${reviewerBinding?.conversationUrl ?? "URL 확인 필요"} 를 브라우저에서 하나만 열고 ‘웹 감사 다시 시도’를 누르세요.`);
+    }
+  } else {
+    text("reviewBindingRecoveryStatus", "");
+  }
   if (!$("workerInterventionKind").value) $("workerInterventionKind").value = "GUIDANCE";
   const interventionActive = run?.phase === "WORKER_RUNNING";
   const interventionKind = $("workerInterventionKind").value;
@@ -610,10 +650,12 @@ function render() {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
     $("retryRun").textContent = "웹 감사 다시 시도";
+    const needsReviewerTabSelection = caps.has("code.review.rebind");
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 감사를 다시 시도할 수 있습니다."
+      : needsReviewerTabSelection ? "감사자 대화 탭이 여러 개입니다. 먼저 위 복구 영역에서 사용할 탭을 선택하세요."
       : !webConnected() ? "브라우저 확장 연결과 정확한 ChatGPT 세션을 복구해야 같은 후보의 감사를 다시 시도할 수 있습니다."
       : "Worker를 다시 실행하지 않고 현재 후보를 같은 요구사항으로 다시 감사합니다. REWORK 판정이면 기존 수정 루프를 이어갑니다.";
-    actionState("retryRun", (operations.runCommand !== "IDLE") || !webConnected(), retryReason, retryReason);
+    actionState("retryRun", (operations.runCommand !== "IDLE") || needsReviewerTabSelection || !webConnected(), retryReason, retryReason);
   } else {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
@@ -680,6 +722,7 @@ async function command(type, payload = {}) {
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
         "code.review.discuss": "감사자 답변을 기록했습니다. 현재 감사 판정과 적용 권한은 변경되지 않았습니다.",
         "code.review.discuss.discard": "미확정 감사 대화 전송을 폐기했습니다. 자동 재전송하지 않습니다.",
+        "code.review.rebind": "감사자 대화 탭을 다시 연결했습니다. 같은 후보의 감사를 재개하려면 ‘웹 감사 다시 시도’를 누르세요.",
         "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
         "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",

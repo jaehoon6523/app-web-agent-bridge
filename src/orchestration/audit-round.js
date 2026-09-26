@@ -7,12 +7,13 @@ import { aggregateReviewReports, assertionsToReviewReport, createAgreedWorkOrder
   validatePlanProposal, validatePlanResponse, validateReviewAssertions } from "../domain/review-coordination.js";
 import { evidenceRecord, excerpt, executeVerification } from "../evidence/candidate-evidence.js";
 import { redactForEvidence } from "../security/redaction.js";
-import { createWebSessionBinding } from "../runtime/web/binding.js";
+import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { buildCodeReviewPrompt, buildPlanProposalPrompt, buildPlanReviewPrompt, buildReviewDiscussionPrompt } from "./code-change-prompts.js";
 
 const REVIEW_ROLES = Object.freeze(["JUDGE", "CRITIC"]);
 const MAX_PLAN_ROUNDS = 2;
-const BINDING_WAIT_CODES = new Set(["NEEDS_REBIND","AMBIGUOUS","AUTH_REQUIRED","EXPLICIT_REBIND_REQUIRED","WEB_SESSION_BINDING_MISMATCH","WEB_DOCUMENT_CHANGED","ROOT_NOT_READY","EXTENSION_NOT_AUTHENTICATED","WEB_RESPONSE_TIMEOUT"]);
+const BINDING_WAIT_CODES = new Set(["NEEDS_REBIND","AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED","AUTH_REQUIRED","EXPLICIT_REBIND_REQUIRED","WEB_SESSION_BINDING_MISMATCH","WEB_DOCUMENT_CHANGED","ROOT_NOT_READY","EXTENSION_NOT_AUTHENTICATED","WEB_RESPONSE_TIMEOUT"]);
+const REVIEW_TAB_SELECTION_CODES = new Set(["AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED"]);
 
 /**
  * @param {unknown} error
@@ -22,6 +23,25 @@ function coordinationError(error) {
   return /** @type {Error & {code?: string, role?: string, bindingCode?: string, missingInformation?: unknown[]}} */ (
     error instanceof Error ? error : new Error(String(error))
   );
+}
+
+function selectableReviewTabs(error, record) {
+  if (!REVIEW_TAB_SELECTION_CODES.has(error?.code)) return [];
+  const source = Array.isArray(error?.details?.candidates) ? error.details.candidates : [];
+  const seen = new Set(), candidates = [];
+  for (const candidate of source) {
+    if (!Number.isSafeInteger(candidate?.tabId) || candidate.tabId < 0 || seen.has(candidate.tabId)) continue;
+    const url = canonicalConversationUrl(candidate.canonicalUrl ?? candidate.url);
+    const conversationId = candidate.conversationId ?? extractConversationId(url);
+    if (url !== record.conversationUrl || conversationId !== record.conversationId) continue;
+    seen.add(candidate.tabId);
+    candidates.push({
+      tabId:candidate.tabId,
+      windowId:Number.isSafeInteger(candidate.windowId) ? candidate.windowId : null,
+      url,
+    });
+  }
+  return candidates;
 }
 
 function roleSessionId(runId, role) {
@@ -95,16 +115,73 @@ async function activateRole(service, runId, role) {
     if (!typedError.code || !BINDING_WAIT_CODES.has(typedError.code)) throw error;
     const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED"].includes(typedError.code) ? typedError.code : "NEEDS_REBIND";
     const failed = { ...record, bindingStatus, activeDeliveryId:null, updatedAt:new Date().toISOString() };
+    const bindingCandidates = selectableReviewTabs(typedError, record);
     run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, failed) });
     throw Object.assign(new Error(`${role} conversation requires rebind before review can continue.`), {
       code:"WEB_BINDING_REQUIRED",
       role,
       bindingCode:typedError.code,
+      bindingCandidates,
     });
   }
   const next = recordFromReturned(record, returned, new Date().toISOString(), null);
   run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, next) });
   return bindingForRole(run, role);
+}
+
+export async function rebindReviewRole(service, runId, { role, tabId }) {
+  const run = service.get(runId);
+  if (!run || run.stage !== "HOLD" || run.terminationReason !== "WEB_BINDING_REQUIRED"
+    || !REVIEW_ROLES.includes(role) || run.coordination?.activeRole !== role) {
+    throw Object.assign(new Error("Reviewer binding recovery is no longer available for this role."), {
+      code:"REVIEW_BINDING_RECOVERY_UNAVAILABLE",
+    });
+  }
+  const selected = (run.coordination?.bindingCandidates ?? []).find((candidate) => candidate.tabId === tabId);
+  if (!selected) {
+    throw Object.assign(new Error("The selected ChatGPT tab is not an eligible reviewer recovery target."), {
+      code:"DELIVERY_RECOVERY_MISMATCH",
+    });
+  }
+  if (typeof service.web?.rebind !== "function") {
+    throw Object.assign(new Error("The Web adapter does not support explicit reviewer tab selection."), {
+      code:"WEB_REBIND_UNAVAILABLE",
+    });
+  }
+  const record = bindingForRole(run, role);
+  if (!record.conversationUrl || !record.conversationId) {
+    throw Object.assign(new Error(`${role} does not have an exact conversation identity to recover.`), {
+      code:"REVIEW_BINDING_RECOVERY_UNAVAILABLE",
+    });
+  }
+  const requested = { ...record, tabId:null, windowId:null, documentId:null, frameId:null,
+    bindingStatus:"NEEDS_REBIND", activeDeliveryId:null };
+  const returned = await service.web.rebind({ binding:webBinding(requested), tabId:selected.tabId, focus:true });
+  if (returned.sessionId !== record.sessionId || returned.runId !== runId
+    || returned.conversationUrl !== record.conversationUrl || returned.conversationId !== record.conversationId
+    || returned.bindingStatus !== "BOUND") {
+    throw Object.assign(new Error("Explicit reviewer rebind returned a different conversation identity."), {
+      code:"DELIVERY_RECOVERY_MISMATCH",
+    });
+  }
+  const next = recordFromReturned(record, returned, new Date().toISOString(), null);
+  const bindings = replaceBinding(run.conversationBindings, next);
+  const other = bindings.find((item) => item.role !== role && REVIEW_ROLES.includes(item.role));
+  if (other?.conversationId && other.conversationId === next.conversationId) {
+    throw Object.assign(new Error("Judge and Critic cannot resolve to the same ChatGPT conversation."), {
+      code:"DELIVERY_RECOVERY_MISMATCH",
+    });
+  }
+  const at = new Date().toISOString();
+  const updated = service.update(runId, {
+    conversationBindings:bindings, error:null,
+    coordination:{ ...run.coordination, phase:"ROLE_BINDING_RECOVERED", activeRole:role,
+      bindingCode:null, bindingCandidates:[] },
+    events:[...(run.events ?? []), { eventId:`event_${randomUUID()}`, type:"REVIEWER_BINDING_RECOVERED",
+      createdAt:at, payload:{ role, tabId:next.tabId, conversationId:next.conversationId } }],
+  });
+  return { runId, role, tabId:next.tabId, conversationId:next.conversationId,
+    status:"REBOUND", version:updated.version };
 }
 
 function parseControl(raw) {
@@ -606,7 +683,8 @@ export async function auditCandidate(service, runId, workspace) {
     if (typedError.code === "WEB_BINDING_REQUIRED") {
       service.update(runId, { stage:"HOLD", auditResult:"HOLD", terminationReason:"WEB_BINDING_REQUIRED", error:typedError.message,
         coordination:{ phase:"WAITING_FOR_ROLE_BINDING", activeRole:typedError.role ?? null,
-          bindingCode:typedError.bindingCode ?? null, auditManifestHash:auditManifest.auditManifestHash } });
+          bindingCode:typedError.bindingCode ?? null, bindingCandidates:typedError.bindingCandidates ?? [],
+          auditManifestHash:auditManifest.auditManifestHash } });
       return;
     }
     const reason = typedError.code

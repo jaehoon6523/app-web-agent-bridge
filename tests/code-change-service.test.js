@@ -226,3 +226,57 @@ test("finished run archive preserves evidence and version history and can be res
   caps=f.service.snapshot(run.runId,{}).commandCapabilities;
   assert.ok(caps.includes("run.archive"));
 });
+
+test("ambiguous reviewer tabs require explicit eligible selection before audit retry",async(t)=>{
+  let failFirstJudge=true;
+  const rebinds=[];
+  const f=setupAudit(t,{
+    reviewVerdicts:["SATISFIED"],
+    resume(input){
+      if(failFirstJudge&&input.binding.conversationId==="test"){
+        failFirstJudge=false;
+        throw Object.assign(new Error("multiple exact reviewer tabs"),{code:"AMBIGUOUS",details:{candidates:[
+          {tabId:41,windowId:1,url:"https://chatgpt.com/c/test"},
+          {tabId:42,windowId:2,url:"https://chatgpt.com/c/test"},
+          {tabId:99,windowId:3,url:"https://chatgpt.com/c/other"},
+        ]}});
+      }
+    },
+  });
+  f.service.web.rebind=async({binding,tabId,focus})=>{
+    rebinds.push({binding:structuredClone(binding),tabId,focus});
+    f.service.web.activeBinding={...binding,tabId,windowId:1,
+      documentId:`doc-${binding.sessionId}-${tabId}`,frameId:0,bindingStatus:"BOUND"};
+    return f.service.web.activeBinding;
+  };
+  let run=await f.run();
+  assert.equal(run.stage,"HOLD");
+  assert.equal(run.terminationReason,"WEB_BINDING_REQUIRED");
+  assert.equal(run.coordination.activeRole,"JUDGE");
+  assert.deepEqual(run.coordination.bindingCandidates.map((item)=>item.tabId),[41,42]);
+  let caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(caps.includes("code.review.rebind"));
+  assert.ok(!caps.includes("code.review.retry"));
+  await assert.rejects(f.dashboard.executeDurable({type:"code.review.rebind",requestId:"review-rebind-invalid",
+    payload:{runId:run.runId,expectedVersion:run.version,role:"JUDGE",selectedTabId:99}}),
+  (error)=>error.code==="DELIVERY_RECOVERY_MISMATCH");
+
+  run=f.service.get(run.runId);
+  const rebound=await f.dashboard.executeDurable({type:"code.review.rebind",requestId:"review-rebind-41",
+    payload:{runId:run.runId,expectedVersion:run.version,role:"JUDGE",selectedTabId:41}});
+  assert.equal(rebound.status,"REBOUND");
+  run=f.service.get(run.runId);
+  assert.equal(run.stage,"HOLD");
+  assert.equal(run.coordination.phase,"ROLE_BINDING_RECOVERED");
+  assert.equal(run.conversationBindings.find((item)=>item.role==="JUDGE").tabId,41);
+  assert.equal(rebinds.length,1);
+  caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(!caps.includes("code.review.rebind"));
+  assert.ok(caps.includes("code.review.retry"));
+
+  const accepted=await f.dashboard.executeDurable({type:"code.review.retry",requestId:"review-after-rebind",
+    payload:{runId:run.runId,expectedVersion:run.version}});
+  assert.equal(accepted.status,"REVIEW_RETRY_ACCEPTED");
+  await f.service.jobs.get(run.runId);
+  assert.equal(f.service.get(run.runId).stage,"AWAITING_APPLY");
+});
