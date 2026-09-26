@@ -47,6 +47,28 @@ export function groupRunsByProject(runs) {
   return [...groups.values()];
 }
 
+export function projectActivityRecords(runs, { limit = 80 } = {}) {
+  if (!Array.isArray(runs)) throw new TypeError("runs must be an array.");
+  const safeLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : 80;
+  const records = [];
+  for (const run of runs) {
+    for (const activity of Array.isArray(run?.activity) ? run.activity : []) {
+      if (!activity || typeof activity.at !== "string" || !activity.at
+        || typeof activity.kind !== "string" || !activity.kind) continue;
+      records.push(Object.freeze({
+        ...activity,
+        runId:run.runId ?? run.id ?? activity.runId ?? null,
+        objective:run.objective ?? "",
+        archivedAt:run.archivedAt ?? null,
+      }));
+    }
+  }
+  records.sort((left, right) => String(right.at).localeCompare(String(left.at))
+    || String(right.runId ?? "").localeCompare(String(left.runId ?? ""))
+    || String(left.kind).localeCompare(String(right.kind)));
+  return records.slice(0, safeLimit);
+}
+
 const HISTORY_ATTENTION_PHASES = new Set(["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"]);
 const HISTORY_CLOSED_PHASES = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
 const HISTORY_SCOPES = new Set(["ALL", "ACTIVE", "ATTENTION", "CLOSED", "ARCHIVED"]);

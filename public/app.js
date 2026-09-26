@@ -1,5 +1,6 @@
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
+import { renderProjectOverview } from "./project-overview-view.js";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
@@ -80,61 +81,6 @@ function ensureOperatorNoteControls() {
 ensureOperatorNoteControls();
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
-function renderProjectOverview(group, busyRun, allRuns) {
-  const allProjectRuns = allRuns.filter((item) =>
-    (item.targetRoot ?? item.projectRef?.targetRoot ?? null) === group.targetRoot);
-  const lineageFor = (runId) => {
-    const current = allProjectRuns.find((item) => item.runId === runId) ?? null;
-    if (!current) return null;
-    const parentRunId = typeof current.parentRunId === "string" && current.parentRunId
-      ? current.parentRunId
-      : null;
-    const parent = parentRunId
-      ? allProjectRuns.find((item) => item.runId === parentRunId) ?? null
-      : null;
-    return {
-      parentRunId,
-      parentAvailable:Boolean(parent),
-      parentObjective:parent?.objective ?? null,
-      children:allProjectRuns.filter((item) => item.parentRunId === runId),
-    };
-  };
-  text("overviewTitle", folderName(group.targetRoot));
-  text("overviewPath", group.targetRoot);
-  const tasks = group.runs;
-  const attention = tasks.filter((r) => ["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"].includes(r.phase));
-  text("overviewSummary", `기록 ${tasks.length}건 · 확인할 작업 ${attention.length}건`);
-  const list = $("overviewTasks"); list.replaceChildren();
-  for (const run of tasks) {
-    const card = node("article", "", "overview-task");
-    card.append(node("h3", run.objective), node("strong", labels[run.phase] ?? run.phase, `health ${runAppearance(run.phase)}`));
-    const guidance = run.phase === "HOLD" ? "감사 질문·판단 대기를 확인하세요."
-      : run.phase === "AWAITING_APPLY" ? "통과 후보의 근거를 확인하고 별도로 적용하세요."
-      : run.phase === "RECOVERY_REQUIRED" ? "진단과 외부 작업 상태를 확인하세요."
-      : terminal.has(run.phase) ? "완료된 기록을 확인할 수 있습니다." : "진행 상태와 기록을 확인하세요.";
-    card.append(node("p", guidance), node("p", `시작 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}`, "muted"));
-    const lineage = lineageFor(run.runId);
-    if (lineage?.parentRunId || lineage?.children.length) {
-      const relation = [];
-      if (lineage.parentRunId) relation.push(lineage.parentAvailable
-        ? `이어짐: ${lineage.parentObjective}`
-        : `이전 작업 기록 없음: ${lineage.parentRunId}`);
-      if (lineage.children.length) relation.push(`후속 작업 ${lineage.children.length}건`);
-      card.append(node("p", relation.join(" · "), "muted"));
-    }
-    const action = node("button", ["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"].includes(run.phase) ? "확인하고 조치하기" : "작업 기록 보기");
-    action.addEventListener("click", () => openRun(run.runId));
-    card.append(action); list.append(card);
-  }
-  if (!tasks.length) list.append(node("p", "아직 이 프로젝트의 실행 기록이 없습니다.", "muted"));
-  $("newProjectTask").disabled = !connected || $("newRun").disabled;
-  $("openProjectBlocker").hidden = !busyRun;
-  $("openProjectBlocker").disabled = !connected;
-  text("overviewReason", !connected ? "서버에 다시 연결한 뒤 작업을 선택하세요."
-    : busyRun ? `‘${busyRun.objective}’ 작업이 아직 종료되지 않았습니다. 현재 작업을 확인하세요.`
-    : $("newProjectTask").disabled ? "현재 준비 또는 요청이 끝난 뒤 새 작업을 시작할 수 있습니다."
-    : "새 작업은 별도 요구사항 승인과 감사·적용 절차를 거칩니다.");
-}
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   const element = $(id);
   element.disabled = Boolean(disabled);
@@ -551,7 +497,7 @@ function render() {
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
     : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
-  if (overviewGroup) renderProjectOverview(overviewGroup, unfinished, allRuns);
+  if (overviewGroup) renderProjectOverview({ group:overviewGroup, busyRun:unfinished, allRuns, $, text, node, folderName, labels, runAppearance, terminal, time, connected, newRunDisabled:$("newRun").disabled, openRun });
   if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
     && !preparation?.error && !checks?.extensionAuthenticated) {
     text("startReason", "입력은 가능합니다. 브릿지 확장이 인증되면 준비 대화를 시작할 수 있습니다. ChatGPT 탭은 자동으로 엽니다.");

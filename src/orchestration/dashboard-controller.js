@@ -3,6 +3,7 @@ import { isTerminalRunPhase } from "../domain/run-state-machine.js";
 import { canonicalConversationUrl } from "../runtime/web/binding.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { sha256CanonicalJson } from "../domain/canonical-json.js";
+import { projectRunActivity } from "./project-activity.js";
 
 function reject(message, code = "INVALID_COMMAND") {
   throw Object.assign(new Error(message), { code });
@@ -26,6 +27,20 @@ function provisioningErrorMessage(error) {
     SESSION_AUTH_REQUIRED: "Sign in to ChatGPT in the connected browser, open the entered conversation URL, then retry Start.",
   }[code];
   return guidance ? `${error.message} [${code}] ${guidance}` : error.message;
+}
+
+function dashboardRunSummary(run) {
+  return {
+    runId:run?.runId ?? run?.id ?? null,
+    objective:run?.objective ?? "",
+    phase:run?.phase ?? run?.status ?? "UNKNOWN",
+    targetRoot:run?.projectRef?.targetRoot ?? run?.targetRoot ?? null,
+    parentRunId:run?.followUp?.runId ?? run?.parentRunId ?? null,
+    createdAt:run?.createdAt ?? null,
+    updatedAt:run?.updatedAt ?? null,
+    archivedAt:run?.archivedAt ?? null,
+    activity:projectRunActivity(run),
+  };
 }
 
 /** Authenticated dashboard projection and commands over the existing runtime. */
@@ -60,10 +75,7 @@ export class DashboardController {
     const codeRun = codeRuns.find((r) => r.runId === (runId || run?.runId));
     if (codeRun) {
       const snapshot = live.codeChanges.snapshot(codeRun.runId, this.#preflight());
-      snapshot.runs = runs.map(({ runId, objective, phase, projectRef, targetRoot, followUp, createdAt, updatedAt, archivedAt }) =>
-        ({ runId, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null,
-          parentRunId:followUp?.runId ?? null,
-          createdAt, updatedAt, archivedAt:archivedAt ?? null }));
+      snapshot.runs = runs.map(dashboardRunSummary);
       return snapshot;
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
@@ -87,10 +99,7 @@ export class DashboardController {
     const inputs = run ? store.listAgentTurnInputs(run.runId) : [];
     return {
       run,
-      runs: runs.map(({ runId: id, objective, phase, projectRef, targetRoot, followUp, createdAt, updatedAt, archivedAt }) =>
-        ({ runId: id, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null,
-          parentRunId:followUp?.runId ?? null,
-          createdAt, updatedAt, archivedAt:archivedAt ?? null })),
+      runs:runs.map(dashboardRunSummary),
       sessions: sessions.map((session) => ({
         ...session,
         ...(session.actor === "CHATGPT_WEB_AGENT" && this.#transport?.snapshot?.binding?.runId === run.runId
