@@ -534,8 +534,8 @@ async function prepareBoundSession(payload) {
     try {
       documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: provider.rootUrl, conversationId: null });
       await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
-        tabId: root.id, windowId: root.windowId, conversationUrl: provider.rootUrl, conversationId: null,
-        bindingStatus: "ROOT_READY", bindingError: null, lastActiveChatGptTarget: createStoredTarget({ tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: provider.rootUrl, conversationId: null }) });
+        webProvider: requested.provider, tabId: root.id, windowId: root.windowId, conversationUrl: provider.rootUrl, conversationId: null,
+        bindingStatus: "ROOT_READY", bindingError: null, lastActiveWebTarget: createStoredTarget({ provider:requested.provider, tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: provider.rootUrl, conversationId: null }) });
     } catch (error) { throw rootBootstrapError(error.code ?? "ROOT_BIND_FAILED", error.message, "BIND", { tabId: root.id }); }
     console.info("[bridge:root:ready]", rootBootstrapDetails("ROOT_READY", { sessionId: requested.sessionId, tabId: root.id }));
     return { ...documentBinding, sessionId: requested.sessionId, runId: requested.runId, tabId: root.id, windowId: root.windowId,
@@ -612,15 +612,15 @@ async function rebindSession(payload) {
     await store.bindSession({
       ...documentBinding,
       lastBoundSessionId: requested.sessionId,
-      lastBoundRunId: requested.runId,
+      lastBoundRunId: requested.runId, webProvider: requested.provider,
       conversationUrl: provider.rootUrl,
       conversationId: null,
       tabId: tab.id,
       windowId: tab.windowId,
       bindingStatus: "ROOT_READY",
       bindingError: null,
-      lastActiveChatGptTarget: createStoredTarget({
-        tabId: tab.id, windowId: tab.windowId, ...documentBinding,
+      lastActiveWebTarget: createStoredTarget({
+        provider:requested.provider, tabId: tab.id, windowId: tab.windowId, ...documentBinding,
         conversationUrl: provider.rootUrl, conversationId: null,
       }),
     });
@@ -653,13 +653,13 @@ async function persistBoundTab(tab, requested) {
   await store.bindSession({
     ...documentBinding,
     lastBoundSessionId: requested.sessionId,
-    lastBoundRunId: requested.runId,
+    lastBoundRunId: requested.runId, webProvider: requested.provider,
     conversationUrl: requested.conversationUrl,
     conversationId: requested.conversationId,
     tabId: tab.id,
     windowId: tab.windowId,
     bindingStatus: "BOUND",
-    lastActiveChatGptTarget: createStoredTarget({ tabId: tab.id, windowId: tab.windowId, ...documentBinding,
+    lastActiveWebTarget: createStoredTarget({ provider:requested.provider, tabId: tab.id, windowId: tab.windowId, ...documentBinding,
       conversationUrl: requested.conversationUrl, conversationId: requested.conversationId }),
   });
 }
@@ -733,7 +733,7 @@ async function handlePrompt(message) {
     // when the user has focused another ChatGPT conversation in the meantime.
     const target = payload.sessionId === undefined
       ? await resolveCurrentUserTarget({ tabs: chrome.tabs, store, state,
-        urlPatterns: CHATGPT_URL_PATTERNS, waitForContentScript })
+        waitForContentScript })
       : await resolvePreparedSessionTarget({ tabs: chrome.tabs, state, waitForContentScript });
     if (state.currentDeliveryId !== null) {
       const conflict = pendingDeliveryTargetConflict(state, target, message.requestId);

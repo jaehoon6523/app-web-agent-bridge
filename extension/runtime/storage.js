@@ -1,9 +1,12 @@
+import { resolveWebTargetProvider } from "./provider-target.js";
+
 export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   controllerUrl: "ws://127.0.0.1:8787/ws/extension",
   sharedSecret: "",
   extensionIdentity: "",
   lastBoundSessionId: null,
   lastBoundRunId: null,
+  webProvider: null,
   conversationUrl: null,
   conversationId: null,
   tabId: null,
@@ -13,7 +16,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   currentDeliveryId: null,
   completedDelivery: null,
   deliveryScopes: {},
-  lastActiveChatGptTarget: null,
+  lastActiveWebTarget: null,
   lastObservedUserMessageId: null,
   lastObservedAssistantMessageId: null,
   bindingError: null,
@@ -21,6 +24,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
 });
 
 const STORED_KEYS = Object.freeze(Object.keys(DEFAULT_EXTENSION_CONFIG));
+const LEGACY_STORED_KEYS = Object.freeze(["lastActiveChatGptTarget"]);
 const BINDING_STATUSES = new Set(["ROOT_READY", "BOUND", "NEEDS_REBIND", "AUTH_REQUIRED", "AMBIGUOUS"]);
 
 export class ExtensionStateError extends Error {
@@ -69,11 +73,25 @@ function normalizeActiveTarget(value) {
   const tabId = nullableInteger(value.tabId), windowId = nullableInteger(value.windowId);
   const documentId = nullableString(value.documentId), frameId = nullableInteger(value.frameId);
   const conversationUrl = nullableString(value.conversationUrl);
-  if (tabId === null || windowId === null || documentId === null || frameId !== 0 || conversationUrl === null) return null;
-  return { tabId, windowId, documentId, frameId, conversationUrl, conversationId: nullableString(value.conversationId), observedAt: Number.isFinite(value.observedAt) ? value.observedAt : 0 };
+  const provider = conversationUrl === null ? null : resolveWebTargetProvider({
+    provider:nullableString(value.provider),
+    conversationUrl,
+  });
+  const conversationId = nullableString(value.conversationId);
+  if (tabId === null || windowId === null || documentId === null || frameId !== 0
+    || !provider || provider.canonicalize(conversationUrl) !== conversationUrl
+    || (conversationId === null ? conversationUrl !== provider.rootUrl
+      : provider.conversationIdFromUrl(conversationUrl) !== conversationId)) return null;
+  return { provider:provider.provider, tabId, windowId, documentId, frameId, conversationUrl, conversationId,
+    observedAt:Number.isFinite(value.observedAt) ? value.observedAt : 0 };
 }
 
 export function normalizeExtensionState(value = {}) {
+  const conversationUrl = nullableString(value.conversationUrl);
+  const bindingProvider = conversationUrl === null ? null : resolveWebTargetProvider({
+    provider:nullableString(value.webProvider),
+    conversationUrl,
+  });
   const state = {
     controllerUrl: typeof value.controllerUrl === "string" && value.controllerUrl.length > 0
       ? value.controllerUrl
@@ -82,7 +100,8 @@ export function normalizeExtensionState(value = {}) {
     extensionIdentity: typeof value.extensionIdentity === "string" ? value.extensionIdentity : "",
     lastBoundSessionId: nullableString(value.lastBoundSessionId),
     lastBoundRunId: nullableString(value.lastBoundRunId),
-    conversationUrl: nullableString(value.conversationUrl),
+    webProvider: bindingProvider?.provider ?? null,
+    conversationUrl,
     conversationId: nullableString(value.conversationId),
     tabId: nullableInteger(value.tabId),
     windowId: nullableInteger(value.windowId),
@@ -92,7 +111,9 @@ export function normalizeExtensionState(value = {}) {
     completedDelivery: value.completedDelivery && typeof value.completedDelivery === "object"
       ? structuredClone(value.completedDelivery) : null,
     deliveryScopes: normalizeDeliveryScopes(value.deliveryScopes),
-    lastActiveChatGptTarget: normalizeActiveTarget(value.lastActiveChatGptTarget),
+    lastActiveWebTarget: normalizeActiveTarget(
+      value.lastActiveWebTarget !== undefined ? value.lastActiveWebTarget : value.lastActiveChatGptTarget,
+    ),
     lastObservedUserMessageId: nullableString(value.lastObservedUserMessageId),
     lastObservedAssistantMessageId: nullableString(value.lastObservedAssistantMessageId),
     bindingError: nullableString(value.bindingError),
@@ -103,13 +124,14 @@ export function normalizeExtensionState(value = {}) {
   if (
     ["BOUND", "ROOT_READY"].includes(state.bindingStatus)
     && (
-      state.tabId === null
+      state.webProvider === null
+      || state.tabId === null
       || state.windowId === null
       || state.conversationUrl === null
       || state.documentId === null
       || state.frameId !== 0
       || (state.bindingStatus === "BOUND" && state.conversationId === null)
-      || (state.bindingStatus === "ROOT_READY" && (state.conversationUrl !== "https://chatgpt.com/" || state.conversationId !== null))
+      || (state.bindingStatus === "ROOT_READY" && (state.conversationUrl !== bindingProvider?.rootUrl || state.conversationId !== null))
       || state.lastBoundSessionId === null
       || state.lastBoundRunId === null
     )
@@ -126,7 +148,7 @@ export function createExtensionStateStore(storageArea) {
   let mutationQueue = Promise.resolve();
 
   async function readStoredState() {
-    const stored = await storageArea.get(STORED_KEYS);
+    const stored = await storageArea.get([...STORED_KEYS, ...LEGACY_STORED_KEYS]);
     return normalizeExtensionState(stored);
   }
 
