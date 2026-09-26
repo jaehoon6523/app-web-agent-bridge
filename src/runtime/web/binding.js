@@ -1,4 +1,10 @@
 import { WebBindingStatus, WebProtocolError, isPlainObject } from "./protocol.js";
+import {
+  canonicalWebConversationUrl,
+  extractWebConversationId,
+  isWebProviderRootUrl,
+  webConversationProviderForUrl,
+} from "./provider-registry.js";
 
 export const WEB_SESSION_BINDING_FIELDS = Object.freeze([
   "sessionId",
@@ -14,8 +20,6 @@ export const WEB_SESSION_BINDING_FIELDS = Object.freeze([
   "lastObservedAssistantMessageId",
   "bindingStatus",
 ]);
-
-const CHATGPT_HOSTS = new Set(["chatgpt.com"]);
 
 function requireExactKeys(value, keys, label) {
   if (!isPlainObject(value)) {
@@ -55,34 +59,11 @@ function requireInteger(value, label, { nullable = false } = {}) {
 }
 
 export function canonicalConversationUrl(value) {
-  if (typeof value !== "string" || value.length === 0) return null;
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" || !CHATGPT_HOSTS.has(url.hostname)) return null;
-  url.username = "";
-  url.password = "";
-  url.search = "";
-  url.hash = "";
-  const normalizedPath = url.pathname.length > 1
-    ? url.pathname.replace(/\/+$/, "")
-    : url.pathname;
-  return `${url.origin}${normalizedPath}`;
+  return canonicalWebConversationUrl(value);
 }
 
 export function extractConversationId(value) {
-  const canonical = canonicalConversationUrl(value);
-  if (!canonical) return null;
-  const pathname = new URL(canonical).pathname;
-  const segments = pathname.split("/").filter(Boolean);
-  const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
-  if (markerIndex < 0 || markerIndex + 1 >= segments.length) return null;
-  const id = decodeURIComponent(segments[markerIndex + 1]);
-  // ChatGPT can expose WEB:* briefly while a new conversation is being created.
-  return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+  return extractWebConversationId(value);
 }
 
 export function validateWebSessionBinding(value) {
@@ -108,7 +89,7 @@ export function validateWebSessionBinding(value) {
     const canonical = canonicalConversationUrl(value.conversationUrl);
     if (canonical === null || canonical !== value.conversationUrl) {
       throw new WebProtocolError(
-        "WebSessionBinding.conversationUrl must be a canonical ChatGPT conversation URL",
+        "WebSessionBinding.conversationUrl must be a canonical registered Web-provider conversation URL",
         "INVALID_WEB_SESSION_BINDING",
       );
     }
@@ -120,8 +101,10 @@ export function validateWebSessionBinding(value) {
       );
     }
   }
-  if (value.bindingStatus === "ROOT_READY" && (value.conversationUrl !== "https://chatgpt.com/" || value.conversationId !== null || value.tabId === null || value.windowId === null)) {
-    throw new WebProtocolError("ROOT_READY requires a selected ChatGPT start tab", "INVALID_WEB_SESSION_BINDING");
+  const provider = value.conversationUrl ? webConversationProviderForUrl(value.conversationUrl) : null;
+  if (value.bindingStatus === "ROOT_READY" && (!provider || !isWebProviderRootUrl(value.conversationUrl, provider.provider)
+    || value.conversationId !== null || value.tabId === null || value.windowId === null)) {
+    throw new WebProtocolError("ROOT_READY requires a selected registered Web-provider start tab", "INVALID_WEB_SESSION_BINDING");
   }
   if (value.bindingStatus === WebBindingStatus.BOUND) {
     if (

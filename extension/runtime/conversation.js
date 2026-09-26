@@ -1,31 +1,16 @@
-const CHATGPT_HOSTS = new Set(["chatgpt.com"]);
+import {
+  CHATGPT_WEB_TARGET_PROVIDER,
+  defaultWebTargetProviderRegistry,
+} from "./provider-target.js";
+
+export { CHATGPT_WEB_TARGET_PROVIDER, createWebTargetProviderRegistry } from "./provider-target.js";
 
 export function canonicalChatGptUrl(value) {
-  if (typeof value !== "string" || value.length === 0) return null;
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    return null;
-  }
-  if (url.protocol !== "https:" || !CHATGPT_HOSTS.has(url.hostname)) return null;
-  url.search = "";
-  url.hash = "";
-  url.username = "";
-  url.password = "";
-  const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : url.pathname;
-  return `${url.origin}${path}`;
+  return defaultWebTargetProviderRegistry.canonicalize(value, CHATGPT_WEB_TARGET_PROVIDER.provider);
 }
 
 export function conversationIdFromUrl(value) {
-  const canonical = canonicalChatGptUrl(value);
-  if (!canonical) return null;
-  const segments = new URL(canonical).pathname.split("/").filter(Boolean);
-  const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
-  if (markerIndex < 0 || markerIndex + 1 >= segments.length) return null;
-  const id = decodeURIComponent(segments[markerIndex + 1]);
-  // ChatGPT can expose WEB:* briefly while a new conversation is being created.
-  return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+  return defaultWebTargetProviderRegistry.conversationIdFromUrl(value, CHATGPT_WEB_TARGET_PROVIDER.provider);
 }
 
 export function matchExactConversationTabs(tabs, { conversationUrl, conversationId }) {
