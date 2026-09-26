@@ -438,6 +438,44 @@ export class ChatGptWebSessionAdapter {
     }
   }
 
+  /** @param {{binding?: WebSessionBindingValue, tabId?: number, focus?: boolean}} [input] */
+  async rebind({ binding, tabId, focus = false } = {}) {
+    validateWebSessionBinding(binding);
+    if (!this.#transport.authenticated) {
+      throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
+    }
+    if (!Number.isSafeInteger(tabId) || tabId < 0) {
+      throw new WebProtocolError("Explicit rebind requires a selected tab ID", "REBIND_TAB_REQUIRED");
+    }
+    const conversationBootstrap = binding.conversationUrl === null && binding.conversationId === null;
+    this.#beginSessionOperation("REBIND");
+    this.#ready = false;
+    try {
+      const message = await this.#request({
+        type: "web.session.rebind",
+        payload: this.#bindingPayload(binding, { tabId, focus }),
+      }, new Set(["web.session.ready", "web.session.error"]), 60_000);
+      if (message.type === "web.session.error") throw this.#messageError(message);
+      this.#acceptReturnedBinding(message.payload?.session, {
+        expectedBinding: binding,
+        allowTabRelocation: true,
+        allowConversationBootstrap: conversationBootstrap,
+      });
+      this.#ready = true;
+      this.#emitRuntimeEvent(this.#runtimeEvent("SESSION_READY", null, {
+        binding: this.#transport.snapshot.binding,
+        resumed: true,
+        rebound: true,
+      }));
+      return this.#transport.snapshot.binding;
+    } catch (error) {
+      this.#ready = false;
+      throw error;
+    } finally {
+      this.#sessionOperation = null;
+    }
+  }
+
   async inspect() {
     return Object.freeze({
       ...this.#transport.snapshot,

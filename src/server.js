@@ -286,7 +286,7 @@ export function createBridgeServer({
     try {
       const input = { ...req.body, ...(req.params.id ? { preparationId: req.params.id } : {}) };
       const command = type === "web" ? input.command : type;
-      if (typeof command !== "string" || (type === "web" && !["web.inspect", "web.focus", "web.stop", "web.reconcile"].includes(command))) {
+      if (typeof command !== "string" || (type === "web" && !["web.inspect", "web.focus", "web.stop", "web.reconcile", "web.rebind"].includes(command))) {
         throw Object.assign(new Error("Invalid Web command."), { code: "INVALID_COMMAND" });
       }
       const result = await preparations().execute(command, input);

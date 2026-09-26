@@ -27,6 +27,15 @@ function fixture(t) {
         : { ...input.binding, bindingStatus: "BOUND", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 };
       calls.push(binding.sessionId); return binding;
     },
+    async rebind(input) {
+      validateWebSessionBinding(input.binding);
+      binding = input.binding.conversationUrl === null
+        ? { ...input.binding, conversationUrl:"https://chatgpt.com/", conversationId:null,
+          bindingStatus:"ROOT_READY", tabId:input.tabId, windowId:2, documentId:`document-${input.tabId}`, frameId:0 }
+        : { ...input.binding, bindingStatus:"BOUND", tabId:input.tabId, windowId:2,
+          documentId:`document-${input.tabId}`, frameId:0 };
+      calls.push(`rebind:${input.tabId}`); return binding;
+    },
     async submitTurn(input) {
       prompts.push(input.text);
       if (binding.bindingStatus === "ROOT_READY") binding = { ...binding, conversationUrl: "https://chatgpt.com/c/new-conversation", conversationId: "new-conversation", bindingStatus: "BOUND" };
@@ -315,6 +324,46 @@ test("connection must succeed before entering preparation; absent tab never send
   assert.equal(sent, 0);
   assert.ok(failed.commandCapabilities.includes("preparation.start"));
   assert.ok(!failed.commandCapabilities.includes("preparation.approve"));
+});
+
+test("ambiguous unsent binding waits for an explicit eligible tab and then sends exactly once", async (t) => {
+  const f = fixture(t);
+  let resumeCalls = 0, sent = 0;
+  const submitTurn = f.web.submitTurn;
+  f.web.resume = async () => {
+    resumeCalls++;
+    throw Object.assign(new Error("Several matching tabs are open."), {
+      code:"AMBIGUOUS",
+      details:{ candidates:[
+        { tabId:11, windowId:1, url:"https://chatgpt.com/c/test", canonicalUrl:"https://chatgpt.com/c/test", conversationId:"test" },
+        { tabId:12, windowId:2, url:"https://chatgpt.com/c/test", canonicalUrl:"https://chatgpt.com/c/test", conversationId:"test" },
+        { tabId:99, windowId:3, url:"https://chatgpt.com/c/other", canonicalUrl:"https://chatgpt.com/c/other", conversationId:"other" },
+      ] },
+    });
+  };
+  f.web.submitTurn = async (input) => { sent++; return submitTurn(input); };
+  await f.start(); await settled(f.service);
+  const blocked = f.service.current;
+  assert.equal(blocked.lifecycle, "ACTIVE");
+  assert.equal(blocked.state, "WEB_BLOCKED");
+  assert.equal(blocked.error.code, "WEB_TAB_SELECTION_REQUIRED");
+  assert.deepEqual(blocked.error.details.candidates.map((item) => item.tabId), [11, 12]);
+  assert.equal(blocked.error.details.browserDispatchStarted, false);
+  assert.equal(blocked.deliveries[0].state, "FAILED");
+  assert.equal(blocked.webSession.activeDeliveryId, blocked.deliveries[0].deliveryId);
+  assert.equal(sent, 0);
+  assert.ok(f.service.capabilities().includes("web.rebind"));
+  assert.ok(f.service.capabilities().includes("preparation.cancel"));
+  assert.ok(!f.service.capabilities().includes("preparation.discard"));
+  const session = blocked.webSession;
+  await f.command("web.rebind", { sessionId:session.sessionId, conversationId:session.conversationId,
+    conversationUrl:session.conversationUrl, deliveryId:session.activeDeliveryId, selectedTabId:12 });
+  await settled(f.service);
+  assert.equal(resumeCalls, 1, "explicit selection must not repeat ambiguous automatic discovery");
+  assert.equal(sent, 1);
+  assert.equal(f.service.current.state, "DISCUSSING");
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+  assert.ok(f.calls.includes("rebind:12"));
 });
 
 test("result projection never attaches an unrelated preparation or its commands", async (t) => {

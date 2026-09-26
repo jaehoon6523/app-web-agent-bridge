@@ -705,6 +705,28 @@ function renderPreparation() {
         : `연결 성공: ChatGPT tab ${tabId} · BOUND · identity: ${identity} · 정확한 conversation 일치`
       : `연결 비활성화: ChatGPT tab ${tabId} · ${session?.bindingState ?? "UNBOUND"} · identity: ${identity} · BOUND 및 정확한 conversation 일치가 확인되지 않음`,
     bindingConfirmed ? "recovery-guidance ok" : "recovery-guidance error"));
+  const tabCandidates = preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED"
+    && Array.isArray(preparation.error?.details?.candidates)
+    ? preparation.error.details.candidates
+    : [];
+  if (tabCandidates.length) {
+    const chooser = node("div", "", "flow-band");
+    chooser.append(
+      node("h2", "사용할 ChatGPT 탭 선택"),
+      node("p", "메시지는 아직 전송되지 않았습니다. 아래 후보 중 이 작업에 사용할 탭을 선택하면 정확한 탭으로 다시 연결한 뒤 최초 전송을 계속합니다."),
+    );
+    for (const candidate of tabCandidates) {
+      const row = node("div", "", "record");
+      row.append(node("p", `tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`} · ${candidate.url}`));
+      const button = node("button", `tab ${candidate.tabId} 사용`);
+      button.type = "button"; button.dataset.webCommand = "web.rebind";
+      const disabled = !capabilities().has("web.rebind") || operations.webTurn !== "IDLE";
+      button.disabled = disabled; buttonReason(button, disabled ? disabledWebReason("web.rebind") : "");
+      button.addEventListener("click", () => webSessionCommand("web.rebind", { selectedTabId:candidate.tabId }));
+      row.append(button); chooser.append(row);
+    }
+    recovery.append(chooser);
+  }
   const deliveries = preparation.deliveries ?? [];
   const displayedDelivery = deliveries.find(item => item.deliveryId === session?.activeDeliveryId) ?? deliveries.at(-1);
   if (displayedDelivery) {
@@ -865,13 +887,14 @@ async function preparationMutation(operation, capability, url, payload = {}) {
     await refresh();
   }
 }
-async function webSessionCommand(commandType) {
+async function webSessionCommand(commandType, extras = {}) {
   const session = preparation?.webSession;
   if (!session) return;
   await preparationMutation("webTurn", commandType, "/api/preparations/web", {
     command: commandType, preparationId: workflow.preparationId,
     sessionId: session.sessionId, conversationId: session.conversationId,
     conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId,
+    ...extras,
   });
 }
 async function beginPreparation() {

@@ -234,6 +234,30 @@ test("missing server workflow fails closed without constructing a preparation", 
   assert.equal(ui.elements.get("planRun").disabled, true);
   assert.match(ui.elements.get("connectionNotice").textContent, /WORKFLOW_CONTRACT/);
 });
+test("ambiguous preparation renders eligible ChatGPT tabs and sends the selected tab identity", async () => {
+  const state = prepared();
+  state.workflow.state = "WEB_BLOCKED";
+  state.preparation.state = "WEB_BLOCKED";
+  state.preparation.deliveries = [{ deliveryId:"d1", sessionId:"s1", conversationId:"c1", state:"FAILED" }];
+  state.preparation.webSession.activeDeliveryId = "d1";
+  state.preparation.error = { code:"WEB_TAB_SELECTION_REQUIRED", message:"Select a tab.", details:{
+    browserDispatchStarted:false,
+    candidates:[
+      { tabId:11, windowId:1, url:"https://chatgpt.com/c/c1" },
+      { tabId:12, windowId:2, url:"https://chatgpt.com/c/c1" },
+    ],
+  } };
+  state.commandCapabilities = ["web.rebind", "web.inspect", "preparation.cancel"];
+  const ui = await dashboard(state, async () => ({}));
+  const buttons = ui.run('document.querySelectorAll("[data-web-command]").filter((button) => button.dataset.webCommand === "web.rebind")');
+  assert.equal(buttons.length, 2);
+  await buttons[1].listeners.click();
+  const call = ui.calls.find((item) => item.url === "/api/preparations/web");
+  assert.equal(call.body.command, "web.rebind");
+  assert.equal(call.body.selectedTabId, 12);
+  assert.equal(call.body.sessionId, "s1");
+  assert.equal(call.body.deliveryId, "d1");
+});
 test("approval is a single mutation carrying the canonical version", async () => {
   const state = prepared();
   state.workflow.state = "AGREEMENT_READY";

@@ -574,6 +574,51 @@ async function rebindSession(payload) {
     throw new ExtensionOperationError("REBIND_TAB_REQUIRED", "Explicit rebind requires a selected ChatGPT tab ID.");
   }
   const tab = await chrome.tabs.get(payload.tabId);
+  if (requested.bootstrap) {
+    if (
+      canonicalChatGptUrl(tab.url) !== "https://chatgpt.com/"
+      || conversationIdFromUrl(tab.url) !== null
+    ) {
+      throw new ExtensionOperationError(
+        "REBIND_CONVERSATION_MISMATCH",
+        "The selected tab is not a ChatGPT start page.",
+      );
+    }
+    if (payload.focus === true) await focusTab(tab);
+    await waitForContentScript(tab.id, 30_000, true);
+    const page = await chrome.tabs.sendMessage(tab.id, { type: "agent.ping" });
+    if (!page?.ready || page.busy || page.generating || page.url !== "https://chatgpt.com/" || page.conversationId !== null) {
+      throw new ExtensionOperationError("ROOT_NOT_READY", "The selected ChatGPT start tab is not ready.");
+    }
+    const documentBinding = await inspectBoundDocument(chrome.tabs, tab.id, {
+      conversationUrl: "https://chatgpt.com/",
+      conversationId: null,
+    });
+    await store.bindSession({
+      ...documentBinding,
+      lastBoundSessionId: requested.sessionId,
+      lastBoundRunId: requested.runId,
+      conversationUrl: "https://chatgpt.com/",
+      conversationId: null,
+      tabId: tab.id,
+      windowId: tab.windowId,
+      bindingStatus: "ROOT_READY",
+      bindingError: null,
+      lastActiveChatGptTarget: createStoredTarget({
+        tabId: tab.id, windowId: tab.windowId, ...documentBinding,
+        conversationUrl: "https://chatgpt.com/", conversationId: null,
+      }),
+    });
+    return {
+      ...documentBinding,
+      sessionId: requested.sessionId, runId: requested.runId,
+      tabId: tab.id, windowId: tab.windowId,
+      conversationUrl: "https://chatgpt.com/", conversationId: null,
+      title: tab.title || "ChatGPT",
+      lastObservedUserMessageId: null, lastObservedAssistantMessageId: null,
+      bindingStatus: "ROOT_READY",
+    };
+  }
   if (
     canonicalChatGptUrl(tab.url) !== requested.conversationUrl
     || conversationIdFromUrl(tab.url) !== requested.conversationId

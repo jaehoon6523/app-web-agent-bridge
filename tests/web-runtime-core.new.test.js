@@ -136,6 +136,38 @@ test("Controller-configured review parser accepts evaluation data through the ex
   } finally { await adapter.close(); }
 });
 
+test("explicit Web rebind carries the user-selected tab and establishes that exact binding", async () => {
+  const transport = new WebExtensionTransport({ sharedSecret:SECRET, expectedExtensionIdentity:IDENTITY });
+  const socket = new FakeSocket();
+  transport.attach(socket); authenticate(transport, socket);
+  const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs:500 });
+  const requested = createWebSessionBinding({
+    sessionId:"session-rebind", runId:"run-rebind",
+    tabId:null, windowId:null, documentId:null, frameId:null,
+    conversationUrl:"https://chatgpt.com/c/rebind", conversationId:"rebind",
+    title:null, lastObservedUserMessageId:null, lastObservedAssistantMessageId:null,
+    bindingStatus:"NEEDS_REBIND",
+  });
+  const pending = adapter.rebind({ binding:requested, tabId:12, focus:true });
+  const request = socket.sent.at(-1);
+  assert.equal(request.type, "web.session.rebind");
+  assert.equal(request.payload.tabId, 12);
+  assert.equal(request.payload.focus, true);
+  const rebound = createWebSessionBinding({
+    ...requested, tabId:12, windowId:2, documentId:"document-12", frameId:0,
+    title:"Chosen", bindingStatus:"BOUND",
+  });
+  socket.receive({
+    type:"web.session.ready", protocolVersion:2, requestId:request.requestId,
+    payload:{ session:rebound },
+  });
+  const result = await pending;
+  assert.equal(result.tabId, 12);
+  assert.equal(result.conversationId, "rebind");
+  assert.equal((await adapter.inspect()).sessionReady, true);
+  await adapter.close();
+});
+
 test("one-time HMAC challenges reject invalid values and replay", () => {
   let now = 1_000;
   let counter = 0;

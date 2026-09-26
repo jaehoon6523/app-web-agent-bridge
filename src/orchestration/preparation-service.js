@@ -3,7 +3,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../domain/canonical-json.js";
-import { createWebSessionBinding } from "../runtime/web/binding.js";
+import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 
 function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
@@ -18,6 +18,36 @@ const PACKET_FORMAT_CODES = new Set([
   "INVALID_PACKET_LIMIT",
   "INVALID_PACKET_JSON",
 ]);
+
+const USER_TAB_SELECTION_ERRORS = new Set(["AMBIGUOUS", "STORED_AMBIGUOUS_REBIND_REQUIRED"]);
+
+function selectableTabsFor(error, session) {
+  if (!USER_TAB_SELECTION_ERRORS.has(error?.code)) return [];
+  const source = Array.isArray(error?.details?.rootTabs)
+    ? error.details.rootTabs
+    : Array.isArray(error?.details?.candidates)
+      ? error.details.candidates
+      : [];
+  const bootstrap = session.conversationUrl === null && session.conversationId === null;
+  const seen = new Set();
+  const candidates = [];
+  for (const candidate of source) {
+    if (!Number.isSafeInteger(candidate?.tabId) || candidate.tabId < 0 || seen.has(candidate.tabId)) continue;
+    const url = canonicalConversationUrl(candidate.canonicalUrl ?? candidate.url);
+    const conversationId = candidate.conversationId ?? extractConversationId(url);
+    const matches = bootstrap
+      ? url === "https://chatgpt.com/" && conversationId === null
+      : url === session.conversationUrl && conversationId === session.conversationId;
+    if (!matches) continue;
+    seen.add(candidate.tabId);
+    candidates.push({
+      tabId: candidate.tabId,
+      windowId: Number.isSafeInteger(candidate.windowId) ? candidate.windowId : null,
+      url,
+    });
+  }
+  return candidates;
+}
 
 function packetFormatError(error) {
   const code = PACKET_FORMAT_CODES.has(error?.code) ? error.code : "INVALID_CONTROLLER_PACKET";
@@ -280,6 +310,16 @@ export class PreparationService {
     if (type === "preparation.cancel") {
       if (!this.capabilities().includes(type)) fail("Inspect and stop the active delivery before cancellation.");
       const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
+      if (context.error?.code === "WEB_TAB_SELECTION_REQUIRED") {
+        if (!delivery || delivery.state !== "FAILED" || context.error?.details?.browserDispatchStarted !== false) {
+          fail("The unsent binding failure changed; refresh before cancelling.", "DELIVERY_RECOVERY_MISMATCH");
+        }
+        delivery.cancelled = true; delivery.cancelledAt = stamp();
+        context.webSession.activeDeliveryId = null;
+        context.lifecycle = "ABANDONED";
+        context.error = { code: "UNSENT_BINDING_CANCELLED", message: "The unsent ChatGPT binding request was cancelled." };
+        this.touch(context); return this.snapshot();
+      }
       if (delivery) {
         const observed = await this.web.inspectDelivery(); this.setDiagnostics(context, observed);
         if (!context.diagnostics.canRecover) fail("Delivery termination is not confirmed.");
@@ -324,8 +364,12 @@ export class PreparationService {
     context.deliveries.push({ commandRequestId, deliveryId, preparationId: context.preparationId, sessionId: session.sessionId,
       conversationId: session.conversationId, state: "RESERVED", response: null, createdAt: stamp() });
     session.activeDeliveryId = deliveryId; this.touch(context);
+    this.launchDelivery(context, deliveryId);
+  }
+  launchDelivery(context, deliveryId, preparedBinding = null) {
+    const session = context.webSession;
     // No Web response is awaited by the HTTP request. The intent is durable first.
-    const job = new Promise((resolve) => setImmediate(resolve)).then(() => this.generate(context, deliveryId))
+    const job = new Promise((resolve) => setImmediate(resolve)).then(() => this.generate(context, deliveryId, preparedBinding))
       .catch((rawError) => {
         if (this.closed) return;
         const error = normalizePreparationWebFailure(rawError, {
@@ -334,6 +378,23 @@ export class PreparationService {
         });
         const delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
         const unsent = delivery.state === "RESERVED" || error.details?.browserDispatchStarted === false;
+        const candidates = unsent ? selectableTabsFor(error, session) : [];
+        const selectionRequired = candidates.length > 0;
+        if (selectionRequired) {
+          delivery.state = "FAILED";
+          session.activeDeliveryId = deliveryId;
+          session.bindingState = "AMBIGUOUS";
+          context.state = "WEB_BLOCKED";
+          context.lifecycle = "ACTIVE";
+          context.error = {
+            code: "WEB_TAB_SELECTION_REQUIRED",
+            message: "Several matching ChatGPT tabs are open. Select the tab to use; no message has been sent yet.",
+            details: { ...(error.details ?? {}), originalCode: error.code ?? "AMBIGUOUS",
+              browserDispatchStarted: false, candidates },
+          };
+          this.touch(context);
+          return;
+        }
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
         if (unsent) context.webSession.activeDeliveryId = null;
         context.state = unsent ? "WEB_BLOCKED" : "RECOVERY_REQUIRED";
@@ -354,23 +415,26 @@ export class PreparationService {
       }).finally(() => this.jobs.delete(context.preparationId));
     this.jobs.set(context.preparationId, job);
   }
-  async generate(context, deliveryId) {
+  async generate(context, deliveryId, preparedBinding = null) {
     if (this.closed) return;
     const session = context.webSession, delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
     const runId = context.preparationId;
-    session.bindingState = "BINDING"; this.touch(context);
-    console.info("[bridge:preparation:binding]", { preparationId: runId, sessionId: session.sessionId, deliveryId });
-    // Exact conversations stay background-safe. Root bootstrap is user-visible:
-    // focus/open ChatGPT so the user does not wait on a page that is not present.
-    const request = { focus: session.conversationUrl === null && session.conversationId === null, binding: createWebSessionBinding({
-      sessionId: session.sessionId, runId, title: null, bindingStatus: "NEEDS_REBIND",
-      conversationId: session.conversationId, conversationUrl: session.conversationUrl,
-      tabId: session.tabId, windowId: session.windowId,
-      documentId: session.documentId ?? null, frameId: session.frameId ?? null,
-      lastObservedUserMessageId: session.lastObservedUserMessageId,
-      lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
-    }) };
-    const binding = await this.web.resume(request);
+    let binding = preparedBinding;
+    if (!binding) {
+      session.bindingState = "BINDING"; this.touch(context);
+      console.info("[bridge:preparation:binding]", { preparationId: runId, sessionId: session.sessionId, deliveryId });
+      // Exact conversations stay background-safe. Root bootstrap is user-visible:
+      // focus/open ChatGPT so the user does not wait on a page that is not present.
+      const request = { focus: session.conversationUrl === null && session.conversationId === null, binding: createWebSessionBinding({
+        sessionId: session.sessionId, runId, title: null, bindingStatus: "NEEDS_REBIND",
+        conversationId: session.conversationId, conversationUrl: session.conversationUrl,
+        tabId: session.tabId, windowId: session.windowId,
+        documentId: session.documentId ?? null, frameId: session.frameId ?? null,
+        lastObservedUserMessageId: session.lastObservedUserMessageId,
+        lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
+      }) };
+      binding = await this.web.resume(request);
+    }
     if (this.closed) return;
     if (binding.sessionId !== session.sessionId) fail("Web binding changed.");
     if (session.conversationUrl !== null && binding.conversationId !== session.conversationId) fail("Web binding changed.");
@@ -563,6 +627,47 @@ export class PreparationService {
       if (input[key] !== value) fail("Web identity mismatch: " + key, "DELIVERY_RECOVERY_MISMATCH");
     }
     if (!this.capabilities().includes(type)) fail("Web operation is unavailable.");
+    if (type === "web.rebind") {
+      const delivery = context.deliveries.find((item) => item.deliveryId === session.activeDeliveryId);
+      const candidates = context.error?.code === "WEB_TAB_SELECTION_REQUIRED"
+        ? context.error?.details?.candidates ?? []
+        : [];
+      const selected = candidates.find((candidate) => candidate.tabId === input.selectedTabId);
+      if (!delivery || delivery.state !== "FAILED" || context.error?.details?.browserDispatchStarted !== false
+        || !selected || this.jobs.has(context.preparationId)) {
+        fail("The selected ChatGPT tab is no longer an eligible unsent recovery target.", "DELIVERY_RECOVERY_MISMATCH");
+      }
+      if (typeof this.web?.rebind !== "function") fail("The Web adapter does not support explicit tab selection.", "WEB_REBIND_UNAVAILABLE");
+      const bootstrap = session.conversationUrl === null && session.conversationId === null;
+      const rebound = await this.web.rebind({
+        tabId: selected.tabId,
+        focus: true,
+        binding: createWebSessionBinding({
+          sessionId: session.sessionId, runId: context.preparationId,
+          tabId: null, windowId: null, documentId: null, frameId: null,
+          conversationUrl: session.conversationUrl, conversationId: session.conversationId,
+          title: null, lastObservedUserMessageId: session.lastObservedUserMessageId,
+          lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
+          bindingStatus: "NEEDS_REBIND",
+        }),
+      });
+      if (rebound.sessionId !== session.sessionId || rebound.runId !== context.preparationId
+        || (!bootstrap && (rebound.conversationUrl !== session.conversationUrl || rebound.conversationId !== session.conversationId))
+        || (bootstrap && (rebound.bindingStatus !== "ROOT_READY" || rebound.conversationUrl !== "https://chatgpt.com/" || rebound.conversationId !== null))) {
+        fail("Explicit rebind returned a different ChatGPT session.", "DELIVERY_RECOVERY_MISMATCH");
+      }
+      Object.assign(session, {
+        conversationUrl: rebound.conversationUrl, conversationId: rebound.conversationId,
+        tabId: rebound.tabId, windowId: rebound.windowId, documentId: rebound.documentId, frameId: rebound.frameId,
+        bindingState: rebound.bindingStatus,
+      });
+      context.conversationUrl = rebound.conversationUrl;
+      context.error = null; context.diagnostics = null; context.state = "INITIALIZING";
+      delivery.state = "RESERVED"; delivery.conversationId = rebound.conversationId;
+      this.touch(context);
+      this.launchDelivery(context, delivery.deliveryId, rebound);
+      return this.snapshot();
+    }
     const pendingDelivery = context.deliveries.find(item => item.deliveryId === session.activeDeliveryId);
     // Explicit reconcile is the user-authorized refresh path, including an
     // ACK_PENDING response that may have one manually completed follow-up.
@@ -652,9 +757,12 @@ export class PreparationService {
     if (!context || context.lifecycle !== "ACTIVE") return this.available() ? ["preparation.start"] : [];
     const caps = [];
     const active = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
-    if (active && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
+    const tabSelection = context.error?.code === "WEB_TAB_SELECTION_REQUIRED"
+      && active?.state === "FAILED" && context.error?.details?.browserDispatchStarted === false;
+    if (active && !tabSelection && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
       || context.error?.code === "DELIVERY_RECOVERY_UNCONFIRMED"
       || context.error?.code === "REBIND_DURING_ACTIVE_DELIVERY")) caps.push("preparation.discard");
+    if (tabSelection && !this.jobs.has(context.preparationId)) caps.push("preparation.cancel");
     if (context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
       && context.diagnostics?.canRecover && (active?.response || active?.stopped)) caps.push("preparation.cancel");
     if (!context.webSession.activeDeliveryId && !this.jobs.has(context.preparationId)) {
@@ -666,6 +774,8 @@ export class PreparationService {
     }
     if (this.available()) {
       caps.push("web.inspect");
+      if (tabSelection && (context.error?.details?.candidates?.length ?? 0) > 0
+        && !this.jobs.has(context.preparationId)) caps.push("web.rebind");
       if (context.diagnostics?.canFocus) caps.push("web.focus");
       if (context.diagnostics?.canStop) caps.push("web.stop");
       if (context.deliveries.some((d) => d.deliveryId === context.webSession.activeDeliveryId && d.response)

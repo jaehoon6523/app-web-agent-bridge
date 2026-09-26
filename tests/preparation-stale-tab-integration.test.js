@@ -173,3 +173,45 @@ test("preparation opens a ChatGPT root tab when none exists", async () => {
   assert.equal(session.bindingStatus, "ROOT_READY");
   assert.equal((await store.read()).tabId, 19);
 });
+
+test("explicit rebind can select one ChatGPT start tab when several roots are open", async () => {
+  let stored = {};
+  const store = createExtensionStateStore({
+    get: async () => structuredClone(stored),
+    set: async (value) => { stored = structuredClone(value); },
+  });
+  const selected = { id:22, windowId:4, url:"https://chatgpt.com/", title:"Selected new chat" };
+  const page = { ok:true, ready:true, busy:false, generating:false, url:selected.url,
+    conversationId:null, documentId:"document-22", frameId:0 };
+  const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
+  const context = vm.createContext({
+    ...documentBinding, ...conversation, createStoredTarget, console, store,
+    CHATGPT_URL_PATTERNS:["https://chatgpt.com/*"],
+    chrome:{ tabs:{
+      get:async (id) => { assert.equal(id, 22); return selected; },
+      sendMessage:async () => page,
+    } },
+    waitForContentScript:async () => {},
+    inspectBoundDocument:async () => ({ documentId:"document-22", frameId:0 }),
+    focusTab:async () => {},
+    getSessionInfo:async () => { throw new Error("root rebind returns directly"); },
+    ExtensionOperationError:class extends Error {
+      constructor(code, message, details) { super(message); this.code=code; this.details=details; }
+    },
+  });
+  vm.runInContext(
+    source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function requireExactBoundTab(")),
+    context,
+  );
+  const rebound = await context.rebindSession({
+    sessionId:"web_prep_root", runId:"prep_root",
+    conversationUrl:null, conversationId:null, tabId:22, focus:true,
+  });
+  assert.equal(rebound.bindingStatus, "ROOT_READY");
+  assert.equal(rebound.tabId, 22);
+  const state = await store.read();
+  assert.equal(state.bindingStatus, "ROOT_READY");
+  assert.equal(state.tabId, 22);
+  assert.equal(state.conversationUrl, "https://chatgpt.com/");
+  assert.equal(state.conversationId, null);
+});
