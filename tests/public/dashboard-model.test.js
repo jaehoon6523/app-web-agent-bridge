@@ -48,6 +48,7 @@ test("history search and status filters are deterministic and preserve run order
     { runId:"run-beta", phase:"HOLD", objective:"Beta settings", targetRoot:"C:/work/two" },
     { runId:"run-release", phase:"APPLIED", objective:"Release", targetRoot:"C:/work/one" },
     { runId:"run-failed", phase:"FAILED", objective:"Broken build", targetRoot:"C:/work/three" },
+    { runId:"run-archived", phase:"APPLIED", objective:"Old release", targetRoot:"C:/work/one", archivedAt:"2026-09-01T00:00:00Z" },
   ];
   assert.deepEqual(filterRunsForHistory(runs, { query:"beta" }).map((run) => run.runId), ["run-beta"]);
   assert.deepEqual(filterRunsForHistory(runs, { query:"C:/WORK/TWO" }).map((run) => run.runId), ["run-beta"]);
@@ -58,8 +59,10 @@ test("history search and status filters are deterministic and preserve run order
     ["run-beta"]);
   assert.deepEqual(filterRunsForHistory(runs, { scope:"CLOSED" }).map((run) => run.runId),
     ["run-release", "run-failed"]);
+  assert.deepEqual(filterRunsForHistory(runs, { scope:"ARCHIVED" }).map((run) => run.runId),
+    ["run-archived"]);
   assert.deepEqual(filterRunsForHistory(runs, { scope:"UNKNOWN" }).map((run) => run.runId),
-    runs.map((run) => run.runId));
+    ["run-alpha", "run-beta", "run-release", "run-failed"]);
 });
 
 test("dashboard uses only canonical actor names and removes legacy completion controls", async () => {

@@ -609,6 +609,25 @@ export class CodeChangeService {
   async command(type, payload) {
     const run = this.get(payload.runId);
     if (!run || run.version !== payload.expectedVersion) throw Object.assign(new Error("Run changed; refresh."), { code: "RUN_VERSION_CONFLICT" });
+    if (type === "run.archive" || type === "run.unarchive") {
+      if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
+        || this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId) {
+        throw Object.assign(new Error("Only settled finished runs can be archived or restored."), { code:"RUN_NOT_TERMINAL" });
+      }
+      const archiving = type === "run.archive";
+      if (archiving === Boolean(run.archivedAt)) {
+        throw Object.assign(new Error(archiving ? "Run is already archived." : "Run is not archived."), { code:"RUN_ARCHIVE_STATE_INVALID" });
+      }
+      const at = new Date().toISOString();
+      return this.update(run.runId, {
+        archivedAt:archiving ? at : null,
+        events:[...(run.events ?? []), {
+          eventId:`event_${randomUUID()}`,
+          type:archiving ? "RUN_ARCHIVED" : "RUN_UNARCHIVED",
+          createdAt:at, payload:{ archivedAt:archiving ? at : null },
+        }],
+      });
+    }
     if (type === "run.delete") {
       if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
         || this.web.activeTurnId && this.web.activeTurnId === run.reviewTurnId) {
@@ -966,7 +985,9 @@ export class CodeChangeService {
           && (record.conversationBindings ?? []).some((item) =>
             ["JUDGE","CRITIC"].includes(item.role) && item.conversationUrl && item.conversationId && item.activeDeliveryId === null)
           ? ["code.review.discuss"] : []),
-        ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.delete"] : []),
+        ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
+          ? ["run.delete", record.archivedAt ? "run.unarchive" : "run.archive"]
+          : []),
         ...(record.stage === "WORKER_RUNNING" && typeof record.workerTurnId === "string" && record.workerTurnId
           && typeof this.workers.get(runId)?.steer === "function"
           ? ["code.worker.intervene"] : []),

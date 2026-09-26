@@ -199,3 +199,30 @@ test("uncertain reviewer discussion is never resent and can be explicitly discar
   caps=f.service.snapshot(current.runId,{}).commandCapabilities;
   assert.ok(caps.includes("code.review.discuss"));
 });
+
+test("finished run archive preserves evidence and version history and can be restored",async(t)=>{
+  const f=setupAudit(t,{reviewVerdicts:["SATISFIED"]});
+  let run=await f.run();
+  await f.dashboard.executeDurable({type:"code.apply",requestId:"archive-apply",payload:f.applyPayload(run)});
+  run=f.service.get(run.runId);
+  const historyBefore=f.service.store.history(run.runId).length;
+  assert.ok(f.service.snapshot(run.runId,{}).commandCapabilities.includes("run.archive"));
+
+  const archived=await f.dashboard.executeDurable({type:"run.archive",requestId:"archive-run",
+    payload:{runId:run.runId,expectedVersion:run.version}});
+  assert.equal(archived.stage,"APPLIED");
+  assert.equal(typeof archived.archivedAt,"string");
+  assert.ok(f.service.store.history(run.runId).length>historyBefore);
+  assert.ok(archived.evidence.length>0);
+  let caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(caps.includes("run.unarchive"));
+  assert.ok(!caps.includes("run.archive"));
+
+  const restored=await f.dashboard.executeDurable({type:"run.unarchive",requestId:"unarchive-run",
+    payload:{runId:archived.runId,expectedVersion:archived.version}});
+  assert.equal(restored.archivedAt,null);
+  assert.equal(restored.stage,"APPLIED");
+  assert.deepEqual(restored.evidence,archived.evidence);
+  caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(caps.includes("run.archive"));
+});

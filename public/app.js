@@ -28,6 +28,24 @@ function folderName(targetRoot) {
 }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
+function ensureArchiveControls() {
+  const filter = $("historyStatusFilter");
+  if (filter && !Array.from(filter.children ?? []).some((item) => item.value === "ARCHIVED")) {
+    const option = node("option", "보관됨");
+    option.value = "ARCHIVED";
+    filter.append(option);
+  }
+  let archive = $("archiveRun");
+  if (!archive) {
+    archive = node("button", "기록 보관");
+    archive.id = "archiveRun";
+    archive.type = "button";
+    archive.disabled = true;
+    archive.title = "종료된 실행을 감사 기록과 함께 보관합니다.";
+    $("deleteRun")?.after(archive);
+  }
+}
+ensureArchiveControls();
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function renderProjectOverview(group, busyRun) {
@@ -355,15 +373,19 @@ function render() {
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   $("historySearch").value = historyQuery;
-  $("historyStatusFilter").value = ["ALL", "ACTIVE", "ATTENTION", "CLOSED"].includes(historyScope) ? historyScope : "ALL";
+  $("historyStatusFilter").value = ["ALL", "ACTIVE", "ATTENTION", "CLOSED", "ARCHIVED"].includes(historyScope) ? historyScope : "ALL";
   historyScope = $("historyStatusFilter").value;
   const allRuns = snapshot?.runs ?? [];
+  const activeHistoryRuns = allRuns.filter((item) => !item.archivedAt);
+  const archivedHistoryRuns = allRuns.filter((item) => item.archivedAt);
   const filteredRuns = filterRunsForHistory(allRuns, { query:historyQuery, scope:historyScope });
   const filtersActive = Boolean(historyQuery.trim()) || historyScope !== "ALL";
   $("historyClearFilters").hidden = !filtersActive;
-  text("historyFilterSummary", filtersActive ? `${allRuns.length}건 중 ${filteredRuns.length}건 표시` : `전체 ${allRuns.length}건`);
+  const historyBaseCount = historyScope === "ARCHIVED" ? archivedHistoryRuns.length : activeHistoryRuns.length;
+  text("historyFilterSummary", filtersActive ? `${historyBaseCount}건 중 ${filteredRuns.length}건 표시`
+    : `전체 ${activeHistoryRuns.length}건 · 보관 ${archivedHistoryRuns.length}건`);
   const list = $("runList"); list.replaceChildren();
-  const groups = groupRunsByProject(allRuns);
+  const groups = groupRunsByProject(activeHistoryRuns);
   for (const record of snapshot?.projectConversations ?? []) {
     if (record.targetRoot && !groups.some((item) => item.targetRoot === record.targetRoot)) groups.push({ targetRoot:record.targetRoot, runs:[] });
   }
@@ -383,9 +405,13 @@ function render() {
   $("historyEmpty").hidden = historyGroups.length > 0;
   for (const group of historyGroups) {
     const section = node("section", "", "project-history");
-    const heading = group.targetRoot ? node("button", folderName(group.targetRoot), `project-open${projectViewRoot === group.targetRoot ? " active" : ""}`)
+    const projectHeadingLink = Boolean(group.targetRoot && historyScope !== "ARCHIVED");
+    const heading = group.targetRoot
+      ? node(projectHeadingLink ? "button" : "h3", folderName(group.targetRoot),
+        projectHeadingLink ? `project-open${projectViewRoot === group.targetRoot ? " active" : ""}` : "")
       : node("h3", "기타 작업");
-    if (group.targetRoot) { heading.title = group.targetRoot; heading.addEventListener("click", () => selectProject(group.targetRoot)); }
+    if (group.targetRoot) heading.title = group.targetRoot;
+    if (projectHeadingLink) heading.addEventListener("click", () => selectProject(group.targetRoot));
     section.append(heading);
     for (const r of group.runs) {
       const button = node("button", r.objective, `run-item${workflow.stage !== "START" && r.runId === run?.runId ? " active" : ""}`);
@@ -597,6 +623,9 @@ function render() {
   for (const [id, capability] of [["stopRun", "run.stop"], ["applyCode", "code.apply"], ["exportEvidence", "evidence.export"], ["deleteRun", "run.delete"]]) {
     $(id).disabled = !run || operations.runCommand !== "IDLE" || !caps.has(capability);
   }
+  const archiveCapability = run?.archivedAt ? "run.unarchive" : "run.archive";
+  $("archiveRun").textContent = run?.archivedAt ? "보관 해제" : "기록 보관";
+  $("archiveRun").disabled = !run || operations.runCommand !== "IDLE" || !caps.has(archiveCapability);
   if (!run) return;
   $("continueProject").hidden = run.phase !== "APPLIED";
   $("continueProject").disabled = $("newRun").disabled;
@@ -609,7 +638,7 @@ function render() {
     : `작업 기록 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
-  text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
+  text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
   const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
@@ -656,6 +685,8 @@ async function command(type, payload = {}) {
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
         "code.apply": "적용 요청을 처리했습니다. 최신 적용 상태를 확인하세요.",
         "evidence.export": "감사 기록 요청을 처리했습니다.",
+        "run.archive": "종료된 실행을 보관했습니다. 기록과 감사 근거는 유지됩니다.",
+        "run.unarchive": "보관된 실행을 기본 기록으로 복원했습니다.",
         "run.delete": "종료된 작업 기록을 삭제했습니다.",
       }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
       text("commandResult", successMessage);
@@ -1137,6 +1168,9 @@ $("abandonRun").addEventListener("click", () => {
   }
 });
 $("stopRun").addEventListener("click", () => command("run.stop"));
+$("archiveRun").addEventListener("click", () => {
+  if (!$("archiveRun").disabled) command(snapshot?.run?.archivedAt ? "run.unarchive" : "run.archive");
+});
 $("deleteRun").addEventListener("click", () => {
   if (!$("deleteRun").disabled && window.confirm("종료된 작업의 실행 기록·감사 근거·임시 작업 사본을 삭제합니다. 적용된 프로젝트 코드는 유지됩니다. 삭제할까요?")) {
     command("run.delete");

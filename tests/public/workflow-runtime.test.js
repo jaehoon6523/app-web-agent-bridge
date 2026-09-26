@@ -332,12 +332,14 @@ test("history search and status filter narrow the sidebar without changing the s
       { runId:"alpha", version:1, phase:"WORKER_RUNNING", objective:"Alpha chat", targetRoot:"C:/work/one" },
       { runId:"beta", version:1, phase:"HOLD", objective:"Beta settings", targetRoot:"C:/work/two" },
       { runId:"done", version:1, phase:"APPLIED", objective:"Release", targetRoot:"C:/work/one" },
+      { runId:"archived", version:2, phase:"APPLIED", objective:"Old release", targetRoot:"C:/work/one", archivedAt:"2026-09-01T00:00:00Z" },
     ] };
   const storage = new Map();
   const ui = await dashboard(state, undefined, storage);
-  assert.match(ui.elements.get("historyFilterSummary").textContent, /전체 3건/u);
+  assert.match(ui.elements.get("historyFilterSummary").textContent, /전체 3건 · 보관 1건/u);
   assert.match(renderedText(ui.elements.get("runList")), /Alpha chat/u);
   assert.match(renderedText(ui.elements.get("runList")), /Beta settings/u);
+  assert.doesNotMatch(renderedText(ui.elements.get("runList")), /Old release/u);
   ui.run('selectProject("C:/work/one")');
   assert.equal(ui.elements.get("projectOverview").hidden, false);
 
@@ -357,7 +359,12 @@ test("history search and status filter narrow the sidebar without changing the s
   assert.match(ui.elements.get("historyFilterSummary").textContent, /3건 중 1건 표시/u);
   assert.equal(storage.get("bridge.history.scope"), "ATTENTION");
   ui.elements.get("historyClearFilters").listeners.click();
-  assert.match(ui.elements.get("historyFilterSummary").textContent, /전체 3건/u);
+  assert.match(ui.elements.get("historyFilterSummary").textContent, /전체 3건 · 보관 1건/u);
+  ui.elements.get("historyStatusFilter").value = "ARCHIVED";
+  ui.elements.get("historyStatusFilter").listeners.change();
+  assert.match(renderedText(ui.elements.get("runList")), /Old release/u);
+  assert.doesNotMatch(renderedText(ui.elements.get("runList")), /Release/u);
+  assert.match(ui.elements.get("historyFilterSummary").textContent, /1건 중 1건 표시/u);
 });
 
 for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"],

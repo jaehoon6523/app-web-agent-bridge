@@ -49,7 +49,7 @@ export function groupRunsByProject(runs) {
 
 const HISTORY_ATTENTION_PHASES = new Set(["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"]);
 const HISTORY_CLOSED_PHASES = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
-const HISTORY_SCOPES = new Set(["ALL", "ACTIVE", "ATTENTION", "CLOSED"]);
+const HISTORY_SCOPES = new Set(["ALL", "ACTIVE", "ATTENTION", "CLOSED", "ARCHIVED"]);
 
 export function filterRunsForHistory(runs, { query = "", scope = "ALL" } = {}) {
   if (!Array.isArray(runs)) throw new TypeError("runs must be an array.");
@@ -57,10 +57,13 @@ export function filterRunsForHistory(runs, { query = "", scope = "ALL" } = {}) {
   const selectedScope = HISTORY_SCOPES.has(scope) ? scope : "ALL";
   return runs.filter((run) => {
     const phase = String(run?.phase ?? run?.status ?? "UNKNOWN").toUpperCase();
-    const scopeMatch = selectedScope === "ALL"
-      || (selectedScope === "ACTIVE" && !HISTORY_CLOSED_PHASES.has(phase))
-      || (selectedScope === "ATTENTION" && HISTORY_ATTENTION_PHASES.has(phase))
-      || (selectedScope === "CLOSED" && HISTORY_CLOSED_PHASES.has(phase));
+    const archived = Boolean(run?.archivedAt);
+    const scopeMatch = selectedScope === "ARCHIVED"
+      ? archived
+      : !archived && (selectedScope === "ALL"
+        || (selectedScope === "ACTIVE" && !HISTORY_CLOSED_PHASES.has(phase))
+        || (selectedScope === "ATTENTION" && HISTORY_ATTENTION_PHASES.has(phase))
+        || (selectedScope === "CLOSED" && HISTORY_CLOSED_PHASES.has(phase)));
     if (!scopeMatch) return false;
     if (!needle) return true;
     const targetRoot = run?.targetRoot ?? run?.projectRef?.targetRoot ?? "";
