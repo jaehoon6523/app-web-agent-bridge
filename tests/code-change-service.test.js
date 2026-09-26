@@ -227,6 +227,34 @@ test("uncertain reviewer discussion is never resent and can be explicitly discar
   assert.ok(caps.includes("code.review.discuss"));
 });
 
+test("operator note is durable append-only context and does not change review or apply authority",async(t)=>{
+  const f=setupAudit(t,{reviewVerdicts:["SATISFIED"]});
+  let run=await f.run();
+  assert.equal(run.stage,"AWAITING_APPLY");
+  let caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(caps.includes("run.note.add"));
+  assert.ok(caps.includes("code.apply"));
+  const reviewId=run.reviews.at(-1).reviewId;
+  const auditResult=run.auditResult;
+
+  const recorded=await f.dashboard.executeDurable({type:"run.note.add",requestId:"note-1",
+    payload:{runId:run.runId,expectedVersion:run.version,kind:"DECISION",
+      text:"Keep the reviewed candidate; deploy validation is a separate follow-up."}});
+  assert.equal(recorded.status,"RECORDED");
+  run=f.service.get(run.runId);
+  assert.equal(run.stage,"AWAITING_APPLY");
+  assert.equal(run.auditResult,auditResult);
+  assert.equal(run.reviews.at(-1).reviewId,reviewId);
+  assert.equal(run.operatorNotes.length,1);
+  assert.equal(run.operatorNotes[0].kind,"DECISION");
+  assert.equal(run.operatorNotes[0].candidateId,run.candidate.candidateId);
+  assert.equal(run.operatorNotes[0].phase,"AWAITING_APPLY");
+  assert.ok(run.events.some((event)=>event.type==="OPERATOR_NOTE_ADDED"
+    && event.payload.noteId===run.operatorNotes[0].noteId));
+  caps=f.service.snapshot(run.runId,{}).commandCapabilities;
+  assert.ok(caps.includes("code.apply"));
+});
+
 test("finished run archive preserves evidence and version history and can be restored",async(t)=>{
   const f=setupAudit(t,{reviewVerdicts:["SATISFIED"]});
   let run=await f.run();

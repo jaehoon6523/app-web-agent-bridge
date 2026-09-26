@@ -368,7 +368,7 @@ export class CodeChangeService {
       coordination: { phase:"NOT_STARTED", activeRole:null, auditManifestHash:null, activePlanId:null, agreedWorkOrderId:null },
       worker: { provider: this.workerConfig.provider, model: this.workerConfig.model ?? null },
       workerTurns: [],
-      userDecisions: [], userInterventions: [], reviewDiscussions: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
+      userDecisions: [], userInterventions: [], reviewDiscussions: [], operatorNotes: [], messages: [], events: [{ eventId: `event_${randomUUID()}`, type: "RUN_ACCEPTED", createdAt, payload: { stage: "CREATED" } }],
       auditResult: null, application: null, terminationReason: null, missingInformation: [], error: null, createdAt,
       deadlineAt: new Date(Date.now() + project.policy.totalTimeoutMs).toISOString() });
     this.controls.set(runId, new AbortController());
@@ -698,6 +698,31 @@ export class CodeChangeService {
       return { ...e, ...excerpt(this.artifactStore.read(e.contentRef.sha256).toString("utf8"), payload.startLine, payload.endLine) };
     }
     if (type === "run.reconcile") return this.reconcile(run);
+    if (type === "run.note.add") {
+      if (!["NOTE","DECISION"].includes(payload.kind)) {
+        throw Object.assign(new Error("Operator note kind must be NOTE or DECISION."), { code:"OPERATOR_NOTE_KIND_INVALID" });
+      }
+      if (typeof payload.text !== "string" || !payload.text.trim() || payload.text.length > 4000) {
+        throw Object.assign(new Error("Operator note text must contain 1–4000 characters."), { code:"OPERATOR_NOTE_TEXT_INVALID" });
+      }
+      const createdAt = new Date().toISOString();
+      const note = {
+        noteId:`note_${randomUUID()}`,
+        actor:"LOCAL_AUTHENTICATED_USER",
+        kind:payload.kind,
+        text:payload.text.trim(),
+        phase:run.stage,
+        candidateId:run.candidate?.candidateId ?? null,
+        requirementsRef:run.requirementsRef ?? null,
+        createdAt,
+      };
+      const updated = this.update(run.runId, {
+        operatorNotes:[...(run.operatorNotes ?? []), note],
+        events:[...(run.events ?? []), { eventId:`event_${randomUUID()}`, type:"OPERATOR_NOTE_ADDED",
+          createdAt, payload:{ noteId:note.noteId, kind:note.kind, phase:note.phase, candidateId:note.candidateId } }],
+      });
+      return { runId:run.runId, noteId:note.noteId, status:"RECORDED", version:updated.version };
+    }
     if (type === "code.worker.intervene") {
       if (payload.kind === "REQUIREMENTS_CHANGE") {
         throw Object.assign(new Error("Requirements or acceptance criteria cannot be changed inside an active implementation turn. Stop this run and start a new preparation."), {
@@ -1023,7 +1048,7 @@ export class CodeChangeService {
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
       workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
-      commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile",
+      commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile", "run.note.add",
         ...(["HOLD","AWAITING_APPLY"].includes(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
           && !this.web.activeTurnId
           && (record.reviewDiscussions ?? []).some((item) => item.status === "UNCONFIRMED")

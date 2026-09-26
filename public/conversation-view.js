@@ -17,6 +17,11 @@ export function renderConversation(run, timeline, node, time) {
     add(turn.createdAt, turn.actor === "USER" ? "사용자 · 요구사항" : "웹 설계자 · 요구사항",
       turn.content, `준비 대화 · ${run.preparationSnapshot?.preparationId ?? "ID 없음"}`);
   }
+  for (const note of run.operatorNotes ?? []) {
+    add(note.createdAt, note.kind === "DECISION" ? "사용자 · 결정 기록" : "사용자 · 작업 메모",
+      note.text, [`당시 상태 ${note.phase ?? "미확인"}`, note.candidateId && `후보 ${note.candidateId}`].filter(Boolean).join(" · "),
+      "decision");
+  }
   for (const intervention of run.userInterventions ?? []) {
     const role = intervention.kind === "QUESTION" ? "사용자 · 구현 질문" : "사용자 · 구현 참고";
     const status = intervention.status === "DELIVERED" ? "전달 확인" : intervention.status === "FAILED" ? "전달 실패" : "전달 확인 중";

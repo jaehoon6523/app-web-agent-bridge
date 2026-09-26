@@ -530,6 +530,33 @@ test("selected run exposes child tasks and archived applied runs cannot start a 
   assert.equal(ui.elements.get("continueProject").hidden,true);
 });
 
+test("operator note records local context without using worker or reviewer messaging",async()=>{
+  const run={runId:"run-note",version:8,phase:"AWAITING_APPLY",objective:"Greeting",
+    candidate:{candidateId:"candidate-1"},
+    operatorNotes:[{noteId:"note-old",actor:"LOCAL_AUTHENTICATED_USER",kind:"NOTE",
+      text:"Check deployment separately.",phase:"HOLD",candidateId:"candidate-1",createdAt:"2026-09-26T00:00:00Z"}]};
+  const state=stateFor(run,["run.note.add","code.apply"]);
+  const ui=await dashboard(state,async(url,options)=>{
+    const body=JSON.parse(options.body);
+    if(body.type==="run.note.add")return{payload:{status:"RECORDED",noteId:"note-new"}};
+    return{payload:{}};
+  });
+  assert.equal(ui.elements.get("operatorNotePanel").hidden,false);
+  assert.match(renderedText(ui.elements.get("operatorNoteList")),/Check deployment separately/u);
+  ui.elements.get("operatorNoteKind").value="DECISION";
+  ui.elements.get("operatorNoteText").value="Apply this candidate, but do not infer deployment success.";
+  ui.elements.get("operatorNoteText").listeners.input();
+  assert.equal(ui.elements.get("addOperatorNote").disabled,false);
+  await ui.elements.get("addOperatorNote").listeners.click();
+  const mutation=ui.calls.find((item)=>item.url==="/api/commands"&&item.body.type==="run.note.add");
+  assert.deepEqual(mutation.body.payload,{
+    runId:"run-note",expectedVersion:8,kind:"DECISION",
+    text:"Apply this candidate, but do not infer deployment success.",
+  });
+  assert.equal(ui.calls.some((item)=>item.body?.type==="code.worker.intervene"),false);
+  assert.equal(ui.calls.some((item)=>item.body?.type==="code.review.discuss"),false);
+});
+
 test("a held reviewer question accepts a human answer with the exact run and question identities", async () => {
   const run = { runId:"run-question", version:4, phase:"HOLD", objective:"Implement greeting",
     terminationReason:"USER_DECISION_REQUIRED", candidate:{ candidateId:"candidate-1" },

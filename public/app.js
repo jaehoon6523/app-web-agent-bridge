@@ -57,6 +57,27 @@ function ensureReviewerBindingRecoveryControls() {
   $("reviewDiscussionPanel")?.after(panel);
 }
 ensureReviewerBindingRecoveryControls();
+function ensureOperatorNoteControls() {
+  if ($("operatorNotePanel")) return;
+  const panel = node("section", "", "flow-band");
+  panel.id = "operatorNotePanel"; panel.hidden = true;
+  panel.append(node("h2", "작업 메모 · 결정 기록"));
+  panel.append(node("p", "이 기록은 Worker나 감사자에게 전송되지 않으며 요구사항·감사 판정·적용 권한을 바꾸지 않습니다.", "muted"));
+  const kindLabel = node("label", "기록 종류"); kindLabel.setAttribute("for", "operatorNoteKind");
+  const kind = node("select", ""); kind.id = "operatorNoteKind";
+  const noteOption = node("option", "메모"); noteOption.value = "NOTE";
+  const decisionOption = node("option", "결정"); decisionOption.value = "DECISION";
+  kind.append(noteOption, decisionOption);
+  const textLabel = node("label", "내용"); textLabel.setAttribute("for", "operatorNoteText");
+  const input = node("textarea", ""); input.id = "operatorNoteText"; input.rows = 3; input.maxLength = 4000;
+  input.placeholder = "나중에 이 작업을 다시 볼 때 필요한 판단 근거나 인수인계 내용을 기록하세요.";
+  const add = node("button", "기록 추가"); add.id = "addOperatorNote"; add.type = "button"; add.disabled = true;
+  const status = node("p", "", "muted"); status.id = "operatorNoteStatus"; status.setAttribute("role", "status");
+  const list = node("div", ""); list.id = "operatorNoteList";
+  panel.append(kindLabel, kind, textLabel, input, add, status, list);
+  $("reviewBindingRecoveryPanel")?.after(panel);
+}
+ensureOperatorNoteControls();
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function renderProjectOverview(group, busyRun) {
@@ -616,6 +637,31 @@ function render() {
   } else {
     text("reviewBindingRecoveryStatus", "");
   }
+  const notePanel = $("operatorNotePanel");
+  notePanel.hidden = !run;
+  if (notePanel.dataset.runId !== run?.runId) {
+    notePanel.dataset.runId = run?.runId ?? "";
+    $("operatorNoteKind").value = "NOTE";
+    $("operatorNoteText").value = "";
+  }
+  const noteText = $("operatorNoteText").value.trim();
+  $("addOperatorNote").disabled = !run || !connected || operations.runCommand !== "IDLE"
+    || !caps.has("run.note.add") || !noteText;
+  text("operatorNoteStatus", run
+    ? "메모와 결정은 append-only 작업 기록입니다. 에이전트에게 전달하려면 위 전용 대화·개입 기능을 사용하세요."
+    : "");
+  const noteList = $("operatorNoteList"); noteList.replaceChildren();
+  for (const note of [...(run?.operatorNotes ?? [])].reverse()) {
+    const row = node("article", "", "conversation-entry decision");
+    const title = note.kind === "DECISION" ? "결정" : "메모";
+    row.append(
+      node("strong", title),
+      node("p", `${time(note.createdAt)} · 당시 상태 ${labels[note.phase] ?? note.phase ?? "미확인"}${note.candidateId ? ` · 후보 ${note.candidateId}` : ""}`, "muted"),
+      node("p", note.text),
+    );
+    noteList.append(row);
+  }
+  if (!(run?.operatorNotes ?? []).length) noteList.append(node("p", "아직 사용자 메모가 없습니다.", "muted"));
   if (!$("workerInterventionKind").value) $("workerInterventionKind").value = "GUIDANCE";
   const interventionActive = run?.phase === "WORKER_RUNNING";
   const interventionKind = $("workerInterventionKind").value;
@@ -798,6 +844,7 @@ async function command(type, payload = {}) {
         "code.review.discuss": "감사자 답변을 기록했습니다. 현재 감사 판정과 적용 권한은 변경되지 않았습니다.",
         "code.review.discuss.discard": "미확정 감사 대화 전송을 폐기했습니다. 자동 재전송하지 않습니다.",
         "code.review.rebind": "감사자 대화 탭을 다시 연결했습니다. 같은 후보의 감사를 재개하려면 ‘웹 감사 다시 시도’를 누르세요.",
+        "run.note.add": "작업 메모를 기록했습니다. 실행 상태와 감사 판정은 변경되지 않았습니다.",
         "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
         "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
         "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
@@ -1263,6 +1310,17 @@ $("discardReviewDiscussion").addEventListener("click", async () => {
     $("reviewDiscussionUnresolved").checked = false;
     $("reviewDiscussionNoResend").checked = false;
     $("reviewDiscussionDiscardReason").value = "";
+    render();
+  }
+});
+$("operatorNoteKind").addEventListener("change", render);
+$("operatorNoteText").addEventListener("input", render);
+$("addOperatorNote").addEventListener("click", async () => {
+  if ($("addOperatorNote").disabled) return;
+  const textValue = $("operatorNoteText").value.trim();
+  const result = await command("run.note.add", { kind:$("operatorNoteKind").value, text:textValue });
+  if (result?.status === "RECORDED" && $("operatorNoteText").value.trim() === textValue) {
+    $("operatorNoteText").value = "";
     render();
   }
 });
