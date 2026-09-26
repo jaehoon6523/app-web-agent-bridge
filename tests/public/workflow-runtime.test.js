@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
-import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
+import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
 import { workflowForRun } from "../../src/orchestration/preparation-service.js";
 
 export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
@@ -60,7 +60,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
   const context = vm.createContext({
-    externalEventRecords, groupRunsByProject, normalizeDashboardState, Date, Map, Set, JSON, URL, Blob,
+    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, Date, Map, Set, JSON, URL, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
@@ -323,6 +323,41 @@ test("automatic approval survives UI reload and does not resend after an attempt
   assert.equal(first.calls.filter((call) => call.url.endsWith("/approve")).length, 1);
   const reloaded = await dashboard(state, async () => ({}), storage);
   assert.equal(reloaded.calls.filter((call) => call.url.endsWith("/approve")).length, 0);
+});
+
+test("history search and status filter narrow the sidebar without changing the selected project view", async () => {
+  const state = { workflow:{ stage:"START", state:"START_IDLE" }, preparation:null, run:null,
+    preflight:{ checks:{ extensionAuthenticated:true } }, commandCapabilities:["preparation.start"],
+    runs:[
+      { runId:"alpha", version:1, phase:"WORKER_RUNNING", objective:"Alpha chat", targetRoot:"C:/work/one" },
+      { runId:"beta", version:1, phase:"HOLD", objective:"Beta settings", targetRoot:"C:/work/two" },
+      { runId:"done", version:1, phase:"APPLIED", objective:"Release", targetRoot:"C:/work/one" },
+    ] };
+  const storage = new Map();
+  const ui = await dashboard(state, undefined, storage);
+  assert.match(ui.elements.get("historyFilterSummary").textContent, /전체 3건/u);
+  assert.match(renderedText(ui.elements.get("runList")), /Alpha chat/u);
+  assert.match(renderedText(ui.elements.get("runList")), /Beta settings/u);
+  ui.run('selectProject("C:/work/one")');
+  assert.equal(ui.elements.get("projectOverview").hidden, false);
+
+  ui.elements.get("historySearch").value = "beta";
+  ui.elements.get("historySearch").listeners.input();
+  assert.doesNotMatch(renderedText(ui.elements.get("runList")), /Alpha chat/u);
+  assert.match(renderedText(ui.elements.get("runList")), /Beta settings/u);
+  assert.equal(ui.elements.get("projectOverview").hidden, false, "sidebar filtering must not close the main project view");
+  assert.equal(storage.get("bridge.history.query"), "beta");
+
+  ui.elements.get("historySearch").value = "";
+  ui.elements.get("historySearch").listeners.input();
+  ui.elements.get("historyStatusFilter").value = "ATTENTION";
+  ui.elements.get("historyStatusFilter").listeners.change();
+  assert.match(renderedText(ui.elements.get("runList")), /Beta settings/u);
+  assert.doesNotMatch(renderedText(ui.elements.get("runList")), /Release/u);
+  assert.match(ui.elements.get("historyFilterSummary").textContent, /3건 중 1건 표시/u);
+  assert.equal(storage.get("bridge.history.scope"), "ATTENTION");
+  ui.elements.get("historyClearFilters").listeners.click();
+  assert.match(ui.elements.get("historyFilterSummary").textContent, /전체 3건/u);
 });
 
 for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"],

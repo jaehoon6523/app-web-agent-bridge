@@ -47,6 +47,36 @@ export function groupRunsByProject(runs) {
   return [...groups.values()];
 }
 
+const HISTORY_ATTENTION_PHASES = new Set(["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"]);
+const HISTORY_CLOSED_PHASES = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
+const HISTORY_SCOPES = new Set(["ALL", "ACTIVE", "ATTENTION", "CLOSED"]);
+
+export function filterRunsForHistory(runs, { query = "", scope = "ALL" } = {}) {
+  if (!Array.isArray(runs)) throw new TypeError("runs must be an array.");
+  const needle = String(query ?? "").trim().toLowerCase();
+  const selectedScope = HISTORY_SCOPES.has(scope) ? scope : "ALL";
+  return runs.filter((run) => {
+    const phase = String(run?.phase ?? run?.status ?? "UNKNOWN").toUpperCase();
+    const scopeMatch = selectedScope === "ALL"
+      || (selectedScope === "ACTIVE" && !HISTORY_CLOSED_PHASES.has(phase))
+      || (selectedScope === "ATTENTION" && HISTORY_ATTENTION_PHASES.has(phase))
+      || (selectedScope === "CLOSED" && HISTORY_CLOSED_PHASES.has(phase));
+    if (!scopeMatch) return false;
+    if (!needle) return true;
+    const targetRoot = run?.targetRoot ?? run?.projectRef?.targetRoot ?? "";
+    const haystack = [
+      run?.objective,
+      run?.runId ?? run?.id,
+      targetRoot,
+      phase,
+    ]
+      .filter((value) => value !== null && value !== undefined)
+      .map((value) => String(value).toLowerCase())
+      .join("\n");
+    return haystack.includes(needle);
+  });
+}
+
 const DELIVERY_STATES = new Set([
   "RESERVED",
   "PENDING",

@@ -9,6 +9,7 @@ import {
   classifyMessageOrigin,
   deliveryState,
   externalEventRecords,
+  filterRunsForHistory,
   groupRunsByProject,
   normalizeDashboardState,
   selectMessagesForActor,
@@ -39,6 +40,26 @@ test("history groups runs by exact project root, keeping newest first", () => {
   ]);
   assert.deepEqual(groups.map((group) => [group.targetRoot, group.runs.map((run) => run.runId)]),
     [["C:/work/one", ["c", "a"]], ["C:/work/two", ["b"]]]);
+});
+
+test("history search and status filters are deterministic and preserve run order", () => {
+  const runs = [
+    { runId:"run-alpha", phase:"WORKER_RUNNING", objective:"Alpha chat", targetRoot:"C:/work/one" },
+    { runId:"run-beta", phase:"HOLD", objective:"Beta settings", targetRoot:"C:/work/two" },
+    { runId:"run-release", phase:"APPLIED", objective:"Release", targetRoot:"C:/work/one" },
+    { runId:"run-failed", phase:"FAILED", objective:"Broken build", targetRoot:"C:/work/three" },
+  ];
+  assert.deepEqual(filterRunsForHistory(runs, { query:"beta" }).map((run) => run.runId), ["run-beta"]);
+  assert.deepEqual(filterRunsForHistory(runs, { query:"C:/WORK/TWO" }).map((run) => run.runId), ["run-beta"]);
+  assert.deepEqual(filterRunsForHistory(runs, { query:"run-release" }).map((run) => run.runId), ["run-release"]);
+  assert.deepEqual(filterRunsForHistory(runs, { scope:"ACTIVE" }).map((run) => run.runId),
+    ["run-alpha", "run-beta"]);
+  assert.deepEqual(filterRunsForHistory(runs, { scope:"ATTENTION" }).map((run) => run.runId),
+    ["run-beta"]);
+  assert.deepEqual(filterRunsForHistory(runs, { scope:"CLOSED" }).map((run) => run.runId),
+    ["run-release", "run-failed"]);
+  assert.deepEqual(filterRunsForHistory(runs, { scope:"UNKNOWN" }).map((run) => run.runId),
+    runs.map((run) => run.runId));
 });
 
 test("dashboard uses only canonical actor names and removes legacy completion controls", async () => {

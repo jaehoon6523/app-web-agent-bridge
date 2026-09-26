@@ -1,6 +1,6 @@
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
-import { externalEventRecords, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
+import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
@@ -11,6 +11,8 @@ let agreement = null, preparation = null;
 let projectConversationRoot = null;
 let followUpSource = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
+let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
+let historyScope = sessionStorage.getItem("bridge.history.scope") || "ALL";
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
 let requestedView = "";
@@ -348,20 +350,38 @@ function render() {
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
-  $("editProject").disabled = (operations.runCommand !== "IDLE") || !connected || (operations.webTurn !== "IDLE");
   $("planRun").disabled = (operations.runCommand !== "IDLE") || !connected || busy || (operations.webTurn !== "IDLE");
   $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않았습니다. 아래 버튼에서 확인하고 중단할 수 있습니다.` : "과거 기록은 언제든 선택할 수 있습니다.");
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
+  $("historySearch").value = historyQuery;
+  $("historyStatusFilter").value = ["ALL", "ACTIVE", "ATTENTION", "CLOSED"].includes(historyScope) ? historyScope : "ALL";
+  historyScope = $("historyStatusFilter").value;
+  const allRuns = snapshot?.runs ?? [];
+  const filteredRuns = filterRunsForHistory(allRuns, { query:historyQuery, scope:historyScope });
+  const filtersActive = Boolean(historyQuery.trim()) || historyScope !== "ALL";
+  $("historyClearFilters").hidden = !filtersActive;
+  text("historyFilterSummary", filtersActive ? `${allRuns.length}건 중 ${filteredRuns.length}건 표시` : `전체 ${allRuns.length}건`);
   const list = $("runList"); list.replaceChildren();
-  const groups = groupRunsByProject(snapshot?.runs ?? []);
+  const groups = groupRunsByProject(allRuns);
   for (const record of snapshot?.projectConversations ?? []) {
     if (record.targetRoot && !groups.some((item) => item.targetRoot === record.targetRoot)) groups.push({ targetRoot:record.targetRoot, runs:[] });
   }
   if (projectViewRoot && !groups.some((item) => item.targetRoot === projectViewRoot)) {
     projectViewRoot = null; sessionStorage.setItem("bridge.project.view", "");
   }
-  for (const group of groups) {
+  const historyGroups = groupRunsByProject(filteredRuns);
+  if (historyScope === "ALL") {
+    const needle = historyQuery.trim().toLowerCase();
+    for (const record of snapshot?.projectConversations ?? []) {
+      if (!record.targetRoot || historyGroups.some((item) => item.targetRoot === record.targetRoot)) continue;
+      const target = record.targetRoot.toLowerCase();
+      const name = folderName(record.targetRoot).toLowerCase();
+      if (!needle || target.includes(needle) || name.includes(needle)) historyGroups.push({ targetRoot:record.targetRoot, runs:[] });
+    }
+  }
+  $("historyEmpty").hidden = historyGroups.length > 0;
+  for (const group of historyGroups) {
     const section = node("section", "", "project-history");
     const heading = group.targetRoot ? node("button", folderName(group.targetRoot), `project-open${projectViewRoot === group.targetRoot ? " active" : ""}`)
       : node("h3", "기타 작업");
@@ -425,12 +445,6 @@ function render() {
   renderInitialRequest(workflow, preparation, $, text, document, capabilities().has("preparation.cancel"));
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
-  const project = preflight?.project;
-  const projectContainer = $("projectSummary"); projectContainer.replaceChildren();
-  if (project) {
-    projectContainer.append(node("p", `${folderName(project.targetRoot)} · ${project.targetRoot}`), node("p", `기준 ${project.requirementsId} / ${project.revision}`));
-    for (const req of project.requirements.items) projectContainer.append(node("p", `${req.requirementId} · ${req.statement}`, "muted"));
-  } else projectContainer.append(node("p", connected ? "사용할 프로젝트가 아직 준비되지 않았습니다." : "연결 후 프로젝트 설정을 확인합니다.", "muted"));
   actionState("planRun", !webConnected() || !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
     !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다." : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
     "ChatGPT 탭이 없으면 새 탭을 열고 첫 부탁을 전송합니다.");
@@ -911,6 +925,22 @@ async function beginPreparation() {
 }
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
 $("startRoot").addEventListener("input", render);
+$("historySearch").addEventListener("input", () => {
+  historyQuery = $("historySearch").value;
+  sessionStorage.setItem("bridge.history.query", historyQuery);
+  render();
+});
+$("historyStatusFilter").addEventListener("change", () => {
+  historyScope = $("historyStatusFilter").value;
+  sessionStorage.setItem("bridge.history.scope", historyScope);
+  render();
+});
+$("historyClearFilters").addEventListener("click", () => {
+  historyQuery = ""; historyScope = "ALL";
+  sessionStorage.setItem("bridge.history.query", "");
+  sessionStorage.setItem("bridge.history.scope", "ALL");
+  render();
+});
 $("reuseProjectConversation").addEventListener("input", () => {
   if (!$("reuseProjectConversation").checked) $("conversationUrl").value = "";
   render();
