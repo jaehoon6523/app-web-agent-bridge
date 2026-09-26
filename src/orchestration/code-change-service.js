@@ -1047,6 +1047,13 @@ export class CodeChangeService {
       findings: record.findings ?? [], assessments: record.reviews?.at(-1)?.report.assessments ?? [], evidence: record.evidence ?? [],
       outcome: { type: record.stage, auditResult: record.auditResult, applicationStatus: record.application?.status ?? "NOT_APPLIED", reason: record.terminationReason },
       error: record.error, drafts: {}, starting: record.stage === "PROVISIONING", preflight,
+      reviewerRuntime: this.web?.runtimeIdentity ? {
+        actor:this.web.runtimeIdentity.actor ?? null,
+        provider:this.web.runtimeIdentity.provider ?? null,
+        providerEvidence:this.web.runtimeIdentity.providerEvidence ?? "UNAVAILABLE",
+        model:this.web.runtimeIdentity.model ?? null,
+        modelEvidence:this.web.runtimeIdentity.modelEvidence ?? "UNOBSERVED",
+      } : { actor:null, provider:null, providerEvidence:"UNAVAILABLE", model:null, modelEvidence:"UNOBSERVED" },
       workerRuntime: projectWorkerRuntime(record, preflight, this.workerInspections.get(runId) ?? null),
       commandCapabilities: ["state.get", "evidence.export", "evidence.get", "run.reconcile", "run.note.add",
         ...(["HOLD","AWAITING_APPLY"].includes(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)

@@ -350,6 +350,16 @@ export class ChatGptWebSessionAdapter {
     return "CHATGPT_WEB_AGENT";
   }
 
+  get runtimeIdentity() {
+    return Object.freeze({
+      actor:this.actor,
+      provider:"CHATGPT_WEB",
+      providerEvidence:"ADAPTER_IMPLEMENTATION",
+      model:null,
+      modelEvidence:"UNOBSERVED",
+    });
+  }
+
   get activeTurnId() {
     return this.#activeTurnId;
   }

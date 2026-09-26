@@ -785,11 +785,21 @@ function render() {
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
+  let reviewerRuntimeStatus = $("reviewerRuntimeStatus");
+  if (!reviewerRuntimeStatus) {
+    reviewerRuntimeStatus = node("p", "", "muted");
+    reviewerRuntimeStatus.id = "reviewerRuntimeStatus";
+    $("workerProvenance")?.after(reviewerRuntimeStatus);
+  }
+  const reviewerRuntime = snapshot?.reviewerRuntime;
+  text("reviewerRuntimeStatus", reviewerRuntime
+    ? `Reviewer 실행 출처: provider ${reviewerRuntime.provider ?? "미확인"} · provider 근거 ${reviewerRuntime.providerEvidence ?? "미확인"} · model ${reviewerRuntime.model ?? "관측 불가"} · model 근거 ${reviewerRuntime.modelEvidence ?? "UNOBSERVED"}`
+    : "Reviewer 실행 출처: 현재 runtime에서 확인되지 않음");
   let reviewIndependenceStatus = $("reviewIndependenceStatus");
   if (!reviewIndependenceStatus) {
     reviewIndependenceStatus = node("p", "", "muted");
     reviewIndependenceStatus.id = "reviewIndependenceStatus";
-    $("workerProvenance")?.after(reviewIndependenceStatus);
+    $("reviewerRuntimeStatus")?.after(reviewIndependenceStatus);
   }
   const independence = run.reviews?.at(-1)?.reviewerIndependence ?? null;
   if (independence) {

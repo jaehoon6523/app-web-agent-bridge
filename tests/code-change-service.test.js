@@ -20,6 +20,10 @@ test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately appl
   assert.equal(independence.bindings.length,2);
   assert.notEqual(independence.bindings[0].sessionId,independence.bindings[1].sessionId);
   assert.notEqual(independence.bindings[0].conversationId,independence.bindings[1].conversationId);
+  assert.deepEqual(independence.bindings.map((item)=>item.provider),["CHATGPT_WEB","CHATGPT_WEB"]);
+  assert.deepEqual(independence.bindings.map((item)=>item.providerEvidence),["ADAPTER_IMPLEMENTATION","ADAPTER_IMPLEMENTATION"]);
+  assert.deepEqual(independence.bindings.map((item)=>item.model),[null,null]);
+  assert.deepEqual(independence.bindings.map((item)=>item.modelEvidence),["UNOBSERVED","UNOBSERVED"]);
   assert.equal(run.findings[0].status,"RESOLVED");assert.equal(f.briefs[1].unresolvedFindings[0].findingId,run.findings[0].findingId);
   assert.ok(run.evidence.some((e)=>e.candidateId===run.candidate.candidateId
     && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));

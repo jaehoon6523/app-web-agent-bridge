@@ -48,11 +48,26 @@ function roleSessionId(runId, role) {
   return role === "JUDGE" ? `web_${runId}` : `web_${runId}_${role.toLowerCase()}`;
 }
 
-function initialBinding(run, role, at) {
+function reviewerRuntimeIdentity(service) {
+  const identity = service?.web?.runtimeIdentity;
+  return {
+    actor:typeof identity?.actor === "string" && identity.actor ? identity.actor : "CHATGPT_WEB_AGENT",
+    provider:typeof identity?.provider === "string" && identity.provider ? identity.provider : null,
+    providerEvidence:typeof identity?.providerEvidence === "string" && identity.providerEvidence
+      ? identity.providerEvidence : "UNAVAILABLE",
+    model:typeof identity?.model === "string" && identity.model ? identity.model : null,
+    modelEvidence:typeof identity?.modelEvidence === "string" && identity.modelEvidence
+      ? identity.modelEvidence : "UNOBSERVED",
+  };
+}
+
+function initialBinding(run, role, at, runtimeIdentity) {
   const judge = role === "JUDGE";
   return {
-    bindingId:`binding_${run.runId}_${role.toLowerCase()}`, runId:run.runId, actor:"CHATGPT_WEB_AGENT", role,
-    required:true, provider:"CHATGPT_WEB", sessionId:roleSessionId(run.runId, role),
+    bindingId:`binding_${run.runId}_${role.toLowerCase()}`, runId:run.runId, actor:runtimeIdentity.actor, role,
+    required:true, provider:runtimeIdentity.provider, providerEvidence:runtimeIdentity.providerEvidence,
+    model:runtimeIdentity.model, modelEvidence:runtimeIdentity.modelEvidence,
+    sessionId:roleSessionId(run.runId, role),
     conversationUrl:judge ? run.conversationUrl : null, conversationId:judge ? run.conversationId : null,
     tabId:null, windowId:null, documentId:null, frameId:null, activeDeliveryId:null,
     historyAnchor:{ lastObservedUserMessageId:null, lastObservedAssistantMessageId:null },
@@ -60,9 +75,9 @@ function initialBinding(run, role, at) {
   };
 }
 
-function ensureBindings(run, at) {
+function ensureBindings(run, at, runtimeIdentity) {
   const bindings = [...(run.conversationBindings ?? [])];
-  for (const role of REVIEW_ROLES) if (!bindings.some((item) => item.role === role)) bindings.push(initialBinding(run, role, at));
+  for (const role of REVIEW_ROLES) if (!bindings.some((item) => item.role === role)) bindings.push(initialBinding(run, role, at, runtimeIdentity));
   const judge = bindings.find((item) => item.role === "JUDGE");
   const critic = bindings.find((item) => item.role === "CRITIC");
   if (!judge || !critic) throw new Error("Required reviewer bindings are unavailable.");
@@ -123,6 +138,9 @@ function reviewerIndependenceSnapshot(run) {
       sessionId:item.sessionId,
       conversationId:item.conversationId,
       provider:item.provider ?? null,
+      providerEvidence:item.providerEvidence ?? "UNAVAILABLE",
+      model:item.model ?? null,
+      modelEvidence:item.modelEvidence ?? "UNOBSERVED",
     })),
   };
 }
@@ -648,7 +666,8 @@ export async function auditCandidate(service, runId, workspace) {
   service.assertActive(runId);
   let run = service.get(runId);
   const now = new Date().toISOString();
-  const bindings = ensureBindings(run, now);
+  const runtimeIdentity = reviewerRuntimeIdentity(service);
+  const bindings = ensureBindings(run, now, runtimeIdentity);
   if (canonicalJson(bindings) !== canonicalJson(run.conversationBindings ?? [])) run = service.update(runId, { conversationBindings:bindings });
   let auditManifest = createAuditManifest(run);
   const manifestRef = service.artifactStore.put(canonicalJson(auditManifest), { mimeType:"application/json", redacted:true });

@@ -166,6 +166,18 @@ test("1-2 Given Extension 환경변수 없음, When loadConfig, Then 서버 설�
   assert.equal(config.webExtension.expectedExtensionIdentity, null);
 });
 
+test("1-2a ChatGPT Web adapter reports provider identity without inventing a model identity", () => {
+  const { transport } = authenticatedTransport();
+  const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs:100 });
+  assert.deepEqual(adapter.runtimeIdentity, {
+    actor:"CHATGPT_WEB_AGENT",
+    provider:"CHATGPT_WEB",
+    providerEvidence:"ADAPTER_IMPLEMENTATION",
+    model:null,
+    modelEvidence:"UNOBSERVED",
+  });
+});
+
 test("1-2b Given Extension 환경변수 일부만 존재, When loadConfig, Then 설정 오류가 발생한다", () => {
   assert.throws(
     () => loadConfig({
