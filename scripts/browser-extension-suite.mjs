@@ -134,9 +134,17 @@ test('fixture integration: real adapters, subprocess, Git capture and browser re
   assert.equal(fs.readFileSync(path.join(f.target, 'file.txt'), 'utf8'), 'base\n');
   assert.equal(run.application, null);
   const prompts = web.commands.filter(command => command.type === 'agent.prompt');
-  assert.equal(prompts.length, run.requests.length);
-  assert.equal(new Set(prompts.map(command => command.requestId)).size, prompts.length);
+  const promptIds = prompts.map(command => command.requestId);
+  const trackedTurnIds = [
+    ...run.requests.map(request => request.requestId),
+    ...(run.coordinationEvents ?? []).map(event => event.turnId),
+  ];
+  assert.equal(prompts.length, trackedTurnIds.length);
+  assert.equal(new Set(promptIds).size, prompts.length);
+  assert.deepEqual(new Set(promptIds), new Set(trackedTurnIds));
   assert.ok(run.requests.every(request => request.status === 'PROCESSED' && request.promptRef && request.responseRef));
+  assert.ok((run.coordinationEvents ?? []).every(event =>
+    event.turnId && event.packetRef?.sha256 && event.reasoningRef?.sha256));
   await f.reopen();
   assert.equal(f.service.get(run.runId).stage, 'AWAITING_APPLY');
   assert.equal(f.service.get(run.runId).workerTurns.length, 2);

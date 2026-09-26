@@ -17,10 +17,10 @@ const REVIEW_TAB_SELECTION_CODES = new Set(["AMBIGUOUS","STORED_AMBIGUOUS_REBIND
 
 /**
  * @param {unknown} error
- * @returns {Error & {code?: string, role?: string, bindingCode?: string, missingInformation?: unknown[]}}
+ * @returns {Error & {code?: string, role?: string, bindingCode?: string, missingInformation?: unknown[], bindingCandidates?: unknown[]}}
  */
 function coordinationError(error) {
-  return /** @type {Error & {code?: string, role?: string, bindingCode?: string, missingInformation?: unknown[]}} */ (
+  return /** @type {Error & {code?: string, role?: string, bindingCode?: string, missingInformation?: unknown[], bindingCandidates?: unknown[]}} */ (
     error instanceof Error ? error : new Error(String(error))
   );
 }
