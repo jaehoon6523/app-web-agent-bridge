@@ -60,6 +60,24 @@ ensureReviewerBindingRecoveryControls();
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function renderProjectOverview(group, busyRun) {
+  const allProjectRuns = allRuns.filter((item) =>
+    (item.targetRoot ?? item.projectRef?.targetRoot ?? null) === group.targetRoot);
+  const lineageFor = (runId) => {
+    const current = allProjectRuns.find((item) => item.runId === runId) ?? null;
+    if (!current) return null;
+    const parentRunId = typeof current.parentRunId === "string" && current.parentRunId
+      ? current.parentRunId
+      : null;
+    const parent = parentRunId
+      ? allProjectRuns.find((item) => item.runId === parentRunId) ?? null
+      : null;
+    return {
+      parentRunId,
+      parentAvailable:Boolean(parent),
+      parentObjective:parent?.objective ?? null,
+      children:allProjectRuns.filter((item) => item.parentRunId === runId),
+    };
+  };
   text("overviewTitle", folderName(group.targetRoot));
   text("overviewPath", group.targetRoot);
   const tasks = group.runs;
@@ -74,6 +92,15 @@ function renderProjectOverview(group, busyRun) {
       : run.phase === "RECOVERY_REQUIRED" ? "진단과 외부 작업 상태를 확인하세요."
       : terminal.has(run.phase) ? "완료된 기록을 확인할 수 있습니다." : "진행 상태와 기록을 확인하세요.";
     card.append(node("p", guidance), node("p", `시작 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}`, "muted"));
+    const lineage = lineageFor(run.runId);
+    if (lineage?.parentRunId || lineage?.children.length) {
+      const relation = [];
+      if (lineage.parentRunId) relation.push(lineage.parentAvailable
+        ? `이어짐: ${lineage.parentObjective}`
+        : `이전 작업 기록 없음: ${lineage.parentRunId}`);
+      if (lineage.children.length) relation.push(`후속 작업 ${lineage.children.length}건`);
+      card.append(node("p", relation.join(" · "), "muted"));
+    }
     const action = node("button", ["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"].includes(run.phase) ? "확인하고 조치하기" : "작업 기록 보기");
     action.addEventListener("click", () => openRun(run.runId));
     card.append(action); list.append(card);
@@ -669,12 +696,41 @@ function render() {
   $("archiveRun").textContent = run?.archivedAt ? "보관 해제" : "기록 보관";
   $("archiveRun").disabled = !run || operations.runCommand !== "IDLE" || !caps.has(archiveCapability);
   if (!run) return;
-  $("continueProject").hidden = run.phase !== "APPLIED";
+  $("continueProject").hidden = run.phase !== "APPLIED" || Boolean(run.archivedAt);
   $("continueProject").disabled = $("newRun").disabled;
   text("runFollowUp", run.followUp ? `이전 적용 작업: ${run.followUp.objective} · ${run.followUp.runId}` : "");
   $("openFollowUp").hidden = !run.followUp;
   $("openFollowUp").disabled = !snapshot?.runs?.some((item) => item.runId === run.followUp?.runId);
   $("openFollowUp").title = $("openFollowUp").disabled ? "이전 작업 기록이 삭제되어 열 수 없습니다." : "이전 적용 작업의 기록을 엽니다.";
+  let lineagePanel = $("runLineage");
+  if (!lineagePanel) {
+    lineagePanel = node("section", "", "flow-band");
+    lineagePanel.id = "runLineage"; lineagePanel.hidden = true;
+    lineagePanel.append(node("h2", "작업 계보"));
+    const summary = node("p", "", "muted"); summary.id = "runLineageSummary";
+    const children = node("div", ""); children.id = "runLineageChildren";
+    lineagePanel.append(summary, children);
+    $("openFollowUp")?.after(lineagePanel);
+  }
+  const projected = snapshot?.runs ?? [];
+  const currentProjection = projected.find((item) => item.runId === run.runId) ?? null;
+  const parentRunId = currentProjection?.parentRunId ?? run.followUp?.runId ?? null;
+  const parent = parentRunId ? projected.find((item) => item.runId === parentRunId) ?? null : null;
+  const children = projected.filter((item) => item.parentRunId === run.runId);
+  lineagePanel.hidden = !parentRunId && children.length === 0;
+  const lineageSummary = [];
+  if (parentRunId) lineageSummary.push(parent
+    ? `이전 작업: ${parent.objective}`
+    : `이전 작업 기록 없음: ${parentRunId}`);
+  if (children.length) lineageSummary.push(`후속 작업 ${children.length}건`);
+  text("runLineageSummary", lineageSummary.join(" · "));
+  const lineageChildren = $("runLineageChildren"); lineageChildren.replaceChildren();
+  for (const child of children) {
+    const button = node("button", `${child.objective}${child.archivedAt ? " · 보관됨" : ""}`);
+    button.type = "button";
+    button.addEventListener("click", () => openRun(child.runId));
+    lineageChildren.append(button);
+  }
   text("runObjective", run.objective); text("runContext", run.requirements
     ? `${folderName(run.projectRef?.targetRoot)} / ${run.objective} / ${labels[run.phase] ?? run.phase} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`
     : `작업 기록 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`);

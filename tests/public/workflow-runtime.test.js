@@ -431,7 +431,9 @@ test("project view groups tasks, surfaces pending action, and opens the selected
   const state = stateFor(active, ["code.apply"]);
   state.runs = [
     { runId:"old", phase:"APPLIED", objective:"Initial app", targetRoot:"C:/project", createdAt:"2026-09-24T00:00:00Z" },
-    { ...active, targetRoot:"C:/project" },
+    { ...active, targetRoot:"C:/project", parentRunId:"old" },
+    { runId:"archived-child", phase:"APPLIED", objective:"Old branch", targetRoot:"C:/project",
+      parentRunId:"old", archivedAt:"2026-09-24T12:00:00Z" },
   ];
   const storage = new Map();
   const ui = await dashboard(state, undefined, storage);
@@ -441,6 +443,8 @@ test("project view groups tasks, surfaces pending action, and opens the selected
   assert.equal(ui.elements.get("newProjectTask").disabled, true);
   assert.equal(ui.elements.get("openProjectBlocker").hidden, false);
   assert.match(renderedText(ui.elements.get("overviewTasks")), /통과 후보의 근거를 확인/);
+  assert.match(renderedText(ui.elements.get("overviewTasks")), /이어짐: Initial app/u);
+  assert.match(renderedText(ui.elements.get("overviewTasks")), /후속 작업 2건/u);
   assert.equal(storage.get("bridge.project.view"), "C:/project");
   await ui.elements.get("openProjectBlocker").listeners.click();
   assert.equal(ui.elements.get("projectOverview").hidden, true);
@@ -502,6 +506,28 @@ test("follow-up task can reopen its available source; deleted source stays label
   assert.equal(ui.elements.get("openFollowUp").disabled, false);
   await ui.elements.get("openFollowUp").listeners.click();
   assert.equal(ui.run("selected"), "first");
+});
+
+test("selected run exposes child tasks and archived applied runs cannot start a new continuation", async () => {
+  const run = { runId:"first", version:4, phase:"APPLIED", objective:"Initial app",
+    projectRef:{ targetRoot:"C:/project" } };
+  const state = stateFor(run, []);
+  state.runs = [
+    { runId:"first", phase:"APPLIED", objective:"Initial app", targetRoot:"C:/project" },
+    { runId:"second", phase:"APPLIED", objective:"Settings", targetRoot:"C:/project", parentRunId:"first" },
+    { runId:"old-child", phase:"APPLIED", objective:"Old theme", targetRoot:"C:/project",
+      parentRunId:"first", archivedAt:"2026-09-25T00:00:00Z" },
+  ];
+  const ui = await dashboard(state);
+  assert.equal(ui.elements.get("runLineage").hidden,false);
+  assert.match(ui.elements.get("runLineageSummary").textContent,/후속 작업 2건/u);
+  assert.equal(ui.elements.get("runLineageChildren").children.length,2);
+  await ui.elements.get("runLineageChildren").children[0].listeners.click();
+  assert.equal(ui.run("selected"),"second");
+
+  state.run={...run,archivedAt:"2026-09-26T00:00:00Z"};
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("continueProject").hidden,true);
 });
 
 test("a held reviewer question accepts a human answer with the exact run and question identities", async () => {

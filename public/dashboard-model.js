@@ -72,6 +72,7 @@ export function filterRunsForHistory(runs, { query = "", scope = "ALL" } = {}) {
       run?.runId ?? run?.id,
       targetRoot,
       phase,
+      run?.parentRunId,
     ]
       .filter((value) => value !== null && value !== undefined)
       .map((value) => String(value).toLowerCase())

@@ -60,8 +60,10 @@ export class DashboardController {
     const codeRun = codeRuns.find((r) => r.runId === (runId || run?.runId));
     if (codeRun) {
       const snapshot = live.codeChanges.snapshot(codeRun.runId, this.#preflight());
-      snapshot.runs = runs.map(({ runId, objective, phase, projectRef, targetRoot, createdAt, updatedAt, archivedAt }) =>
-        ({ runId, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null, createdAt, updatedAt, archivedAt:archivedAt ?? null }));
+      snapshot.runs = runs.map(({ runId, objective, phase, projectRef, targetRoot, followUp, createdAt, updatedAt, archivedAt }) =>
+        ({ runId, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null,
+          parentRunId:followUp?.runId ?? null,
+          createdAt, updatedAt, archivedAt:archivedAt ?? null }));
       return snapshot;
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
@@ -85,8 +87,10 @@ export class DashboardController {
     const inputs = run ? store.listAgentTurnInputs(run.runId) : [];
     return {
       run,
-      runs: runs.map(({ runId: id, objective, phase, projectRef, targetRoot, createdAt, updatedAt, archivedAt }) =>
-        ({ runId: id, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null, createdAt, updatedAt, archivedAt:archivedAt ?? null })),
+      runs: runs.map(({ runId: id, objective, phase, projectRef, targetRoot, followUp, createdAt, updatedAt, archivedAt }) =>
+        ({ runId: id, objective, phase, targetRoot:projectRef?.targetRoot ?? targetRoot ?? null,
+          parentRunId:followUp?.runId ?? null,
+          createdAt, updatedAt, archivedAt:archivedAt ?? null })),
       sessions: sessions.map((session) => ({
         ...session,
         ...(session.actor === "CHATGPT_WEB_AGENT" && this.#transport?.snapshot?.binding?.runId === run.runId

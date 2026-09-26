@@ -53,6 +53,8 @@ test("history search and status filters are deterministic and preserve run order
   assert.deepEqual(filterRunsForHistory(runs, { query:"beta" }).map((run) => run.runId), ["run-beta"]);
   assert.deepEqual(filterRunsForHistory(runs, { query:"C:/WORK/TWO" }).map((run) => run.runId), ["run-beta"]);
   assert.deepEqual(filterRunsForHistory(runs, { query:"run-release" }).map((run) => run.runId), ["run-release"]);
+  assert.deepEqual(filterRunsForHistory([{ runId:"child", phase:"APPLIED", parentRunId:"parent-42" }],
+    { query:"parent-42" }).map((run) => run.runId), ["child"]);
   assert.deepEqual(filterRunsForHistory(runs, { scope:"ACTIVE" }).map((run) => run.runId),
     ["run-alpha", "run-beta"]);
   assert.deepEqual(filterRunsForHistory(runs, { scope:"ATTENTION" }).map((run) => run.runId),
