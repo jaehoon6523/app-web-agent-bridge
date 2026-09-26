@@ -802,6 +802,7 @@ export class ChatGptWebSessionAdapter {
     return {
       sessionId: binding.sessionId,
       runId: binding.runId,
+      provider: this.runtimeIdentity.provider,
       conversationUrl: binding.conversationUrl,
       conversationId: binding.conversationId,
       ...additional,

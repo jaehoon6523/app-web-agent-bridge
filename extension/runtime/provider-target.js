@@ -93,3 +93,17 @@ export function createWebTargetProviderRegistry(initialProviders = [CHATGPT_WEB_
 }
 
 export const defaultWebTargetProviderRegistry = createWebTargetProviderRegistry();
+
+export function resolveWebTargetProvider({
+  provider = null,
+  conversationUrl = null,
+  registry = defaultWebTargetProviderRegistry,
+} = {}) {
+  const byId = provider === null ? null
+    : typeof provider === "string" && provider ? registry.provider(provider) : null;
+  if (provider !== null && !byId) return null;
+  const byUrl = conversationUrl === null ? null : registry.providerForUrl(conversationUrl);
+  if (conversationUrl !== null && !byUrl) return null;
+  if (byId && byUrl && byId.provider !== byUrl.provider) return null;
+  return byId ?? byUrl ?? registry.provider(CHATGPT_WEB_TARGET_PROVIDER.provider);
+}

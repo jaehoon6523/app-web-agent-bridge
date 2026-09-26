@@ -12,6 +12,7 @@ import { createBrowserRuntime } from "./runtime/browser-runtime.js";
 import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
+import { resolveWebTargetProvider } from "./runtime/provider-target.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -429,25 +430,28 @@ async function handleFocus(message) {
 function requireBindingInput(payload) {
   const sessionId = typeof payload.sessionId === "string" ? payload.sessionId : "";
   const runId = typeof payload.runId === "string" ? payload.runId : "";
-  const conversationUrl = canonicalChatGptUrl(payload.conversationUrl);
+  const requestedProvider = typeof payload.provider === "string" && payload.provider ? payload.provider : null;
+  const provider = resolveWebTargetProvider({ provider:requestedProvider, conversationUrl:payload.conversationUrl ?? null });
+  if (!provider) throw new ExtensionOperationError("WEB_PROVIDER_UNAVAILABLE", "The requested Web provider is not registered or does not match the conversation URL.");
+  const conversationUrl = payload.conversationUrl === null ? null : provider.canonicalize(payload.conversationUrl);
   const suppliedConversationId = typeof payload.conversationId === "string" && payload.conversationId
     ? payload.conversationId : null;
   const bootstrap = suppliedConversationId === null
-    && (conversationUrl === "https://chatgpt.com/" || (conversationUrl === null && payload.conversationUrl === null));
+    && (conversationUrl === provider.rootUrl || (conversationUrl === null && payload.conversationUrl === null));
   if (!sessionId || !runId || ((!conversationUrl) && !bootstrap) || (!suppliedConversationId && !bootstrap)) {
     throw new ExtensionOperationError(
       "EXACT_SESSION_BINDING_REQUIRED",
-      "Session ID, run ID, and either an exact conversation or the ChatGPT start page are required.",
+      "Session ID, run ID, and either an exact conversation or the provider start page are required.",
     );
   }
-  if (!bootstrap && conversationIdFromUrl(conversationUrl) !== suppliedConversationId) {
+  if (!bootstrap && provider.conversationIdFromUrl(conversationUrl) !== suppliedConversationId) {
     throw new ExtensionOperationError(
       "CONVERSATION_ID_MISMATCH",
       "Conversation URL and conversation ID do not identify the same conversation.",
     );
   }
   return {
-    sessionId, runId,
+    sessionId, runId, provider:provider.provider,
     conversationUrl: bootstrap ? null : conversationUrl,
     conversationId: bootstrap ? null : suppliedConversationId,
     bootstrap,
@@ -460,24 +464,28 @@ function rootBootstrapError(code, message, stage, extra = {}) {
   return new ExtensionOperationError(code, message, rootBootstrapDetails(stage, extra));
 }
 async function selectRootBootstrapTab(payload, requested) {
+  const provider = resolveWebTargetProvider({ provider:requested.provider });
+  if (!provider) throw rootBootstrapError("WEB_PROVIDER_UNAVAILABLE", "The requested Web provider is not registered.", "DISCOVER");
   let tabs;
-  try { tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS }); }
+  try { tabs = await chrome.tabs.query({ url: provider.urlPatterns }); }
   catch (error) { throw rootBootstrapError("ROOT_TAB_QUERY_FAILED", error.message, "DISCOVER"); }
-  const roots = tabs.filter((tab) => canonicalChatGptUrl(tab?.url) === "https://chatgpt.com/");
+  const roots = tabs.filter((tab) => provider.canonicalize(tab?.url) === provider.rootUrl);
   const create = payload.createNewConversation === true || roots.length === 0;
   console.info("[bridge:root:select]", rootBootstrapDetails("SELECT", { sessionId: requested.sessionId, rootCount: roots.length, action: create ? "CREATE" : "REUSE" }));
   if (create) {
     let tab;
-    try { tab = await createConversationBootstrapTab(chrome, waitForContentScript); }
+    try { tab = await createConversationBootstrapTab(chrome, waitForContentScript, provider); }
     catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_CREATE_FAILED", error.message, "CREATE", { rootCount: roots.length }); }
-    if (!tab) throw rootBootstrapError("ROOT_TAB_CREATE_FAILED", "ChatGPT 시작 탭을 만들지 못했습니다.", "CREATE", { rootCount: roots.length });
+    if (!tab) throw rootBootstrapError("ROOT_TAB_CREATE_FAILED", "Web provider 시작 탭을 만들지 못했습니다.", "CREATE", { rootCount: roots.length });
     return tab;
   }
-  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "ChatGPT 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
+  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "Web provider 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
   return roots[0];
 }
 async function prepareBoundSession(payload) {
   const requested = requireBindingInput(payload);
+  const provider = resolveWebTargetProvider({ provider:requested.provider });
+  if (!provider) throw new ExtensionOperationError("WEB_PROVIDER_UNAVAILABLE", "The requested Web provider is not registered.");
   const state = await store.read();
   const sameSession = state.lastBoundSessionId === requested.sessionId;
   const sameRun = state.lastBoundRunId === requested.runId;
@@ -519,47 +527,52 @@ async function prepareBoundSession(payload) {
     try { if (payload.focus) await focusTab(root); await waitForContentScript(root.id, 30_000, true);
       page = await chrome.tabs.sendMessage(root.id, { type: "agent.ping" }); }
     catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_LOAD_FAILED", error.message, "LOAD", { tabId: root.id }); }
-    if (!page?.ready || page.busy || page.generating || page.url !== "https://chatgpt.com/") {
-      throw rootBootstrapError("ROOT_NOT_READY", "ChatGPT 새 대화 입력창을 사용할 수 없습니다.", "READY", { tabId: root.id, page });
+    if (!page?.ready || page.busy || page.generating || provider.canonicalize(page.url) !== provider.rootUrl) {
+      throw rootBootstrapError("ROOT_NOT_READY", "Web provider 새 대화 입력창을 사용할 수 없습니다.", "READY", { tabId: root.id, page });
     }
     let documentBinding;
     try {
-      documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: "https://chatgpt.com/", conversationId: null });
+      documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: provider.rootUrl, conversationId: null });
       await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
-        tabId: root.id, windowId: root.windowId, conversationUrl: "https://chatgpt.com/", conversationId: null,
-        bindingStatus: "ROOT_READY", bindingError: null, lastActiveChatGptTarget: createStoredTarget({ tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: "https://chatgpt.com/", conversationId: null }) });
+        tabId: root.id, windowId: root.windowId, conversationUrl: provider.rootUrl, conversationId: null,
+        bindingStatus: "ROOT_READY", bindingError: null, lastActiveChatGptTarget: createStoredTarget({ tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: provider.rootUrl, conversationId: null }) });
     } catch (error) { throw rootBootstrapError(error.code ?? "ROOT_BIND_FAILED", error.message, "BIND", { tabId: root.id }); }
     console.info("[bridge:root:ready]", rootBootstrapDetails("ROOT_READY", { sessionId: requested.sessionId, tabId: root.id }));
     return { ...documentBinding, sessionId: requested.sessionId, runId: requested.runId, tabId: root.id, windowId: root.windowId,
-      conversationUrl: "https://chatgpt.com/", conversationId: null, title: root.title || "ChatGPT",
+      conversationUrl: provider.rootUrl, conversationId: null, title: root.title || provider.provider,
       lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "ROOT_READY" };
   } else {
-    const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
+    const tabs = await chrome.tabs.query({ url: provider.urlPatterns });
     const preferred = Number.isSafeInteger(state.tabId)
       ? tabs.find((tab) => tab.id === state.tabId
-        && canonicalChatGptUrl(tab?.url) === requested.conversationUrl
-        && conversationIdFromUrl(tab?.url) === requested.conversationId)
+        && provider.canonicalize(tab?.url) === requested.conversationUrl
+        && provider.conversationIdFromUrl(tab?.url) === requested.conversationId)
       : null;
     matched = preferred
       ? { status: "BOUND", tab: preferred }
-      : matchExactConversationTabs(tabs, requested);
+      : (() => {
+        const matches = tabs.filter((tab) => provider.canonicalize(tab?.url) === requested.conversationUrl
+          && provider.conversationIdFromUrl(tab?.url) === requested.conversationId);
+        return matches.length === 1 ? { status:"BOUND", tab:matches[0] }
+          : { status:matches.length > 1 ? "AMBIGUOUS" : "NEEDS_REBIND", tab:null };
+      })();
     if (matched.status === "NEEDS_REBIND") {
-      const reopened = await reopenExactConversationTab(chrome, waitForContentScript, requested);
+      const reopened = await reopenExactConversationTab(chrome, waitForContentScript, requested, provider);
       if (reopened) matched = { status: "BOUND", tab: reopened };
     }
   }
   if (matched.status !== "BOUND") {
     if (sameSession) await store.update({ bindingStatus: matched.status });
-    throw new ExtensionOperationError(matched.status, "The exact ChatGPT conversation tab could not be uniquely recovered.", {
+    throw new ExtensionOperationError(matched.status, "The exact Web provider conversation tab could not be uniquely recovered.", {
       mode: "EXACT_CONVERSATION_RECOVERY", requested: {
         sessionId: requested.sessionId, runId: requested.runId,
         conversationUrl: requested.conversationUrl, conversationId: requested.conversationId,
       }, persisted: {
         tabId: state.tabId, windowId: state.windowId, conversationUrl: state.conversationUrl,
         conversationId: state.conversationId, bindingStatus: state.bindingStatus,
-      }, candidates: (await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS })).map((tab) => ({
+      }, candidates: (await chrome.tabs.query({ url: provider.urlPatterns })).map((tab) => ({
         tabId: tab.id, windowId: tab.windowId, url: tab.url,
-        canonicalUrl: canonicalChatGptUrl(tab.url), conversationId: conversationIdFromUrl(tab.url),
+        canonicalUrl: provider.canonicalize(tab.url), conversationId: provider.conversationIdFromUrl(tab.url),
       })),
     });
   }
@@ -570,35 +583,37 @@ async function prepareBoundSession(payload) {
 }
 async function rebindSession(payload) {
   const requested = requireBindingInput(payload);
+  const provider = resolveWebTargetProvider({ provider:requested.provider });
+  if (!provider) throw new ExtensionOperationError("WEB_PROVIDER_UNAVAILABLE", "The requested Web provider is not registered.");
   if (!Number.isSafeInteger(payload.tabId)) {
     throw new ExtensionOperationError("REBIND_TAB_REQUIRED", "Explicit rebind requires a selected ChatGPT tab ID.");
   }
   const tab = await chrome.tabs.get(payload.tabId);
   if (requested.bootstrap) {
     if (
-      canonicalChatGptUrl(tab.url) !== "https://chatgpt.com/"
-      || conversationIdFromUrl(tab.url) !== null
+      provider.canonicalize(tab.url) !== provider.rootUrl
+      || provider.conversationIdFromUrl(tab.url) !== null
     ) {
       throw new ExtensionOperationError(
         "REBIND_CONVERSATION_MISMATCH",
-        "The selected tab is not a ChatGPT start page.",
+        "The selected tab is not the requested Web provider start page.",
       );
     }
     if (payload.focus === true) await focusTab(tab);
     await waitForContentScript(tab.id, 30_000, true);
     const page = await chrome.tabs.sendMessage(tab.id, { type: "agent.ping" });
-    if (!page?.ready || page.busy || page.generating || page.url !== "https://chatgpt.com/" || page.conversationId !== null) {
-      throw new ExtensionOperationError("ROOT_NOT_READY", "The selected ChatGPT start tab is not ready.");
+    if (!page?.ready || page.busy || page.generating || provider.canonicalize(page.url) !== provider.rootUrl || page.conversationId !== null) {
+      throw new ExtensionOperationError("ROOT_NOT_READY", "The selected Web provider start tab is not ready.");
     }
     const documentBinding = await inspectBoundDocument(chrome.tabs, tab.id, {
-      conversationUrl: "https://chatgpt.com/",
+      conversationUrl: provider.rootUrl,
       conversationId: null,
     });
     await store.bindSession({
       ...documentBinding,
       lastBoundSessionId: requested.sessionId,
       lastBoundRunId: requested.runId,
-      conversationUrl: "https://chatgpt.com/",
+      conversationUrl: provider.rootUrl,
       conversationId: null,
       tabId: tab.id,
       windowId: tab.windowId,
@@ -606,26 +621,26 @@ async function rebindSession(payload) {
       bindingError: null,
       lastActiveChatGptTarget: createStoredTarget({
         tabId: tab.id, windowId: tab.windowId, ...documentBinding,
-        conversationUrl: "https://chatgpt.com/", conversationId: null,
+        conversationUrl: provider.rootUrl, conversationId: null,
       }),
     });
     return {
       ...documentBinding,
       sessionId: requested.sessionId, runId: requested.runId,
       tabId: tab.id, windowId: tab.windowId,
-      conversationUrl: "https://chatgpt.com/", conversationId: null,
-      title: tab.title || "ChatGPT",
+      conversationUrl: provider.rootUrl, conversationId: null,
+      title: tab.title || provider.provider,
       lastObservedUserMessageId: null, lastObservedAssistantMessageId: null,
       bindingStatus: "ROOT_READY",
     };
   }
   if (
-    canonicalChatGptUrl(tab.url) !== requested.conversationUrl
-    || conversationIdFromUrl(tab.url) !== requested.conversationId
+    provider.canonicalize(tab.url) !== requested.conversationUrl
+    || provider.conversationIdFromUrl(tab.url) !== requested.conversationId
   ) {
     throw new ExtensionOperationError(
       "REBIND_CONVERSATION_MISMATCH",
-      "The selected tab does not show the requested ChatGPT conversation.",
+      "The selected tab does not show the requested Web provider conversation.",
     );
   }
   if (payload.focus === true) await focusTab(tab);
