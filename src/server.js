@@ -9,6 +9,7 @@ import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "./config.js";
 import { AuditProjectSettings } from "./orchestration/audit-project-settings.js";
+import { defaultReviewerConfiguration } from "./orchestration/reviewer-settings.js";
 import { isTerminalRunPhase } from "./domain/run-state-machine.js";
 import {
   ChatGptWebSessionAdapter,
@@ -187,6 +188,7 @@ export function createBridgeServer({
         revision: audit.project.requirements.revision,
         requirements: audit.project.requirements,
         policy: audit.project.policy,
+        reviewers: audit.project.reviewers,
         verifications: audit.project.verifications.map(({ verificationId, purpose }) => ({ verificationId, purpose })),
       } : null,
       projectError: audit.error,
@@ -240,6 +242,7 @@ export function createBridgeServer({
               verificationMethod: { kinds: ["CODE_SNAPSHOT"], description: "코드 스냅샷 검토 (실행 검증 없음)" },
             })) },
           policy: { maxIterations: 3, maxEvidenceRounds: 3, maxFormatRepairs: 2, totalTimeoutMs: 1800000, turnTimeoutMs: 600000 },
+          reviewers: structuredClone(auditSettings.project?.reviewers ?? defaultReviewerConfiguration()),
           verifications: [],
         };
         auditSettings = projectSettings.save(project, projectSettings.snapshot().version);
