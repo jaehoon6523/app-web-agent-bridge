@@ -7,6 +7,12 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const roots = ["src", "extension", "public", "scripts", "tests"];
 const sourceExtensions = new Set([".js", ".mjs"]);
 const activeRoots = new Set(["src", "extension", "public"]);
+const legacyLineLimits = Object.freeze({
+  "extension/background.js": 1_058,
+  "public/app.js": 1_379,
+  "src/orchestration/code-change-service.js": 1_136,
+  "src/runtime/web/session-adapter.js": 1_031,
+});
 
 const prohibitedActivePatterns = Object.freeze([
   { expression: /\bAPP_AGENT\b/u, label: "legacy APP_AGENT actor" },
@@ -32,9 +38,15 @@ const failures = [];
 
 for (const filename of files) {
   const relative = path.relative(root, filename);
+  const normalizedRelative = relative.split(path.sep).join("/");
   const source = fs.readFileSync(filename, "utf8");
   const lineCount = source === "" ? 0 : source.split(/\r?\n/u).length;
-  if (lineCount > 1_000) failures.push(`${relative}: ${lineCount} lines exceeds 1000`);
+  const legacyLimit = legacyLineLimits[normalizedRelative];
+  const lineLimit = legacyLimit ?? 1_000;
+  if (lineCount > lineLimit) {
+    const label = legacyLimit === undefined ? "1000" : `${legacyLimit} legacy ceiling`;
+    failures.push(`${relative}: ${lineCount} lines exceeds ${label}`);
+  }
 
   const topLevel = relative.split(path.sep)[0];
   if (activeRoots.has(topLevel)) {

@@ -123,6 +123,7 @@ try {
  assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
  assert.equal(fixture.mutations.at(-1).body.payload.expectedVersion,fixture.version-1);
  fixture.phase='AWAITING_APPLY'; await page.reload(); await stage('stepResult');
+ await page.click('#showAudit'); await visible('auditPanel');
  await page.locator('#evidenceList .links button').click(); await visible('evidenceDialog');
  assert.equal(await page.locator('#evidenceContent').textContent(),'Verified UI fixture evidence');
  await screenshot('09-evidence'); await page.click('#closeEvidence');
