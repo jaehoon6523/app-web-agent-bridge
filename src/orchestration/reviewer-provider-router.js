@@ -27,6 +27,12 @@ function requireProvider(provider, supportedProviders) {
   return provider;
 }
 
+/**
+ * @param {{
+ *   adapterForProvider?: (provider: string, role: string) => any,
+ *   supportedProviders?: readonly string[],
+ * }} [options]
+ */
 export function createReviewerProviderRouter({
   adapterForProvider,
   supportedProviders = SUPPORTED_WEB_REVIEWER_PROVIDERS,
@@ -39,6 +45,7 @@ export function createReviewerProviderRouter({
     throw new TypeError("supportedProviders must contain provider IDs.");
   }
 
+  /** @param {string} role @param {string} provider */
   function resolve(role, provider) {
     requireRole(role);
     requireProvider(provider, supported);

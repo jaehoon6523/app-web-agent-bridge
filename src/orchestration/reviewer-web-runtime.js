@@ -1,5 +1,13 @@
 import { createReviewerProviderRouter } from "./reviewer-provider-router.js";
 
+/**
+ * @param {{
+ *   webSession?: any,
+ *   reviewerWebSessions?: Record<string, any> | null,
+ *   reviewerWebProviders?: Record<string, any> | null,
+ *   configuredProvider?: (role: string) => string | null,
+ * }} [options]
+ */
 export function createReviewerWebRuntime({
   webSession,
   reviewerWebSessions = null,
@@ -9,11 +17,13 @@ export function createReviewerWebRuntime({
   if (typeof configuredProvider !== "function") {
     throw new TypeError("configuredProvider(role) must be a function.");
   }
-  const sessions = Object.freeze({
+  const sessions = /** @type {Record<string, any>} */ (Object.freeze({
     JUDGE:reviewerWebSessions?.JUDGE ?? webSession,
     CRITIC:reviewerWebSessions?.CRITIC ?? webSession,
-  });
-  const providers = Object.freeze({ ...(reviewerWebProviders ?? {}) });
+  }));
+  const providers = /** @type {Record<string, any>} */ (
+    Object.freeze({ ...(reviewerWebProviders ?? {}) })
+  );
   const router = createReviewerProviderRouter({
     adapterForProvider:(provider, role) => {
       const roleAdapter = sessions[role] ?? null;
@@ -22,6 +32,7 @@ export function createReviewerWebRuntime({
     },
   });
 
+  /** @param {string} role @param {string | null} [expectedProvider] */
   function adapter(role, expectedProvider = null) {
     const provider = expectedProvider
       ?? configuredProvider(role)

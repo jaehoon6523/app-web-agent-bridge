@@ -1,5 +1,12 @@
 import { ChatGptWebSessionAdapter, WebSessionAdapter } from "./session-adapter.js";
 
+/**
+ * @param {{
+ *   transport?: any,
+ *   chatGptSession?: any,
+ *   responseTimeoutMs?: number,
+ * }} [options]
+ */
 export function createReviewerWebProviderSessions({
   transport,
   chatGptSession = null,
