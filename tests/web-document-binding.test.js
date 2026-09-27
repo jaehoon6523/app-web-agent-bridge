@@ -14,12 +14,10 @@ const content = readFileSync(new URL("../extension/content.js", import.meta.url)
 const documentGuard = content.slice(content.indexOf("function assertExpectedDocument("), content.indexOf("class ContentContractError"));
 const execute = content.slice(content.indexOf("async function executePrompt("), content.indexOf("function cancelCurrentJob("));
 
-test("content script rejects temporary WEB conversation IDs", () => {
-  const context = vm.createContext({ URL, CHATGPT_HOSTS: new Set(["chatgpt.com"]) });
-  vm.runInContext(content.slice(content.indexOf("function canonicalConversationUrl("), content.indexOf("function inspectPageState(")), context);
-  assert.equal(context.conversationIdFromUrl("https://chatgpt.com/c/WEB:temporary"), null);
-  assert.equal(context.conversationIdFromUrl("https://chatgpt.com/c/WEB%3Atemporary"), null);
-  assert.equal(context.conversationIdFromUrl("https://chatgpt.com/c/real-id"), "real-id");
+test("registered ChatGPT provider rejects temporary WEB conversation IDs", () => {
+  assert.equal(conversation.conversationIdFromUrl("https://chatgpt.com/c/WEB:temporary"), null);
+  assert.equal(conversation.conversationIdFromUrl("https://chatgpt.com/c/WEB%3Atemporary"), null);
+  assert.equal(conversation.conversationIdFromUrl("https://chatgpt.com/c/real-id"), "real-id");
 });
 
 function harness({ root = false, reloadBeforePing = false, reloadAfterPing = false, staleEvidence = false,
@@ -55,9 +53,11 @@ function harness({ root = false, reloadBeforePing = false, reloadAfterPing = fal
         dispatches.push(message);
         const location = { href: tab.url };
         const receiver = vm.createContext({ DOCUMENT_ID: documentId, FRAME_ID: 0, ContentContractError: ContractError,
-          currentJob: null, requireSelectorRegistry() {}, AbortController, DOMException,
+          currentJob: null, AbortController, DOMException,
           location, selectorTelemetry: new Map(), messageSnapshot: () => [],
           canonicalConversationUrl: conversation.canonicalChatGptUrl, conversationIdFromUrl: conversation.conversationIdFromUrl,
+          requirePageProvider: () => ({ rootUrl: "https://chatgpt.com/", resetEvidence() {} }),
+          requirePageContract: () => ({}),
           parseMarkers: () => ({ controllerMessageId: "t1", runId: "r1" }),
           assertExpectedConversation: url => assert.equal(url, location.href), inspectPageState: () => ({ status: "READY" }),
           submitPrompt: async () => { clicks.push(id); if (root) location.href = tab.url = "https://chatgpt.com/c/new"; },
@@ -131,18 +131,32 @@ test("a closed stale tab is never reused when another ChatGPT tab is the current
   assert.equal(h.state.completedDelivery.trace.documentId, "d-after-close");
 });
 
-test("conversation change while waiting for send control prevents the actual click", async () => {
+test("provider submission mutation guard prevents a click after the conversation changes", async () => {
   const location = { href: "https://chatgpt.com/c/a" }; let clicks = 0;
+  class ContractError extends Error {
+    constructor(code, message) { super(message); this.code = code; }
+  }
   const context = vm.createContext({ DOCUMENT_ID: "d1", FRAME_ID: 0,
-    ContentContractError: class extends Error {},
-    waitForVisible: async () => ({ element: { focus() {} } }), setNativeValue() {}, sleep: async () => {},
-    waitForEnabledSend: async () => { location.href = "https://chatgpt.com/c/b"; return { element: { click() { clicks++; } } }; },
-    assertExpectedConversation: expected => assert.equal(location.href, expected),
+    ContentContractError: ContractError,
+    location,
+    assertExpectedConversation: expected => {
+      if (location.href !== expected) {
+        throw new ContractError("MANUAL_INTERVENTION_DETECTED", "Conversation changed.");
+      }
+    },
+    requirePageContract: () => ({
+      submitPrompt: async (_text, _signal, { assertCanMutate }) => {
+        assertCanMutate();
+        location.href = "https://chatgpt.com/c/b";
+        assertCanMutate();
+        clicks++;
+      },
+    }),
   });
-  vm.runInContext(documentGuard + content.slice(content.indexOf("async function submitPrompt("), content.indexOf("async function waitForControlledUserMessage(")), context);
+  vm.runInContext(documentGuard + content.slice(content.indexOf("async function submitPrompt("), content.indexOf("function sleep(")), context);
   await assert.rejects(context.submitPrompt("request", null, {
     expectedDocumentId: "d1", expectedFrameId: 0, expectedConversationUrl: "https://chatgpt.com/c/a", expectedConversationId: "a",
-  }));
+  }), { code: "MANUAL_INTERVENTION_DETECTED" });
   assert.equal(clicks, 0);
 });
 
