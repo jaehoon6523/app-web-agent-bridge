@@ -33,6 +33,44 @@ export const CHATGPT_WEB_PROVIDER = Object.freeze({
   conversationIdFromUrl:chatGptConversationId,
 });
 
+function canonicalClaudeUrl(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname !== "claude.ai") return null;
+  url.username = "";
+  url.password = "";
+  url.search = "";
+  url.hash = "";
+  const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : url.pathname;
+  if (path !== "/new" && !/^\/chat\/[^/]+$/u.test(path)) return null;
+  return `${url.origin}${path}`;
+}
+
+function claudeConversationId(value) {
+  const canonical = canonicalClaudeUrl(value);
+  if (!canonical) return null;
+  const segments = new URL(canonical).pathname.split("/").filter(Boolean);
+  if (segments.length !== 2 || segments[0] !== "chat") return null;
+  try {
+    const id = decodeURIComponent(segments[1]);
+    return id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export const CLAUDE_WEB_PROVIDER = Object.freeze({
+  provider:"CLAUDE_WEB",
+  rootUrl:"https://claude.ai/new",
+  canonicalize:canonicalClaudeUrl,
+  conversationIdFromUrl:claudeConversationId,
+});
+
 function validateProviderSpec(spec) {
   if (!spec || typeof spec !== "object" || Array.isArray(spec)) {
     throw new TypeError("Web conversation provider spec must be an object.");
@@ -54,7 +92,7 @@ function validateProviderSpec(spec) {
   }
 }
 
-export function createWebConversationProviderRegistry(initialProviders = [CHATGPT_WEB_PROVIDER]) {
+export function createWebConversationProviderRegistry(initialProviders = [CHATGPT_WEB_PROVIDER, CLAUDE_WEB_PROVIDER]) {
   const providers = new Map();
 
   function register(spec) {

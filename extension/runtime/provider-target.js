@@ -33,7 +33,46 @@ export const CHATGPT_WEB_TARGET_PROVIDER = Object.freeze({
   conversationIdFromUrl:chatGptConversationId,
 });
 
-export function createWebTargetProviderRegistry(initialProviders = [CHATGPT_WEB_TARGET_PROVIDER]) {
+function canonicalClaudeUrl(value) {
+  if (typeof value !== "string" || value.length === 0) return null;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" || url.hostname !== "claude.ai") return null;
+  url.search = "";
+  url.hash = "";
+  url.username = "";
+  url.password = "";
+  const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, "") : url.pathname;
+  if (path !== "/new" && !/^\/chat\/[^/]+$/u.test(path)) return null;
+  return `${url.origin}${path}`;
+}
+
+function claudeConversationId(value) {
+  const canonical = canonicalClaudeUrl(value);
+  if (!canonical) return null;
+  const segments = new URL(canonical).pathname.split("/").filter(Boolean);
+  if (segments.length !== 2 || segments[0] !== "chat") return null;
+  try {
+    const id = decodeURIComponent(segments[1]);
+    return id.length > 0 ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+export const CLAUDE_WEB_TARGET_PROVIDER = Object.freeze({
+  provider:"CLAUDE_WEB",
+  rootUrl:"https://claude.ai/new",
+  urlPatterns:Object.freeze(["https://claude.ai/*"]),
+  canonicalize:canonicalClaudeUrl,
+  conversationIdFromUrl:claudeConversationId,
+});
+
+export function createWebTargetProviderRegistry(initialProviders = [CHATGPT_WEB_TARGET_PROVIDER, CLAUDE_WEB_TARGET_PROVIDER]) {
   const providers = new Map();
 
   function register(spec) {

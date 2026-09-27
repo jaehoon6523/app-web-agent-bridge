@@ -3,17 +3,20 @@ import test from "node:test";
 
 import {
   CHATGPT_WEB_PROVIDER,
+  CLAUDE_WEB_PROVIDER,
   canonicalWebConversationUrl,
   createWebConversationProviderRegistry,
   extractWebConversationId,
   isWebProviderRootUrl,
   webConversationProviderForUrl,
+  webConversationProvider,
 } from "../src/runtime/web/provider-registry.js";
 import {
   canonicalChatGptUrl,
   conversationIdFromUrl,
   createWebTargetProviderRegistry,
 } from "../extension/runtime/conversation.js";
+import { CLAUDE_WEB_TARGET_PROVIDER } from "../extension/runtime/provider-target.js";
 
 test("default Web provider registry preserves the existing ChatGPT URL contract", () => {
   assert.equal(canonicalWebConversationUrl("https://chatgpt.com/c/example/?x=1#part"),
@@ -24,6 +27,24 @@ test("default Web provider registry preserves the existing ChatGPT URL contract"
   assert.equal(webConversationProviderForUrl("https://chatgpt.com/c/example")?.provider, "CHATGPT_WEB");
   assert.equal(canonicalChatGptUrl("https://chatgpt.com/c/example/?x=1"), "https://chatgpt.com/c/example");
   assert.equal(conversationIdFromUrl("https://chatgpt.com/c/example"), "example");
+});
+
+
+test("default Web provider registries include Claude without accepting unrelated Claude pages", () => {
+  assert.equal(CLAUDE_WEB_PROVIDER.rootUrl, "https://claude.ai/new");
+  assert.equal(CLAUDE_WEB_TARGET_PROVIDER.rootUrl, "https://claude.ai/new");
+  assert.equal(webConversationProvider("CLAUDE_WEB")?.provider, "CLAUDE_WEB");
+  assert.equal(canonicalWebConversationUrl("https://claude.ai/chat/example/?x=1#part"),
+    "https://claude.ai/chat/example");
+  assert.equal(extractWebConversationId("https://claude.ai/chat/example"), "example");
+  assert.equal(isWebProviderRootUrl("https://claude.ai/new"), true);
+  assert.equal(webConversationProviderForUrl("https://claude.ai/settings"), null);
+
+  const extensionRegistry = createWebTargetProviderRegistry();
+  assert.equal(extensionRegistry.providerForUrl("https://claude.ai/chat/example")?.provider, "CLAUDE_WEB");
+  assert.equal(extensionRegistry.canonicalize("https://claude.ai/chat/example/?x=1"), "https://claude.ai/chat/example");
+  assert.equal(extensionRegistry.conversationIdFromUrl("https://claude.ai/chat/example"), "example");
+  assert.equal(extensionRegistry.providerForUrl("https://claude.ai/settings"), null);
 });
 
 test("provider registries accept a distinct future provider without weakening unknown-host rejection", () => {
@@ -49,6 +70,7 @@ test("provider registries accept a distinct future provider without weakening un
 
   const controllerRegistry = createWebConversationProviderRegistry([
     CHATGPT_WEB_PROVIDER,
+  CLAUDE_WEB_PROVIDER,
     testProvider,
   ]);
   assert.equal(controllerRegistry.providerForUrl("https://example.test/chat/abc")?.provider, "TEST_WEB");
