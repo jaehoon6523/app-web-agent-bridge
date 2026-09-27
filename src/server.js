@@ -13,6 +13,7 @@ import { defaultReviewerConfiguration } from "./orchestration/reviewer-settings.
 import { isTerminalRunPhase } from "./domain/run-state-machine.js";
 import {
   ChatGptWebSessionAdapter,
+  createReviewerWebProviderSessions,
   WebExtensionTransport,
 } from "./runtime/web/index.js";
 import { createLiveDiscussionRuntime } from "./runtime/live-discussion-runtime.js";
@@ -70,6 +71,13 @@ export function createBridgeServer({
         responseTimeoutMs: runtimeConfig.relay.webResponseTimeoutMs,
       })
     : null;
+  const reviewerWebProviders = extensionTransport && webSession
+    ? createReviewerWebProviderSessions({
+        transport:extensionTransport,
+        chatGptSession:webSession,
+        responseTimeoutMs:runtimeConfig.relay.webResponseTimeoutMs,
+      })
+    : null;
   const dashboardAuth = runtimeConfig.dashboard?.token
     ? new LocalSessionAuthenticator({
         token: runtimeConfig.dashboard.token,
@@ -119,7 +127,11 @@ export function createBridgeServer({
     }
     if (liveRuntime !== null) return liveRuntime;
     if (liveRuntimePromise === null) {
-      liveRuntimePromise = createLiveRuntime({ runtimeConfig: { ...runtimeConfig, auditProject: auditSettings.project }, webSession })
+      liveRuntimePromise = createLiveRuntime({
+        runtimeConfig:{ ...runtimeConfig, auditProject:auditSettings.project },
+        webSession,
+        reviewerWebProviders,
+      })
         .then((runtime) => {
           liveRuntime = runtime;
           return runtime;

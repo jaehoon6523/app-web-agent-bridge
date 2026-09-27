@@ -17,6 +17,7 @@ import { redactForEvidence } from "../security/redaction.js";
 import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts.js";
 import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
 import { workerProvenance } from "../domain/worker-provenance.js";
+import { createReviewerWebRuntime } from "./reviewer-web-runtime.js";
 
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
@@ -156,13 +157,12 @@ function projectWorkerRuntime(run, preflight, inspection = null) {
 }
 
 export class CodeChangeService {
-  constructor({ filename, artifactStore, webSession, reviewerWebSessions = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
+  constructor({ filename, artifactStore, webSession, reviewerWebSessions = null, reviewerWebProviders = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
     this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
-    this.reviewerWebSessions = {
-      JUDGE:reviewerWebSessions?.JUDGE ?? webSession,
-      CRITIC:reviewerWebSessions?.CRITIC ?? webSession,
-    };
     this.project = project; this.workerConfig = workerConfig ?? { provider: "codex", model: null };
+    const reviewers = createReviewerWebRuntime({ webSession, reviewerWebSessions, reviewerWebProviders,
+      configuredProvider:(role) => this.project?.reviewers?.[role]?.provider ?? null });
+    this.reviewerWeb = reviewers.adapter; this.reviewerWebAdapters = reviewers.adapters;
     this.createWorker = createWorker;
     this.jobs = new Map(); this.workers = new Map(); this.controls = new Map();
     this.workerInspections = new Map(); this.closed = false;
@@ -171,21 +171,6 @@ export class CodeChangeService {
   list() { return this.store.list(); }
   get(id) { return this.store.get(id); }
   busy() { return this.jobs.size > 0 || this.list().some((r) => !terminal.has(r.stage)); }
-  reviewerWeb(role, expectedProvider = null) {
-    if (!["JUDGE","CRITIC"].includes(role)) throw new TypeError("Reviewer role must be JUDGE or CRITIC.");
-    const adapter = this.reviewerWebSessions?.[role] ?? null;
-    if (!adapter) throw new Error(`${role} Web reviewer adapter is unavailable.`);
-    const actualProvider = adapter.runtimeIdentity?.provider ?? null;
-    if (expectedProvider !== null && actualProvider !== expectedProvider) {
-      throw Object.assign(new Error(`${role} reviewer provider changed from ${expectedProvider} to ${actualProvider ?? "unknown"}; the persisted conversation binding cannot be reused.`), {
-        code:"REVIEWER_PROVIDER_MISMATCH",
-      });
-    }
-    return adapter;
-  }
-  reviewerWebAdapters() {
-    return [...new Set(["JUDGE","CRITIC"].map((role) => this.reviewerWebSessions?.[role]).filter(Boolean))];
-  }
   reviewerWebBusy() {
     return this.reviewerWebAdapters().some((adapter) => Boolean(adapter.activeTurnId));
   }

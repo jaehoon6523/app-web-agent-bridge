@@ -61,14 +61,15 @@ function reviewerRuntimeIdentity(service, role) {
   };
 }
 
-function initialBinding(run, role, at, runtimeIdentity) {
-  const judge = role === "JUDGE";
+export function initialBinding(run, role, at, runtimeIdentity) {
+  const reusePreparation = role === "JUDGE" && runtimeIdentity.provider === "CHATGPT_WEB";
   return {
     bindingId:`binding_${run.runId}_${role.toLowerCase()}`, runId:run.runId, actor:runtimeIdentity.actor, role,
     required:true, provider:runtimeIdentity.provider, providerEvidence:runtimeIdentity.providerEvidence,
     model:runtimeIdentity.model, modelEvidence:runtimeIdentity.modelEvidence,
     sessionId:roleSessionId(run.runId, role),
-    conversationUrl:judge ? run.conversationUrl : null, conversationId:judge ? run.conversationId : null,
+    conversationUrl:reusePreparation ? run.conversationUrl : null,
+    conversationId:reusePreparation ? run.conversationId : null,
     tabId:null, windowId:null, documentId:null, frameId:null, activeDeliveryId:null,
     historyAnchor:{ lastObservedUserMessageId:null, lastObservedAssistantMessageId:null },
     bindingStatus:"NEEDS_REBIND", createdAt:at, updatedAt:at,
@@ -161,7 +162,7 @@ async function activateRole(service, runId, role) {
   try {
     returned = await service.wait(runId, web.resume({
       binding:webBinding(record),
-      createNewConversation:role === "CRITIC" && record.conversationId === null,
+      createNewConversation:record.conversationId === null,
     }));
   } catch (error) {
     const typedError = coordinationError(error);

@@ -5,4 +5,5 @@ export * from "./markers.js";
 export * from "./observation.js";
 export * from "./protocol.js";
 export * from "./provider-registry.js";
+export * from "./provider-sessions.js";
 export * from "./session-adapter.js";

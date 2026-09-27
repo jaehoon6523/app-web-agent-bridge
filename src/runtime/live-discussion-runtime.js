@@ -23,8 +23,13 @@ export class LiveDiscussionRuntimeError extends Error {
  * Creates the production composition without opening a thread or submitting a
  * prompt. provisionRun() is the explicit effect boundary.
  */
-/** @param {{runtimeConfig: any, webSession: any, reviewerWebSessions?: {JUDGE?: any, CRITIC?: any} | null}} input */
-export async function createLiveDiscussionRuntime({ runtimeConfig, webSession, reviewerWebSessions = null }) {
+/** @param {{runtimeConfig: any, webSession: any, reviewerWebSessions?: {JUDGE?: any, CRITIC?: any} | null, reviewerWebProviders?: Record<string, any> | null}} input */
+export async function createLiveDiscussionRuntime({
+  runtimeConfig,
+  webSession,
+  reviewerWebSessions = null,
+  reviewerWebProviders = null,
+}) {
   if (runtimeConfig?.demoMode === true) {
     throw new LiveDiscussionRuntimeError("Demo mode cannot create a live discussion runtime.", "DEMO_MODE_FORBIDDEN");
   }
@@ -63,7 +68,8 @@ export async function createLiveDiscussionRuntime({ runtimeConfig, webSession, r
 
   let closed = false;
   const codeChanges = new CodeChangeService({ filename: runtimeConfig.persistence.databasePath,
-    artifactStore, webSession, reviewerWebSessions, project: runtimeConfig.auditProject ?? readAuditProject(runtimeConfig.auditProjectFile).project, codex: {
+    artifactStore, webSession, reviewerWebSessions, reviewerWebProviders,
+    project: runtimeConfig.auditProject ?? readAuditProject(runtimeConfig.auditProjectFile).project, codex: {
       executablePath: runtimeConfig.codex?.executablePath, authPathKeys: runtimeConfig.codex?.authPathKeys,
       approvalPolicy: runtimeConfig.codex?.approvalPolicy,
     }, workerConfig: runtimeConfig.codeWorker });
