@@ -280,7 +280,12 @@ test("blank conversation URL starts at the ChatGPT root and keeps automatic appr
   await ui.run("beginPreparation()");
   assert.deepEqual(ui.calls.find((call) => call.url === "/api/preparations").body, {
     objective: "Make a page", targetRoot: "C:/project", conversationUrl: "https://chatgpt.com/",
-    autoApproveOnReady: true, reuseProjectConversation:false, requestId: "request-1",
+    autoApproveOnReady: true,
+    reviewers:{
+      JUDGE:{ provider:"CHATGPT_WEB" },
+      CRITIC:{ provider:"CHATGPT_WEB" },
+    },
+    reuseProjectConversation:false, requestId: "request-1",
   });
 });
 test("a saved project conversation is selected for the same folder and can be explicitly replaced", async () => {
