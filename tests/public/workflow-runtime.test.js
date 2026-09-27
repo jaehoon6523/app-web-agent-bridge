@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
 import { renderProjectOverview } from "../../public/project-overview-view.js";
+import { createRunActionLayout } from "../../public/run-action-layout.js";
 import { workflowForRun } from "../../src/orchestration/preparation-service.js";
 
 export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
@@ -61,7 +62,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
   const context = vm.createContext({
-    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, Date, Map, Set, JSON, URL, Blob,
+    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
