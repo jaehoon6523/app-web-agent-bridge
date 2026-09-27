@@ -296,7 +296,8 @@ test("ambiguous reviewer tabs require explicit eligible selection before audit r
         failFirstJudge=false;
         throw Object.assign(new Error("multiple exact reviewer tabs"),{code:"AMBIGUOUS",details:{candidates:[
           {tabId:41,windowId:1,url:"https://chatgpt.com/c/test"},
-          {tabId:42,windowId:2,url:"https://chatgpt.com/c/test"},
+          {tabId:42,windowId:2,url:"https://chatgpt.com/c/test",provider:"CHATGPT_WEB"},
+          {tabId:43,windowId:4,url:"https://chatgpt.com/c/test",provider:"CLAUDE_WEB"},
           {tabId:99,windowId:3,url:"https://chatgpt.com/c/other"},
         ]}});
       }
@@ -312,13 +313,22 @@ test("ambiguous reviewer tabs require explicit eligible selection before audit r
   assert.equal(run.stage,"HOLD");
   assert.equal(run.terminationReason,"WEB_BINDING_REQUIRED");
   assert.equal(run.coordination.activeRole,"JUDGE");
-  assert.deepEqual(run.coordination.bindingCandidates.map((item)=>item.tabId),[41,42]);
+  assert.deepEqual(run.coordination.bindingCandidates.map((item)=>[item.tabId,item.provider]),
+    [[41,"CHATGPT_WEB"],[42,"CHATGPT_WEB"]]);
   let caps=f.service.snapshot(run.runId,{}).commandCapabilities;
   assert.ok(caps.includes("code.review.rebind"));
   assert.ok(!caps.includes("code.review.retry"));
   await assert.rejects(f.dashboard.executeDurable({type:"code.review.rebind",requestId:"review-rebind-invalid",
     payload:{runId:run.runId,expectedVersion:run.version,role:"JUDGE",selectedTabId:99}}),
   (error)=>error.code==="DELIVERY_RECOVERY_MISMATCH");
+
+  run=f.service.get(run.runId);
+  run=f.service.update(run.runId,{coordination:{...run.coordination,
+    bindingCandidates:[...run.coordination.bindingCandidates,
+      {tabId:43,windowId:4,url:"https://chatgpt.com/c/test",provider:"CLAUDE_WEB"}]}});
+  await assert.rejects(f.dashboard.executeDurable({type:"code.review.rebind",requestId:"review-rebind-provider-mismatch",
+    payload:{runId:run.runId,expectedVersion:run.version,role:"JUDGE",selectedTabId:43}}),
+  (error)=>error.code==="WEB_SESSION_PROVIDER_MISMATCH");
 
   run=f.service.get(run.runId);
   const rebound=await f.dashboard.executeDurable({type:"code.review.rebind",requestId:"review-rebind-41",

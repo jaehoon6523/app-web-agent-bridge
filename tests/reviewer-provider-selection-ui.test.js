@@ -21,5 +21,7 @@ test("reviewer provider selection is explicit, preparation-bound, and keeps prep
   assert.match(app, /reviewers:\{\s*JUDGE:\{ provider:\$\("judgeReviewerProvider"\)\.value \},\s*CRITIC:\{ provider:\$\("criticReviewerProvider"\)\.value \}/su);
   assert.match(app, /workflow\.stage !== "START".*reviewerProvidersLocked/su);
   assert.match(app, /snapshot\?\.preflight\?\.project/su);
+  assert.match(app, /candidate\.provider === reviewerBinding\.provider/su);
+  assert.match(app, /\$\{candidate\.provider\} · tab/su);
   assert.match(server, /context\.reviewers \?\? auditSettings\.project\?\.reviewers/su);
 });

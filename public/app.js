@@ -582,16 +582,19 @@ function render() {
   const reviewerBinding = reviewerRole
     ? (run.conversationBindings ?? []).find((item) => item.role === reviewerRole) ?? null
     : null;
-  const reviewerCandidates = reviewerBindingHold ? run?.coordination?.bindingCandidates ?? [] : [];
+  const reviewerCandidates = reviewerBindingHold
+    ? (run?.coordination?.bindingCandidates ?? []).filter((candidate) =>
+        Boolean(reviewerBinding?.provider) && candidate.provider === reviewerBinding.provider)
+    : [];
   $("reviewBindingRecoveryPanel").hidden = !reviewerBindingHold;
   const reviewerCandidateList = $("reviewBindingRecoveryCandidates"); reviewerCandidateList.replaceChildren();
   if (reviewerBindingHold) {
     if (run.coordination?.phase === "ROLE_BINDING_RECOVERED") {
-      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화 탭을 다시 연결했습니다. 기존 후보·요구사항은 그대로입니다. ‘웹 감사 다시 시도’를 눌러 감사를 재개하세요.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"} 대화 탭을 다시 연결했습니다. 기존 후보·요구사항은 그대로입니다. ‘웹 감사 다시 시도’를 눌러 감사를 재개하세요.`);
     } else if (reviewerCandidates.length) {
-      text("reviewBindingRecoveryStatus", `${reviewerRole}의 정확한 대화와 일치하는 탭이 여러 개입니다. 사용할 탭 하나를 선택하세요. 선택만으로 감사가 재실행되지는 않습니다.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"}의 정확한 대화와 일치하는 탭이 여러 개입니다. 사용할 탭 하나를 선택하세요. 선택만으로 감사가 재실행되지는 않습니다.`);
       for (const candidate of reviewerCandidates) {
-        const button = node("button", `tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`}`);
+        const button = node("button", `${candidate.provider} · tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`}`);
         button.type = "button"; button.title = candidate.url ?? reviewerBinding?.conversationUrl ?? "";
         button.disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("code.review.rebind");
         button.addEventListener("click", () => {
@@ -600,7 +603,7 @@ function render() {
         reviewerCandidateList.append(button);
       }
     } else {
-      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화를 자동 복구하지 못했습니다. 정확한 대화 ${reviewerBinding?.conversationUrl ?? "URL 확인 필요"} 를 브라우저에서 하나만 열고 ‘웹 감사 다시 시도’를 누르세요.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"} 대화를 자동 복구하지 못했습니다. 정확한 대화 ${reviewerBinding?.conversationUrl ?? "URL 확인 필요"} 를 브라우저에서 하나만 열고 ‘웹 감사 다시 시도’를 누르세요.`);
     }
   } else {
     text("reviewBindingRecoveryStatus", "");

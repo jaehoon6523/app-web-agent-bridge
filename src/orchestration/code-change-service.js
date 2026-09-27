@@ -682,11 +682,17 @@ export class CodeChangeService {
           code:"REVIEW_BINDING_RECOVERY_UNAVAILABLE",
         });
       }
-      const eligible = (run.coordination?.bindingCandidates ?? []).some((candidate) =>
+      const eligible = (run.coordination?.bindingCandidates ?? []).find((candidate) =>
         candidate.tabId === payload.selectedTabId);
       if (!eligible) {
-        throw Object.assign(new Error("The selected ChatGPT tab is not one of the recorded reviewer recovery candidates."), {
+        throw Object.assign(new Error("The selected Web tab is not one of the recorded reviewer recovery candidates."), {
           code:"DELIVERY_RECOVERY_MISMATCH",
+        });
+      }
+      const reviewerBinding = (run.conversationBindings ?? []).find((binding) => binding.role === payload.role);
+      if (!reviewerBinding?.provider || eligible.provider !== reviewerBinding.provider) {
+        throw Object.assign(new Error("The selected reviewer tab belongs to a different Web provider."), {
+          code:"WEB_SESSION_PROVIDER_MISMATCH",
         });
       }
       return rebindReviewRole(this, run.runId, { role:payload.role, tabId:payload.selectedTabId });

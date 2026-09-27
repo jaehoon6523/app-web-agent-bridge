@@ -8,6 +8,7 @@ import { aggregateReviewReports, assertionsToReviewReport, createAgreedWorkOrder
 import { evidenceRecord, excerpt, executeVerification } from "../evidence/candidate-evidence.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
+import { webConversationProviderForUrl } from "../runtime/web/provider-registry.js";
 import { buildCodeReviewPrompt, buildPlanProposalPrompt, buildPlanReviewPrompt, buildReviewDiscussionPrompt } from "./code-change-prompts.js";
 
 const REVIEW_ROLES = Object.freeze(["JUDGE", "CRITIC"]);
@@ -32,12 +33,16 @@ function selectableReviewTabs(error, record) {
   for (const candidate of source) {
     if (!Number.isSafeInteger(candidate?.tabId) || candidate.tabId < 0 || seen.has(candidate.tabId)) continue;
     const url = canonicalConversationUrl(candidate.canonicalUrl ?? candidate.url);
+    const provider = webConversationProviderForUrl(url)?.provider ?? null;
+    const declaredProvider = typeof candidate.provider === "string" ? candidate.provider : provider;
     const conversationId = candidate.conversationId ?? extractConversationId(url);
-    if (url !== record.conversationUrl || conversationId !== record.conversationId) continue;
+    if (!provider || declaredProvider !== provider || provider !== record.provider
+      || url !== record.conversationUrl || conversationId !== record.conversationId) continue;
     seen.add(candidate.tabId);
     candidates.push({
       tabId:candidate.tabId,
       windowId:Number.isSafeInteger(candidate.windowId) ? candidate.windowId : null,
+      provider,
       url,
     });
   }
@@ -193,12 +198,17 @@ export async function rebindReviewRole(service, runId, { role, tabId }) {
   }
   const selected = (run.coordination?.bindingCandidates ?? []).find((candidate) => candidate.tabId === tabId);
   if (!selected) {
-    throw Object.assign(new Error("The selected ChatGPT tab is not an eligible reviewer recovery target."), {
+    throw Object.assign(new Error("The selected Web tab is not an eligible reviewer recovery target."), {
       code:"DELIVERY_RECOVERY_MISMATCH",
     });
   }
   const record = bindingForRole(run, role);
-  const web = service.reviewerWeb(role, record.provider ?? null);
+  if (!record?.provider || selected.provider !== record.provider) {
+    throw Object.assign(new Error("The selected reviewer tab belongs to a different Web provider."), {
+      code:"WEB_SESSION_PROVIDER_MISMATCH",
+    });
+  }
+  const web = service.reviewerWeb(role, record.provider);
   if (typeof web?.rebind !== "function") {
     throw Object.assign(new Error("The Web adapter does not support explicit reviewer tab selection."), {
       code:"WEB_REBIND_UNAVAILABLE",
