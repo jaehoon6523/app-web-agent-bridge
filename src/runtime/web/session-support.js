@@ -1,4 +1,4 @@
-import { webConversationProvider } from "./provider-registry.js";
+import { webConversationProvider, webConversationProviderForUrl } from "./provider-registry.js";
 import { WebProtocolError } from "./protocol.js";
 
 export function socketIsOpen(socket) {
@@ -22,4 +22,16 @@ export function resolveWebSessionProvider(provider) {
     );
   }
   return providerSpec.provider;
+}
+
+export function assertWebSessionProviderBinding(binding, provider) {
+  if (binding?.conversationUrl === null) return binding;
+  const owner = webConversationProviderForUrl(binding?.conversationUrl)?.provider ?? null;
+  if (owner !== provider) {
+    throw new WebProtocolError(
+      `Web session binding belongs to ${owner ?? "an unknown provider"}, not ${provider}`,
+      "WEB_SESSION_PROVIDER_MISMATCH",
+    );
+  }
+  return binding;
 }

@@ -4,7 +4,7 @@ import { validateRuntimeEventType } from "../runtime-events.js";
 import { WebExtensionAuthenticator } from "./auth.js";
 import { createWebSessionBinding, validateWebSessionBinding } from "./binding.js";
 import { parseFinalControllerPacket } from "./controller-packet.js";
-import { resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
+import { assertWebSessionProviderBinding, resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
 import {
   WEB_BRIDGE_PROTOCOL_VERSION,
   WebAuthenticationState,
@@ -364,7 +364,7 @@ export class WebSessionAdapter {
 
   /** @param {{binding?: WebSessionBindingValue, focus?: boolean}} [input] */
   async start({ binding, focus = false } = {}) {
-    validateWebSessionBinding(binding);
+    validateWebSessionBinding(binding); assertWebSessionProviderBinding(binding, this.#provider);
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
     }
@@ -399,7 +399,7 @@ export class WebSessionAdapter {
 
   /** @param {{binding?: WebSessionBindingValue, focus?: boolean, createNewConversation?: boolean}} [input] */
   async resume({ binding, focus = false, createNewConversation = false } = {}) {
-    validateWebSessionBinding(binding);
+    validateWebSessionBinding(binding); assertWebSessionProviderBinding(binding, this.#provider);
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
     }
@@ -442,7 +442,7 @@ export class WebSessionAdapter {
 
   /** @param {{binding?: WebSessionBindingValue, tabId?: number, focus?: boolean}} [input] */
   async rebind({ binding, tabId, focus = false } = {}) {
-    validateWebSessionBinding(binding);
+    validateWebSessionBinding(binding); assertWebSessionProviderBinding(binding, this.#provider);
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
     }
@@ -823,7 +823,7 @@ export class WebSessionAdapter {
         "WEB_SESSION_BINDING_MISMATCH",
       );
     }
-    const next = createWebSessionBinding(value);
+    const next = createWebSessionBinding(value); assertWebSessionProviderBinding(next, this.#provider);
     const bootstrap = allowConversationBootstrap
       && (current.conversationUrl === null || current.bindingStatus === "ROOT_READY") && current.conversationId === null;
     for (const key of ["sessionId", "runId", ...(allowUserTargetChange ? [] : ["conversationUrl", "conversationId"])]) {

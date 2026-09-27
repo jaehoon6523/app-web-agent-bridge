@@ -27,11 +27,23 @@ function boundClaudeSession() {
   };
 }
 
+function boundChatGptSession() {
+  return {
+    ...boundClaudeSession(),
+    sessionId:"session-chatgpt",
+    runId:"run-chatgpt",
+    conversationUrl:"https://chatgpt.com/c/conversation-2",
+    conversationId:"conversation-2",
+    title:"ChatGPT",
+  };
+}
+
 class CapturingTransport extends WebExtensionTransport {
   lastMessage = null;
 
-  constructor() {
+  constructor(returnedSession = boundClaudeSession()) {
     super({ sharedSecret:SECRET, expectedExtensionIdentity:IDENTITY });
+    this.returnedSession = returnedSession;
   }
 
   get authenticated() {
@@ -45,7 +57,7 @@ class CapturingTransport extends WebExtensionTransport {
         type:"web.session.ready",
         protocolVersion:2,
         requestId:message.requestId,
-        payload:{ session:boundClaudeSession() },
+        payload:{ session:this.returnedSession },
       });
     });
   }
@@ -68,6 +80,29 @@ test("generic Web session adapter exposes the configured provider and sends it t
   assert.equal(transport.lastMessage.type, "web.session.rebind");
   assert.equal(transport.lastMessage.payload.provider, "CLAUDE_WEB");
   assert.equal(returned.conversationId, binding.conversationId);
+  await adapter.close();
+});
+
+test("generic Web session adapter rejects an outbound binding owned by another provider", async () => {
+  const transport = new CapturingTransport();
+  const adapter = new WebSessionAdapter({ transport, provider:"CLAUDE_WEB", responseTimeoutMs:500 });
+
+  await assert.rejects(
+    adapter.start({ binding:boundChatGptSession() }),
+    (error) => error?.code === "WEB_SESSION_PROVIDER_MISMATCH",
+  );
+  assert.equal(transport.lastMessage, null);
+  await adapter.close();
+});
+
+test("generic Web session adapter rejects a returned binding owned by another provider", async () => {
+  const transport = new CapturingTransport(boundChatGptSession());
+  const adapter = new WebSessionAdapter({ transport, provider:"CLAUDE_WEB", responseTimeoutMs:500 });
+
+  await assert.rejects(
+    adapter.start({ binding:boundClaudeSession() }),
+    (error) => error?.code === "WEB_SESSION_PROVIDER_MISMATCH",
+  );
   await adapter.close();
 });
 
