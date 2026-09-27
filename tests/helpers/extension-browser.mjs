@@ -196,7 +196,7 @@ export async function extensionBrowser(t, {
           const body = document.createElement('div');
           if (role === 'user') body.setAttribute('data-testid', 'user-message');
           else { body.setAttribute('data-testid', 'chat-message-content'); body.className = 'font-claude-response'; }
-          const content = document.createElement('div'); content.className = 'standard-markdown'; content.textContent = text;
+          const content = document.createElement('div'); content.className = 'standard-markdown'; content.style.whiteSpace = 'pre-wrap'; content.textContent = text;
           body.append(content); article.append(body); document.querySelector('#messages').append(article);
         }
         if (sessionStorage.getItem('submitted')) {
