@@ -109,6 +109,9 @@ try {
  fixture.offline=false; await enabled('stopRun'); await page.click('#stopRun'); await stage('stepResult');
  assert.equal(fixture.mutations.at(-1).body.type,'run.stop');
  fixture.phase='RECOVERY_REQUIRED'; await page.reload(); await visible('recoveryPanel');
+ assert.equal(await page.locator('#runRecoveryTier').isVisible(),true);
+ assert.equal(await page.locator('#recoveryPanel').evaluate(el=>el.closest('#runRecoveryTier')!==null),true);
+ assert.equal(await page.locator('#runPrimaryTier').isVisible(),false);
  assert.equal(await page.locator('#abandonRun').isDisabled(),true);
  await page.click('#reconcileRun');
  await page.waitForFunction(()=>document.getElementById('reconcileResult').textContent.includes('RECOVERY_REQUIRED'));
@@ -118,18 +121,26 @@ try {
  await screenshot('08-recovery'); await page.click('#abandonRun'); await enabled('newRun');
  assert.equal(fixture.mutations.at(-1).body.type,'run.abandon');
  fixture.phase='HOLD'; await page.reload(); await visible('runPanel'); await enabled('retryRun');
+ assert.equal(await page.locator('#runPrimaryTier').isVisible(),true);
+ assert.equal(await page.locator('#retryRun').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
+ assert.equal(await page.locator('#runSecondaryTier').evaluate(el=>el.open),false);
  await page.click('#retryRun');
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='웹 감사 중');
  assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
  assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
  assert.equal(fixture.mutations.at(-1).body.payload.expectedVersion,fixture.version-1);
  fixture.phase='AWAITING_APPLY'; await page.reload(); await stage('stepResult');
+ assert.equal(await page.locator('#runPrimaryTier').isVisible(),true);
+ assert.equal(await page.locator('#applyCode').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
+ assert.equal(await page.locator('#applyCode').evaluate(el=>el.classList.contains('primary')),true);
  await page.click('#showAudit'); await visible('auditPanel');
  await page.locator('#evidenceList .links button').click(); await visible('evidenceDialog');
  assert.equal(await page.locator('#evidenceContent').textContent(),'Verified UI fixture evidence');
  await screenshot('09-evidence'); await page.click('#closeEvidence');
- await page.locator('#intervention summary').click(); await page.click('#applyCode');
+ await page.click('#applyCode');
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='적용됨');
+ assert.equal(await page.locator('#continueProject').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
+ assert.equal(await page.locator('#continueProject').isVisible(),true);
  assert.equal(fixture.mutations.at(-1).body.payload.candidateId,'candidate-qa');
  assert.equal(fixture.mutations.at(-1).body.payload.reviewId,'review-qa');
  const commands=fixture.mutations.filter(({pathname})=>pathname==='/api/commands').map(({body})=>body);
@@ -149,7 +160,7 @@ try {
  assert.deepEqual(errors,[]);
  console.log(JSON.stringify({result:'PASS',screenshots:output,scenarios:['first-use','health/timeout','input validation',
    'root waiting','document-change diagnostic/cancel','preparation/reply/reload/approval','blocked history',
-   'stop','recovery','disconnect/reconnect','evidence/apply','mobile'],pageErrors:errors},null,2));
+   'stop','recovery/action hierarchy','disconnect/reconnect','review retry primary','evidence/apply primary','applied follow-up primary','mobile'],pageErrors:errors},null,2));
 } catch(error) {
  await screenshot('failure').catch(()=>{});
  fs.writeFileSync(path.join(output,'failure.json'),JSON.stringify({message:error.message,pageErrors:errors,
