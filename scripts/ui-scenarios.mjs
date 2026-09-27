@@ -103,6 +103,7 @@ try {
  await page.waitForFunction(()=>document.getElementById('runObjective').textContent==='Previous task');
  assert.equal(await page.locator('#newRun').isDisabled(),true);
  await page.click('#showUnfinishedRun'); await stage('stepWork');
+ await page.locator('#runSecondaryTier > summary').click();
  fixture.offline=true; await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('unknown'));
  assert.equal(await page.locator('#stopRun').isDisabled(),true); await screenshot('07-disconnected');
  fixture.offline=false; await enabled('stopRun'); await page.click('#stopRun'); await stage('stepResult');

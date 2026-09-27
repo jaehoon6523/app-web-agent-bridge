@@ -2,6 +2,7 @@ import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
+import { createRunActionLayout } from "./run-action-layout.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
@@ -98,51 +99,7 @@ function ensureOperatorNoteControls() {
 }
 ensureOperatorNoteControls();
 
-const primaryActionIds = Object.freeze(["submitDecision", "applyCode", "continueProject", "retryRun"]);
-const primaryActionHomes = new Map();
-for (const id of primaryActionIds) {
-  const element = $(id);
-  if (element?.parentElement) primaryActionHomes.set(id, { parent:element.parentElement, nextSibling:element.nextSibling });
-}
-function restorePrimaryActions() {
-  const slot = $("runPrimaryActionSlot");
-  for (const id of primaryActionIds) {
-    const element = $(id), home = primaryActionHomes.get(id);
-    if (!element || !home || element.parentElement !== slot) continue;
-    if (home.nextSibling?.parentElement === home.parent) home.parent.insertBefore(element, home.nextSibling);
-    else home.parent.append(element);
-    element.classList.remove("primary");
-  }
-  slot?.querySelectorAll(".action-reason").forEach((item) => item.remove());
-}
-function syncRunInformationArchitecture(run) {
-  restorePrimaryActions();
-  const decisionVisible = !$("decisionPanel").hidden;
-  const primaryId = decisionVisible ? "submitDecision"
-    : run?.phase === "AWAITING_APPLY" ? "applyCode"
-    : run?.phase === "APPLIED" && !$("continueProject").hidden ? "continueProject"
-    : !$("retryRun").disabled ? "retryRun"
-    : null;
-  const primary = primaryId ? $(primaryId) : null;
-  $("runPrimaryTier").hidden = !primary;
-  if (primary) {
-    $("runPrimaryActionSlot").append(primary);
-    primary.classList.add("primary");
-    const reason = primaryId === "submitDecision"
-      ? (textValue("decisionStatus") || "감사자의 확인 질문에 답변하면 같은 후보의 독립 검토를 재개합니다.")
-      : primaryId === "continueProject"
-        ? "적용된 작업을 기준으로 같은 폴더에서 새 준비 작업을 시작합니다."
-        : primary.title;
-    text("runPrimaryActionReason", reason ?? "");
-  } else {
-    text("runPrimaryActionReason", "");
-  }
-  $("runContextTier").hidden = $("workerInterventionPanel").hidden
-    && $("decisionPanel").hidden && $("reviewDiscussionPanel").hidden;
-  $("runRecoveryTier").hidden = $("reviewDiscussionRecovery").hidden
-    && $("reviewBindingRecoveryPanel").hidden && $("recoveryPanel").hidden;
-}
-function textValue(id) { return $(id)?.textContent?.trim() ?? ""; }
+const syncRunInformationArchitecture = createRunActionLayout({ $, text });
 
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
