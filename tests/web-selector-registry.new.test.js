@@ -41,11 +41,13 @@ test("selector scripts build an ordered, versioned registry without orchestratio
   assert.equal(registry.resolveFirst("composer", () => []), null);
 });
 
-test("extension manifest targets chatgpt.com only and loads selectors before content logic", async () => {
+test("extension manifest targets registered Web providers and loads selectors before content logic", async () => {
   const manifest = JSON.parse(await readFile(path.join(ROOT, "extension", "manifest.json"), "utf8"));
-  assert.deepEqual(manifest.host_permissions, ["https://chatgpt.com/*"]);
-  assert.deepEqual(manifest.content_scripts[0].matches, ["https://chatgpt.com/*"]);
+  assert.deepEqual(manifest.host_permissions, ["https://chatgpt.com/*", "https://claude.ai/*"]);
+  assert.deepEqual(manifest.content_scripts[0].matches, ["https://chatgpt.com/*", "https://claude.ai/*"]);
   assert.deepEqual(manifest.content_scripts[0].js.slice(0, 5), SELECTOR_FILES.map((file) => `selectors/${file}`));
+  assert.ok(manifest.content_scripts[0].js.includes("runtime/providers/chatgpt-page.js"));
+  assert.ok(manifest.content_scripts[0].js.includes("runtime/providers/claude-page.js"));
   assert.equal(manifest.content_scripts[0].js.at(-1), "content.js");
   const background = await readFile(path.join(ROOT, "extension", "background.js"), "utf8");
   assert.doesNotMatch(background, /chrome\.tabs\.create/);
