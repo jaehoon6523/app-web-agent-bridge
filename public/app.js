@@ -73,7 +73,7 @@ function ensureReviewerBindingRecoveryControls() {
   const status = node("p", "", "muted"); status.id = "reviewBindingRecoveryStatus"; status.setAttribute("role", "status");
   const candidates = node("div", ""); candidates.id = "reviewBindingRecoveryCandidates";
   panel.append(status, candidates);
-  $("reviewDiscussionPanel")?.after(panel);
+  $("reviewBindingRecoveryHost")?.append(panel);
 }
 ensureReviewerBindingRecoveryControls();
 function ensureOperatorNoteControls() {
@@ -94,9 +94,56 @@ function ensureOperatorNoteControls() {
   const status = node("p", "", "muted"); status.id = "operatorNoteStatus"; status.setAttribute("role", "status");
   const list = node("div", ""); list.id = "operatorNoteList";
   panel.append(kindLabel, kind, textLabel, input, add, status, list);
-  $("reviewBindingRecoveryPanel")?.after(panel);
+  $("runSecondaryContent")?.append(panel);
 }
 ensureOperatorNoteControls();
+
+const primaryActionIds = Object.freeze(["submitDecision", "applyCode", "continueProject", "retryRun"]);
+const primaryActionHomes = new Map();
+for (const id of primaryActionIds) {
+  const element = $(id);
+  if (element?.parentElement) primaryActionHomes.set(id, { parent:element.parentElement, nextSibling:element.nextSibling });
+}
+function restorePrimaryActions() {
+  const slot = $("runPrimaryActionSlot");
+  for (const id of primaryActionIds) {
+    const element = $(id), home = primaryActionHomes.get(id);
+    if (!element || !home || element.parentElement !== slot) continue;
+    if (home.nextSibling?.parentElement === home.parent) home.parent.insertBefore(element, home.nextSibling);
+    else home.parent.append(element);
+    element.classList.remove("primary");
+  }
+  slot?.querySelectorAll(".action-reason").forEach((item) => item.remove());
+}
+function syncRunInformationArchitecture(run) {
+  restorePrimaryActions();
+  const decisionVisible = !$("decisionPanel").hidden;
+  const primaryId = decisionVisible ? "submitDecision"
+    : run?.phase === "AWAITING_APPLY" ? "applyCode"
+    : run?.phase === "APPLIED" && !$("continueProject").hidden ? "continueProject"
+    : !$("retryRun").disabled ? "retryRun"
+    : null;
+  const primary = primaryId ? $(primaryId) : null;
+  $("runPrimaryTier").hidden = !primary;
+  if (primary) {
+    $("runPrimaryActionSlot").append(primary);
+    primary.classList.add("primary");
+    const reason = primaryId === "submitDecision"
+      ? (textValue("decisionStatus") || "감사자의 확인 질문에 답변하면 같은 후보의 독립 검토를 재개합니다.")
+      : primaryId === "continueProject"
+        ? "적용된 작업을 기준으로 같은 폴더에서 새 준비 작업을 시작합니다."
+        : primary.title;
+    text("runPrimaryActionReason", reason ?? "");
+  } else {
+    text("runPrimaryActionReason", "");
+  }
+  $("runContextTier").hidden = $("workerInterventionPanel").hidden
+    && $("decisionPanel").hidden && $("reviewDiscussionPanel").hidden;
+  $("runRecoveryTier").hidden = $("reviewDiscussionRecovery").hidden
+    && $("reviewBindingRecoveryPanel").hidden && $("recoveryPanel").hidden;
+}
+function textValue(id) { return $(id)?.textContent?.trim() ?? ""; }
+
 function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
@@ -808,6 +855,7 @@ function render() {
     : "현재까지 보존된 감사 기록을 JSON으로 다운로드할 수 있습니다.";
   actionState("exportEvidence", (operations.runCommand !== "IDLE") || !caps.has("evidence.export"), exportReason, exportReason);
   text("commandReason", `적용: ${applyReason} · 감사 기록: ${exportReason}`);
+  syncRunInformationArchitecture(run);
   const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
   if (renderedRecords !== signature) { renderedRecords = signature; renderConversation(run, $("conversationTimeline"), node, time); renderAudit(); renderLog(); }
 }

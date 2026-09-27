@@ -105,6 +105,17 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
 .discussion-fold { margin-top:12px; }
 .discussion-fold .record { padding:10px 0; }
 .discussion-fold pre { margin:6px 0 0; }
+.run-action-tier { margin-top:16px; }
+.run-action-primary { padding:16px 18px; border:1px solid var(--live); border-radius:8px; background:var(--panel); }
+.run-action-primary .eyebrow { margin:0 0 6px; }
+.run-action-primary .actions { margin-top:0; }
+.run-action-primary .primary { margin-top:0; }
+.run-action-recovery { padding:16px; border:1px solid var(--warn); border-radius:8px; background:var(--panel); }
+.run-action-recovery > h2 { margin-top:0; }
+#runContextTier > h2 { color:var(--muted); margin-bottom:8px; }
+#runSecondaryTier > summary, #runTechnicalTier > summary { font-weight:600; }
+#runSecondaryContent .flow-band { border-color:var(--line); border-left-color:var(--line); }
+#runTechnicalSlot p { margin:6px 0; }
 @media(max-width:760px) {
   .workflow { gap:8px; overflow-x:auto; padding-bottom:4px; }
   .workflow li { min-width:112px; white-space:nowrap; font-size:12px; }
