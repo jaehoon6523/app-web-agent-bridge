@@ -55,6 +55,7 @@ export const OperationalBlockerReason = enumObject([
 export const SessionProvider = enumObject([
   "CODEX_APP_SERVER",
   "CHATGPT_WEB",
+  "CLAUDE_WEB",
 ]);
 
 export const AgentSessionStatus = enumObject([

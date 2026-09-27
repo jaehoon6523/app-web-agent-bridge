@@ -1,7 +1,7 @@
 import { exactObject } from "../domain/audit-contract.js";
 
 export const REVIEWER_ROLES = Object.freeze(["JUDGE", "CRITIC"]);
-export const SUPPORTED_WEB_REVIEWER_PROVIDERS = Object.freeze(["CHATGPT_WEB"]);
+export const SUPPORTED_WEB_REVIEWER_PROVIDERS = Object.freeze(["CHATGPT_WEB", "CLAUDE_WEB"]);
 
 const DEFAULT_REVIEWER_CONFIGURATION = Object.freeze({
   JUDGE:Object.freeze({ provider:"CHATGPT_WEB" }),

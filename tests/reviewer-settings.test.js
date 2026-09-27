@@ -22,11 +22,18 @@ test("reviewer configuration defaults legacy projects to the currently supported
   });
 });
 
-test("reviewer configuration rejects unsupported providers until a runtime actually supports them", () => {
-  assert.throws(() => validateReviewerConfiguration({
+test("reviewer configuration accepts registered Web providers and rejects unknown providers", () => {
+  assert.deepEqual(validateReviewerConfiguration({
     JUDGE:{ provider:"CHATGPT_WEB" },
     CRITIC:{ provider:"CLAUDE_WEB" },
-  }), /CLAUDE_WEB.*not available/u);
+  }), {
+    JUDGE:{ provider:"CHATGPT_WEB" },
+    CRITIC:{ provider:"CLAUDE_WEB" },
+  });
+  assert.throws(() => validateReviewerConfiguration({
+    JUDGE:{ provider:"CHATGPT_WEB" },
+    CRITIC:{ provider:"UNKNOWN_WEB" },
+  }), /UNKNOWN_WEB.*not available/u);
 });
 
 test("audit project accepts legacy files without reviewers and normalizes an explicit reviewer contract", () => {
