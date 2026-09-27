@@ -12,7 +12,7 @@ import { createBrowserRuntime } from "./runtime/browser-runtime.js";
 import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
-import { resolveWebTargetProvider } from "./runtime/provider-target.js";
+import { resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -664,35 +664,33 @@ async function persistBoundTab(tab, requested) {
   });
 }
 async function requireExactBoundTab(expectedTurn = null) {
-  const state = await store.read();
+  const state = await store.read(), provider = resolveStoredWebTargetProvider(state);
   if (expectedTurn) assertTurnStateBinding(expectedTurn, state);
   if (state.bindingStatus !== "BOUND" || state.tabId === null) {
-    throw new ExtensionOperationError("NEEDS_REBIND", "No exact ChatGPT Web session is currently bound.");
+    throw new ExtensionOperationError("NEEDS_REBIND", "No exact Web provider session is currently bound.");
   }
+  if (!provider) throw new ExtensionOperationError("WEB_PROVIDER_UNAVAILABLE", "The bound Web provider is not registered.");
   let tab;
   try {
     tab = await chrome.tabs.get(state.tabId);
   } catch {
     await store.update({ bindingStatus: "NEEDS_REBIND", tabId: null, windowId: null, documentId: null, frameId: null });
-    throw new ExtensionOperationError("NEEDS_REBIND", "The bound ChatGPT tab no longer exists.");
+    throw new ExtensionOperationError("NEEDS_REBIND", "The bound Web provider tab no longer exists.");
   }
-  if (
-    canonicalChatGptUrl(tab.url) !== state.conversationUrl
-    || conversationIdFromUrl(tab.url) !== state.conversationId
-  ) {
+  if (provider.canonicalize(tab.url) !== state.conversationUrl || provider.conversationIdFromUrl(tab.url) !== state.conversationId) {
     await store.update({ bindingStatus: "AMBIGUOUS" });
     throw new ExtensionOperationError(
       "MANUAL_INTERVENTION_DETECTED",
       "The bound tab changed to a different conversation.",
-      { observedUrl: canonicalChatGptUrl(tab.url) },
+      { observedUrl: provider.canonicalize(tab.url), provider:provider.provider },
     );
   }
   if (expectedTurn) {
     assertTurnTabBinding(
       expectedTurn,
       tab,
-      canonicalChatGptUrl(tab.url),
-      conversationIdFromUrl(tab.url),
+      provider.canonicalize(tab.url),
+      provider.conversationIdFromUrl(tab.url),
     );
   }
   if (expectedTurn) assertTurnStateBinding(expectedTurn, await store.read());
@@ -742,7 +740,8 @@ async function handlePrompt(message) {
     state = await bindCurrentUserTarget({ store, state, target });
     const reservedState = await store.reserveDelivery(message.requestId);
     deliveryReserved = true;
-    const bootstrap = reservedState.bindingStatus === "ROOT_READY";
+    const bootstrap = reservedState.bindingStatus === "ROOT_READY", provider = resolveStoredWebTargetProvider(reservedState);
+    if (!provider) throw new ExtensionOperationError("WEB_PROVIDER_UNAVAILABLE", "The prepared Web provider is not registered.");
     bridgeLog("prompt:reserved", { deliveryId: message.requestId, tabId: reservedState.tabId, bindingStatus: reservedState.bindingStatus, conversationUrl: reservedState.conversationUrl, conversationId: reservedState.conversationId, bootstrap });
     const turnIdentity = {
       requestId: message.requestId,
@@ -752,14 +751,14 @@ async function handlePrompt(message) {
     let frozenTurn = bootstrap ? null : captureTurnBinding(reservedState, turnIdentity);
     broadcastPopupState();
     const tab = bootstrap ? await chrome.tabs.get(reservedState.tabId) : await requireExactBoundTab(frozenTurn);
-    if (bootstrap && canonicalChatGptUrl(tab.url) !== "https://chatgpt.com/") throw new ExtensionOperationError("ROOT_CHANGED", "선택한 새 대화 탭의 주소가 변경되었습니다.");
+    if (bootstrap && provider.canonicalize(tab.url) !== provider.rootUrl) throw new ExtensionOperationError("ROOT_CHANGED", "선택한 새 대화 탭의 주소가 변경되었습니다.");
     await waitForContentScript(tab.id);
     const markedText = createControlledPrompt({
       controllerMessageId: payload.controllerMessageId,
       runId: payload.runId,
       text: payload.text,
     });
-    if (!reservedState.documentId || reservedState.frameId !== 0) throw new ExtensionOperationError("WEB_DOCUMENT_CHANGED", "Prepare the current ChatGPT document before sending.");
+    if (!reservedState.documentId || reservedState.frameId !== 0) throw new ExtensionOperationError("WEB_DOCUMENT_CHANGED", "Prepare the current Web provider document before sending.");
     await inspectBoundDocument(chrome.tabs, tab.id, reservedState);
     contentDispatchStarted = true;
     bridgeLog("prompt:dispatch", { deliveryId: message.requestId, tabId: tab.id, bootstrap });
@@ -793,14 +792,14 @@ async function handlePrompt(message) {
     if (!result?.ok) {
       throw new ExtensionOperationError(
         result?.code || "CONTENT_SCRIPT_FAILURE",
-        result?.error || "The ChatGPT content script returned no result.",
+        result?.error || "The Web provider content script returned no result.",
         result?.evidence || null,
       );
     }
     if (bootstrap && !bootstrapRecovered) {
       const current = await store.read();
       const observed = await chrome.tabs.get(tab.id);
-      const url = canonicalChatGptUrl(observed.url), id = conversationIdFromUrl(url);
+      const url = provider.canonicalize(observed.url), id = provider.conversationIdFromUrl(url);
       // During bootstrap the response may contain a temporary WEB:* ID before
       // the browser URL settles on the real conversation ID.
       if (current.currentDeliveryId !== message.requestId || current.lastBoundSessionId !== reservedState.lastBoundSessionId

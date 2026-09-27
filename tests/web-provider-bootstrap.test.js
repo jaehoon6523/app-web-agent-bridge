@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { recoverBootstrapAfterNavigation } from "../extension/runtime/bootstrap-recovery.js";
 import { createConversationBootstrapTab, reopenExactConversationTab } from "../extension/runtime/conversation-bootstrap.js";
+import { createExtensionStateStore } from "../extension/runtime/storage.js";
 import { createWebTargetProviderRegistry, resolveWebTargetProvider } from "../extension/runtime/provider-target.js";
 
 function providerFixture() {
@@ -67,4 +69,59 @@ test("exact conversation reopen validates with the supplied provider identity ru
   } };
   const tab = await reopenExactConversationTab(chromeApi, async() => {}, requested, provider);
   assert.equal(tab.url, requested.conversationUrl);
+});
+
+test("bootstrap recovery promotes a Claude root to its durable conversation without resending", async () => {
+  let saved = {
+    controllerUrl:"ws://127.0.0.1:8787/ws/extension",
+    sharedSecret:"",
+    extensionIdentity:"fixture",
+    lastBoundSessionId:"session-claude",
+    lastBoundRunId:"run-claude",
+    webProvider:"CLAUDE_WEB",
+    currentDeliveryId:"delivery-claude",
+    completedDelivery:null,
+    deliveryScopes:{},
+    lastActiveWebTarget:null,
+    lastObservedUserMessageId:null,
+    lastObservedAssistantMessageId:null,
+    bindingError:null,
+    tabId:17,
+    windowId:4,
+    documentId:"document-root",
+    frameId:0,
+    conversationUrl:"https://claude.ai/new",
+    conversationId:null,
+    bindingStatus:"ROOT_READY",
+  };
+  const store = createExtensionStateStore({
+    get:async () => structuredClone(saved),
+    set:async (value) => { saved = { ...saved, ...structuredClone(value) }; },
+  });
+  const sent = [];
+  const result = await recoverBootstrapAfterNavigation({
+    store,
+    reservedState:{ ...saved },
+    tab:{ id:17 },
+    turnIdentity:{ requestId:"delivery-claude", controllerMessageId:"message-claude", runId:"run-claude" },
+    payload:{ timeoutMs:1000, stableMs:100 },
+    sleep:async () => {},
+    tabs:{
+      get:async () => ({ id:17, windowId:4, url:"https://claude.ai/chat/claude-1" }),
+      sendMessage:async (_tabId, message) => { sent.push(message); return { ok:true }; },
+    },
+    waitForContentScript:async () => ({
+      ok:true,
+      url:"https://claude.ai/chat/claude-1",
+      conversationId:"claude-1",
+      documentId:"document-chat",
+      frameId:0,
+    }),
+  });
+
+  assert.equal(result.frozenTurn.conversationId, "claude-1");
+  assert.equal((await store.read()).webProvider, "CLAUDE_WEB");
+  assert.equal((await store.read()).conversationUrl, "https://claude.ai/chat/claude-1");
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].type, "agent.observeSubmittedPrompt");
 });

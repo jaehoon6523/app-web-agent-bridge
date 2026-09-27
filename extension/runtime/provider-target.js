@@ -146,3 +146,11 @@ export function resolveWebTargetProvider({
   if (byId && byUrl && byId.provider !== byUrl.provider) return null;
   return byId ?? byUrl ?? registry.provider(CHATGPT_WEB_TARGET_PROVIDER.provider);
 }
+
+export function resolveStoredWebTargetProvider(state, registry = defaultWebTargetProviderRegistry) {
+  return resolveWebTargetProvider({
+    provider:typeof state?.webProvider === "string" && state.webProvider ? state.webProvider : null,
+    conversationUrl:typeof state?.conversationUrl === "string" && state.conversationUrl ? state.conversationUrl : null,
+    registry,
+  });
+}

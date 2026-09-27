@@ -1,4 +1,4 @@
-import { canonicalChatGptUrl, conversationIdFromUrl } from "./conversation.js";
+import { resolveStoredWebTargetProvider } from "./provider-target.js";
 import { captureTurnBinding } from "./turn-guard.js";
 export { classifyStoredAmbiguousRoot } from "./binding-recovery.js";
 
@@ -16,6 +16,8 @@ export async function recoverBootstrapAfterNavigation({
   waitForContentScript,
   sleep,
 }) {
+  const provider = resolveStoredWebTargetProvider(reservedState);
+  if (!provider) fail("WEB_PROVIDER_UNAVAILABLE", "The bootstrap Web provider is not registered.");
   const deadline = Date.now() + 30_000;
   let observed = null;
   let url = null;
@@ -29,8 +31,8 @@ export async function recoverBootstrapAfterNavigation({
       fail("TURN_BINDING_CHANGED", "새 대화 전환 중 전송 identity가 변경되었습니다.");
     }
     observed = await tabs.get(tab.id);
-    url = canonicalChatGptUrl(observed.url);
-    id = conversationIdFromUrl(url);
+    url = provider.canonicalize(observed.url);
+    id = provider.conversationIdFromUrl(url);
     if (id) break;
     await sleep(150);
   }
