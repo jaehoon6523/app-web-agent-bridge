@@ -195,3 +195,74 @@ test('fixture integration: real adapters, subprocess, Git capture and browser re
   assert.equal(f.service.get(run.runId).workerTurns.length, 2);
   assert.deepEqual(web.errors, []);
 });
+
+
+test('browser fixture: mixed-provider audit uses ChatGPT Judge and Claude Critic on one extension transport', { timeout: 45_000 }, async t => {
+  const web = await extensionBrowser(t, { initialUrl: 'https://chatgpt.com/c/test', reply(text) {
+    const jsonStart = text.indexOf('\n{') + 1;
+    const jsonEnd = text.indexOf('\n', jsonStart);
+    assert.ok(jsonStart > 0 && jsonEnd > jsonStart, 'Prompt must contain its JSON data line');
+    const data = JSON.parse(text.slice(jsonStart, jsonEnd));
+    assert.ok(data.context?.auditManifestHash, 'Unexpected mixed-provider audit prompt');
+    const response = assertionsFor(data.context, 'SATISFIED');
+    return `Fixture response.\nCONTROLLER_PACKET_BEGIN\n${JSON.stringify(response)}\nCONTROLLER_PACKET_END`;
+  } });
+  const f = setupAudit(t, {
+    webSession:web.adapter,
+    reviewerWebProviderFactory(chatGpt) {
+      return {
+        CHATGPT_WEB:chatGpt,
+        CLAUDE_WEB:web.createAdapter('CLAUDE_WEB'),
+      };
+    },
+    configure(project) {
+      project.policy.turnTimeoutMs = 15_000;
+      project.reviewers = {
+        JUDGE:{ provider:'CHATGPT_WEB' },
+        CRITIC:{ provider:'CLAUDE_WEB' },
+      };
+    },
+  });
+
+  const run = await f.run();
+  assert.equal(run.stage, 'AWAITING_APPLY', JSON.stringify({
+    error:run.error,
+    terminationReason:run.terminationReason,
+    coordination:run.coordination,
+    requests:run.requests?.map(request => ({
+      requestId:request.requestId,
+      role:request.role,
+      status:request.status,
+    })),
+    browserCommands:web.commands.map(command => ({
+      type:command.type,
+      requestId:command.requestId,
+      expectedConversationUrl:command.payload?.expectedConversationUrl ?? null,
+    })),
+    browserErrors:web.errors,
+  }));
+
+  const bindings = Object.fromEntries(
+    run.conversationBindings.map(binding => [binding.role, binding]),
+  );
+  assert.equal(bindings.JUDGE.provider, 'CHATGPT_WEB');
+  assert.equal(bindings.JUDGE.conversationUrl, 'https://chatgpt.com/c/test');
+  assert.equal(bindings.CRITIC.provider, 'CLAUDE_WEB');
+  assert.equal(bindings.CRITIC.conversationUrl, 'https://claude.ai/chat/created');
+
+  const independence = run.reviews.at(-1).reviewerIndependence;
+  assert.equal(independence.roleSeparation, 'VERIFIED');
+  assert.equal(independence.sessionSeparation, 'VERIFIED');
+  assert.equal(independence.conversationSeparation, 'VERIFIED');
+  assert.equal(independence.providerSeparation, 'VERIFIED');
+
+  const prompts = web.commands.filter(command => command.type === 'agent.prompt');
+  assert.equal(prompts.length, 2);
+  assert.deepEqual(prompts.map(command => command.payload.expectedConversationUrl), [
+    'https://chatgpt.com/c/test',
+    'https://claude.ai/new',
+  ]);
+  assert.equal(new Set(prompts.map(command => command.requestId)).size, 2);
+  assert.equal(web.contentResults.filter(entry => entry.request.type === 'agent.prompt').length, 2);
+  assert.deepEqual(web.errors, []);
+});
