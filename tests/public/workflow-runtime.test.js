@@ -633,10 +633,13 @@ test("ambiguous reviewer binding offers only controller-recorded tab choices bef
   const run={runId:"run-rebind",version:6,phase:"HOLD",objective:"Greeting",
     terminationReason:"WEB_BINDING_REQUIRED",candidate:{candidateId:"candidate-1"},
     coordination:{phase:"WAITING_FOR_ROLE_BINDING",activeRole:"JUDGE",bindingCode:"AMBIGUOUS",
-      bindingCandidates:[{tabId:41,windowId:1,url:"https://chatgpt.com/c/judge"},{tabId:42,windowId:2,url:"https://chatgpt.com/c/judge"}]},
+      bindingCandidates:[
+        {tabId:41,windowId:1,provider:"CHATGPT_WEB",url:"https://chatgpt.com/c/judge"},
+        {tabId:42,windowId:2,provider:"CHATGPT_WEB",url:"https://chatgpt.com/c/judge"},
+      ]},
     conversationBindings:[
-      {role:"JUDGE",conversationUrl:"https://chatgpt.com/c/judge",conversationId:"judge",activeDeliveryId:null},
-      {role:"CRITIC",conversationUrl:"https://chatgpt.com/c/critic",conversationId:"critic",activeDeliveryId:null},
+      {role:"JUDGE",provider:"CHATGPT_WEB",conversationUrl:"https://chatgpt.com/c/judge",conversationId:"judge",activeDeliveryId:null},
+      {role:"CRITIC",provider:"CHATGPT_WEB",conversationUrl:"https://chatgpt.com/c/critic",conversationId:"critic",activeDeliveryId:null},
     ],reviewDiscussions:[]};
   const state=stateFor(run,["code.review.rebind","run.stop"]);
   const ui=await dashboard(state,async(url,options)=>{
