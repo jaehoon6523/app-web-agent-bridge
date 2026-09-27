@@ -154,3 +154,17 @@ export function resolveStoredWebTargetProvider(state, registry = defaultWebTarge
     registry,
   });
 }
+
+export function matchExactWebConversationTabs(tabs, state, registry = defaultWebTargetProviderRegistry) {
+  const provider = resolveStoredWebTargetProvider(state, registry);
+  const expectedUrl = provider?.canonicalize(state?.conversationUrl);
+  if (!provider || !expectedUrl || typeof state?.conversationId !== "string"
+    || !state.conversationId || !Array.isArray(tabs)) {
+    return Object.freeze({ status:"NEEDS_REBIND", tab:null });
+  }
+  const matches = tabs.filter((tab) => provider.canonicalize(tab?.url) === expectedUrl
+    && provider.conversationIdFromUrl(tab?.url) === state.conversationId);
+  if (matches.length === 0) return Object.freeze({ status:"NEEDS_REBIND", tab:null });
+  if (matches.length > 1) return Object.freeze({ status:"AMBIGUOUS", tab:null });
+  return Object.freeze({ status:"BOUND", tab:matches[0] });
+}

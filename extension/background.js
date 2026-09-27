@@ -1,7 +1,7 @@
 import { inspectBoundDocument, createSuccessTrace, diagnosticError, errorPayload } from "./runtime/document-binding.js";
 import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
-import { canonicalChatGptUrl, conversationIdFromUrl, matchExactConversationTabs, validateLocalControllerUrl } from "./runtime/conversation.js";
+import { canonicalChatGptUrl, conversationIdFromUrl, validateLocalControllerUrl } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
 import { bindCurrentUserTarget, createStoredTarget, installCurrentTargetTracking, isPendingRootPromotion, pendingDeliveryTargetConflict, resolveCurrentUserTarget, resolvePreparedSessionTarget } from "./runtime/current-target.js";
 import { createExtensionStateStore, ensureExtensionIdentity, isLegacyBridgeTestDelivery } from "./runtime/storage.js";
@@ -12,7 +12,7 @@ import { createBrowserRuntime } from "./runtime/browser-runtime.js";
 import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
-import { resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
+import { matchExactWebConversationTabs, resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -275,8 +275,8 @@ async function handleControllerMessage(raw) {
           || state.conversationUrl !== message.payload?.conversationUrl) {
           throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "이전 대화 탭이 변경됐습니다. 상태를 다시 확인하세요.");
         }
-        const tab = await chrome.tabs.get(state.tabId);
-        if (canonicalChatGptUrl(tab.url) !== state.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "기존 탭이 다른 대화로 이동했습니다.");
+        const tab = await chrome.tabs.get(state.tabId), provider = resolveStoredWebTargetProvider(state);
+        if (!provider || provider.canonicalize(tab.url) !== state.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "기존 탭이 다른 대화로 이동했습니다.");
         await focusTab(tab);
         send({ type: "web.delivery.focused", requestId: message.requestId, payload: {} });
       } catch (error) {
@@ -392,8 +392,9 @@ async function handleDeliveryRecovery(message) {
       || expected.conversationUrl !== state.conversationUrl) {
       throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "복구 대상 전송이 변경됐습니다. 준비를 다시 요청하세요.");
     }
-    const recoveryTabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-    const matched = matchExactConversationTabs(recoveryTabs, state);
+    const provider = resolveStoredWebTargetProvider(state);
+    if (!provider) throw new ExtensionOperationError("WEB_PROVIDER_UNAVAILABLE", "복구 대상 Web provider를 확인할 수 없습니다.");
+    const recoveryTabs = await chrome.tabs.query({ url: provider.urlPatterns }), matched = matchExactWebConversationTabs(recoveryTabs, state);
     if (matched.status !== "BOUND") {
       throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 전송을 복구할 대화 탭을 확정할 수 없습니다.", {
         stage: "RECOVERY_TAB_LOOKUP", matchStatus: matched.status, currentDeliveryId: state.currentDeliveryId,
@@ -1003,7 +1004,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   });
 });
 async function inspectBoundTabTopology(triggerTabId = null) {
-  const state = await store.read();
+  const state = await store.read(), provider = resolveStoredWebTargetProvider(state);
   if (!["BOUND", "ROOT_READY"].includes(state.bindingStatus)) return;
   let tab = null; try { tab = await chrome.tabs.get(state.tabId); } catch {}
   if (isPendingRootPromotion({ state, tab, activeRequestId: turnGate.activeRequestId })) {
@@ -1011,15 +1012,15 @@ async function inspectBoundTabTopology(triggerTabId = null) {
     return;
   }
   if (state.bindingStatus === "ROOT_READY") return;
-  const stillExact = tab
-    && canonicalChatGptUrl(tab.url) === state.conversationUrl
-    && conversationIdFromUrl(tab.url) === state.conversationId;
+  const stillExact = tab && provider
+    && provider.canonicalize(tab.url) === state.conversationUrl
+    && provider.conversationIdFromUrl(tab.url) === state.conversationId;
   if (stillExact) return;
   await store.update({ bindingStatus: "AMBIGUOUS" });
-  lastError = diagnosticError(new ExtensionOperationError("AMBIGUOUS", "The persisted ChatGPT tab no longer matches the bound conversation.", {
+  lastError = diagnosticError(new ExtensionOperationError("AMBIGUOUS", "The persisted Web provider tab no longer matches the bound conversation.", {
     mode: "BOUND_TAB_TOPOLOGY", persistedTabId: state.tabId, persistedUrl: state.conversationUrl,
     persistedConversationId: state.conversationId, observedTabId: tab?.id ?? null,
-    observedUrl: tab?.url ?? null, observedConversationId: conversationIdFromUrl(tab?.url),
+    observedUrl: tab?.url ?? null, observedConversationId: provider?.conversationIdFromUrl(tab?.url) ?? null,
   }));
   await store.update({ bindingError: lastError });
   broadcastPopupState();
@@ -1041,9 +1042,9 @@ async function inspectBoundTabTopology(triggerTabId = null) {
   }
   broadcastPopupState();
 }
-chrome.tabs.onCreated.addListener((tab) => { if (canonicalChatGptUrl(tab.url)) void inspectBoundTabTopology(tab.id); });
+chrome.tabs.onCreated.addListener((tab) => { if (resolveWebTargetProvider({ conversationUrl:tab.url })) void inspectBoundTabTopology(tab.id); });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (typeof changeInfo.url === "string" && canonicalChatGptUrl(changeInfo.url)) {
+  if (typeof changeInfo.url === "string" && resolveWebTargetProvider({ conversationUrl:changeInfo.url })) {
     void inspectBoundTabTopology(tabId);
     return;
   }
