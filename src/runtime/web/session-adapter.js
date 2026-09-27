@@ -4,7 +4,7 @@ import { validateRuntimeEventType } from "../runtime-events.js";
 import { WebExtensionAuthenticator } from "./auth.js";
 import { createWebSessionBinding, validateWebSessionBinding } from "./binding.js";
 import { parseFinalControllerPacket } from "./controller-packet.js";
-import { webConversationProvider } from "./provider-registry.js";
+import { resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
 import {
   WEB_BRIDGE_PROTOCOL_VERSION,
   WebAuthenticationState,
@@ -30,10 +30,6 @@ import {
  * @property {string} bindingStatus
  */
 
-function socketIsOpen(socket) {
-  return socket?.readyState === 1;
-}
-
 const AMBIGUOUS_WEB_TURN_CODES = new Set([
   "WEB_TURN_AMBIGUOUS",
   "MANUAL_INTERVENTION_DETECTED",
@@ -48,14 +44,6 @@ const SESSION_INVALIDATING_CODES = new Set([
   "WEB_DOCUMENT_CHANGED",
   "WEB_SUCCESS_TRACE_MISMATCH",
 ]);
-
-function safeParse(raw) {
-  try {
-    return JSON.parse(String(raw));
-  } catch {
-    throw new WebProtocolError("Extension sent invalid JSON", "INVALID_JSON");
-  }
-}
 
 // Authenticated transport only. AgentSession lifecycle semantics are provided by
 // WebSessionAdapter below rather than being inferred from socket state.
@@ -180,7 +168,7 @@ export class WebExtensionTransport extends EventEmitter {
     if (socket !== this.#socket) return;
     let message;
     try {
-      message = assertProtocolEnvelope(safeParse(raw));
+      message = assertProtocolEnvelope(safeParseExtensionJson(raw));
     } catch (error) {
       this.emit("diagnostic", Object.freeze({
         type: "PROTOCOL_MESSAGE_IGNORED",
@@ -334,17 +322,11 @@ export class WebSessionAdapter {
         "INVALID_WEB_TRANSPORT",
       );
     }
-    const providerSpec = webConversationProvider(provider);
-    if (!providerSpec) {
-      throw new WebProtocolError(
-        `WebSessionAdapter provider ${String(provider)} is not registered`,
-        "WEB_PROVIDER_UNAVAILABLE",
-      );
-    }
+    const sessionProvider = resolveWebSessionProvider(provider);
     if (!Number.isSafeInteger(responseTimeoutMs) || responseTimeoutMs < 1) {
       throw new WebProtocolError("responseTimeoutMs must be positive", "INVALID_WEB_ADAPTER_CONFIG");
     }
-    this.#provider = providerSpec.provider;
+    this.#provider = sessionProvider;
     this.#transport = transport;
     this.#responseTimeoutMs = responseTimeoutMs;
     if (typeof parseResponse !== "function") throw new TypeError("Controller response parser is required.");
