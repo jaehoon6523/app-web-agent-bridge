@@ -9,6 +9,7 @@ import * as conversation from "../extension/runtime/conversation.js";
 import * as guards from "../extension/runtime/turn-guard.js";
 import { createControlledPrompt } from "../extension/runtime/markers.js";
 import * as currentTarget from "../extension/runtime/current-target.js";
+import * as providerTarget from "../extension/runtime/provider-target.js";
 
 const source = readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
 
@@ -56,7 +57,7 @@ test("root prepare returns without navigation; first delivery sends once and per
   const state = { tabId: 99, bindingStatus: "AMBIGUOUS", currentDeliveryId: null };
   const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/" };
   const sent = [], prompts = [];
-  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, createControlledPrompt,
+  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, ...providerTarget, createControlledPrompt,
     console, Number, Date, setTimeout, clearTimeout, lastError: null,
     bridgeLog() {},
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],

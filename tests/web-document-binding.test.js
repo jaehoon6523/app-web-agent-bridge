@@ -8,6 +8,7 @@ import * as guards from "../extension/runtime/turn-guard.js";
 import { createControlledPrompt } from "../extension/runtime/markers.js";
 import { normalizeExtensionState } from "../extension/runtime/storage.js";
 import * as currentTarget from "../extension/runtime/current-target.js";
+import * as providerTarget from "../extension/runtime/provider-target.js";
 
 const background = readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
 const content = readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
@@ -31,7 +32,7 @@ function harness({ root = false, reloadBeforePing = false, reloadAfterPing = fal
   const messages = [], dispatches = [], clicks = [];
   let documentId = activeDocumentId ?? (reloadBeforePing ? "d2" : "d1");
   class ContractError extends Error { constructor(code, message) { super(message); this.code = code; } }
-  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, createControlledPrompt,
+  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, ...providerTarget, createControlledPrompt,
     console: { info() {}, warn() {} }, authenticated: false, lastError: null,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
     turnGate: guards.createActiveTurnGate(), broadcastPopupState() {}, waitForContentScript: async () => {},
