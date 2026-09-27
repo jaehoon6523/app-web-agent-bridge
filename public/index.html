@@ -64,6 +64,7 @@
           <summary>작업 정보 · 합의한 완료 기준</summary>
           <div class="flow-fold-body">
             <div id="projectRequirements"></div>
+            <p id="reviewerProviderSummary" class="muted"></p>
             <p class="muted">검증 방식: 코드 스냅샷 검토 · 실행 테스트 없음 · 최대 구현 3회 · 전체 30분</p>
           </div>
         </details>
@@ -87,6 +88,9 @@
         <label for="conversationUrl">기존 ChatGPT 대화 URL (선택)</label><input id="conversationUrl" type="url" placeholder="비워 두면 새 대화를 엽니다">
         <div id="projectConversationPanel" class="flow-band" hidden><label><input id="reuseProjectConversation" type="checkbox"> 이 프로젝트의 준비 대화 이어가기</label><p id="projectConversationDetail"></p><a id="projectConversationLink" target="_blank" rel="noopener noreferrer">저장된 대화 열기</a><p class="muted">이전 합의가 새 요구사항을 자동 승인하지 않습니다. 정확한 대화에 연결할 수 없으면 상태를 확인한 뒤 다시 시도하거나 체크를 해제해 새 대화를 시작하세요.</p></div>
         <p class="muted">비워 두면 확장에서 ChatGPT 시작 탭을 찾아 사용하거나 새 탭을 엽니다. 같은 대화 후보가 여러 개면 사용할 탭을 선택할 수 있습니다.</p>
+        <label for="judgeReviewerProvider">Judge 감사 provider</label><select id="judgeReviewerProvider"><option value="CHATGPT_WEB">ChatGPT Web</option><option value="CLAUDE_WEB">Claude Web</option></select>
+        <label for="criticReviewerProvider">Critic 감사 provider</label><select id="criticReviewerProvider"><option value="CHATGPT_WEB">ChatGPT Web</option><option value="CLAUDE_WEB">Claude Web</option></select>
+        <p class="muted">준비 대화는 계속 ChatGPT에서 진행합니다. 위 설정은 독립 감사 단계에만 적용되며 준비를 시작하면 해당 작업에 고정됩니다.</p>
         <label><input id="autoApprovePreparation" type="checkbox"> 첫 대화에서 확인 질문 없이 요구사항이 준비되면 자동 승인하고 구현 시작</label>
         <button id="planRun" disabled type="submit" class="primary">준비 대화 시작</button><p id="followUpSource" class="muted" hidden></p>
         <button id="startRun" hidden type="button" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>

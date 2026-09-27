@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
+import { validateReviewerConfiguration } from "./reviewer-settings.js";
 
 function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
 const stamp = () => new Date().toISOString();
@@ -258,6 +259,9 @@ export class PreparationService {
       if (typeof input.targetRoot !== "string" || !path.isAbsolute(input.targetRoot)) fail("Select an absolute project folder.", "INVALID_INPUT");
       const targetRoot = fs.realpathSync(input.targetRoot);
       if (!fs.statSync(targetRoot).isDirectory() || path.parse(targetRoot).root === targetRoot) fail("Select a project folder.", "INVALID_INPUT");
+      let reviewers;
+      try { reviewers = validateReviewerConfiguration(input.reviewers); }
+      catch (error) { fail(error.message, "INVALID_REVIEWER_CONFIGURATION"); }
       let followUp = null;
       if (input.followUpRunId !== undefined && input.followUpRunId !== null) {
         if (typeof input.followUpRunId !== "string" || !input.followUpRunId.trim()) fail("Select an applied task to continue.", "INVALID_FOLLOW_UP");
@@ -281,6 +285,7 @@ export class PreparationService {
         preparationId, version: 1, stage: "PREPARE", state: "INITIALIZING", lifecycle: "ACTIVE",
         objective: input.objective, targetRoot, conversationUrl,
         followUp,
+        reviewers,
         projectConversationSource: input.reuseProjectConversation === true ? previousConversation.preparationId : null,
         autoApproveOnReady: input.autoApproveOnReady === true,
         webSession: { sessionId: "web_" + preparationId,

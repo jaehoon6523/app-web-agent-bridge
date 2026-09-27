@@ -107,6 +107,35 @@ test("follow-up rejects unavailable, unfinished, and different-folder tasks befo
   assert.equal(f.service.current, null);
   assert.equal(f.prompts.length, 0);
 });
+
+test("reviewer provider choices are validated and persist with the preparation", async (t) => {
+  const f = fixture(t);
+  const reviewers = {
+    JUDGE:{ provider:"CLAUDE_WEB" },
+    CRITIC:{ provider:"CHATGPT_WEB" },
+  };
+  await f.service.execute("preparation.start", {
+    requestId:"reviewer-providers",
+    objective:"provider 선택 보존",
+    targetRoot:f.root,
+    conversationUrl:"https://chatgpt.com/c/test",
+    reviewers,
+  });
+  assert.deepEqual(f.service.current.reviewers, reviewers);
+  await settled(f.service);
+  f.restart();
+  assert.deepEqual(f.service.current.reviewers, reviewers);
+
+  const invalid = fixture(t);
+  await assert.rejects(invalid.service.execute("preparation.start", {
+    requestId:"reviewer-provider-invalid",
+    objective:"잘못된 provider 거부",
+    targetRoot:invalid.root,
+    conversationUrl:"https://chatgpt.com/c/test",
+    reviewers:{ JUDGE:{ provider:"CHATGPT_WEB" }, CRITIC:{ provider:"UNKNOWN_WEB" } },
+  }), (error) => error.code === "INVALID_REVIEWER_CONFIGURATION");
+});
+
 test("unresolved delivery can be explicitly discarded with confirmations and remains auditable", async (t) => {
   const f = fixture(t);
   await f.start();

@@ -11,6 +11,7 @@ let decisionSignature = "", interventionRunId = null;
 let agreement = null, preparation = null;
 let projectConversationRoot = null, reviewDiscussionRunId = null;
 let followUpSource = null;
+let reviewerSelectionRoot = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
 let historyScope = sessionStorage.getItem("bridge.history.scope") || "ALL";
@@ -26,6 +27,23 @@ const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상�
 function text(id, value) { $(id).textContent = value ?? ""; }
 function folderName(targetRoot) {
   return String(targetRoot ?? "").replace(/[\\/]+$/u, "").split(/[\\/]/u).at(-1) || "프로젝트";
+}
+const reviewerProviderIds = new Set(["CHATGPT_WEB", "CLAUDE_WEB"]);
+function syncReviewerProviderControls() {
+  const judge = $("judgeReviewerProvider"), critic = $("criticReviewerProvider");
+  if (!judge || !critic) return;
+  if (workflow.stage !== "START" && preparation?.reviewers) {
+    judge.value = reviewerProviderIds.has(preparation.reviewers.JUDGE?.provider) ? preparation.reviewers.JUDGE.provider : "CHATGPT_WEB";
+    critic.value = reviewerProviderIds.has(preparation.reviewers.CRITIC?.provider) ? preparation.reviewers.CRITIC.provider : "CHATGPT_WEB";
+    return;
+  }
+  const root = $("startRoot")?.value.trim() ?? "";
+  if (reviewerSelectionRoot === root) return;
+  const project = snapshot?.preflight?.project;
+  const reviewers = project?.targetRoot === root ? project.reviewers : null;
+  judge.value = reviewerProviderIds.has(reviewers?.JUDGE?.provider) ? reviewers.JUDGE.provider : "CHATGPT_WEB";
+  critic.value = reviewerProviderIds.has(reviewers?.CRITIC?.provider) ? reviewers.CRITIC.provider : "CHATGPT_WEB";
+  reviewerSelectionRoot = root;
 }
 function time(value) { return value ? new Date(value).toLocaleString("ko-KR") : "확인 전"; }
 function node(tag, value, className = "") { const n = document.createElement(tag); n.textContent = value; n.className = className; return n; }
@@ -373,6 +391,10 @@ function render() {
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 ${time(lastConfirmed)}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
+  syncReviewerProviderControls();
+  const reviewerProvidersLocked = workflow.stage !== "START" || operations.preparationStart !== "IDLE" || !connected || busy;
+  $("judgeReviewerProvider").disabled = reviewerProvidersLocked;
+  $("criticReviewerProvider").disabled = reviewerProvidersLocked;
   $("planRun").disabled = (operations.runCommand !== "IDLE") || !connected || busy || (operations.webTurn !== "IDLE");
   $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않았습니다. 아래 버튼에서 확인하고 중단할 수 있습니다.` : "과거 기록은 언제든 선택할 수 있습니다.");
   $("showUnfinishedRun").hidden = !busy;
@@ -897,6 +919,7 @@ function renderPreparation() {
     row.append(node("p", item.statement), node("p", item.acceptanceCriteria));
     $("projectRequirements").append(row);
   }
+  text("reviewerProviderSummary", `감사 provider · Judge ${preparation.reviewers?.JUDGE?.provider ?? "CHATGPT_WEB"} · Critic ${preparation.reviewers?.CRITIC?.provider ?? "CHATGPT_WEB"} · 준비 대화는 ChatGPT`);
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
   const recovery = node("details", "", "session-recovery");
@@ -1115,6 +1138,10 @@ async function beginPreparation() {
   const autoApprove = $("autoApprovePreparation").checked;
   await preparationMutation("preparationStart", "preparation.start", "/api/preparations",
     { objective, targetRoot, conversationUrl, autoApproveOnReady: autoApprove,
+      reviewers:{
+        JUDGE:{ provider:$("judgeReviewerProvider").value },
+        CRITIC:{ provider:$("criticReviewerProvider").value },
+      },
       ...(followUpSource ? { followUpRunId:followUpSource.runId } : {}),
       reuseProjectConversation:$("reuseProjectConversation").checked && !$("projectConversationPanel").hidden });
 }

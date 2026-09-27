@@ -254,7 +254,7 @@ export function createBridgeServer({
               verificationMethod: { kinds: ["CODE_SNAPSHOT"], description: "코드 스냅샷 검토 (실행 검증 없음)" },
             })) },
           policy: { maxIterations: 3, maxEvidenceRounds: 3, maxFormatRepairs: 2, totalTimeoutMs: 1800000, turnTimeoutMs: 600000 },
-          reviewers: structuredClone(auditSettings.project?.reviewers ?? defaultReviewerConfiguration()),
+          reviewers: structuredClone(context.reviewers ?? auditSettings.project?.reviewers ?? defaultReviewerConfiguration()),
           verifications: [],
         };
         auditSettings = projectSettings.save(project, projectSettings.snapshot().version);
