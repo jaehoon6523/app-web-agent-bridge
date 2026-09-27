@@ -6,7 +6,8 @@
   "minimum_chrome_version": "116",
   "permissions": ["storage", "tabs", "scripting"],
   "host_permissions": [
-    "https://chatgpt.com/*"
+    "https://chatgpt.com/*",
+    "https://claude.ai/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -15,7 +16,8 @@
   "content_scripts": [
     {
       "matches": [
-        "https://chatgpt.com/*"
+        "https://chatgpt.com/*",
+        "https://claude.ai/*"
       ],
       "js": [
         "selectors/selector-version.js",
@@ -27,6 +29,7 @@
         "runtime/manual-followup.js",
         "runtime/response-text.js",
         "runtime/providers/chatgpt-page.js",
+        "runtime/providers/claude-page.js",
         "content.js"
       ],
       "run_at": "document_idle"
