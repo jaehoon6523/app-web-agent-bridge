@@ -134,14 +134,18 @@ export function setupAudit(t, hooks = {}) {
         const raw=`${reasoning?`${reasoning}\n`:""}<controller_packet>\n${JSON.stringify(report)}\n</controller_packet>`;
         return {turnId,completion:Promise.resolve({turnId,...parseResponse(raw),binding:{...this.activeBinding,runId}})};
       }} };
-  service=new CodeChangeService(options);
+  const reviewerWebProviders = typeof hooks.reviewerWebProviderFactory === "function"
+    ? hooks.reviewerWebProviderFactory(options.webSession)
+    : hooks.reviewerWebProviders ?? null;
+  const serviceOptions = { ...options, reviewerWebProviders };
+  service=new CodeChangeService(serviceOptions);
   const live={codeChanges:service,store:{listRuns:()=>[],getRun:()=>null}};
-  const dashboard=new DashboardController({getRuntime:async()=>live,preflight:()=>({readyForProvisioning:true}),webSession:options.webSession,transport:null});
+  const dashboard=new DashboardController({getRuntime:async()=>live,preflight:()=>({readyForProvisioning:true}),webSession:serviceOptions.webSession,transport:null});
   t.after(async()=>{await service.close();fs.rmSync(directory,{recursive:true,force:true});});
-  return {target,directory,options,briefs,prompts,reviewPrompts,discussionPrompts,discussionDiscards,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>prompts.length,get service(){return service;},
+  return {target,directory,options:serviceOptions,briefs,prompts,reviewPrompts,discussionPrompts,discussionDiscards,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>prompts.length,get service(){return service;},
     async start(){return dashboard.execute({type:"run.start",payload:{mode:"CODE_CHANGE",expectedVersion:0,objective:"Implement required file contents",conversationUrl:"https://chatgpt.com/c/test"}});},
     async run(){const r=await this.start();await service.jobs.get(r.runId);return service.get(r.runId);},
-    async reopen(){await service.close();service=new CodeChangeService(options);live.codeChanges=service;},
+    async reopen(){await service.close();service=new CodeChangeService(serviceOptions);live.codeChanges=service;},
     applyPayload(run){return {runId:run.runId,expectedVersion:run.version,candidateId:run.candidate.candidateId,reviewId:run.reviews.at(-1).reviewId,artifactHash:run.capture.artifact.sha256,baseCommit:run.baseCommit};}
   };
 }
