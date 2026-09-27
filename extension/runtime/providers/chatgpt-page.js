@@ -1,0 +1,351 @@
+(function registerChatGptPageProvider(root) {
+  const selectorRegistry = root.ChatGptBridgeSelectors;
+  const responseText = root.ChatGptBridgeResponseText;
+  const pageProviders = root.WebBridgePageProviders;
+  const REQUIRED_SELECTOR_GROUPS = Object.freeze([
+    "composer",
+    "sendButton",
+    "stopButton",
+    "message",
+    "messageContainer",
+    "messageContent",
+  ]);
+  const selectorTelemetry = new Map();
+
+  class PageProviderError extends Error {
+    constructor(code, message, evidence = null) {
+      super(message);
+      this.name = "PageProviderError";
+      this.code = code;
+      this.evidence = evidence;
+    }
+  }
+
+  function sleep(ms, signal) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(new DOMException("Aborted", "AbortError"));
+        return;
+      }
+      const timer = setTimeout(resolve, ms);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(timer);
+        reject(new DOMException("Aborted", "AbortError"));
+      }, { once:true });
+    });
+  }
+
+  function canonicalizeUrl(value) {
+    let url;
+    try { url = new URL(value); } catch { return null; }
+    if (url.protocol !== "https:" || url.hostname !== "chatgpt.com") return null;
+    url.search = "";
+    url.hash = "";
+    url.username = "";
+    url.password = "";
+    const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/u, "") : url.pathname;
+    return `${url.origin}${path}`;
+  }
+
+  function conversationIdFromUrl(value) {
+    const canonical = canonicalizeUrl(value);
+    if (!canonical) return null;
+    const parts = new URL(canonical).pathname.split("/").filter(Boolean);
+    const index = Math.max(parts.lastIndexOf("c"), parts.lastIndexOf("uc"));
+    if (index < 0 || index + 1 >= parts.length) return null;
+    const id = decodeURIComponent(parts[index + 1]);
+    return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+  }
+
+  function assertContract() {
+    if (!pageProviders?.register || !selectorRegistry || typeof selectorRegistry.version !== "string"
+      || !selectorRegistry.groups || typeof responseText?.elementText !== "function") {
+      throw new PageProviderError("UI_CONTRACT_CHANGED", "ChatGPT page adapter dependencies are unavailable.");
+    }
+    for (const group of REQUIRED_SELECTOR_GROUPS) {
+      if (!Array.isArray(selectorRegistry.groups[group]) || selectorRegistry.groups[group].length === 0) {
+        throw new PageProviderError("UI_CONTRACT_CHANGED", `Selector group ${group} is unavailable.`);
+      }
+    }
+    if (typeof selectorRegistry.resolveSendButtonState !== "function") {
+      throw new PageProviderError("UI_CONTRACT_CHANGED", "Send-control state resolver is unavailable.");
+    }
+    return true;
+  }
+
+  function isVisible(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = getComputedStyle(element);
+    const rect = element.getBoundingClientRect();
+    return style.visibility !== "hidden" && style.display !== "none" && rect.width > 0 && rect.height > 0;
+  }
+
+  function firstVisible(group) {
+    assertContract();
+    const match = selectorRegistry.resolveFirst(
+      group,
+      (selector) => document.querySelectorAll(selector),
+      isVisible,
+    );
+    if (match) selectorTelemetry.set(group, match.selector);
+    return match;
+  }
+
+  function evidence() {
+    return {
+      selectorVersion: selectorRegistry?.version ?? null,
+      selectorsUsed:Object.fromEntries([...selectorTelemetry.entries()].sort()),
+    };
+  }
+
+  function resetEvidence() {
+    selectorTelemetry.clear();
+  }
+
+  async function waitForVisible(group, timeoutMs, signal) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const match = firstVisible(group);
+      if (match) return match;
+      await sleep(200, signal);
+    }
+    throw new PageProviderError(
+      "UI_CONTRACT_CHANGED",
+      `Could not find a visible ${group} element.`,
+      evidence(),
+    );
+  }
+
+  function readConversationIdentity() {
+    const conversationUrl = canonicalizeUrl(location.href);
+    return {
+      provider:"CHATGPT_WEB",
+      conversationUrl,
+      conversationId:conversationIdFromUrl(conversationUrl),
+      title:document.title,
+    };
+  }
+
+  function identifyPage() {
+    const identity = readConversationIdentity();
+    return identity.conversationUrl ? identity : null;
+  }
+
+  function detectAuthentication() {
+    const url = String(location.href).toLowerCase();
+    const title = String(document.title || "").toLowerCase();
+    const text = String(document.body?.innerText || "").slice(0, 20_000).toLowerCase();
+    const combined = `${title}\n${text}`;
+    if (/\/(auth|login)(\/|\?|$)/.test(url)
+      || /log in to chatgpt|sign in to chatgpt|로그인.*chatgpt|세션.*만료/.test(combined)) {
+      return "SESSION_AUTH_REQUIRED";
+    }
+    if (/captcha|verify you are human|로봇이 아님/.test(combined)) return "CAPTCHA_REQUIRED";
+    if (/cloudflare|checking your browser|security check|보안 확인/.test(combined)) return "SECURITY_CHECK_REQUIRED";
+    if (/rate limit|too many requests|요청 한도|try again later/.test(combined)) return "RATE_LIMITED";
+    if (/something went wrong|internal server error|문제가 발생|unable to load/.test(combined)) {
+      return "CHATGPT_ERROR_PAGE";
+    }
+    return null;
+  }
+
+  function composerText(element) {
+    return element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement
+      ? element.value
+      : (element.innerText || element.textContent || "");
+  }
+
+  function detectComposer() {
+    const match = firstVisible("composer");
+    return {
+      present:Boolean(match),
+      empty:match ? composerText(match.element).trim().length === 0 : null,
+      element:match?.element ?? null,
+    };
+  }
+
+  function detectGeneration() {
+    return Boolean(firstVisible("stopButton"));
+  }
+
+  function inspectPageState() {
+    assertContract();
+    const composer = detectComposer();
+    const generating = detectGeneration();
+    if (composer.present || generating) {
+      return { status:"READY", composerPresent:composer.present };
+    }
+    return {
+      status:detectAuthentication() ?? "UI_CONTRACT_CHANGED",
+      composerPresent:false,
+    };
+  }
+
+  function setNativeValue(element, value) {
+    if (element instanceof HTMLTextAreaElement || element instanceof HTMLInputElement) {
+      const prototype = element instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+      if (!setter) throw new PageProviderError("UI_CONTRACT_CHANGED", "Composer value setter is unavailable.");
+      setter.call(element, value);
+      element.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data:value }));
+      element.dispatchEvent(new Event("change", { bubbles:true }));
+      return;
+    }
+    element.focus();
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    let inserted = false;
+    try { inserted = document.execCommand("insertText", false, value); } catch { inserted = false; }
+    if (!inserted || !(element.innerText || "").trim()) {
+      element.textContent = value;
+      element.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data:value }));
+    }
+    selection.removeAllRanges();
+  }
+
+  function extractAssistantResponse(element) {
+    return responseText.elementText(element, selectorRegistry.groups.messageContent, selectorTelemetry);
+  }
+
+  function messageContainer(roleNode) {
+    for (const selector of selectorRegistry.groups.messageContainer) {
+      const container = roleNode.closest(selector);
+      if (container) {
+        selectorTelemetry.set("messageContainer", selector);
+        return container;
+      }
+    }
+    return roleNode;
+  }
+
+  function messageId(container) {
+    return container.getAttribute("data-message-id")
+      || container.getAttribute("data-testid")
+      || container.id
+      || null;
+  }
+
+  function messageRole(roleNode) {
+    const explicit = roleNode.getAttribute?.("data-message-author-role")
+      || roleNode.querySelector?.("[data-message-author-role]")?.getAttribute("data-message-author-role");
+    if (explicit === "user" || explicit === "assistant") return explicit;
+    const container = messageContainer(roleNode);
+    const classes = `${String(roleNode.className || "")} ${String(container.className || "")}`.toLowerCase();
+    if (classes.includes("user-turn")) return "user";
+    if (classes.includes("agent-turn") || classes.includes("assistant-turn")) return "assistant";
+    const labelled = [container, ...(container.querySelectorAll?.("h1, h2, h3, h4, h5, h6") || [])];
+    for (const node of labelled) {
+      const label = `${node.getAttribute?.("aria-label") || ""} ${node.textContent || ""}`
+        .trim().toLowerCase().replace(/\s+/g, " ");
+      if (/^(you said|user said|user|사용자|나의 말|내가 말함|내 말)(:|의 말| 메시지|$)/u.test(label)) return "user";
+      if (/^(chatgpt said|assistant said|chatgpt|assistant|챗지피티|어시스턴트)(:|의 말| 메시지|$)/u.test(label)) return "assistant";
+    }
+    return null;
+  }
+
+  function readMessages() {
+    assertContract();
+    let roleNodes = [];
+    for (const selector of selectorRegistry.groups.message) {
+      roleNodes = [...document.querySelectorAll(selector)].filter((node) => {
+        const role = messageRole(node);
+        return role === "user" || role === "assistant";
+      });
+      if (roleNodes.length) {
+        selectorTelemetry.set("message", selector);
+        break;
+      }
+    }
+    const seen = new Set();
+    const messages = [];
+    roleNodes.forEach((roleNode, index) => {
+      const container = messageContainer(roleNode);
+      if (seen.has(container)) return;
+      seen.add(container);
+      messages.push({
+        id:messageId(container),
+        role:messageRole(roleNode),
+        text:extractAssistantResponse(container),
+        index,
+        element:container,
+      });
+    });
+    return messages;
+  }
+
+  function findSendControl() {
+    assertContract();
+    const result = selectorRegistry.resolveSendButtonState({
+      isComposerEmpty:() => {
+        const composer = detectComposer();
+        return composer.present && composer.empty === true;
+      },
+    });
+    if (result?.selector) selectorTelemetry.set("sendButton", result.selector);
+    return result;
+  }
+
+  async function waitForEnabledSend(signal) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const state = findSendControl();
+      if (state.state === "ENABLED") {
+        const match = firstVisible("sendButton");
+        if (match && !match.element.disabled && match.element.getAttribute("aria-disabled") !== "true") {
+          return match;
+        }
+      }
+      await sleep(150, signal);
+    }
+    throw new PageProviderError("MESSAGE_SEND_FAILED", "ChatGPT send control did not become enabled.", evidence());
+  }
+
+  async function submitPrompt(text, signal, { assertCanMutate } = {}) {
+    const composer = await waitForVisible("composer", 30_000, signal);
+    assertCanMutate?.();
+    composer.element.focus();
+    setNativeValue(composer.element, text);
+    await sleep(250, signal);
+    const sendButton = await waitForEnabledSend(signal);
+    assertCanMutate?.();
+    sendButton.element.click();
+  }
+
+  function cancelGeneration() {
+    const stop = firstVisible("stopButton");
+    if (!stop) return false;
+    stop.element.click();
+    return true;
+  }
+
+  function mutationRoot() {
+    return document.querySelector("main") || document.body;
+  }
+
+  pageProviders.register({
+    provider:"CHATGPT_WEB",
+    rootUrl:"https://chatgpt.com/",
+    matches:(value) => canonicalizeUrl(value) !== null,
+    assertContract,
+    identifyPage,
+    detectAuthentication,
+    detectComposer,
+    readConversationIdentity,
+    readMessages,
+    findSendControl,
+    submitPrompt,
+    detectGeneration,
+    cancelGeneration,
+    extractAssistantResponse,
+    inspectPageState,
+    evidence,
+    resetEvidence,
+    mutationRoot,
+    canonicalizeUrl,
+    conversationIdFromUrl,
+  });
+})(globalThis);

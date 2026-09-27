@@ -23,8 +23,10 @@
         "selectors/send-button-selectors.js",
         "selectors/stop-button-selectors.js",
         "selectors/message-selectors.js",
+        "runtime/page-provider-registry.js",
         "runtime/manual-followup.js",
         "runtime/response-text.js",
+        "runtime/providers/chatgpt-page.js",
         "content.js"
       ],
       "run_at": "document_idle"
