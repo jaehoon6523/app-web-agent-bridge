@@ -26,6 +26,51 @@ for (const variant of ['roles', 'classes', 'headings']) {
   });
 }
 
+test('browser fixture: one extension transport switches from ChatGPT to Claude without duplicate sends', { timeout: 35_000 }, async t => {
+  const f = await extensionBrowser(t);
+  await f.prepare();
+  const chatResult = await f.submit('chat-d1');
+  await f.adapter.acknowledgeDelivery({ turnId: 'chat-d1' });
+  await f.adapter.confirmDeliveryAcknowledgement({
+    turnId:'chat-d1', sessionId:'s1', runId:'r1', conversationUrl:chatResult.binding.conversationUrl,
+  });
+  assert.equal(chatResult.binding.conversationUrl, 'https://chatgpt.com/c/created');
+
+  const claude = f.createAdapter('CLAUDE_WEB');
+  const claudeReady = await claude.resume({
+    binding:{
+      sessionId:'s2', runId:'r2', tabId:null, windowId:null, documentId:null, frameId:null,
+      conversationUrl:null, conversationId:null, title:null,
+      lastObservedUserMessageId:null, lastObservedAssistantMessageId:null, bindingStatus:'NEEDS_REBIND',
+    },
+    createNewConversation:true,
+  });
+  assert.equal(claude.runtimeIdentity.provider, 'CLAUDE_WEB');
+  assert.equal(claudeReady.conversationUrl, 'https://claude.ai/new');
+  assert.equal(claudeReady.bindingStatus, 'ROOT_READY');
+
+  const handle = await claude.submitTurn({
+    turnId:'claude-d1',
+    controllerMessageId:'claude-d1',
+    runId:'r2',
+    text:'Read this controlled prompt',
+    timeoutMs:8_000,
+    stableMs:1_000,
+    parseResponse:raw => ({ body:raw, packetText:raw, packet:{ type:'FIXTURE_REPLY' } }),
+  });
+  const claudeResult = await handle.completion;
+  assert.equal(claudeResult.rawText, 'Observed fixture reply');
+  assert.equal(claudeResult.binding.conversationUrl, 'https://claude.ai/chat/created');
+  assert.equal(claudeResult.binding.conversationId, 'created');
+  assert.equal(f.readStorage().conversationUrl, 'https://claude.ai/chat/created');
+  assert.deepEqual(
+    f.commands.filter(message => message.type === 'agent.prompt').map(message => message.requestId),
+    ['chat-d1', 'claude-d1'],
+  );
+  assert.equal(f.contentResults.filter(entry => entry.request.type === 'agent.prompt').length, 2);
+  assert.deepEqual(f.errors, []);
+});
+
 test('browser fixture: temporary WEB ID settles to the durable conversation without manual intervention', { timeout: 25_000 }, async t => {
   const f = await extensionBrowser(t, { navigation: 'temporary-web', variant: 'roles' });
   await f.prepare();

@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { WebSocketServer } from 'ws';
-import { ChatGptWebSessionAdapter, WebExtensionTransport } from '../../src/runtime/web/index.js';
+import { ChatGptWebSessionAdapter, WebExtensionTransport, WebSessionAdapter } from '../../src/runtime/web/index.js';
 
 const extensionRoot = new URL('../../extension/', import.meta.url);
 const publicRoot = new URL('../../public/', import.meta.url);
@@ -37,7 +37,10 @@ export async function extensionBrowser(t, {
     socket.on('message', raw => frames.push(JSON.parse(String(raw))));
     transport.attach(socket);
   });
-  const adapter = new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 8_000 });
+  const createAdapter = provider => provider === 'CHATGPT_WEB'
+    ? new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 8_000 })
+    : new WebSessionAdapter({ transport, provider, responseTimeoutMs: 8_000 });
+  const adapter = createAdapter('CHATGPT_WEB');
   t.after(async () => {
     await adapter.close(); transport.close();
     for (const socket of server.clients) socket.terminate();
@@ -183,6 +186,36 @@ export async function extensionBrowser(t, {
         };
         </script>${scripts.map(source => `<script>${source.replaceAll('</script', '<\\/script')}</script>`).join('')}` });
     }
+    if (url.hostname === 'claude.ai') {
+      return route.fulfill({ contentType: 'text/html', body: `<!doctype html><title>Claude fixture</title>
+        <main id="messages"></main>
+        <div data-testid="chat-input" contenteditable="true" role="textbox" style="width:320px;height:40px"></div>
+        <button data-testid="chat-input-send">Send</button><script>
+        function appendClaudeMessage(role, id, text) {
+          const article = document.createElement('article'); article.setAttribute('data-message-id', id);
+          const body = document.createElement('div');
+          if (role === 'user') body.setAttribute('data-testid', 'user-message');
+          else { body.setAttribute('data-testid', 'chat-message-content'); body.className = 'font-claude-response'; }
+          const content = document.createElement('div'); content.className = 'standard-markdown'; content.textContent = text;
+          body.append(content); article.append(body); document.querySelector('#messages').append(article);
+        }
+        if (sessionStorage.getItem('submitted')) {
+          appendClaudeMessage('user', 'cu1', sessionStorage.getItem('submitted'));
+          appendClaudeMessage('assistant', 'ca1', 'Observed fixture reply');
+        }
+        document.querySelector('[data-testid="chat-input-send"]').onclick = async () => {
+          const composer = document.querySelector('[data-testid="chat-input"]');
+          const text = composer.innerText || composer.textContent || '';
+          sessionStorage.setItem('clicks', String(Number(sessionStorage.getItem('clicks') || 0) + 1));
+          sessionStorage.setItem('submitted', text); composer.textContent = '';
+          if (location.pathname === '/new') history.pushState({}, '', '/chat/created');
+          const sequence = sessionStorage.getItem('clicks');
+          appendClaudeMessage('user', 'cu' + sequence, text);
+          const response = await window.fixtureReply(text);
+          appendClaudeMessage('assistant', 'ca' + sequence, response);
+        };
+        </script>${scripts.map(source => `<script>${source.replaceAll('</script', '<\\/script')}</script>`).join('')}` });
+    }
     return route.abort();
   });
   await page.goto(initialUrl);
@@ -192,7 +225,7 @@ export async function extensionBrowser(t, {
     const lastError = await background.evaluate(() => globalThis.fixturePopupState?.lastError);
     throw new Error(`Extension authentication failed: ${lastError}; ${errors.join('; ')}; ${diagnostics.join('; ')}; ${error.message}`);
   });
-  return { adapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
+  return { adapter, createAdapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
     readStorage: () => structuredClone(stored),
     async openDashboard(snapshot) {
       dashboardSnapshot = structuredClone(snapshot);
