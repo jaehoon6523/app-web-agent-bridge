@@ -175,7 +175,7 @@ async function inspectTopology({ activeRequestId = "t1", observedUrl = "https://
   const state = { bindingStatus: "BOUND", tabId: 7, conversationUrl: "https://chatgpt.com/", conversationId: null,
     currentDeliveryId: "t1" };
   const cancellations = [], messages = [];
-  const context = vm.createContext({ ...conversation, ...documentBinding, ...currentTarget,
+  const context = vm.createContext({ ...conversation, ...documentBinding, ...currentTarget, ...providerTarget,
     console: { info() {} }, lastError: null, authenticated: true,
     turnGate: { activeRequestId }, broadcastPopupState() {},
     ExtensionOperationError: class extends Error {
