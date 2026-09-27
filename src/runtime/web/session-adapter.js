@@ -4,6 +4,7 @@ import { validateRuntimeEventType } from "../runtime-events.js";
 import { WebExtensionAuthenticator } from "./auth.js";
 import { createWebSessionBinding, validateWebSessionBinding } from "./binding.js";
 import { parseFinalControllerPacket } from "./controller-packet.js";
+import { webConversationProvider } from "./provider-registry.js";
 import {
   WEB_BRIDGE_PROTOCOL_VERSION,
   WebAuthenticationState,
@@ -57,7 +58,7 @@ function safeParse(raw) {
 }
 
 // Authenticated transport only. AgentSession lifecycle semantics are provided by
-// ChatGptWebSessionAdapter below rather than being inferred from socket state.
+// WebSessionAdapter below rather than being inferred from socket state.
 export class WebExtensionTransport extends EventEmitter {
   #authentication = null;
   #authenticationState = WebAuthenticationState.DISCONNECTED;
@@ -311,30 +312,39 @@ export class WebExtensionTransport extends EventEmitter {
   }
 }
 
-export class ChatGptWebSessionAdapter {
+export class WebSessionAdapter {
   #activeTurnId = null;
   #ambiguousTurnId = null;
   #events = new EventEmitter();
   #interrupts = new Map();
   #pending = new Map();
+  #provider;
   #responseTimeoutMs;
   #ready = false;
   #sessionOperation = null;
   #transport;
 
   /**
-   * @param {{transport?: WebExtensionTransport, responseTimeoutMs?: number, parseResponse?: Function}} [options]
+   * @param {{transport?: WebExtensionTransport, provider?: string, responseTimeoutMs?: number, parseResponse?: Function}} [options]
    */
-  constructor({ transport, responseTimeoutMs = 300_000, parseResponse = parseFinalControllerPacket } = {}) {
+  constructor({ transport, provider = "CHATGPT_WEB", responseTimeoutMs = 300_000, parseResponse = parseFinalControllerPacket } = {}) {
     if (!(transport instanceof WebExtensionTransport)) {
       throw new WebProtocolError(
-        "ChatGptWebSessionAdapter requires a WebExtensionTransport",
+        "WebSessionAdapter requires a WebExtensionTransport",
         "INVALID_WEB_TRANSPORT",
+      );
+    }
+    const providerSpec = webConversationProvider(provider);
+    if (!providerSpec) {
+      throw new WebProtocolError(
+        `WebSessionAdapter provider ${String(provider)} is not registered`,
+        "WEB_PROVIDER_UNAVAILABLE",
       );
     }
     if (!Number.isSafeInteger(responseTimeoutMs) || responseTimeoutMs < 1) {
       throw new WebProtocolError("responseTimeoutMs must be positive", "INVALID_WEB_ADAPTER_CONFIG");
     }
+    this.#provider = providerSpec.provider;
     this.#transport = transport;
     this.#responseTimeoutMs = responseTimeoutMs;
     if (typeof parseResponse !== "function") throw new TypeError("Controller response parser is required.");
@@ -353,7 +363,7 @@ export class ChatGptWebSessionAdapter {
   get runtimeIdentity() {
     return Object.freeze({
       actor:this.actor,
-      provider:"CHATGPT_WEB",
+      provider:this.#provider,
       providerEvidence:"ADAPTER_IMPLEMENTATION",
       model:null,
       modelEvidence:"UNOBSERVED",
@@ -364,7 +374,7 @@ export class ChatGptWebSessionAdapter {
     return this.#activeTurnId;
   }
 
-  // The durable external identity is the exact ChatGPT conversation, never a
+  // The durable external identity is the exact Web provider conversation, never a
   // transient browser tab id or an extension socket.
   get externalSessionId() {
     return this.#transport.snapshot.binding?.conversationId ?? null;
@@ -1026,5 +1036,11 @@ export class ChatGptWebSessionAdapter {
     } else {
       interrupt.reject(new WebProtocolError("Web turn interruption was not confirmed", code));
     }
+  }
+}
+
+export class ChatGptWebSessionAdapter extends WebSessionAdapter {
+  constructor(options = {}) {
+    super({ ...options, provider:"CHATGPT_WEB" });
   }
 }
