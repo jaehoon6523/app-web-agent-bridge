@@ -4,8 +4,16 @@ import { renderProjectOverview } from "./project-overview-view.js";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 import { createRunActionLayout } from "./run-action-layout.js";
 import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-context-view.js";
+import {
+  DashboardSessionState, ExtensionState, StateReadState, TransportState,
+  classifyDashboardFailure, connectionNoticeFor, dashboardStateReady,
+  initialDashboardConnectionState, markDashboardSessionAuthenticated,
+  markDashboardSessionPending, markStateReadReady, markStateReadStarted,
+  projectBrowserState, requestFailureCode,
+} from "./dashboard-connection-state.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
+let connectionState = initialDashboardConnectionState();
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
 let sequence = 0, lastConfirmed = null, evidencePage = null;
 let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
@@ -168,35 +176,50 @@ function workerIdentity(run) {
 }
 const renderRunContextView = createRunContextView({ $, text, labels, terminal, folderName, workerIdentity });
 async function request(url, options = {}) {
+  const fetchOptions = options;
+  let response = null;
   try {
-    const response = await fetch(url, { ...options, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
+    response = await fetch(url, { ...fetchOptions, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...fetchOptions.headers } });
     let body;
     try { body = await response.json(); }
     catch (error) {
       if (error.name === "TimeoutError" || error.name === "AbortError") throw error;
-      throw Object.assign(new Error(`서버 응답을 해석할 수 없습니다 (${response.status}).`), { status:response.status });
+      throw Object.assign(new Error(`서버 응답을 해석할 수 없습니다 (${response.status}).`), { code:"INVALID_SERVER_RESPONSE", status:response.status, responseReceived:true });
     }
-    if (!response.ok) throw Object.assign(new Error(body?.payload?.message || body?.error?.message || body?.message || body?.error || `요청 실패 (${response.status})`), { ...(typeof body?.error === "object" ? body.error : body), status: response.status });
+    if (!response.ok) throw Object.assign(new Error(body?.payload?.message || body?.error?.message || body?.message || body?.error || `요청 실패 (${response.status})`), { ...(typeof body?.error === "object" ? body.error : body), status:response.status, responseReceived:true });
     return body;
   } catch (error) {
-    if (error.name === "TimeoutError" || error.name === "AbortError") throw Object.assign(new Error("요청 결과를 확인할 수 없습니다."), { code: "UNKNOWN_RESULT" });
+    if (error.name === "TimeoutError" || error.name === "AbortError" || (!response && error instanceof TypeError)) {
+      const code = requestFailureCode({ url, method:fetchOptions.method, responseReceived:Boolean(response) });
+      throw Object.assign(new Error(code === "UNKNOWN_RESULT" ? "요청 결과를 확인할 수 없습니다." : "서버 응답을 받지 못했습니다."), {
+        code, responseReceived:Boolean(response),
+      });
+    }
     throw error;
   }
 }
 async function refresh() {
   const current = ++sequence, target = selected;
+  let phase = token ? "STATE" : "SESSION";
   try {
     if (!token) {
+      connectionState = markDashboardSessionPending(connectionState);
       const session = await request("/api/dashboard/session", { method:"POST", body:"{}" });
-      if (typeof session?.token !== "string" || !session.token.trim()) throw new Error("대시보드 인증 응답에 토큰이 없습니다.");
+      if (typeof session?.token !== "string" || !session.token.trim()) throw Object.assign(new Error("대시보드 인증 응답에 토큰이 없습니다."), { code:"DASHBOARD_SESSION_INVALID", status:200, responseReceived:true });
       token = session.token;
+      connectionState = markDashboardSessionAuthenticated(connectionState);
     }
+    phase = "STATE";
+    connectionState = markStateReadStarted(connectionState);
     const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
     if (current !== sequence || target !== selected) return;
-    if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw new Error("서버 상태 응답 형식을 확인하세요.");
-    if (!result.workflow) throw new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다.");
+    phase = "PROJECTION";
+    if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
+    if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     const canonical = normalizeDashboardState(result);
-    snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null; connected = true;
+    connectionState = markStateReadReady(connectionState);
+    connected = dashboardStateReady(connectionState);
+    snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     const extensionNeedsPreparation = workflow.stage === "PREPARE";
@@ -215,9 +238,10 @@ async function refresh() {
     }
   } catch (error) {
     if (current !== sequence || target !== selected) return;
-    connected = false;
-    if (error.status === 401) token = "";
-    text("connectionNotice", `로컬 서버와 연결이 끊겼습니다. ${userFacingError(error, "현재 상태를 확인할 수 없습니다. 서버 연결을 복구한 뒤 다시 확인하세요.")} · 마지막 확인: ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
+    connectionState = classifyDashboardFailure(connectionState, phase, error);
+    connected = dashboardStateReady(connectionState);
+    if (phase === "STATE" && [401, 403].includes(error.status)) token = "";
+    text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음"));
   }
   render();
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
@@ -269,7 +293,50 @@ function disabledWebReason(action) {
   if (!capabilities().has(action)) return `웹 작업 비활성화: 현재 서버가 ${action} 권한을 제공하지 않습니다. active delivery 또는 응답 처리 상태를 확인하세요.`;
   return "";
 }
+function projectConnectionIndicator(id, state, detail) {
+  const serverReachable = connectionState.transport === TransportState.REACHABLE;
+  const serverUnreachable = connectionState.transport === TransportState.UNREACHABLE;
+  const sessionAuthenticated = connectionState.session === DashboardSessionState.AUTHENTICATED;
+  const sessionRejected = connectionState.session === DashboardSessionState.REJECTED;
+  const sessionInvalid = connectionState.session === DashboardSessionState.AUTH_INVALID;
+  const stateReadFailed = connectionState.stateRead === StateReadState.FAILED;
+  if (id === "apiHealth" || id === "serverSignal") {
+    return serverReachable
+      ? { state:"ok", detail:id === "serverSignal" ? "응답 정상" : "서버 응답 확인됨" }
+      : serverUnreachable
+        ? { state:"error", detail:id === "serverSignal" ? "응답 없음 · npm start 및 포트 확인 필요" : "서버 응답 없음" }
+        : { state:"unknown", detail:"확인 전" };
+  }
+  if (id === "sessionHealth") {
+    return sessionAuthenticated ? { state:"ok", detail:"대시보드 인증됨" }
+      : connectionState.session === DashboardSessionState.PENDING ? { state:"unknown", detail:"대시보드 인증 확인 중" }
+        : sessionInvalid ? { state:"warn", detail:"대시보드 인증 실패" }
+          : sessionRejected ? { state:"warn", detail:"브라우저 세션 거부됨" }
+            : { state:"unknown", detail:"인증 확인 전" };
+  }
+  if (id === "channelHealth") {
+    if (!connected) return { state:"unknown", detail:"최신 상태 확인 필요" };
+    const browser = projectBrowserState(snapshot?.preflight);
+    return browser.extension === ExtensionState.AUTHENTICATED
+      ? { state:"ok", detail:"확장 인증됨" }
+      : browser.extension === ExtensionState.DISCONNECTED
+        ? { state:"warn", detail:"확장 연결 대기" }
+        : { state:"unknown", detail:"확인 전" };
+  }
+  if (["cliSignal", "webSignal", "webBindingSignal"].includes(id) && !connected) {
+    if (serverUnreachable) return { state:"warn", detail:"서버 응답 없음" };
+    if (sessionInvalid || sessionRejected) return { state:"warn", detail:"대시보드 인증 확인 필요" };
+    if (stateReadFailed && serverReachable) return { state:"warn", detail:"최신 상태 확인 필요" };
+  }
+  if (id === "refreshSignal" && !connected) {
+    return stateReadFailed
+      ? { state:"warn", detail:`상태 조회 실패 · 마지막 정상 확인 ${lastConfirmed ? time(lastConfirmed) : "없음"}` }
+      : { state:"unknown", detail:`확인 전 · 마지막 정상 확인 ${lastConfirmed ? time(lastConfirmed) : "없음"}` };
+  }
+  return { state, detail };
+}
 function health(id, name, state, detail) {
+  ({ state, detail } = projectConnectionIndicator(id, state, detail));
   const el = $(id);
   el.className = `health ${state}`;
   el.textContent = name;
@@ -277,6 +344,7 @@ function health(id, name, state, detail) {
   text(`${id}Detail`, detail);
 }
 function signal(id, label, state, detail) {
+  ({ state, detail } = projectConnectionIndicator(id, state, detail));
   const el = $(id);
   text(id, `${label} · ${detail}`);
   el.className = `health ${state}`;

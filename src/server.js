@@ -113,6 +113,13 @@ export function createBridgeServer({
     }
     browserSession.authenticator.verifyOrigin(req.get("origin"));
   }
+  function sendDashboardAuthFailure(res, error, fallbackStatus) {
+    const localAuthError = error instanceof LocalAuthError;
+    res.status(localAuthError ? error.statusCode : fallbackStatus).json({
+      code:localAuthError ? error.code : "DASHBOARD_AUTH_FAILED",
+      error:error.message,
+    });
+  }
   let liveRuntime = null;
   let liveRuntimePromise = null;
   let closing = false;
@@ -213,8 +220,7 @@ export function createBridgeServer({
       verifyDashboardAuthorization(req.get("authorization"));
       next();
     } catch (error) {
-      const status = error instanceof LocalAuthError ? error.statusCode : 401;
-      res.status(status).json({ error: error.message });
+      sendDashboardAuthFailure(res, error, 401);
     }
   }
 
@@ -272,7 +278,7 @@ export function createBridgeServer({
       verifyDashboardAuthorization(req.get("authorization"));
       next();
     } catch (error) {
-      res.status(error.statusCode || 401).json({ error: error.message });
+      sendDashboardAuthFailure(res, error, 401);
     }
   }
 
@@ -284,7 +290,7 @@ export function createBridgeServer({
         staticTokenConfigured: dashboardAuth !== null,
       });
     } catch (error) {
-      res.status(error.statusCode || 403).json({ error: error.message });
+      sendDashboardAuthFailure(res, error, 403);
     }
   });
 
