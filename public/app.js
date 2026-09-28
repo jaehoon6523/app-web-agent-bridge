@@ -24,7 +24,44 @@ const unknownRequests = new Map();
 
 const openFindings = new Set();
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
-const labels = { CREATED:"접수됨", PROVISIONING:"연결 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"후보 캡처 중", VERIFYING:"검증 중", REVIEW_RUNNING:"웹 감사 중", REPORT_REPAIR:"감사 응답 보완 중", EVIDENCE_SUPPLEMENT:"같은 후보 증거 보완 중", REWORK:"수정 대기", HOLD:"판단 보류", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"과거 실행 종료" };
+const labels = { CREATED:"접수됨", PROVISIONING:"작업 환경 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"변경사항 고정 중", VERIFYING:"검증 중", REVIEW_RUNNING:"독립 검토 중", REPORT_REPAIR:"검토 응답 확인 중", EVIDENCE_SUPPLEMENT:"검토 근거 보완 중", REWORK:"수정 대기", HOLD:"확인 필요", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 상태로 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"이전 작업 기록" };
+const phaseReasons = {
+  CREATED:"작업이 접수되었습니다.",
+  PROVISIONING:"격리된 작업 환경을 준비하고 있습니다.",
+  WORKER_RUNNING:"Worker가 승인된 요구사항을 구현하고 있습니다.",
+  CANDIDATE_CAPTURE:"구현 결과를 검토할 변경사항으로 고정하고 있습니다.",
+  VERIFYING:"고정된 변경사항의 검증 근거를 확인하고 있습니다.",
+  REVIEW_RUNNING:"Judge와 Critic이 현재 변경사항을 독립적으로 검토하고 있습니다.",
+  REPORT_REPAIR:"검토 응답을 확인하고 있습니다.",
+  EVIDENCE_SUPPLEMENT:"현재 변경사항의 검토 근거를 보완하고 있습니다.",
+  REWORK:"검토 지적을 반영하기 위한 수정 절차를 진행합니다.",
+  APPLYING:"검토를 통과한 변경사항을 프로젝트에 적용하고 있습니다.",
+};
+const errorCopy = Object.freeze({
+  UNKNOWN_RESULT:"진행 중이던 요청의 결과를 확인할 수 없습니다. 같은 요청을 자동으로 다시 보내지 않습니다. 연결을 복구한 뒤 상태를 확인하세요.",
+  RUN_VERSION_CONFLICT:"작업 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 시도하세요.",
+  RUN_BUSY:"다른 작업이 진행 중입니다. 현재 작업을 확인한 뒤 다시 시도하세요.",
+  WEB_BLOCKED:"브라우저 확장 연결을 확인한 뒤 다시 시도하세요.",
+  RECOVERY_REQUIRED:"현재 작업 상태를 먼저 확인해야 합니다. 복구 안내에 따라 상태를 확인하세요.",
+  WORKER_TURN_CHANGED:"Worker 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 보내세요.",
+  WORKER_INTERVENTION_UNAVAILABLE:"현재 Worker에 메시지를 전달할 수 있는 상태가 아닙니다. Worker 실행 상태를 확인하세요.",
+  REVIEW_DISCUSSION_RECOVERY_REQUIRED:"이전 감사자 요청의 결과가 확인되지 않았습니다. 기존 요청을 먼저 확인하거나 정리하세요.",
+  REVIEW_DISCUSSION_BINDING_REQUIRED:"감사자의 기존 대화 연결을 확인한 뒤 다시 시도하세요.",
+  WEB_SESSION_PROVIDER_MISMATCH:"설정한 감사 서비스와 실제 연결이 다릅니다. 감사자 대화 연결을 다시 확인하세요.",
+  INVALID_INPUT:"입력 내용을 확인하세요.",
+});
+function userFacingError(error, fallback = "요청을 처리하지 못했습니다. 최신 상태와 기술 진단을 확인하세요.") {
+  const code = typeof error?.code === "string" ? error.code : null;
+  if (code && errorCopy[code]) return errorCopy[code];
+  const message = typeof error?.message === "string" ? error.message.trim() : "";
+  if (message && /[가-힣]/u.test(message)) return message;
+  return fallback;
+}
+function userFacingStoredError(value, fallback) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message) return fallback;
+  return /[가-힣]/u.test(message) ? message : fallback;
+}
 const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상태를 확인하고 실행을 폐기했습니다. 감사 기록과 작업 사본은 보존됩니다.", ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
 function text(id, value) { $(id).textContent = value ?? ""; }
 function folderName(targetRoot) {
@@ -142,7 +179,7 @@ async function request(url, options = {}) {
     if (!response.ok) throw Object.assign(new Error(body?.payload?.message || body?.error?.message || body?.message || body?.error || `요청 실패 (${response.status})`), { ...(typeof body?.error === "object" ? body.error : body), status: response.status });
     return body;
   } catch (error) {
-    if (error.name === "TimeoutError" || error.name === "AbortError") throw Object.assign(new Error("요청 결과 미확인 (UNKNOWN_RESULT). 자동 재전송하지 않습니다. 상태와 요청 ID를 확인하세요."), { code: "UNKNOWN_RESULT" });
+    if (error.name === "TimeoutError" || error.name === "AbortError") throw Object.assign(new Error("요청 결과를 확인할 수 없습니다."), { code: "UNKNOWN_RESULT" });
     throw error;
   }
 }
@@ -180,7 +217,7 @@ async function refresh() {
     if (current !== sequence || target !== selected) return;
     connected = false;
     if (error.status === 401) token = "";
-    text("connectionNotice", `로컬 서버 연결이 끊겼습니다. 기본 포트 8787에서 npm start 또는 npm run dev가 실행 중인지 확인하고, 확장 연결을 다시 확인하세요. ${error.message} · 마지막 확인 ${time(lastConfirmed)}`);
+    text("connectionNotice", `로컬 서버와 연결이 끊겼습니다. ${userFacingError(error, "현재 상태를 확인할 수 없습니다. 서버 연결을 복구한 뒤 다시 확인하세요.")} · 마지막 확인: ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
   }
   render();
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
@@ -216,7 +253,7 @@ function renderPreparationPersistence() {
     return;
   }
   if (preparation.lifecycle === "ACTIVE") {
-    element.textContent = `자동 저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 삭제 대신 ‘준비 취소’로 폐기합니다.`;
+    element.textContent = `자동 저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 삭제 대신 ‘요구사항 정리 취소’로 종료합니다.`;
     element.className = "persistence-status ok";
   } else {
     element.textContent = `저장된 준비 종료됨 · 준비 ID ${preparation.preparationId}${savedAt}`;
@@ -294,11 +331,11 @@ function workerRuntimeStatus(runtime) {
   if (runtime.activity === "TOOL_RUNNING") return { state:"ok running", detail:`실행 확인됨 · ${tool} 진행 중${runtimeSuffix}` };
   if (runtime.activity === "TOOL_COMPLETED") return { state:"ok running", detail:`실행 확인됨 · ${tool} 완료${runtimeSuffix}` };
   if (runtime.activity === "APPROVAL_WAIT") return { state:"warn", detail:`실행 확인됨 · Codex 승인 대기${runtimeSuffix}` };
-  if (runtime.activity === "CANDIDATE_CAPTURE") return { state:"ok running", detail:"Worker 완료 · 후보 캡처 중" };
-  if (runtime.activity === "VERIFYING") return { state:"ok running", detail:"Worker 완료 · 후보 검증 중" };
-  if (runtime.activity === "WEB_AUDIT") return { state:"ok running", detail:"Worker 완료 · 웹 감사 진행 중" };
-  if (runtime.activity === "AWAITING_APPLY") return { state:"ok", detail:"Worker·웹 감사 완료 · 적용 대기" };
-  if (runtime.activity === "APPLIED") return { state:"ok", detail:"Worker·웹 감사 완료 · 적용됨" };
+  if (runtime.activity === "CANDIDATE_CAPTURE") return { state:"ok running", detail:"Worker 완료 · 변경사항 고정 중" };
+  if (runtime.activity === "VERIFYING") return { state:"ok running", detail:"Worker 완료 · 변경사항 검증 중" };
+  if (runtime.activity === "WEB_AUDIT") return { state:"ok running", detail:"Worker 완료 · 독립 검토 진행 중" };
+  if (runtime.activity === "AWAITING_APPLY") return { state:"ok", detail:"구현·독립 검토 완료 · 적용 대기" };
+  if (runtime.activity === "APPLIED") return { state:"ok", detail:"구현·독립 검토 완료 · 적용됨" };
   if (runtime.turnState === "ACTIVE") return { state:"ok running", detail:`실행 확인됨 · Worker turn 진행 중${runtimeSuffix}` };
   if (runtime.sessionState === "READY" && runtime.processState === "RUNNING") return { state:"ok running", detail:`Codex 실행 확인 · 세션 준비됨${runtimeSuffix}` };
   if (runtime.processState === "COMPLETE") return { state:"ok", detail:"Worker 실행 완료" };
@@ -394,7 +431,7 @@ function render() {
     !connected ? "서버 확인 필요" : !webAuthenticated ? "확장 연결 대기"
       : lastBinding ? `마지막 바인딩 ${lastBinding.bindingStatus} · 전송 시 재확인` : "아직 확인된 바인딩 없음 · 새 작업에서 탭 생성");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
-    connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 ${time(lastConfirmed)}`);
+    connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
   const busy = Boolean(unfinished);
   syncReviewerProviderControls();
@@ -402,7 +439,7 @@ function render() {
   $("judgeReviewerProvider").disabled = reviewerProvidersLocked;
   $("criticReviewerProvider").disabled = reviewerProvidersLocked;
   $("planRun").disabled = (operations.runCommand !== "IDLE") || !connected || busy || (operations.webTurn !== "IDLE");
-  $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않았습니다. 아래 버튼에서 확인하고 중단할 수 있습니다.` : "과거 기록은 언제든 선택할 수 있습니다.");
+  $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않았습니다. 진행 중인 작업을 먼저 확인하세요.` : "과거 기록은 언제든 선택할 수 있습니다.");
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   $("historySearch").value = historyQuery;
@@ -572,7 +609,7 @@ function render() {
   } else if (unresolvedDiscussion) {
     text("reviewDiscussionStatus", "이전 감사자 대화 전송 결과가 미확인이라 새 질문을 보내지 않습니다. 아래에서 결과 미확인과 자동 재전송 금지를 확인한 뒤 폐기할 수 있습니다.");
   } else if (!discussionBinding) {
-    text("reviewDiscussionStatus", `${discussionRole}의 정확한 기존 ChatGPT 대화가 아직 확인되지 않았습니다. 다른 역할을 선택하거나 감사 세션 상태를 확인하세요.`);
+    text("reviewDiscussionStatus", `${discussionRole}의 기존 대화 연결이 아직 확인되지 않았습니다. 다른 역할을 선택하거나 감사자 연결 상태를 확인하세요.`);
   } else if (!connected) {
     text("reviewDiscussionStatus", "서버 연결을 복구해야 감사자에게 질문할 수 있습니다.");
   } else if (!caps.has("code.review.discuss")) {
@@ -609,7 +646,7 @@ function render() {
         reviewerCandidateList.append(button);
       }
     } else {
-      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"} 대화를 자동 복구하지 못했습니다. 정확한 대화 ${reviewerBinding?.conversationUrl ?? "URL 확인 필요"} 를 브라우저에서 하나만 열고 ‘웹 감사 다시 시도’를 누르세요.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"} 대화를 자동 복구하지 못했습니다. 정확한 대화 ${reviewerBinding?.conversationUrl ?? "URL 확인 필요"} 를 브라우저에서 하나만 열고 ‘독립 검토 다시 시작’을 누르세요.`);
     }
   } else {
     text("reviewBindingRecoveryStatus", "");
@@ -655,7 +692,7 @@ function render() {
   } else if (!connected) {
     text("workerInterventionStatus", "서버 연결을 복구해야 Worker에 전달할 수 있습니다.");
   } else if (!interventionTurnId || !caps.has("code.worker.intervene")) {
-    text("workerInterventionStatus", "활성 Worker turn의 실시간 전달 capability가 아직 확인되지 않았습니다. turn 시작을 기다리거나 현재 Worker 제공자의 지원 여부를 확인하세요.");
+    text("workerInterventionStatus", "현재 Worker에 실시간으로 전달할 수 있는 상태가 아직 확인되지 않았습니다. Worker 실행이 시작된 뒤 다시 시도하세요.");
   } else if (operations.runCommand !== "IDLE") {
     text("workerInterventionStatus", "현재 명령 처리가 끝난 뒤 전달할 수 있습니다.");
   } else {
@@ -682,7 +719,7 @@ function render() {
   $("submitDecision").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("code.decision.reply")
     || !decisionQuestions.length || [...$("decisionQuestions").querySelectorAll("textarea")].some((item) => !item.value.trim());
   $("reconcileRun").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("run.reconcile");
-  $("retryRun").textContent = "수동 진행";
+  $("retryRun").textContent = "Worker 다시 실행";
   if (run?.phase === "RECOVERY_REQUIRED") {
     const recoveryConfirmed = $("recoveryConfirm").checked;
     const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || !recoveryConfirmed;
@@ -693,17 +730,17 @@ function render() {
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
     actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 다시 시도할 수 있습니다."
-      : caps.has("run.retry") ? "실패한 임시 worktree를 정리하고 같은 요구사항으로 새 Worker turn을 시작합니다."
-      : "후보 생성 전 Worker 실패가 안전하게 확인된 경우에만 수동 진행할 수 있습니다.";
+      : caps.has("run.retry") ? "실패한 격리 작업 공간을 정리하고 같은 요구사항으로 Worker를 다시 실행합니다."
+      : "변경사항이 고정되기 전 Worker 실패가 안전하게 확인된 경우에만 Worker를 다시 실행할 수 있습니다.";
     actionState("retryRun", (operations.runCommand !== "IDLE") || !caps.has("run.retry"), retryReason, retryReason);
   } else if (run?.phase === "HOLD" && caps.has("code.review.retry")) {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
-    $("retryRun").textContent = "웹 감사 다시 시도";
+    $("retryRun").textContent = "독립 검토 다시 시작";
     const needsReviewerTabSelection = caps.has("code.review.rebind");
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 감사를 다시 시도할 수 있습니다."
       : needsReviewerTabSelection ? "감사자 대화 탭이 여러 개입니다. 먼저 위 복구 영역에서 사용할 탭을 선택하세요."
-      : !webConnected() ? "브라우저 확장 연결과 정확한 ChatGPT 세션을 복구해야 같은 후보의 감사를 다시 시도할 수 있습니다."
+      : !webConnected() ? "브라우저 확장과 해당 감사자의 대화 연결을 복구해야 현재 변경사항의 독립 검토를 다시 시작할 수 있습니다."
       : "Worker를 다시 실행하지 않고 현재 후보를 같은 요구사항으로 다시 감사합니다. REWORK 판정이면 기존 수정 루프를 이어갑니다.";
     actionState("retryRun", (operations.runCommand !== "IDLE") || needsReviewerTabSelection || !webConnected(), retryReason, retryReason);
   } else {
@@ -757,8 +794,8 @@ function render() {
   text("runObjective", run.objective);
   renderRunContextView(run, snapshot);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
-  text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
-  text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
+  text("runReason", reasons[run.terminationReason] ?? (userFacingStoredError(run.error ?? snapshot?.error, "") || (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 변경사항의 감사가 통과했습니다. 아직 프로젝트에는 적용되지 않았습니다." : run.phase === "APPLIED" ? "검토된 변경사항이 프로젝트에 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : phaseReasons[run.phase] ?? `미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`)));
+  text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김 · 마지막 확인 ${lastConfirmed ? time(lastConfirmed) : "없음"}`}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
   let reviewerRuntimeStatus = $("reviewerRuntimeStatus");
@@ -798,16 +835,16 @@ function render() {
   actionState("stopRun", (operations.runCommand !== "IDLE") || !caps.has("run.stop"), stopReason, stopReason);
   text("stopReason", stopReason);
 
-  const applyReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 후보를 적용할 수 있습니다."
-    : !connected ? "서버 연결을 복구해야 후보를 적용할 수 있습니다."
-    : caps.has("code.apply") ? "감사 통과 후보가 준비됐습니다. 대상 저장소에 반영할 수 있습니다."
-    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 적용 capability가 없습니다. 상태를 다시 확인하고 복구·오류 기록을 확인하세요."
+  const applyReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 변경사항을 적용할 수 있습니다."
+    : !connected ? "서버 연결을 복구해야 변경사항을 적용할 수 있습니다."
+    : caps.has("code.apply") ? "감사를 통과한 변경사항이 준비됐습니다. 대상 저장소에 반영할 수 있습니다."
+    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 지금은 적용할 수 없습니다. 상태를 다시 확인하고 복구·오류 기록을 확인하세요."
     : "구현 → 검증 → 웹 감사가 PASS되어 ‘감사 통과·적용 대기’ 상태가 되어야 적용할 수 있습니다.";
   actionState("applyCode", (operations.runCommand !== "IDLE") || !caps.has("code.apply"), applyReason, applyReason);
 
   const exportReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 감사 기록을 다운로드할 수 있습니다."
     : !connected ? "서버 연결을 복구해야 감사 기록을 다운로드할 수 있습니다."
-    : !caps.has("evidence.export") ? "현재 런에는 내보낼 수 있는 감사 기록 capability가 없습니다. 실행 기록과 상태를 먼저 확인하세요."
+    : !caps.has("evidence.export") ? "현재 작업에는 내보낼 수 있는 감사 기록이 없습니다. 실행 기록과 상태를 먼저 확인하세요."
     : "현재까지 보존된 감사 기록을 JSON으로 다운로드할 수 있습니다.";
   actionState("exportEvidence", (operations.runCommand !== "IDLE") || !caps.has("evidence.export"), exportReason, exportReason);
   text("commandReason", `적용: ${applyReason} · 감사 기록: ${exportReason}`);
@@ -845,7 +882,7 @@ async function command(type, payload = {}) {
     return result.payload;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
-    lastCommandError = `요청 결과를 확인하세요: ${error.message}. 응답 유실 시 자동 재전송하지 않습니다. 실행 기록을 먼저 확인하세요.`;
+    lastCommandError = userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.");
     text("commandResult", lastCommandError);
   } finally { if (operations.runCommand !== "UNKNOWN_RESULT") operations.runCommand = "IDLE"; await refresh(); }
 }
@@ -1118,7 +1155,7 @@ async function preparationMutation(operation, capability, url, payload = {}) {
     return true;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations[operation] = "UNKNOWN_RESULT"; unknownRequests.set(operation, requestId); }
-    const message = (error.code ?? "REQUEST_FAILED") + ": " + error.message + " · 요청 ID: " + requestId;
+    const message = userFacingError(error);
     text("projectStatus", message); text("startReason", message);
     return false;
   } finally {
@@ -1203,7 +1240,7 @@ $("chooseFolder").addEventListener("click", async () => {
     const result = await request("/api/project/folder", { method: "POST", body: JSON.stringify({ requestId: crypto.randomUUID(), expectedVersion: 0 }) });
     if (result.targetRoot) $("startRoot").value = result.targetRoot;
     text("folderStatus", result.targetRoot ? "폴더를 선택했습니다." : "폴더 선택을 취소했습니다.");
-  } catch (error) { text("folderStatus", error.message); }
+  } catch (error) { text("folderStatus", userFacingError(error)); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
 $("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });

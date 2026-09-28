@@ -66,15 +66,15 @@ test("run context presents mixed-provider reviewer roles without technical bindi
   };
   const judge = reviewerRoleSummary(run, runtimes, "JUDGE");
   const critic = reviewerRoleSummary(run, runtimes, "CRITIC");
-  assert.deepEqual(judge, { role:"JUDGE", provider:"Claude Web", status:"감사 중", tone:"ok running" });
-  assert.deepEqual(critic, { role:"CRITIC", provider:"ChatGPT Web", status:"이번 감사 완료", tone:"ok" });
+  assert.deepEqual(judge, { role:"JUDGE", provider:"Claude Web", status:"검토 중", tone:"ok running" });
+  assert.deepEqual(critic, { role:"CRITIC", provider:"ChatGPT Web", status:"이번 검토 완료", tone:"ok" });
   assert.doesNotMatch(JSON.stringify([judge, critic]), /tabId|sessionId|bindingId|providerEvidence/u);
 
   const mismatch = reviewerRoleSummary({
     ...run,
     conversationBindings:[{ role:"JUDGE", provider:"CLAUDE_WEB" }],
   }, { JUDGE:{ provider:"CHATGPT_WEB" } }, "JUDGE");
-  assert.equal(mismatch.status, "provider 불일치 · 확인 필요");
+  assert.equal(mismatch.status, "서비스 연결 불일치 · 확인 필요");
   assert.equal(mismatch.tone, "warn");
 
   const detail = reviewerRuntimeTechnicalSummary(runtimes);

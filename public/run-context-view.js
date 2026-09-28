@@ -5,7 +5,7 @@ const PROVIDER_LABELS = Object.freeze({
 });
 
 export function providerDisplayName(provider) {
-  if (typeof provider !== "string" || !provider) return "provider 미확인";
+  if (typeof provider !== "string" || !provider) return "서비스 확인 필요";
   return PROVIDER_LABELS[provider] ?? provider;
 }
 
@@ -42,7 +42,7 @@ export function reviewerRoleSummary(run, reviewerRuntimes, role) {
   const observedProvider = runtime?.provider ?? null;
   const provider = providerDisplayName(configuredProvider ?? observedProvider);
   if (configuredProvider && observedProvider && configuredProvider !== observedProvider) {
-    return Object.freeze({ role, provider, status:"provider 불일치 · 확인 필요", tone:"warn" });
+    return Object.freeze({ role, provider, status:"서비스 연결 불일치 · 확인 필요", tone:"warn" });
   }
   const active = run?.coordination?.activeRole === role;
   if (run?.phase === "HOLD" && run?.terminationReason === "WEB_BINDING_REQUIRED" && active) {
@@ -56,22 +56,22 @@ export function reviewerRoleSummary(run, reviewerRuntimes, role) {
       return Object.freeze({
         role,
         provider,
-        status:run.phase === "REPORT_REPAIR" ? "응답 보완 중" : "감사 중",
+        status:run.phase === "REPORT_REPAIR" ? "응답 확인 중" : "검토 중",
         tone:"ok running",
       });
     }
     if (currentReviewCompleted(run, role)) {
-      return Object.freeze({ role, provider, status:"이번 감사 완료", tone:"ok" });
+      return Object.freeze({ role, provider, status:"이번 검토 완료", tone:"ok" });
     }
-    return Object.freeze({ role, provider, status:"감사 대기", tone:"" });
+    return Object.freeze({ role, provider, status:"검토 대기", tone:"" });
   }
   if (candidateWasReviewed(run, role)) {
-    return Object.freeze({ role, provider, status:"현재 후보 검토 완료", tone:"ok" });
+    return Object.freeze({ role, provider, status:"현재 변경사항 검토 완료", tone:"ok" });
   }
   if (run?.candidate?.candidateId) {
-    return Object.freeze({ role, provider, status:"감사 대기", tone:"" });
+    return Object.freeze({ role, provider, status:"검토 대기", tone:"" });
   }
-  return Object.freeze({ role, provider, status:"후보 대기", tone:"" });
+  return Object.freeze({ role, provider, status:"변경사항 대기", tone:"" });
 }
 
 export function workerRoleSummary(run, workerLabel) {
@@ -79,7 +79,7 @@ export function workerRoleSummary(run, workerLabel) {
     return Object.freeze({ role:"WORKER", provider:workerLabel, status:"구현 중", tone:"ok running" });
   }
   if (run?.candidate?.candidateId) {
-    return Object.freeze({ role:"WORKER", provider:workerLabel, status:"후보 고정", tone:"ok" });
+    return Object.freeze({ role:"WORKER", provider:workerLabel, status:"변경사항 고정", tone:"ok" });
   }
   if (run?.phase === "RECOVERY_REQUIRED") {
     return Object.freeze({ role:"WORKER", provider:workerLabel, status:"확인 필요", tone:"warn" });
@@ -87,7 +87,7 @@ export function workerRoleSummary(run, workerLabel) {
   return Object.freeze({
     role:"WORKER",
     provider:workerLabel,
-    status:["CANCELLED", "FAILED", "INCONCLUSIVE"].includes(run?.phase) ? "후보 없음" : "대기",
+    status:["CANCELLED", "FAILED", "INCONCLUSIVE"].includes(run?.phase) ? "변경사항 없음" : "대기",
     tone:"",
   });
 }
