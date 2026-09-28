@@ -5,8 +5,22 @@ export function createUiScenarioFixture(targetRoot) {
   const mutations = [];
   const run = () => ({ runId: 'active', version, mode: 'CODE_CHANGE', phase, objective: 'UI scenario task',
     createdAt: at, updatedAt: at, requirements: { items: [] }, findings: [],
+    worker: { provider: 'codex', model: 'fixture-model' },
+    reviewers: { JUDGE: { provider: 'CLAUDE_WEB' }, CRITIC: { provider: 'CHATGPT_WEB' } },
     candidate: { candidateId: 'candidate-qa' }, capture: { artifact: { sha256: 'hash-qa' } },
-    baseCommit: 'base-qa', reviews: [{ reviewId: 'review-qa' }] });
+    baseCommit: 'base-qa',
+    coordination: phase === 'REVIEW_RUNNING'
+      ? { phase: 'ROUND0', activeRole: 'JUDGE', auditManifestHash: 'manifest-qa' }
+      : { phase: 'ACCEPTED', activeRole: null, auditManifestHash: 'manifest-qa' },
+    conversationBindings: [
+      { role: 'JUDGE', provider: 'CLAUDE_WEB', bindingStatus: 'BOUND', activeDeliveryId: null },
+      { role: 'CRITIC', provider: 'CHATGPT_WEB', bindingStatus: 'BOUND', activeDeliveryId: null },
+    ],
+    reviewArtifacts: ['AWAITING_APPLY', 'APPLIED'].includes(phase) ? [
+      { role: 'JUDGE', candidateId: 'candidate-qa' },
+      { role: 'CRITIC', candidateId: 'candidate-qa' },
+    ] : [],
+    reviews: [{ reviewId: 'review-qa', candidateId: 'candidate-qa' }] });
   function state(url) {
     const requested = new URL(url).searchParams;
     const terminal = ['CANCELLED', 'APPLIED', 'AWAITING_APPLY'].includes(phase);
@@ -27,6 +41,10 @@ export function createUiScenarioFixture(targetRoot) {
     return { workflow, preparation, run: selected, runs: phase ? [{ runId: 'old', phase: 'CANCELLED', objective: 'Previous task' }, run()] : [],
       preflight: { checks: { codeWorkerExecutableConfigured: true, extensionAuthenticated: true } },
       commandCapabilities: caps, messages: [], events: [], findings: [], assessments: [], deliveries: [],
+      reviewerRuntimes: {
+        JUDGE: { provider: 'CLAUDE_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED' },
+        CRITIC: { provider: 'CHATGPT_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED' },
+      },
       evidence: selected?.phase === 'AWAITING_APPLY' ? [{ evidenceId: 'evidence-qa', kind: 'PATCH', producer: 'CONTROLLER',
         candidateId: 'candidate-qa', createdAt: at, result: {} }] : [] };
   }

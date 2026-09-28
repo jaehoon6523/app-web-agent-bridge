@@ -95,6 +95,9 @@ try {
  await page.click('#saveProject'); await stage('stepWork');
  assert.equal(fixture.mutations.at(-1).pathname,'/api/preparations/prep-qa/approve');
  await screenshot('06-working');
+ assert.match(await page.locator('#runWorkerRole').textContent(),/Worker · codex \/ fixture-model · 구현 중/);
+ assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 감사 대기/);
+ assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 감사 대기/);
  await page.emulateMedia({reducedMotion:'reduce'});
  assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'none');
  await page.emulateMedia({reducedMotion:'no-preference'});
@@ -126,10 +129,14 @@ try {
  assert.equal(await page.locator('#runSecondaryTier').evaluate(el=>el.open),false);
  await page.click('#retryRun');
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='웹 감사 중');
+ assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 감사 중/);
+ assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 감사 대기/);
  assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
  assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
  assert.equal(fixture.mutations.at(-1).body.payload.expectedVersion,fixture.version-1);
  fixture.phase='AWAITING_APPLY'; await page.reload(); await stage('stepResult');
+ assert.match(await page.locator('#runJudgeRole').textContent(),/현재 후보 검토 완료/);
+ assert.match(await page.locator('#runCriticRole').textContent(),/현재 후보 검토 완료/);
  assert.equal(await page.locator('#runPrimaryTier').isVisible(),true);
  assert.equal(await page.locator('#applyCode').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
  assert.equal(await page.locator('#applyCode').evaluate(el=>el.classList.contains('primary')),true);

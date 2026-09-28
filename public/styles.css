@@ -121,3 +121,8 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
   .workflow li { min-width:112px; white-space:nowrap; font-size:12px; }
   .flow-card { padding:15px; }
 }
+.run-role-summary { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:14px 0 8px; }
+.run-role { margin:0; padding:9px 11px; border:1px solid var(--line); border-radius:6px; background:var(--panel); color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.run-role.ok { color:var(--text); border-color:var(--live); }
+.run-role.warn { color:var(--warn); border-color:var(--warn); }
+@media(max-width:760px) { .run-role-summary { grid-template-columns:1fr; } }

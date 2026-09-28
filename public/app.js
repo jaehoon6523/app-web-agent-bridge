@@ -3,6 +3,7 @@ import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 import { createRunActionLayout } from "./run-action-layout.js";
+import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-context-view.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
@@ -128,6 +129,7 @@ function workerIdentity(run) {
   const model = worker.model ?? null;
   return [provider, model].filter(Boolean).join(" / ") || "정보 없음";
 }
+const renderRunContextView = createRunContextView({ $, text, labels, terminal, folderName, workerIdentity });
 async function request(url, options = {}) {
   try {
     const response = await fetch(url, { ...options, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
@@ -752,9 +754,8 @@ function render() {
     button.addEventListener("click", () => openRun(child.runId));
     lineageChildren.append(button);
   }
-  text("runObjective", run.objective); text("runContext", run.requirements
-    ? `${folderName(run.projectRef?.targetRoot)} / ${run.objective} / ${labels[run.phase] ?? run.phase} · 구현 ${run.iteration ?? 0}회 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`
-    : `작업 기록 · Worker ${workerIdentity(run)} · ${terminal.has(run.phase) ? "종료됨" : run.activeActor ?? "실행 주체 미확인"}`);
+  text("runObjective", run.objective);
+  renderRunContextView(run, snapshot);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? run.error ?? snapshot?.error ?? (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 후보의 감사가 통과했습니다. 적용은 별도 명령입니다." : run.phase === "APPLIED" ? "감사한 후보가 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : `감사 결과: ${run.auditResult ?? "미판정"} · 미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`));
   text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김, 마지막 확인 ${time(lastConfirmed)}`}`);
@@ -766,10 +767,8 @@ function render() {
     reviewerRuntimeStatus.id = "reviewerRuntimeStatus";
     $("workerProvenance")?.after(reviewerRuntimeStatus);
   }
-  const reviewerRuntime = snapshot?.reviewerRuntime;
-  text("reviewerRuntimeStatus", reviewerRuntime
-    ? `Reviewer 실행 출처: provider ${reviewerRuntime.provider ?? "미확인"} · provider 근거 ${reviewerRuntime.providerEvidence ?? "미확인"} · model ${reviewerRuntime.model ?? "관측 불가"} · model 근거 ${reviewerRuntime.modelEvidence ?? "UNOBSERVED"}`
-    : "Reviewer 실행 출처: 현재 runtime에서 확인되지 않음");
+  text("reviewerRuntimeStatus",
+    reviewerRuntimeTechnicalSummary(snapshot?.reviewerRuntimes, snapshot?.reviewerRuntime));
   let reviewIndependenceStatus = $("reviewIndependenceStatus");
   if (!reviewIndependenceStatus) {
     reviewIndependenceStatus = node("p", "", "muted");
