@@ -161,23 +161,23 @@ export function projectBrowserState(preflight) {
 export function connectionNoticeFor(state, lastConfirmedLabel = "없음") {
   const suffix = ` · 마지막 정상 상태 확인: ${lastConfirmedLabel}`;
   if (state?.transport === TransportState.UNREACHABLE) {
-    return `서버 응답을 받지 못했습니다. 로컬 서버와 포트를 확인하세요.${suffix}`;
+    return `서버 응답 없음 · 로컬 서버와 포트를 확인하세요.${suffix}`;
   }
   if (state?.session === DashboardSessionState.REJECTED) {
     const originProblem = ["LOCAL_BROWSER_REQUIRED", "DASHBOARD_ORIGIN_REQUIRED", "DASHBOARD_ORIGIN_INVALID", "DASHBOARD_ORIGIN_REJECTED"]
       .includes(state?.lastError?.code);
     return `${originProblem
-      ? "서버는 실행 중이지만 현재 브라우저 주소가 허용된 대시보드 주소와 일치하지 않습니다. 설정된 로컬 서버 주소로 다시 여세요."
-      : "서버는 실행 중이지만 이 브라우저의 대시보드 세션을 만들지 못했습니다. 기술 진단에서 세션 거부 원인을 확인하세요."}${suffix}`;
+      ? "대시보드 주소가 일치하지 않습니다. 설정된 로컬 서버 주소로 다시 여세요."
+      : "대시보드 세션을 만들지 못했습니다. 기술 진단을 확인하세요."}${suffix}`;
   }
   if (state?.session === DashboardSessionState.AUTH_INVALID) {
-    return `서버는 실행 중입니다. 대시보드 인증에 실패했습니다. 인증 상태를 다시 확인하세요.${suffix}`;
+    return `대시보드 인증 실패 · 인증 상태를 확인하세요.${suffix}`;
   }
   if (state?.runtimeError) {
-    return `서버 응답은 받았지만 Dashboard 상태를 해석하지 못했습니다. 기술 진단을 확인하세요.${suffix}`;
+    return `상태 응답 해석 실패 · 기술 진단을 확인하세요.${suffix}`;
   }
   if (state?.stateRead === StateReadState.FAILED) {
-    return `서버 연결은 확인되었습니다. 현재 작업 상태를 불러오지 못했습니다. 상태 조회를 다시 시도하세요.${suffix}`;
+    return `상태 조회 실패 · 다시 확인하세요.${suffix}`;
   }
   return "";
 }

@@ -285,12 +285,12 @@ function renderPreparationPersistence() {
   }
 }
 function disabledWebReason(action) {
-  if (!connected) return "웹 작업 비활성화: 서버 연결이 없어 상태를 확인할 수 없습니다.";
-  if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "웹 작업 비활성화: 브라우저 확장 인증이 확인되지 않았습니다.";
-  if (operations.webTurn !== "IDLE") return "웹 작업 비활성화: 다른 웹 상태 요청을 처리 중입니다.";
-  if (preparation?.webSession?.bindingState !== "BOUND") return `웹 작업 비활성화: 세션 바인딩이 BOUND가 아닙니다. 현재 상태: ${preparation?.webSession?.bindingState ?? "UNBOUND"}.`;
-  if (preparation?.diagnostics?.exactConversation !== true) return "웹 작업 비활성화: 현재 탭이 준비된 session·conversation·run identity와 정확히 일치하지 않습니다.";
-  if (!capabilities().has(action)) return `웹 작업 비활성화: 현재 서버가 ${action} 권한을 제공하지 않습니다. active delivery 또는 응답 처리 상태를 확인하세요.`;
+  if (!connected) return "최신 상태를 확인할 수 없습니다.";
+  if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
+  if (operations.webTurn !== "IDLE") return "다른 웹 요청을 처리 중입니다.";
+  if (preparation?.webSession?.bindingState !== "BOUND") return `대화 탭 연결이 필요합니다. 현재: ${preparation?.webSession?.bindingState ?? "UNBOUND"}.`;
+  if (preparation?.diagnostics?.exactConversation !== true) return "정확한 대화 탭 연결이 필요합니다.";
+  if (!capabilities().has(action)) return "현재 이 웹 작업을 사용할 수 없습니다.";
   return "";
 }
 function projectConnectionIndicator(id, state, detail) {
@@ -482,22 +482,22 @@ function render() {
   const readiness = JSON.stringify([connected, preflight, [...caps], snapshot?.runs]);
   if (readiness !== readinessSignature) { lastCommandError = ""; readinessSignature = readiness; }
   const checks = preflight?.checks;
-  health("apiHealth", "api", connected ? "ok" : "unknown", connected ? "응답 정상" : "응답 확인 필요");
-  health("sessionHealth", "session", connected && token ? "ok" : "unknown", connected && token ? "대시보드 인증됨" : "인증 확인 필요");
+  health("apiHealth", "서버", connected ? "ok" : "unknown", connected ? "정상" : "확인 필요");
+  health("sessionHealth", "대시보드", connected && token ? "ok" : "unknown", connected && token ? "인증됨" : "확인 필요");
   const workerStatus = workerRuntimeStatus(snapshot?.workerRuntime);
-  health("engineHealth", "engine", workerStatus.state, workerStatus.detail);
-  health("channelHealth", "channel", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
-    !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "확장 인증됨" : "확장 연결 대기");
+  health("engineHealth", "Worker", workerStatus.state, workerStatus.detail);
+  health("channelHealth", "확장", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
+    !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "연결됨" : "연결 대기");
   signal("serverSignal", "서버", connected ? "ok" : "error", connected ? "연결됨" : "연결 끊김 · npm start 확인 필요");
   signal("cliSignal", "CLI", connected ? workerStatus.state : "warn",
     !connected ? "서버 확인 필요" : workerStatus.detail);
   const webAuthenticated = checks?.extensionAuthenticated === true;
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
-    !connected ? "서버 확인 필요" : webAuthenticated ? "확장 인증됨" : "확장 연결 대기 · 확장 팝업 확인");
+    !connected ? "상태 확인 필요" : webAuthenticated ? "연결됨" : "연결 대기");
   const lastBinding = preflight?.lastWebBinding;
   signal("webBindingSignal", "대화 탭", !connected || !webAuthenticated || !["BOUND", "ROOT_READY"].includes(lastBinding?.bindingStatus) ? "warn" : "ok",
     !connected ? "서버 확인 필요" : !webAuthenticated ? "확장 연결 대기"
-      : lastBinding ? `마지막 바인딩 ${lastBinding.bindingStatus} · 전송 시 재확인` : "아직 확인된 바인딩 없음 · 새 작업에서 탭 생성");
+      : lastBinding ? `연결됨 · ${lastBinding.bindingStatus}` : "연결 필요");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
   const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
@@ -507,7 +507,7 @@ function render() {
   $("judgeReviewerProvider").disabled = reviewerProvidersLocked;
   $("criticReviewerProvider").disabled = reviewerProvidersLocked;
   $("planRun").disabled = (operations.runCommand !== "IDLE") || !connected || busy || (operations.webTurn !== "IDLE");
-  $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? `‘${unfinished.objective}’ 작업이 아직 종료되지 않았습니다. 진행 중인 작업을 먼저 확인하세요.` : "과거 기록은 언제든 선택할 수 있습니다.");
+  $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? "진행 중인 작업을 먼저 확인하세요." : "");
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   $("historySearch").value = historyQuery;
@@ -701,9 +701,9 @@ function render() {
   const reviewerCandidateList = $("reviewBindingRecoveryCandidates"); reviewerCandidateList.replaceChildren();
   if (reviewerBindingHold) {
     if (run.coordination?.phase === "ROLE_BINDING_RECOVERED") {
-      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"} 대화 탭을 다시 연결했습니다. 기존 후보·요구사항은 그대로입니다. ‘웹 감사 다시 시도’를 눌러 감사를 재개하세요.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화 탭을 다시 연결했습니다. ‘웹 감사 다시 시도’로 재개하세요.`);
     } else if (reviewerCandidates.length) {
-      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"}의 정확한 대화와 일치하는 탭이 여러 개입니다. 사용할 탭 하나를 선택하세요. 선택만으로 감사가 재실행되지는 않습니다.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화 탭이 여러 개입니다. 사용할 탭 하나를 선택하세요.`);
       for (const candidate of reviewerCandidates) {
         const button = node("button", `${candidate.provider} · tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`}`);
         button.type = "button"; button.title = candidate.url ?? reviewerBinding?.conversationUrl ?? "";
@@ -714,7 +714,7 @@ function render() {
         reviewerCandidateList.append(button);
       }
     } else {
-      text("reviewBindingRecoveryStatus", `${reviewerRole} ${reviewerBinding?.provider ?? "Web"} 대화를 자동 복구하지 못했습니다. 정확한 대화 ${reviewerBinding?.conversationUrl ?? "URL 확인 필요"} 를 브라우저에서 하나만 열고 ‘독립 검토 다시 시작’을 누르세요.`);
+      text("reviewBindingRecoveryStatus", `${reviewerRole} 대화 탭을 찾지 못했습니다. 정확한 대화를 하나만 열고 ‘독립 검토 다시 시작’을 누르세요.`);
     }
   } else {
     text("reviewBindingRecoveryStatus", "");
@@ -862,8 +862,8 @@ function render() {
   text("runObjective", run.objective);
   renderRunContextView(run, snapshot);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
-  text("runReason", reasons[run.terminationReason] ?? (userFacingStoredError(run.error ?? snapshot?.error, "") || (run.phase === "CANCELLED" ? "중단된 작업입니다. 실행 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "이 요구사항 버전과 변경사항의 감사가 통과했습니다. 아직 프로젝트에는 적용되지 않았습니다." : run.phase === "APPLIED" ? "검토된 변경사항이 프로젝트에 반영됐습니다. 배포·추가 환경 검증의 성공을 뜻하지 않습니다." : phaseReasons[run.phase] ?? `미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`)));
-  text("runTime", `접수 ${time(run.createdAt)} · 상태 발생 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}${connected ? "" : ` · 연결 끊김 · 마지막 확인 ${lastConfirmed ? time(lastConfirmed) : "없음"}`}`);
+  text("runReason", reasons[run.terminationReason] ?? (userFacingStoredError(run.error ?? snapshot?.error, "") || (run.phase === "CANCELLED" ? "중단됨 · 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "검토 통과 · 아직 적용되지 않았습니다." : run.phase === "APPLIED" ? "적용 완료 · 배포·환경 검증은 별도입니다." : phaseReasons[run.phase] ?? `미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`)));
+  text("runTime", `접수 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
   let reviewerRuntimeStatus = $("reviewerRuntimeStatus");
@@ -893,29 +893,29 @@ function render() {
       ? "감사자 독립성: 이 PASS에는 현재 독립성 계약이 없습니다. 같은 후보를 다시 감사해야 적용 권한을 얻을 수 있습니다."
       : "감사자 독립성: 아직 고정된 감사 결과가 없습니다.");
   }
-  const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청을 처리 중이라 중단 명령을 보낼 수 없습니다. 처리가 끝난 뒤 다시 누르세요."
-    : !connected ? "서버 연결이 끊겨 중단할 수 없습니다. 서버 연결을 먼저 복구하세요."
-    : terminal.has(run.phase) ? "이미 종료된 작업이라 중단할 수 없습니다. 왼쪽 ‘새 작업’을 사용하거나 다른 미종료 작업을 선택하세요."
-    : run.phase === "RECOVERY_REQUIRED" ? "자동 중단 여부를 확정할 수 없습니다. 아래 확인 항목을 체크한 뒤 ‘실행 폐기’를 누르세요."
-    : caps.has("run.stop") ? "현재 작업을 중단할 수 있습니다. ‘작업 중단’을 누르면 후속 구현·감사를 멈추고 기록은 보존합니다."
-    : run.phase === "APPLYING" ? "코드를 적용 중이라 지금은 중단할 수 없습니다. 적용 결과가 확정된 뒤 다음 행동을 선택하세요."
-    : "현재 단계에서는 중단 명령이 비활성입니다. 상태가 바뀌는지 확인하고, 복구 필요 상태가 되면 복구 확인 절차를 진행하세요.";
+  const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
+    : !connected ? "최신 상태 확인 후 중단할 수 있습니다."
+    : terminal.has(run.phase) ? "이미 종료된 작업입니다."
+    : run.phase === "RECOVERY_REQUIRED" ? "복구 확인 후 종료할 수 있습니다."
+    : caps.has("run.stop") ? "작업을 중단합니다. 기록은 보존됩니다."
+    : run.phase === "APPLYING" ? "적용 중에는 중단할 수 없습니다."
+    : "현재 단계에서는 중단할 수 없습니다.";
   actionState("stopRun", (operations.runCommand !== "IDLE") || !caps.has("run.stop"), stopReason, stopReason);
   text("stopReason", stopReason);
 
-  const applyReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 변경사항을 적용할 수 있습니다."
-    : !connected ? "서버 연결을 복구해야 변경사항을 적용할 수 있습니다."
-    : caps.has("code.apply") ? "감사를 통과한 변경사항이 준비됐습니다. 대상 저장소에 반영할 수 있습니다."
-    : run.phase === "AWAITING_APPLY" ? "감사 통과 상태지만 지금은 적용할 수 없습니다. 상태를 다시 확인하고 복구·오류 기록을 확인하세요."
-    : "구현 → 검증 → 웹 감사가 PASS되어 ‘감사 통과·적용 대기’ 상태가 되어야 적용할 수 있습니다.";
+  const applyReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
+    : !connected ? "최신 상태 확인 후 적용할 수 있습니다."
+    : caps.has("code.apply") ? "검토 통과 변경사항을 프로젝트에 적용합니다."
+    : run.phase === "AWAITING_APPLY" ? "현재 적용할 수 없습니다. 상태를 확인하세요."
+    : "검토 통과 후 적용할 수 있습니다.";
   actionState("applyCode", (operations.runCommand !== "IDLE") || !caps.has("code.apply"), applyReason, applyReason);
 
-  const exportReason = (operations.runCommand !== "IDLE") ? "현재 명령 처리가 끝나야 감사 기록을 다운로드할 수 있습니다."
-    : !connected ? "서버 연결을 복구해야 감사 기록을 다운로드할 수 있습니다."
-    : !caps.has("evidence.export") ? "현재 작업에는 내보낼 수 있는 감사 기록이 없습니다. 실행 기록과 상태를 먼저 확인하세요."
-    : "현재까지 보존된 감사 기록을 JSON으로 다운로드할 수 있습니다.";
+  const exportReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
+    : !connected ? "최신 상태 확인 후 다운로드할 수 있습니다."
+    : !caps.has("evidence.export") ? "다운로드할 감사 기록이 없습니다."
+    : "감사 기록을 다운로드합니다.";
   actionState("exportEvidence", (operations.runCommand !== "IDLE") || !caps.has("evidence.export"), exportReason, exportReason);
-  text("commandReason", `적용: ${applyReason} · 감사 기록: ${exportReason}`);
+  text("commandReason", "");
   syncRunInformationArchitecture(run);
   const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
   if (renderedRecords !== signature) { renderedRecords = signature; renderConversation(run, $("conversationTimeline"), node, time); renderAudit(); renderLog(); }
@@ -1167,9 +1167,9 @@ function renderPreparation() {
     else if (value === "확인되지 않음") row.classList.add("health", "warn", "diagnostic-row");
   }
   const webActionReason = (action) => {
-    if (!connected) return "서버 연결이 없어 이 상태 확인을 실행할 수 없습니다. 로컬 서버와 8787 포트를 확인하세요.";
-    if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장이 인증되지 않았습니다. 확장 팝업에서 서버 주소와 연결 상태를 확인하세요.";
-    if (operations.webTurn !== "IDLE") return "다른 웹 상태 요청을 처리하는 중입니다. 처리가 끝난 뒤 다시 시도하세요.";
+    if (!connected) return "최신 상태를 확인할 수 없습니다.";
+    if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
+    if (operations.webTurn !== "IDLE") return "다른 웹 요청을 처리 중입니다.";
     if (!capabilities().has(action)) return "현재 서버 상태에서는 이 작업을 사용할 수 없습니다.";
     return "";
   };
@@ -1185,11 +1185,11 @@ function renderPreparation() {
   diagnostics.replaceChildren(recovery);
   const error = preparation.error;
   const progress = { INITIALIZING: "ChatGPT 대화에 연결 중입니다.",
-    WAITING_WEB_RESPONSE: "웹 요청을 처리 중입니다. 응답 확인 전에는 승인할 수 없습니다.",
-    DISCUSSING: "웹 응답을 확인했습니다. 질문에 답하며 작업 범위를 정하세요.",
-    AGREEMENT_READY: "웹이 완료 기준을 제안했습니다. 내용을 검토하고 승인하세요.",
-    APPROVING: "승인을 처리하고 작업을 생성하고 있습니다. 작업 생성이 확인되면 이동합니다.",
-    RECOVERY_REQUIRED: "전송 또는 응답 확인이 끝나지 않았습니다. 상태 확인이 필요합니다." };
+    WAITING_WEB_RESPONSE: "응답을 기다리고 있습니다.",
+    DISCUSSING: "질문에 답해 작업 범위를 정하세요.",
+    AGREEMENT_READY: "완료 기준을 확인하고 승인하세요.",
+    APPROVING: "작업을 생성하고 있습니다.",
+    RECOVERY_REQUIRED: "전송 결과 확인이 필요합니다." };
   text("projectHeading", workflow.state === "AGREEMENT_READY" ? "요구사항 준비 완료"
     : workflow.state === "APPROVING" ? "작업을 시작하고 있습니다"
     : preparation.state === "FAILED" ? "작업을 시작하지 못했습니다"

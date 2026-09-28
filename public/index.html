@@ -3,10 +3,10 @@
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>CLI 구현 · 웹 감사</title><link rel="stylesheet" href="styles.css"></head>
 <body>
 <header class="top"><strong>CLI 구현 · 웹 감사</strong><div id="systemHealth" class="signals system-health" aria-label="시스템 상태">
-  <details name="system-health"><summary id="apiHealth" class="health">api</summary><p id="apiHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
-  <details name="system-health"><summary id="sessionHealth" class="health">session</summary><p id="sessionHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
-  <details name="system-health"><summary id="engineHealth" class="health">engine</summary><p id="engineHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
-  <details name="system-health"><summary id="channelHealth" class="health">channel</summary><p id="channelHealthDetail">확인 전</p></details>
+  <details name="system-health"><summary id="apiHealth" class="health">서버</summary><p id="apiHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
+  <details name="system-health"><summary id="sessionHealth" class="health">대시보드</summary><p id="sessionHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
+  <details name="system-health"><summary id="engineHealth" class="health">Worker</summary><p id="engineHealthDetail">확인 전</p></details><span aria-hidden="true">/</span>
+  <details name="system-health"><summary id="channelHealth" class="health">확장</summary><p id="channelHealthDetail">확인 전</p></details>
 </div></header>
 <div class="layout">
   <aside class="history">
@@ -82,15 +82,15 @@
       </form>
     </section>
     <section id="startPanel"><h1>시작</h1>
-      <p class="muted">첫 부탁과 프로젝트 폴더를 입력하세요. ChatGPT 대화는 자동으로 시작하며, 기존 대화를 사용하려면 URL을 입력하세요.</p>
+      <p class="muted">작업과 프로젝트 폴더를 입력하세요. 기존 대화 URL은 선택입니다.</p>
       <form id="startForm"><label for="objective">이번에 맡길 작업</label><textarea id="objective" rows="4" required placeholder="예: 채팅 앱에서 메시지를 보낼 수 있게 해 줘."></textarea>
-        <label for="startRoot">프로젝트 폴더</label><input id="startRoot" required placeholder="폴더를 선택하거나 경로를 입력하세요"><button id="chooseFolder" disabled type="button">파일 탐색기에서 폴더 선택</button><p id="folderStatus" class="muted" role="status"></p><p class="muted">웹과 합의를 마치고 승인하면 Git 저장소와 첫 커밋을 자동으로 준비합니다.</p>
+        <label for="startRoot">프로젝트 폴더</label><input id="startRoot" required placeholder="폴더를 선택하거나 경로를 입력하세요"><button id="chooseFolder" disabled type="button">파일 탐색기에서 폴더 선택</button><p id="folderStatus" class="muted" role="status"></p><p class="muted">승인 후 Git 작업을 준비합니다.</p>
         <label for="conversationUrl">기존 ChatGPT 대화 URL (선택)</label><input id="conversationUrl" type="url" placeholder="비워 두면 새 대화를 엽니다">
         <div id="projectConversationPanel" class="flow-band" hidden><label><input id="reuseProjectConversation" type="checkbox"> 이 프로젝트의 준비 대화 이어가기</label><p id="projectConversationDetail"></p><a id="projectConversationLink" target="_blank" rel="noopener noreferrer">저장된 대화 열기</a><p class="muted">이전 합의가 새 요구사항을 자동 승인하지 않습니다. 정확한 대화에 연결할 수 없으면 상태를 확인한 뒤 다시 시도하거나 체크를 해제해 새 대화를 시작하세요.</p></div>
-        <p class="muted">비워 두면 확장에서 ChatGPT 시작 탭을 찾아 사용하거나 새 탭을 엽니다. 같은 대화 후보가 여러 개면 사용할 탭을 선택할 수 있습니다.</p>
+        <p class="muted">비워 두면 기존 시작 탭을 사용하거나 새 탭을 엽니다.</p>
         <label for="judgeReviewerProvider">Judge 감사 서비스</label><select id="judgeReviewerProvider"><option value="CHATGPT_WEB">ChatGPT Web</option><option value="CLAUDE_WEB">Claude Web</option></select>
         <label for="criticReviewerProvider">Critic 감사 서비스</label><select id="criticReviewerProvider"><option value="CHATGPT_WEB">ChatGPT Web</option><option value="CLAUDE_WEB">Claude Web</option></select>
-        <p class="muted">준비 대화는 계속 ChatGPT에서 진행합니다. 위 설정은 독립 감사 단계에만 적용되며 준비를 시작하면 해당 작업에 고정됩니다.</p>
+        <p class="muted">감사 서비스 설정은 이 작업에 고정됩니다.</p>
         <label><input id="autoApprovePreparation" type="checkbox"> 첫 대화에서 확인 질문 없이 요구사항이 준비되면 자동 승인하고 구현 시작</label>
         <button id="planRun" disabled type="submit" class="primary">요구사항 정리 시작</button><p id="followUpSource" class="muted" hidden></p>
         <button id="startRun" hidden type="button" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
@@ -100,7 +100,7 @@
         <h2 id="startProgressTitle"></h2><p id="startProgressDetail"></p>
       </section>
       <section id="discardPanel" hidden class="recovery-panel">
-        <h2>확인되지 않은 요청 정리</h2><p>원래 ChatGPT 응답을 확인할 수 없을 때만 사용합니다. 같은 요청을 자동으로 다시 보내지 않고 기록을 보존한 채 새 작업을 시작할 수 있게 합니다.</p>
+        <h2>확인되지 않은 요청 정리</h2><p>응답 결과를 확인할 수 없을 때만 사용합니다. 같은 요청은 자동 재전송하지 않습니다.</p>
         <p id="discardDelivery" class="muted"></p>
         <label><input id="discardUnresolved" type="checkbox"> 원래 ChatGPT 응답 결과를 확인하지 못했습니다.</label>
         <label><input id="discardNoResend" type="checkbox"> 이 요청을 자동 재전송하지 않겠습니다.</label>
@@ -124,10 +124,10 @@
           <button id="sendWorkerIntervention" type="button" disabled>현재 Worker에 전달</button>
           <p id="workerInterventionStatus" class="muted" role="status"></p>
         </section>
-        <section id="decisionPanel" class="flow-band" hidden><h2>감사자의 확인 질문</h2><p>답변은 현재 변경사항의 재검토 자료로 기록됩니다. 요구사항이나 완료 기준을 바꾸려면 이 작업을 중단하고 새 작업으로 합의하세요.</p><div id="decisionQuestions"></div><button id="submitDecision" type="button" disabled>답변 보내고 독립 검토 재개</button><p id="decisionStatus" role="status"></p></section>
+        <section id="decisionPanel" class="flow-band" hidden><h2>감사자의 확인 질문</h2><p>답변은 재검토 자료로 기록됩니다. 범위 변경은 새 작업에서 승인하세요.</p><div id="decisionQuestions"></div><button id="submitDecision" type="button" disabled>답변 보내고 독립 검토 재개</button><p id="decisionStatus" role="status"></p></section>
         <section id="reviewDiscussionPanel" class="flow-band" hidden>
           <h2>감사자와 자유 대화</h2>
-          <p>현재 고정된 변경사항에 대해 Judge 또는 Critic에게 질문합니다. 이 대화는 기록과 다음 재감사의 참고자료일 뿐이며 감사 판정·요구사항·적용 권한을 직접 바꾸지 않습니다.</p>
+          <p>대화는 기록되지만 감사 판정과 적용 권한은 바뀌지 않습니다.</p>
           <label for="reviewDiscussionRole">대화 상대</label><select id="reviewDiscussionRole"><option value="JUDGE">Judge</option><option value="CRITIC">Critic</option></select>
           <label for="reviewDiscussionText">질문 · 의견</label><textarea id="reviewDiscussionText" rows="3" maxlength="4000" placeholder="현재 변경사항이나 감사 의견에 대해 자유롭게 질문하세요."></textarea>
           <button id="sendReviewDiscussion" type="button" disabled>감사자에게 보내기</button>
@@ -144,7 +144,7 @@
           <button id="discardReviewDiscussion" type="button" disabled>확인되지 않은 감사자 요청 정리</button>
         </div>
         <div id="reviewBindingRecoveryHost"></div>
-        <section id="recoveryPanel" hidden><h2>상태 확인 후 작업 종료</h2><p>CLI 프로세스·검증 작업과 웹 응답 생성이 모두 끝났는지 확인하고 대상 저장소의 변경 상태를 점검하세요. 기록과 작업 사본은 보존되며, 종료한 작업은 재개하거나 적용할 수 없습니다.</p>
+        <section id="recoveryPanel" hidden><h2>상태 확인 후 작업 종료</h2><p>외부 작업과 저장소 상태를 확인한 뒤 종료하세요. 종료한 작업은 재개하거나 적용할 수 없습니다.</p>
           <button id="reconcileRun" type="button" disabled>현재 실행 상태 진단</button><pre id="reconcileResult" role="status" aria-live="polite"></pre>
           <label><input id="recoveryConfirm" type="checkbox"> 외부 작업이 모두 종료되었고 대상 저장소의 변경 상태를 확인했습니다. 이 실행을 폐기합니다.</label>
           <button id="abandonRun" disabled>이 작업을 종료</button>
@@ -153,12 +153,12 @@
       <details id="runSecondaryTier" class="run-action-tier"><summary>다른 작업</summary>
         <div id="runSecondaryActionSlot" class="actions"><button id="stopRun" disabled>작업 중단</button><button id="retryRun" disabled title="복구 가능한 Worker 실패에서 활성화됩니다.">Worker 다시 실행</button><button id="applyCode" disabled>검토 통과 변경사항 적용</button><button id="continueProject" type="button" hidden>같은 폴더에서 이어서 작업</button><button id="exportEvidence" disabled>감사 기록 다운로드</button><button id="deleteRun" disabled>종료된 작업 삭제</button></div>
         <p id="stopReason" class="muted"></p><p id="commandReason" class="muted"></p><div id="runSecondaryContent"></div>
-        <p class="muted">기록은 자동 만료되지 않습니다. 종료된 작업을 삭제하면 실행 기록과 감사 근거를 복구할 수 없습니다. 적용된 프로젝트 코드는 유지됩니다.</p>
+        <p class="muted">삭제한 실행·감사 기록은 복구할 수 없습니다. 적용된 코드는 유지됩니다.</p>
       </details>
       <details id="runTechnicalTier" class="run-action-tier technical-diagnostics"><summary>실행 기술 정보</summary><div id="runTechnicalSlot"><p id="workerProvenance" class="muted"></p></div></details>
       <p id="commandResult" role="status"></p>
       <div class="tabs" role="group" aria-label="기록 종류"><button id="showConversation" aria-pressed="true">작업 대화·결정</button><button id="showAudit" aria-pressed="false">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
-      <section id="conversationPanel"><h2>작업 대화와 판단 기록</h2><p class="muted">구현자 보고와 검토자 의견은 기록입니다. 적용 가능 여부는 감사 판정과 별도 적용 상태에서 확인하세요.</p><div id="conversationTimeline"></div></section>
+      <section id="conversationPanel"><h2>작업 대화와 판단 기록</h2><p class="muted">적용 여부는 감사 판정과 적용 상태에서 확인하세요.</p><div id="conversationTimeline"></div></section>
       <section id="auditPanel" hidden><h2>요구사항별 판정</h2><div id="assessments"></div><h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>변경사항·검증 근거</h2><div id="evidenceList"></div><details><summary>고정 기준과 변경사항 상세</summary><pre id="candidateDetails"></pre></details></section>
       <section id="logPanel" hidden><div id="eventLog" role="log" aria-label="실제 진행 기록"></div></section>
     </section>

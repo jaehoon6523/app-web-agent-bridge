@@ -13,8 +13,8 @@ export function renderInitialRequest(workflow, preparation, $, text, document, c
   $("startProgress").setAttribute("aria-busy", String(pending));
   text("startProgressTitle", preparation?.state === "INITIALIZING" ? "ChatGPT 대화에 연결하고 있습니다"
     : pending ? "ChatGPT 응답을 기다리고 있습니다" : "요청 상태 확인이 필요합니다");
-  text("startProgressDetail", pending ? "응답 확인이 끝나면 준비 화면으로 이동합니다."
-    : (/[가-힣]/u.test(preparation?.error?.message ?? "") ? preparation.error.message : "요청 상태를 확인할 수 없습니다. 연결 상태와 기술 진단을 확인하세요."));
+  text("startProgressDetail", pending ? "응답 확인 후 준비 화면으로 이동합니다."
+    : (/[가-힣]/u.test(preparation?.error?.message ?? "") ? preparation.error.message : "요청 상태를 확인할 수 없습니다. 기술 진단을 확인하세요."));
   const activeTabCount = preparation?.error?.details?.activeTabCount;
   if (!pending && Number.isInteger(activeTabCount)) text("startProgressDetail", `${$("startProgressDetail").textContent} · 감지된 ChatGPT 활성 탭: ${activeTabCount}개`);
   for (const id of ["objective", "startRoot", "conversationUrl"]) {
