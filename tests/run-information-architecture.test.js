@@ -5,6 +5,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { reviewerRoleSummary, reviewerRuntimeTechnicalSummary } from "../public/run-context-view.js";
+import { runActionVisibility } from "../public/run-action-layout.js";
 
 const dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(dirname, "..");
@@ -36,12 +37,26 @@ test("run dashboard separates primary, contextual, recovery, secondary and techn
   assert.match(app, /createRunActionLayout\(\{ \$, text \}\)/u);
   assert.match(app, /createRunContextView\(\{ \$, text, labels, terminal, folderName, workerIdentity \}\)/u);
   assert.match(layout, /primaryActionIds = Object\.freeze\(\["submitDecision", "applyCode", "continueProject", "retryRun"\]\)/u);
-  assert.match(layout, /run\?\.phase === "AWAITING_APPLY" \? "applyCode"/u);
-  assert.match(layout, /run\?\.phase === "APPLIED".*"continueProject"/su);
-  assert.match(layout, /!\$\("retryRun"\)\.disabled \? "retryRun"/u);
+  assert.match(layout, /visibility\.apply \? "applyCode"/u);
+  assert.match(layout, /visibility\.continue \? "continueProject"/u);
+  assert.match(layout, /visibility\.retry.*"retryRun"/su);
   assert.match(layout, /runRecoveryTier.*reviewDiscussionRecovery.*reviewBindingRecoveryPanel.*recoveryPanel/su);
   assert.doesNotMatch(layout, /cloneNode|addEventListener|fetch\(|localStorage|sessionStorage/u);
   assert.doesNotMatch(context, /fetch\(|localStorage|sessionStorage/u);
+  assert.match(app, /async function request\(url, options = \{\}, \{ mutation = false \} = \{\}\)/u);
+  assert.match(app, /code: mutation \? "UNKNOWN_RESULT" : "READ_UNAVAILABLE"/u);
+});
+
+test("run action projection hides actions that are meaningless for settled and recovery states", () => {
+  assert.deepEqual(runActionVisibility({ phase:"APPLIED", archivedAt:null }), {
+    stop:false, retry:false, apply:false, continue:true, export:true, delete:true, archive:true,
+  });
+  assert.deepEqual(runActionVisibility({ phase:"AWAITING_APPLY", archivedAt:null }), {
+    stop:true, retry:false, apply:true, continue:false, export:true, delete:false, archive:false,
+  });
+  assert.deepEqual(runActionVisibility({ phase:"RECOVERY_REQUIRED", archivedAt:null }), {
+    stop:false, retry:true, apply:false, continue:false, export:true, delete:false, archive:false,
+  });
 });
 
 test("run context presents mixed-provider reviewer roles without technical binding identifiers", () => {
