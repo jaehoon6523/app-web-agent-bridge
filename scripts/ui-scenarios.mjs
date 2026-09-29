@@ -102,7 +102,7 @@ try {
  const unreachable=route=>route.abort();
  await page.route('**/api/state*',unreachable);
  await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('서버 응답 없음'),null,{timeout:20000});
- assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('unknown')),true);
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('error')),true);
  assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('unknown')),true);
  assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT/u);
  assert.equal(await page.locator('#planRun').isDisabled(),true);
