@@ -301,7 +301,7 @@ function disabledWebReason(action) {
 function projectConnectionIndicator(id, state, detail) {
   const serverReachable = connectionState.transport === TransportState.REACHABLE;
   const serverUnreachable = connectionState.transport === TransportState.UNREACHABLE;
-  const sessionAuthenticated = connectionState.session === DashboardSessionState.AUTHENTICATED;
+  const sessionAuthenticated = serverReachable && connectionState.session === DashboardSessionState.AUTHENTICATED;
   const sessionRejected = connectionState.session === DashboardSessionState.REJECTED;
   const sessionInvalid = connectionState.session === DashboardSessionState.AUTH_INVALID;
   const stateReadFailed = connectionState.stateRead === StateReadState.FAILED;
