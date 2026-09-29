@@ -80,6 +80,8 @@ test("fault: runtime initialization failure does not become HTTP, auth, prefligh
     code:"RUNTIME_FAULT_INJECTED",
     message:"injected live runtime failure",
   });
+  assert.deepEqual(state.runs, []);
+  assert.deepEqual(state.dataKnowledge.runs, { status:"UNAVAILABLE" });
   assert.equal(state.workflow.stage, "START");
   assert.equal(state.commandCapabilities.includes("preparation.start"), false);
   assert.equal(state.preflight.checks.extensionConfigured, true);

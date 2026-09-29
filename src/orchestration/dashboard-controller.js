@@ -87,6 +87,7 @@ export class DashboardController {
           code:typeof error?.code === "string" && error.code ? error.code : "LIVE_RUNTIME_UNAVAILABLE",
           message:redactForEvidence(error?.message || "Live runtime is unavailable."),
         },
+        dataKnowledge:{ runs:{ status:"UNAVAILABLE" } },
         starting:this.#starting,
         drafts:{},
       };
@@ -103,6 +104,7 @@ export class DashboardController {
         ...snapshot,
         runs:runs.map(dashboardRunSummary),
         runtimeAvailability:{ ready:true, code:null, message:null },
+        dataKnowledge:{ runs:{ status:runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
       };
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
@@ -149,6 +151,7 @@ export class DashboardController {
       commandCapabilities: commands,
       preflight: this.#preflight(),
       runtimeAvailability:{ ready:true, code:null, message:null },
+      dataKnowledge:{ runs:{ status:runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
       error: run ? this.#errors.get(run.runId) ?? (runtimes || isTerminalRunPhase(run.phase)
         ? null : "이 실행은 이전 서버 세션의 기록입니다. 자동 재전송하지 않습니다. 기록을 확인한 뒤 중단하고 새 실행을 시작하세요.") : null,
       starting: this.#starting,

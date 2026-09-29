@@ -104,6 +104,19 @@ try {
  assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/서버 응답 없음|대시보드 인증 실패/u);
  fixture.extensionAuthenticated=true; await page.reload(); await enabled('planRun');
 
+ // CASE F: runtime failure with runs=[] is unknown history, not a verified empty history.
+ fixture.runtimeAvailable=false; await page.reload();
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('실행 런타임 준비 필요'));
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.match(await page.locator('#engineHealthDetail').textContent(),/런타임 준비 필요/u);
+ assert.match(await page.locator('#historyFilterSummary').textContent(),/작업 기록 조회 불가/u);
+ assert.doesNotMatch(await page.locator('#historyFilterSummary').textContent(),/전체 0건/u);
+ assert.equal(await page.locator('#newRun').isDisabled(),true);
+ assert.equal(await page.locator('#planRun').isDisabled(),true);
+ assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/서버 응답 없음|대시보드 인증 실패/u);
+ fixture.runtimeAvailable=true; await page.reload(); await enabled('planRun');
+
  await page.fill('#objective','UI scenario task'); await page.fill('#startRoot',target);
  await page.fill('#conversationUrl','https://example.com/invalid'); await page.click('#planRun');
  assert.equal(fixture.mutations.length,0);

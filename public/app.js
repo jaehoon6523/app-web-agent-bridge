@@ -3,6 +3,8 @@ import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 import { createRunActionLayout } from "./run-action-layout.js";
+import { projectRunListKnowledge } from "./dashboard-run-list-knowledge.js";
+import { projectDashboardStartActions } from "./dashboard-start-actions.js";
 import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-context-view.js";
 import {
   DashboardSessionState, ExtensionState, StateReadState, TransportState,
@@ -509,38 +511,43 @@ function render() {
       : lastBinding ? `연결됨 · ${lastBinding.bindingStatus}` : "연결 필요");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
-  const unfinished = snapshot?.runs?.find((r) => !terminal.has(r.phase));
+  const runListKnowledge = projectRunListKnowledge(snapshot), runsKnown = runListKnowledge.status !== "UNAVAILABLE";
+  const allRuns = runListKnowledge.runs ?? [], unfinished = runsKnown ? allRuns.find((r) => !terminal.has(r.phase)) : null;
   const busy = Boolean(unfinished);
+  const startActions = projectDashboardStartActions({ stateAvailable:knowledge.stateRead.currentlyAvailable, runListKnowledge,
+    runtimeAvailable:snapshot?.runtimeAvailability?.ready === true, extensionAuthenticated:checks?.extensionAuthenticated === true,
+    preparationStartCapability:caps.has("preparation.start"), hasUnfinishedRun:busy, workflowStage:workflow.stage,
+    preparationActive:preparation?.lifecycle === "ACTIVE" });
   syncReviewerProviderControls();
   const reviewerProvidersLocked = workflow.stage !== "START" || operations.preparationStart !== "IDLE" || !connected || busy;
   $("judgeReviewerProvider").disabled = reviewerProvidersLocked;
   $("criticReviewerProvider").disabled = reviewerProvidersLocked;
-  $("planRun").disabled = (operations.runCommand !== "IDLE") || !connected || busy || (operations.webTurn !== "IDLE");
-  $("newRun").disabled = (operations.runCommand !== "IDLE") || busy; text("newRunReason", busy ? "진행 중인 작업을 먼저 확인하세요." : "");
+  $("planRun").disabled = (operations.runCommand !== "IDLE") || !startActions.canStartPreparation || (operations.webTurn !== "IDLE");
+  $("newRun").disabled = (operations.runCommand !== "IDLE") || !startActions.canOpenNewRun;
+  text("newRunReason", !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다." : busy ? "진행 중인 작업을 먼저 확인하세요." : "");
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   $("historySearch").value = historyQuery;
   $("historyStatusFilter").value = ["ALL", "ACTIVE", "ATTENTION", "CLOSED", "ARCHIVED"].includes(historyScope) ? historyScope : "ALL";
   historyScope = $("historyStatusFilter").value;
-  const allRuns = snapshot?.runs ?? [];
   const activeHistoryRuns = allRuns.filter((item) => !item.archivedAt);
   const archivedHistoryRuns = allRuns.filter((item) => item.archivedAt);
   const filteredRuns = filterRunsForHistory(allRuns, { query:historyQuery, scope:historyScope });
   const filtersActive = Boolean(historyQuery.trim()) || historyScope !== "ALL";
   $("historyClearFilters").hidden = !filtersActive;
   const historyBaseCount = historyScope === "ARCHIVED" ? archivedHistoryRuns.length : activeHistoryRuns.length;
-  text("historyFilterSummary", filtersActive ? `${historyBaseCount}건 중 ${filteredRuns.length}건 표시`
-    : `전체 ${activeHistoryRuns.length}건 · 보관 ${archivedHistoryRuns.length}건`);
+  text("historyFilterSummary", !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다."
+    : filtersActive ? `${historyBaseCount}건 중 ${filteredRuns.length}건 표시` : `전체 ${activeHistoryRuns.length}건 · 보관 ${archivedHistoryRuns.length}건`);
   const list = $("runList"); list.replaceChildren();
-  const groups = groupRunsByProject(activeHistoryRuns);
-  for (const record of snapshot?.projectConversations ?? []) {
+  const groups = runsKnown ? groupRunsByProject(activeHistoryRuns) : [];
+  if (runsKnown) for (const record of snapshot?.projectConversations ?? []) {
     if (record.targetRoot && !groups.some((item) => item.targetRoot === record.targetRoot)) groups.push({ targetRoot:record.targetRoot, runs:[] });
   }
-  if (projectViewRoot && !groups.some((item) => item.targetRoot === projectViewRoot)) {
+  if (runsKnown && projectViewRoot && !groups.some((item) => item.targetRoot === projectViewRoot)) {
     projectViewRoot = null; sessionStorage.setItem("bridge.project.view", "");
   }
-  const historyGroups = groupRunsByProject(filteredRuns);
-  if (historyScope === "ALL") {
+  const historyGroups = runsKnown ? groupRunsByProject(filteredRuns) : [];
+  if (runsKnown && historyScope === "ALL") {
     const needle = historyQuery.trim().toLowerCase();
     for (const record of snapshot?.projectConversations ?? []) {
       if (!record.targetRoot || historyGroups.some((item) => item.targetRoot === record.targetRoot)) continue;
@@ -549,7 +556,8 @@ function render() {
       if (!needle || target.includes(needle) || name.includes(needle)) historyGroups.push({ targetRoot:record.targetRoot, runs:[] });
     }
   }
-  $("historyEmpty").hidden = historyGroups.length > 0;
+  $("historyEmpty").hidden = runsKnown && historyGroups.length > 0;
+  text("historyEmpty", runsKnown ? "조건에 맞는 실행 기록이 없습니다." : "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다.");
   for (const group of historyGroups) {
     const section = node("section", "", "project-history");
     const projectHeadingLink = Boolean(group.targetRoot && historyScope !== "ARCHIVED");
@@ -618,10 +626,11 @@ function render() {
   renderInitialRequest(workflow, preparation, $, text, document, capabilities().has("preparation.cancel"));
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
-  actionState("planRun", !webConnected() || !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
+  actionState("planRun", !startActions.canStartPreparation || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
     runtimeUnavailable ? "실행 런타임 준비가 필요합니다."
-      : !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다."
-        : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
+      : !knowledge.stateRead.currentlyAvailable || !runsKnown ? "최신 상태와 작업 기록을 확인한 뒤 준비 대화를 시작할 수 있습니다."
+        : !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다."
+          : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
     "ChatGPT 탭이 없으면 새 탭을 열고 첫 부탁을 전송합니다.");
   if (workflow.stage === "START") {
     if (workflow.state === "CONNECTING_WEB") {
@@ -633,10 +642,9 @@ function render() {
     }
   }
   $("chooseFolder").disabled = !connected || operations.folderPicker !== "IDLE" || preparation?.lifecycle === "ACTIVE";
-  $("newRun").disabled = !connected || busy || operations.preparationStart !== "IDLE"
-    || operations.runCommand !== "IDLE" || ["PREPARE", "WORK"].includes(workflow.stage)
-    || preparation?.lifecycle === "ACTIVE";
-  text("newRunReason", !connected ? "최신 상태 확인 후 새 작업을 시작할 수 있습니다."
+  $("newRun").disabled = !startActions.canOpenNewRun || operations.preparationStart !== "IDLE" || operations.runCommand !== "IDLE";
+  text("newRunReason", !knowledge.stateRead.currentlyAvailable ? "최신 상태 확인 후 새 작업을 시작할 수 있습니다."
+    : !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인한 뒤 새 작업을 시작할 수 있습니다."
     : workflow.stage === "PREPARE" ? "현재 준비를 유지합니다. 종료하려면 ‘준비 취소’를 선택하세요."
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
