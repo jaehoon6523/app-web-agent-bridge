@@ -140,6 +140,24 @@ export function dashboardStateReady(state) {
     && state?.stateRead === StateReadState.READY;
 }
 
+export function projectDashboardKnowledge(state) {
+  return Object.freeze({
+    transport:Object.freeze({
+      state:state?.transport ?? TransportState.UNKNOWN,
+      currentlyReachable:state?.transport === TransportState.REACHABLE,
+    }),
+    session:Object.freeze({
+      lastKnownState:state?.session ?? DashboardSessionState.UNKNOWN,
+      currentlyVerified:state?.transport === TransportState.REACHABLE
+        && state?.session === DashboardSessionState.AUTHENTICATED,
+    }),
+    stateRead:Object.freeze({
+      state:state?.stateRead ?? StateReadState.IDLE,
+      currentlyAvailable:state?.stateRead === StateReadState.READY,
+    }),
+  });
+}
+
 export function projectBrowserState(preflight) {
   if (!preflight || typeof preflight !== "object") {
     return Object.freeze({ extension:ExtensionState.UNKNOWN, binding:WebBindingState.UNKNOWN });

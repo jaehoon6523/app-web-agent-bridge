@@ -149,6 +149,21 @@ export function workflowForRun(run) {
   return { stage: RESULT_STATES.has(state) ? "RESULT" : "WORK", state, runId: run.runId, runVersion: run.version };
 }
 
+/** Applies only runtime/run-view constraints to already-derived preparation capabilities. */
+export function filterPreparationCapabilitiesForRuntimeContext({
+  capabilities,
+  runtimeAvailable,
+  showingRun,
+  canStart,
+}) {
+  if (!Array.isArray(capabilities)) throw new TypeError("capabilities must be an array.");
+  return capabilities.filter((capability) => {
+    if (capability === "preparation.start") return canStart && runtimeAvailable;
+    if (capability === "preparation.approve") return !showingRun && runtimeAvailable;
+    return !showingRun;
+  });
+}
+
 /** Owns preparation identity, durable receipts, and all PREPARE transitions.
  * @param is intentionally kept in the injected boundaries for testability.
  */
@@ -857,10 +872,12 @@ export class PreparationService {
       runId: workflow.runId ?? null, runVersion: workflow.runVersion ?? null });
     const canStart = !snapshot.runs.some((r) => !terminal.has(r.phase));
     const caps = showingRun ? snapshot.commandCapabilities.filter((c) => c !== "run.start") : [];
-    if (!runId) caps.push(...this.capabilities().filter((c) =>
-      c === "preparation.start" ? canStart && runtimeAvailable
-        : c === "preparation.approve" ? !showingRun && runtimeAvailable
-          : !showingRun));
+    if (!runId) caps.push(...filterPreparationCapabilitiesForRuntimeContext({
+      capabilities:this.capabilities(),
+      runtimeAvailable,
+      showingRun,
+      canStart,
+    }));
     return { ...snapshot, workflow, preparation: structuredClone(context),
       projectConversations:Object.entries(this.data.projectConversations).map(([targetRoot, record]) => ({ targetRoot, ...record })),
       run: showingRun ? snapshot.run : null,

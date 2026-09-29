@@ -47,17 +47,40 @@ try {
  await page.keyboard.press('Space');assert.equal(await page.locator('#engineHealthDetail').isVisible(),false);
  // QA-150: No duplicate IDs can redirect a status update to another element.
  assert.equal(await page.evaluate(()=>{const ids=[...document.querySelectorAll('[id]')].map(el=>el.id);return ids.length===new Set(ids).size;}),true);
- // Verify real fetch cancellation, not only a simulated thrown timeout error.
- const held=[]; const holdState=route=>{held.push(route);};
- await page.route('**/api/state*',holdState);
- await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('unknown'),null,{timeout:20000});
- assert.ok(held.length > 0);
- assert.match(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT/);
- assert.equal(await page.locator('.system-health summary').evaluateAll(es=>es.every(el=>el.classList.contains('unknown'))),true);
+ // CASE A: a received 503 is state degradation, not proof that the HTTP server is down.
+ const state503=route=>route.fulfill({status:503,contentType:'application/json',
+   body:JSON.stringify({error:'injected state read failure'})});
+ await page.route('**/api/state*',state503);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('상태 조회 실패'),null,{timeout:20000});
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT|서버 응답 없음|npm start/u);
  assert.equal(await page.locator('#planRun').isDisabled(),true);
- await page.unroute('**/api/state*',holdState);
- for(const route of held) await route.abort().catch(()=>{});
- await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('ok'));
+ await page.unroute('**/api/state*',state503);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent==='');
+
+ // CASE B: a network-level failure is a distinct transport failure and still is not mutation UNKNOWN_RESULT.
+ const unreachable=route=>route.abort();
+ await page.route('**/api/state*',unreachable);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('서버 응답 없음'),null,{timeout:20000});
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('unknown')),true);
+ assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('unknown')),true);
+ assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT/u);
+ assert.equal(await page.locator('#planRun').isDisabled(),true);
+ await page.unroute('**/api/state*',unreachable);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent==='');
+
+ // CASE C: malformed HTTP 200 state is a projection failure while transport/auth remain known.
+ const malformed=route=>route.fulfill({status:200,contentType:'application/json',
+   body:JSON.stringify({runs:[],commandCapabilities:[],preflight:{}})});
+ await page.route('**/api/state*',malformed);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('상태 응답 해석 실패'),null,{timeout:20000});
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/서버 응답 없음|UNKNOWN_RESULT|npm start/u);
+ assert.equal(await page.locator('#planRun').isDisabled(),true);
+ await page.unroute('**/api/state*',malformed);
+ await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent==='');
  const enabled = id => page.waitForFunction(id => !document.getElementById(id).disabled, id);
  const visible = id => page.locator(`#${id}`).waitFor({state:'visible'});
  const stage = id => page.waitForFunction(id => document.getElementById(id).getAttribute('aria-current') === 'step', id);
@@ -165,7 +188,7 @@ try {
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
  await screenshot('11-mobile');
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({result:'PASS',screenshots:output,scenarios:['first-use','health/timeout','input validation',
+ console.log(JSON.stringify({result:'PASS',screenshots:output,scenarios:['first-use','health/degraded-state-matrix','input validation',
    'root waiting','document-change diagnostic/cancel','preparation/reply/reload/approval','blocked history',
    'stop','recovery/action hierarchy','disconnect/reconnect','review retry primary','evidence/apply primary','applied follow-up primary','mobile'],pageErrors:errors},null,2));
 } catch(error) {

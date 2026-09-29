@@ -9,7 +9,7 @@ import {
   classifyDashboardFailure, connectionNoticeFor, dashboardStateReady,
   initialDashboardConnectionState, markDashboardSessionAuthenticated,
   markDashboardSessionPending, markStateReadReady, markStateReadStarted,
-  projectBrowserState, requestFailureCode,
+  projectBrowserState, projectDashboardKnowledge, requestFailureCode,
 } from "./dashboard-connection-state.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
@@ -484,8 +484,11 @@ function render() {
   const readiness = JSON.stringify([connected, preflight, [...caps], snapshot?.runs]);
   if (readiness !== readinessSignature) { lastCommandError = ""; readinessSignature = readiness; }
   const checks = preflight?.checks;
-  health("apiHealth", "서버", connected ? "ok" : "unknown", connected ? "정상" : "확인 필요");
-  health("sessionHealth", "대시보드", connected && token ? "ok" : "unknown", connected && token ? "인증됨" : "확인 필요");
+  const knowledge = projectDashboardKnowledge(connectionState);
+  health("apiHealth", "서버", knowledge.transport.currentlyReachable ? "ok" : "unknown",
+    knowledge.transport.currentlyReachable ? "정상" : "확인 필요");
+  health("sessionHealth", "대시보드", knowledge.session.currentlyVerified ? "ok" : "unknown",
+    knowledge.session.currentlyVerified ? "인증됨" : "확인 필요");
   const runtimeUnavailable = snapshot?.runtimeAvailability?.ready === false;
   const workerStatus = runtimeUnavailable
     ? { state:"warn", detail:"런타임 준비 필요" }
@@ -493,7 +496,8 @@ function render() {
   health("engineHealth", "Worker", workerStatus.state, workerStatus.detail);
   health("channelHealth", "확장", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
     !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "연결됨" : "연결 대기");
-  signal("serverSignal", "서버", connected ? "ok" : "error", connected ? "연결됨" : "상태 확인 필요");
+  signal("serverSignal", "서버", knowledge.transport.currentlyReachable ? "ok" : "error",
+    knowledge.transport.currentlyReachable ? "연결됨" : "상태 확인 필요");
   signal("cliSignal", "CLI", connected ? workerStatus.state : "warn",
     !connected ? "상태 확인 필요" : workerStatus.detail);
   const webAuthenticated = checks?.extensionAuthenticated === true;
