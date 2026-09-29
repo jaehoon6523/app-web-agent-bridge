@@ -4,11 +4,28 @@ export const RunListKnowledgeStatus = Object.freeze({
   UNAVAILABLE:"UNAVAILABLE",
 });
 
-export function projectRunListKnowledge(snapshot) {
-  const declared = snapshot?.dataKnowledge?.runs?.status ?? RunListKnowledgeStatus.UNAVAILABLE;
-  const runs = Array.isArray(snapshot?.runs) ? snapshot.runs : [];
+function invalidRunListKnowledge(message) {
+  return Object.assign(new TypeError(message), {
+    code:"DASHBOARD_STATE_INVALID",
+    status:200,
+    responseReceived:true,
+  });
+}
 
+export function projectRunListKnowledge(snapshot) {
+  if (!Array.isArray(snapshot?.runs)) {
+    throw invalidRunListKnowledge("runs must be an array before run-list knowledge can be projected.");
+  }
+  const declared = snapshot?.dataKnowledge?.runs?.status;
+  const runs = snapshot.runs;
+
+  if (typeof declared !== "string" || !declared) {
+    throw invalidRunListKnowledge("dataKnowledge.runs.status is required.");
+  }
   if (declared === RunListKnowledgeStatus.UNAVAILABLE) {
+    if (runs.length !== 0) {
+      throw invalidRunListKnowledge("UNAVAILABLE run knowledge cannot contain current runs.");
+    }
     return Object.freeze({
       status:RunListKnowledgeStatus.UNAVAILABLE,
       count:null,
@@ -16,7 +33,9 @@ export function projectRunListKnowledge(snapshot) {
     });
   }
   if (declared === RunListKnowledgeStatus.AVAILABLE_EMPTY) {
-    if (runs.length !== 0) throw new TypeError("AVAILABLE_EMPTY run knowledge cannot contain runs.");
+    if (runs.length !== 0) {
+      throw invalidRunListKnowledge("AVAILABLE_EMPTY run knowledge cannot contain runs.");
+    }
     return Object.freeze({
       status:RunListKnowledgeStatus.AVAILABLE_EMPTY,
       count:0,
@@ -24,12 +43,14 @@ export function projectRunListKnowledge(snapshot) {
     });
   }
   if (declared === RunListKnowledgeStatus.AVAILABLE_NONEMPTY) {
-    if (runs.length === 0) throw new TypeError("AVAILABLE_NONEMPTY run knowledge requires at least one run.");
+    if (runs.length === 0) {
+      throw invalidRunListKnowledge("AVAILABLE_NONEMPTY run knowledge requires at least one run.");
+    }
     return Object.freeze({
       status:RunListKnowledgeStatus.AVAILABLE_NONEMPTY,
       count:runs.length,
       runs:Object.freeze([...runs]),
     });
   }
-  throw new TypeError(`Unknown run-list knowledge status: ${declared}`);
+  throw invalidRunListKnowledge(`Unknown run-list knowledge status: ${declared}`);
 }

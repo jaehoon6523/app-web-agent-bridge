@@ -27,6 +27,22 @@ const page=await browser.newPage({viewport:{width:1280,height:960}});
 const errors=[]; page.on('pageerror',e=>errors.push(e.message));
 const screenshot=async(name)=>page.screenshot({path:path.join(output,name+'.png'),fullPage:true});
 try {
+ // CASE 0: no snapshot has ever been observed. A cold-start state failure must render safely and polling must recover.
+ const coldPage=await browser.newPage({viewport:{width:1280,height:960}});
+ const coldErrors=[]; coldPage.on('pageerror',e=>coldErrors.push(e.message));
+ const coldStateFailure=route=>route.abort();
+ await coldPage.route('**/api/state*',coldStateFailure);
+ await coldPage.goto(config.baseUrl);
+ await coldPage.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('서버 응답 없음'),null,{timeout:20000});
+ assert.equal(await coldPage.locator('#newRun').isDisabled(),true);
+ assert.equal(await coldPage.locator('#planRun').isDisabled(),true);
+ assert.match(await coldPage.locator('#historyFilterSummary').textContent(),/확인할 수 없습니다|확인하지 못했습니다/u);
+ assert.deepEqual(coldErrors,[]);
+ await coldPage.unroute('**/api/state*',coldStateFailure);
+ await coldPage.waitForFunction(()=>!document.getElementById('newRun').disabled,null,{timeout:20000});
+ assert.deepEqual(coldErrors,[]);
+ await coldPage.close();
+
  await page.goto(config.baseUrl); await page.locator('#startPanel').waitFor({state:'visible'});
  await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
  await screenshot('01-first-use');
@@ -70,9 +86,15 @@ try {
  await page.unroute('**/api/state*',unreachable);
  await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent==='');
 
- // CASE C: malformed HTTP 200 state is a projection failure while transport/auth remain known.
+ // CASE C: an otherwise valid 200 snapshot missing required run knowledge is a projection failure.
  const malformed=route=>route.fulfill({status:200,contentType:'application/json',
-   body:JSON.stringify({runs:[],commandCapabilities:[],preflight:{}})});
+   body:JSON.stringify({
+     workflow:{stage:'START',state:'START_IDLE'},
+     runs:[],
+     commandCapabilities:['preparation.start'],
+     preflight:{checks:{extensionAuthenticated:true}},
+     runtimeAvailability:{ready:true,code:null,message:null},
+   })});
  await page.route('**/api/state*',malformed);
  await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('상태 응답 해석 실패'),null,{timeout:20000});
  assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);

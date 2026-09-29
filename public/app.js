@@ -218,6 +218,7 @@ async function refresh() {
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
+    projectRunListKnowledge(result);
     const canonical = normalizeDashboardState(result);
     connectionState = markStateReadReady(connectionState);
     connected = dashboardStateReady(connectionState);
@@ -511,7 +512,10 @@ function render() {
       : lastBinding ? `연결됨 · ${lastBinding.bindingStatus}` : "연결 필요");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
-  const runListKnowledge = projectRunListKnowledge(snapshot), runsKnown = runListKnowledge.status !== "UNAVAILABLE";
+  const runListKnowledge = snapshot
+    ? projectRunListKnowledge(snapshot)
+    : Object.freeze({ status:"NOT_OBSERVED", count:null, runs:null });
+  const runsKnown = ["AVAILABLE_EMPTY", "AVAILABLE_NONEMPTY"].includes(runListKnowledge.status);
   const allRuns = runListKnowledge.runs ?? [], unfinished = runsKnown ? allRuns.find((r) => !terminal.has(r.phase)) : null;
   const busy = Boolean(unfinished);
   const startActions = projectDashboardStartActions({ stateAvailable:knowledge.stateRead.currentlyAvailable, runListKnowledge,

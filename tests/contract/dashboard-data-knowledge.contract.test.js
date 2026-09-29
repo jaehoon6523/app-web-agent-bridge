@@ -79,12 +79,32 @@ test("contract: runtime failure plus runs=[] is UNAVAILABLE, never AVAILABLE_EMP
   dashboard.close();
 });
 
+test("contract: missing run knowledge metadata is a projection error, not implicit UNAVAILABLE", () => {
+  assert.throws(
+    () => projectRunListKnowledge({ runs:[] }),
+    (error) => error?.code === "DASHBOARD_STATE_INVALID"
+      && error?.status === 200
+      && error?.responseReceived === true,
+  );
+  assert.throws(
+    () => projectRunListKnowledge(null),
+    (error) => error?.code === "DASHBOARD_STATE_INVALID",
+  );
+});
+
 test("contract: contradictory declared knowledge is rejected instead of silently reinterpreted", () => {
   assert.throws(
     () => projectRunListKnowledge({
       runs:[{ runId:"unexpected" }],
       dataKnowledge:{ runs:{ status:"AVAILABLE_EMPTY" } },
     }),
-    /AVAILABLE_EMPTY/u,
+    (error) => error?.code === "DASHBOARD_STATE_INVALID",
+  );
+  assert.throws(
+    () => projectRunListKnowledge({
+      runs:[{ runId:"stale-without-freshness-semantics" }],
+      dataKnowledge:{ runs:{ status:"UNAVAILABLE" } },
+    }),
+    (error) => error?.code === "DASHBOARD_STATE_INVALID",
   );
 });
