@@ -821,8 +821,9 @@ export class PreparationService {
     return caps;
   }
   async project(snapshot, { runId = null, start = false } = {}) {
+    const runtimeAvailable = snapshot?.runtimeAvailability?.ready !== false;
     let context = this.current;
-    if (context?.reservedRunId && !context.resultingRunId) {
+    if (runtimeAvailable && context?.reservedRunId && !context.resultingRunId) {
       const existing = await this.findRun(context.reservedRunId);
       if (existing) {
         context.resultingRunId = existing.runId; context.agreement.status = "APPROVED";
@@ -857,7 +858,9 @@ export class PreparationService {
     const canStart = !snapshot.runs.some((r) => !terminal.has(r.phase));
     const caps = showingRun ? snapshot.commandCapabilities.filter((c) => c !== "run.start") : [];
     if (!runId) caps.push(...this.capabilities().filter((c) =>
-      c === "preparation.start" ? canStart : !showingRun));
+      c === "preparation.start" ? canStart && runtimeAvailable
+        : c === "preparation.approve" ? !showingRun && runtimeAvailable
+          : !showingRun));
     return { ...snapshot, workflow, preparation: structuredClone(context),
       projectConversations:Object.entries(this.data.projectConversations).map(([targetRoot, record]) => ({ targetRoot, ...record })),
       run: showingRun ? snapshot.run : null,

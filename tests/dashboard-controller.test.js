@@ -63,6 +63,28 @@ async function settled(dashboard, runId) {
   throw new Error("Run did not settle.");
 }
 
+test("dashboard snapshot remains readable when live runtime initialization fails", async (t) => {
+  const dashboard = new DashboardController({
+    getRuntime:async () => {
+      throw Object.assign(new Error("runtime initialization failed"), { code:"RUNTIME_INIT_FAILED" });
+    },
+    preflight:() => ({ checks:{ extensionAuthenticated:true }, readyForProvisioning:false }),
+    webSession:null,
+    transport:null,
+  });
+  t.after(() => dashboard.close());
+
+  const state = await dashboard.snapshot();
+  assert.deepEqual(state.runs, []);
+  assert.deepEqual(state.commandCapabilities, []);
+  assert.equal(state.preflight.checks.extensionAuthenticated, true);
+  assert.deepEqual(state.runtimeAvailability, {
+    ready:false,
+    code:"RUNTIME_INIT_FAILED",
+    message:"runtime initialization failed",
+  });
+});
+
 test("dashboard runs both actors, exposes durable output, and acknowledges stored Web responses", async (t) => {
   const { dashboard, store, sessions, live } = fixture(t);
   const { runId } = await dashboard.execute({ type: "run.start", payload: { expectedVersion: 0, mode: "DISCUSSION", objective: "Test relay", maxTurns: 2, conversationUrl: "https://chatgpt.com/c/conversation-test" } });

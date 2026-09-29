@@ -252,6 +252,25 @@ test("server boots without optional live credentials and local browser session r
   assert.ok(session.body.token.length >= 32);
   assert.equal(session.body.staticTokenConfigured, false);
 
+  const stateResponse = await fetch(`${baseHttp}/api/state`, {
+    headers: { authorization: `Bearer ${session.body.token}` },
+  });
+  assert.equal(stateResponse.status, 200);
+  const state = await stateResponse.json();
+  assert.equal(state.runtimeAvailability.ready, false);
+  assert.equal(state.workflow.stage, "START");
+  assert.equal(state.commandCapabilities.includes("preparation.start"), false);
+
+  const unresolvedResponse = await fetch(`${baseHttp}/api/state?requestId=missing-request`, {
+    headers: { authorization: `Bearer ${session.body.token}` },
+  });
+  assert.equal(unresolvedResponse.status, 200);
+  const unresolved = await unresolvedResponse.json();
+  assert.deepEqual(unresolved.requestResult, {
+    requestId:"missing-request",
+    status:"UNAVAILABLE",
+  });
+
   const projectResponse = await fetch(`${baseHttp}/api/project`, {
     headers: { authorization: `Bearer ${session.body.token}` },
   });

@@ -222,9 +222,11 @@ async function refresh() {
     snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
+    const runtimeUnavailable = result.runtimeAvailability?.ready === false;
     const extensionNeedsPreparation = workflow.stage === "PREPARE";
-    text("connectionNotice", !extensionNeedsPreparation || result.preflight?.checks?.extensionAuthenticated === true
-      ? ""
+    text("connectionNotice", runtimeUnavailable
+      ? "서버·대시보드 정상 · 실행 런타임 준비 필요"
+      : !extensionNeedsPreparation || result.preflight?.checks?.extensionAuthenticated === true ? ""
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
     for (const [operation, requestId] of unknownRequests) {
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
@@ -272,7 +274,7 @@ function renderPreparationPersistence() {
   }
   const savedAt = preparation.updatedAt ? ` · 마지막 저장 ${time(preparation.updatedAt)}` : "";
   if (!connected) {
-    element.textContent = `저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 서버 연결 끊김으로 저장/폐기 조작 불가`;
+    element.textContent = `저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 최신 상태 미확인으로 조작 불가`;
     element.className = "persistence-status warn";
     return;
   }
@@ -414,7 +416,7 @@ function evidenceLinks(container, refs) {
   for (const id of refs ?? []) {
     const button = node("button", `근거 ${id.slice(-8)}`);
     button.disabled = !connected || (operations.runCommand !== "IDLE");
-    button.title = !connected ? "서버 연결을 복구하면 근거를 열 수 있습니다."
+    button.title = !connected ? "최신 상태 확인 후 근거를 열 수 있습니다."
       : (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나면 근거를 열 수 있습니다." : "근거 원문을 엽니다.";
     button.addEventListener("click", () => openEvidence(id)); links.append(button);
   }
@@ -484,19 +486,22 @@ function render() {
   const checks = preflight?.checks;
   health("apiHealth", "서버", connected ? "ok" : "unknown", connected ? "정상" : "확인 필요");
   health("sessionHealth", "대시보드", connected && token ? "ok" : "unknown", connected && token ? "인증됨" : "확인 필요");
-  const workerStatus = workerRuntimeStatus(snapshot?.workerRuntime);
+  const runtimeUnavailable = snapshot?.runtimeAvailability?.ready === false;
+  const workerStatus = runtimeUnavailable
+    ? { state:"warn", detail:"런타임 준비 필요" }
+    : workerRuntimeStatus(snapshot?.workerRuntime);
   health("engineHealth", "Worker", workerStatus.state, workerStatus.detail);
   health("channelHealth", "확장", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
     !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "연결됨" : "연결 대기");
-  signal("serverSignal", "서버", connected ? "ok" : "error", connected ? "연결됨" : "연결 끊김 · npm start 확인 필요");
+  signal("serverSignal", "서버", connected ? "ok" : "error", connected ? "연결됨" : "상태 확인 필요");
   signal("cliSignal", "CLI", connected ? workerStatus.state : "warn",
-    !connected ? "서버 확인 필요" : workerStatus.detail);
+    !connected ? "상태 확인 필요" : workerStatus.detail);
   const webAuthenticated = checks?.extensionAuthenticated === true;
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
     !connected ? "상태 확인 필요" : webAuthenticated ? "연결됨" : "연결 대기");
   const lastBinding = preflight?.lastWebBinding;
   signal("webBindingSignal", "대화 탭", !connected || !webAuthenticated || !["BOUND", "ROOT_READY"].includes(lastBinding?.bindingStatus) ? "warn" : "ok",
-    !connected ? "서버 확인 필요" : !webAuthenticated ? "확장 연결 대기"
+    !connected ? "상태 확인 필요" : !webAuthenticated ? "확장 연결 대기"
       : lastBinding ? `연결됨 · ${lastBinding.bindingStatus}` : "연결 필요");
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
@@ -610,7 +615,9 @@ function render() {
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
   actionState("planRun", !webConnected() || !caps.has("preparation.start") || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
-    !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다." : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
+    runtimeUnavailable ? "실행 런타임 준비가 필요합니다."
+      : !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다."
+        : "현재 요청이나 작업이 끝나야 준비 대화를 시작할 수 있습니다.",
     "ChatGPT 탭이 없으면 새 탭을 열고 첫 부탁을 전송합니다.");
   if (workflow.stage === "START") {
     if (workflow.state === "CONNECTING_WEB") {
@@ -625,7 +632,7 @@ function render() {
   $("newRun").disabled = !connected || busy || operations.preparationStart !== "IDLE"
     || operations.runCommand !== "IDLE" || ["PREPARE", "WORK"].includes(workflow.stage)
     || preparation?.lifecycle === "ACTIVE";
-  text("newRunReason", !connected ? "서버 연결 후 새 작업 입력 화면을 열 수 있습니다."
+  text("newRunReason", !connected ? "최신 상태 확인 후 새 작업을 시작할 수 있습니다."
     : workflow.stage === "PREPARE" ? "현재 준비를 유지합니다. 종료하려면 ‘준비 취소’를 선택하세요."
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
@@ -679,7 +686,7 @@ function render() {
   } else if (!discussionBinding) {
     text("reviewDiscussionStatus", `${discussionRole}의 기존 대화 연결이 아직 확인되지 않았습니다. 다른 역할을 선택하거나 감사자 연결 상태를 확인하세요.`);
   } else if (!connected) {
-    text("reviewDiscussionStatus", "서버 연결을 복구해야 감사자에게 질문할 수 있습니다.");
+    text("reviewDiscussionStatus", "최신 상태 확인 후 감사자에게 질문할 수 있습니다.");
   } else if (!caps.has("code.review.discuss")) {
     text("reviewDiscussionStatus", "현재 감사 작업이 진행 중이거나 아직 자유 대화를 받을 수 있는 정지 상태가 아닙니다.");
   } else {
@@ -758,7 +765,7 @@ function render() {
   } else if (scopeChange) {
     text("workerInterventionStatus", "요구사항이나 완료 기준을 바꾸는 내용은 현재 승인 범위를 우회할 수 없습니다. 작업을 중단한 뒤 새 작업에서 다시 합의·승인하세요.");
   } else if (!connected) {
-    text("workerInterventionStatus", "서버 연결을 복구해야 Worker에 전달할 수 있습니다.");
+    text("workerInterventionStatus", "최신 상태 확인 후 Worker에 전달할 수 있습니다.");
   } else if (!interventionTurnId || !caps.has("code.worker.intervene")) {
     text("workerInterventionStatus", "현재 Worker에 실시간으로 전달할 수 있는 상태가 아직 확인되지 않았습니다. Worker 실행이 시작된 뒤 다시 시도하세요.");
   } else if (operations.runCommand !== "IDLE") {
@@ -792,7 +799,7 @@ function render() {
     const recoveryConfirmed = $("recoveryConfirm").checked;
     const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || !recoveryConfirmed;
     const abandonReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
-      : !connected ? "서버 연결을 복구해야 실행을 폐기할 수 있습니다."
+      : !connected ? "최신 상태 확인 후 실행을 폐기할 수 있습니다."
       : !caps.has("run.abandon") ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
       : !recoveryConfirmed ? "외부 작업 종료·대상 저장소 상태 확인·실행 폐기를 한 번에 확인하세요."
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
@@ -983,7 +990,7 @@ function proposalControls() {
     "현재 요구사항을 승인하고 작업을 시작합니다.");
   const cancelDisabled = !caps.has("preparation.cancel") || operations.preparationStart !== "IDLE";
   actionState("closeProject", cancelDisabled,
-    !connected ? "서버 연결을 복구해야 준비를 종료할 수 있습니다."
+    !connected ? "최신 상태 확인 후 준비를 종료할 수 있습니다."
       : !caps.has("preparation.cancel") ? "현재 응답 또는 전송 처리가 끝난 뒤 준비를 취소할 수 있습니다."
         : "이전 준비 작업을 처리 중입니다.",
     "현재 준비를 종료하고 기록은 보존합니다.");

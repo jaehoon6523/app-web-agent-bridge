@@ -407,14 +407,24 @@ export function createBridgeServer({
         return;
       }
       const service = preparations();
-      const snapshot = await service.project(await dashboard.snapshot(req.query.runId || null),
+      const baseSnapshot = await dashboard.snapshot(req.query.runId || null);
+      const snapshot = await service.project(baseSnapshot,
         { runId: req.query.runId || null, start: req.query.view === "start" });
       if (typeof req.query.requestId === "string") {
         snapshot.requestResult = service.receipt(req.query.requestId);
         if (snapshot.requestResult.status === "NOT_FOUND") {
-          const live = await getLiveRuntime();
-          const receipt = live.codeChanges?.store?.receipt(req.query.requestId);
-          if (receipt) snapshot.requestResult = { requestId: req.query.requestId, status: receipt.status === "COMPLETED" ? "COMPLETED" : "PROCESSING" };
+          if (baseSnapshot.runtimeAvailability?.ready === false) {
+            snapshot.requestResult = { requestId:req.query.requestId, status:"UNAVAILABLE" };
+          } else {
+            const live = await getLiveRuntime();
+            const receipt = live.codeChanges?.store?.receipt(req.query.requestId);
+            if (receipt) {
+              snapshot.requestResult = {
+                requestId:req.query.requestId,
+                status:receipt.status === "COMPLETED" ? "COMPLETED" : "PROCESSING",
+              };
+            }
+          }
         }
       }
       res.json(snapshot);
@@ -560,7 +570,7 @@ export async function main(runtimeConfig = loadConfig()) {
 
   console.log(`\nApp/Web Agent Bridge running at ${runtimeConfig.baseUrl}`);
   console.log(`Mode: ${runtimeConfig.demoMode ? "DEMO (transport disabled)" : "LIVE"}`);
-  console.warn(LIVE_ORCHESTRATION_UNAVAILABLE);
+  console.log(`Extension integration: ${bridge.extensionTransport ? "configured" : "not configured"}`);
   console.log("");
 
   let shuttingDown = false;

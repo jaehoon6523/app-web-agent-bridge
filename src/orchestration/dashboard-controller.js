@@ -66,7 +66,31 @@ export class DashboardController {
   isDispatching() { return this.#starting || this.#jobs.size > 0; }
 
   async snapshot(runId = null) {
-    const live = await this.#getRuntime();
+    let live;
+    try {
+      live = await this.#getRuntime();
+    } catch (error) {
+      return {
+        run:null,
+        runs:[],
+        sessions:[],
+        messages:[],
+        deliveries:[],
+        approvals:[],
+        events:[],
+        outcome:null,
+        commandCapabilities:[],
+        preflight:this.#preflight(),
+        error:null,
+        runtimeAvailability:{
+          ready:false,
+          code:typeof error?.code === "string" && error.code ? error.code : "LIVE_RUNTIME_UNAVAILABLE",
+          message:redactForEvidence(error?.message || "Live runtime is unavailable."),
+        },
+        starting:this.#starting,
+        drafts:{},
+      };
+    }
     const store = live.store;
     const codeRuns = live.codeChanges?.list() ?? [];
     const runs = [...store.listRuns(), ...codeRuns.map((r) => live.codeChanges.snapshot(r.runId, this.#preflight()).run)]
@@ -75,8 +99,11 @@ export class DashboardController {
     const codeRun = codeRuns.find((r) => r.runId === (runId || run?.runId));
     if (codeRun) {
       const snapshot = live.codeChanges.snapshot(codeRun.runId, this.#preflight());
-      snapshot.runs = runs.map(dashboardRunSummary);
-      return snapshot;
+      return {
+        ...snapshot,
+        runs:runs.map(dashboardRunSummary),
+        runtimeAvailability:{ ready:true, code:null, message:null },
+      };
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
     const commands = ["state.get", "evidence.export"];
@@ -121,6 +148,7 @@ export class DashboardController {
       outcome: run ? store.getRunOutcome(run.runId) : null,
       commandCapabilities: commands,
       preflight: this.#preflight(),
+      runtimeAvailability:{ ready:true, code:null, message:null },
       error: run ? this.#errors.get(run.runId) ?? (runtimes || isTerminalRunPhase(run.phase)
         ? null : "이 실행은 이전 서버 세션의 기록입니다. 자동 재전송하지 않습니다. 기록을 확인한 뒤 중단하고 새 실행을 시작하세요.") : null,
       starting: this.#starting,
