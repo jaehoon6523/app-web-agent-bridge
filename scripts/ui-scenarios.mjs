@@ -86,6 +86,24 @@ try {
  const stage = id => page.waitForFunction(id => document.getElementById(id).getAttribute('aria-current') === 'step', id);
  const fixture = createUiScenarioFixture(target); await fixture.install(page);
  await page.reload(); await enabled('planRun');
+
+ // CASE D: authenticated extension without a bound conversation is not an extension failure.
+ assert.equal(await page.locator('#channelHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.equal(await page.locator('#webBindingSignal').evaluate(el=>el.classList.contains('warn')),true);
+ assert.match(await page.locator('#webBindingSignal').getAttribute('aria-label'),/연결 필요/u);
+ assert.equal(await page.locator('#planRun').isDisabled(),false,
+   'preparation may bootstrap a new conversation when no exact binding exists yet');
+
+ // CASE E: extension disconnect leaves HTTP/dashboard state usable and blocks only Web-dependent start.
+ fixture.extensionAuthenticated=false; await page.reload();
+ await page.waitForFunction(()=>document.getElementById('channelHealth').classList.contains('warn'));
+ assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
+ assert.equal(await page.locator('#planRun').isDisabled(),true);
+ assert.equal(await page.locator('#newRun').isDisabled(),false);
+ assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/서버 응답 없음|대시보드 인증 실패/u);
+ fixture.extensionAuthenticated=true; await page.reload(); await enabled('planRun');
+
  await page.fill('#objective','UI scenario task'); await page.fill('#startRoot',target);
  await page.fill('#conversationUrl','https://example.com/invalid'); await page.click('#planRun');
  assert.equal(fixture.mutations.length,0);

@@ -2,6 +2,7 @@
 export function createUiScenarioFixture(targetRoot) {
   const at = '2026-09-13T00:00:00Z';
   let preparation = null, phase = null, version = 1, offline = false;
+  let extensionAuthenticated = true, lastWebBinding = null;
   const mutations = [];
   const run = () => ({ runId: 'active', version, mode: 'CODE_CHANGE', phase, objective: 'UI scenario task',
     createdAt: at, updatedAt: at, requirements: { items: [] }, findings: [],
@@ -39,7 +40,10 @@ export function createUiScenarioFixture(targetRoot) {
         : phase === 'HOLD' ? ['code.review.retry', 'run.stop'] : ['run.stop']
         : ['preparation.start', ...(phase === 'AWAITING_APPLY' && !old ? ['code.apply', 'evidence.get', 'run.stop'] : [])];
     return { workflow, preparation, run: selected, runs: phase ? [{ runId: 'old', phase: 'CANCELLED', objective: 'Previous task' }, run()] : [],
-      preflight: { checks: { codeWorkerExecutableConfigured: true, extensionAuthenticated: true } },
+      preflight: {
+        checks: { codeWorkerExecutableConfigured: true, extensionAuthenticated },
+        lastWebBinding,
+      },
       commandCapabilities: caps, messages: [], events: [], findings: [], assessments: [], deliveries: [],
       reviewerRuntimes: {
         JUDGE: { provider: 'CLAUDE_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED' },
@@ -52,6 +56,8 @@ export function createUiScenarioFixture(targetRoot) {
     mutations,
     get version() { return version; },
     set offline(value) { offline = value; },
+    set extensionAuthenticated(value) { extensionAuthenticated = value === true; },
+    set lastWebBinding(value) { lastWebBinding = value ? structuredClone(value) : null; },
     set phase(value) { phase = value; version++; },
     discuss() {
       preparation.state = 'DISCUSSING'; preparation.version++;
