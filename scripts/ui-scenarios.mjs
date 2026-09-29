@@ -9,10 +9,14 @@ import { createBridgeServer } from '../src/server.js';
 import { loadConfig } from '../src/config.js';
 // Real server initialization; preparation and provider transitions use explicit browser fixtures.
 // This never launches a provider or edits the user's existing runs.
-const portProbe = net.createServer();
-await new Promise(resolve => portProbe.listen(0, '127.0.0.1', resolve));
-const port = portProbe.address().port;
-await new Promise(resolve => portProbe.close(resolve));
+async function freePort() {
+ const probe=net.createServer();
+ await new Promise((resolve,reject)=>{probe.once('error',reject);probe.listen(0,'127.0.0.1',resolve);});
+ const selected=probe.address().port;
+ await new Promise(resolve=>probe.close(resolve));
+ return selected;
+}
+const port=await freePort();
 const output = path.resolve('.agent-controller/ui-qa'); fs.mkdirSync(output, {recursive:true});
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-browser-qa-'));
 const target = path.join(root, 'target'); fs.mkdirSync(target);
@@ -42,6 +46,25 @@ try {
  await coldPage.waitForFunction(()=>!document.getElementById('newRun').disabled,null,{timeout:20000});
  assert.deepEqual(coldErrors,[]);
  await coldPage.close();
+
+ // CASE S: actual server-side projection exception -> real 503 -> UI degradation, with transport/auth still known.
+ const faultPort=await freePort();
+ const faultRoot=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-browser-projection-fault-'));
+ const faultConfig=loadConfig({cwd:faultRoot,env:{PORT:String(faultPort),CODEX_EXECUTABLE:process.execPath,
+   WEB_EXTENSION_SHARED_SECRET:'ui-projection-fault-secret-0123456789abcdef',WEB_EXTENSION_EXPECTED_IDENTITY:'ui-projection-fault-extension'}});
+ const faultRuntime={store:{listRuns:()=>[]},codeChanges:{list:()=>[{runId:'run-projection-fault'}],snapshot:()=>{
+   throw Object.assign(new Error('injected browser-visible state projection failure'),{code:'STATE_PROJECTION_FAULT_INJECTED'});}},composition:{},async close(){}};
+ const faultBridge=createBridgeServer({runtimeConfig:faultConfig,createLiveRuntime:async()=>faultRuntime}); await faultBridge.listen();
+ const faultPage=await browser.newPage({viewport:{width:1280,height:960}}); const faultErrors=[]; faultPage.on('pageerror',e=>faultErrors.push(e.message));
+ try {
+   await faultPage.goto(faultConfig.baseUrl);
+   await faultPage.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('상태 조회 실패'),null,{timeout:20000});
+   assert.equal(await faultPage.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);
+   assert.equal(await faultPage.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
+   assert.equal(await faultPage.locator('#newRun').isDisabled(),true); assert.equal(await faultPage.locator('#planRun').isDisabled(),true);
+   assert.doesNotMatch(await faultPage.locator('#connectionNotice').textContent(),/서버 응답 없음|UNKNOWN_RESULT|npm start/u);
+   assert.deepEqual(faultErrors,[]);
+ } finally { await faultPage.close(); await faultBridge.close(); fs.rmSync(faultRoot,{recursive:true,force:true}); }
 
  await page.goto(config.baseUrl); await page.locator('#startPanel').waitFor({state:'visible'});
  await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
@@ -241,7 +264,7 @@ try {
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
  await screenshot('11-mobile');
  assert.deepEqual(errors,[]);
- console.log(JSON.stringify({result:'PASS',screenshots:output,scenarios:['first-use','health/degraded-state-matrix','input validation',
+ console.log(JSON.stringify({result:'PASS',screenshots:output,scenarios:['first-use','health/degraded-state-matrix','server-projection-fault','input validation',
    'root waiting','document-change diagnostic/cancel','preparation/reply/reload/approval','blocked history',
    'stop','recovery/action hierarchy','disconnect/reconnect','review retry primary','evidence/apply primary','applied follow-up primary','mobile'],pageErrors:errors},null,2));
 } catch(error) {

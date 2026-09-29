@@ -21,6 +21,10 @@ import { createReviewerWebRuntime } from "./reviewer-web-runtime.js";
 
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
+const REVIEWER_READ_DEGRADATION_CODES = new Set([
+  "REVIEWER_PROVIDER_UNAVAILABLE",
+  "REVIEWER_PROVIDER_MISMATCH",
+]);
 
 function retryableWorkerTimeout(run) {
   const lastTurn = run?.workerTurns?.at(-1);
@@ -1059,17 +1063,28 @@ export class CodeChangeService {
   }
   snapshot(runId, preflight) {
     const record = this.get(runId);
-    const reviewerRuntime = (role) => {
-      const identity = this.reviewerWeb(role)?.runtimeIdentity;
-      return identity ? {
-        actor:identity.actor ?? null,
-        provider:identity.provider ?? null,
-        providerEvidence:identity.providerEvidence ?? "UNAVAILABLE",
-        model:identity.model ?? null,
-        modelEvidence:identity.modelEvidence ?? "UNOBSERVED",
-      } : { actor:null, provider:null, providerEvidence:"UNAVAILABLE", model:null, modelEvidence:"UNOBSERVED" };
+    const reviewerProjection = (role) => {
+      const configuredProvider = record?.reviewers?.[role]?.provider ?? this.project?.reviewers?.[role]?.provider ?? null;
+      try {
+        const adapter = this.reviewerWeb(role);
+        const identity = adapter?.runtimeIdentity;
+        return { adapter, runtime:identity ? {
+          actor:identity.actor ?? null, provider:identity.provider ?? null,
+          providerEvidence:identity.providerEvidence ?? "UNAVAILABLE",
+          model:identity.model ?? null, modelEvidence:identity.modelEvidence ?? "UNOBSERVED",
+          availability:"AVAILABLE", errorCode:null,
+        } : { actor:null, provider:configuredProvider, providerEvidence:"UNAVAILABLE",
+          model:null, modelEvidence:"UNOBSERVED", availability:"UNAVAILABLE", errorCode:null } };
+      } catch (error) {
+        if (!REVIEWER_READ_DEGRADATION_CODES.has(error?.code)) throw error;
+        return { adapter:null, runtime:{ actor:null, provider:configuredProvider, providerEvidence:"CONFIGURED",
+          model:null, modelEvidence:"UNOBSERVED",
+          availability:error.code === "REVIEWER_PROVIDER_MISMATCH" ? "MISMATCH" : "UNAVAILABLE",
+          errorCode:error.code } };
+      }
     };
-    const reviewerRuntimes = { JUDGE:reviewerRuntime("JUDGE"), CRITIC:reviewerRuntime("CRITIC") };
+    const reviewerProjections = { JUDGE:reviewerProjection("JUDGE"), CRITIC:reviewerProjection("CRITIC") };
+    const reviewerRuntimes = { JUDGE:reviewerProjections.JUDGE.runtime, CRITIC:reviewerProjections.CRITIC.runtime };
     return redactForEvidence({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
       activeActor: record.stage === "WORKER_RUNNING"
         ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
@@ -1100,7 +1115,7 @@ export class CodeChangeService {
           && !this.jobs.has(runId) && !this.workers.has(runId) && !this.reviewerWebBusy()
           && (record.coordination?.bindingCandidates?.length ?? 0) > 0
           && ["JUDGE","CRITIC"].includes(record.coordination?.activeRole)
-          && typeof this.reviewerWeb(record.coordination.activeRole)?.rebind === "function"
+          && typeof reviewerProjections[record.coordination.activeRole]?.adapter?.rebind === "function"
           ? ["code.review.rebind"] : []),
         ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
           ? ["run.delete", record.archivedAt ? "run.unarchive" : "run.archive"]
