@@ -256,7 +256,7 @@ try {
  assert.equal(await page.locator('#retryRun').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
  assert.equal(await page.locator('#runSecondaryTier').evaluate(el=>el.open),false);
  await page.click('#retryRun');
- await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='웹 감사 중');
+ await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='독립 검토 중');
  assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 감사 중/);
  assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 검토 대기/);
  assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
