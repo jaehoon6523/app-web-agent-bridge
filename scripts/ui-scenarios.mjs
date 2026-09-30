@@ -62,6 +62,8 @@ try {
    assert.equal(await faultPage.locator('#apiHealth').evaluate(el=>el.classList.contains('ok')),true);
    assert.equal(await faultPage.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
    assert.equal(await faultPage.locator('#newRun').isDisabled(),true); assert.equal(await faultPage.locator('#planRun').isDisabled(),true);
+   assert.equal(await faultPage.locator('#chooseFolder').isDisabled(),false,
+     'state projection failure must not disable an authenticated local folder picker');
    assert.doesNotMatch(await faultPage.locator('#connectionNotice').textContent(),/서버 응답 없음|UNKNOWN_RESULT|npm start/u);
    assert.deepEqual(faultErrors,[]);
  } finally { await faultPage.close(); await faultBridge.close(); fs.rmSync(faultRoot,{recursive:true,force:true}); }
@@ -95,6 +97,13 @@ try {
  assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('ok')),true);
  assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT|서버 응답 없음|npm start/u);
  assert.equal(await page.locator('#planRun').isDisabled(),true);
+ assert.equal(await page.locator('#chooseFolder').isDisabled(),false);
+ const folderWhileStateUnavailable=route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targetRoot:target})});
+ await page.route('**/api/project/folder',folderWhileStateUnavailable);
+ await page.click('#chooseFolder');
+ assert.equal(await page.inputValue('#startRoot'),target,
+   'folder selection remains usable while state read is unavailable but server/session are current');
+ await page.unroute('**/api/project/folder',folderWhileStateUnavailable);
  await page.unroute('**/api/state*',state503);
  await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent==='');
 
@@ -106,6 +115,7 @@ try {
  assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('unknown')),true);
  assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT/u);
  assert.equal(await page.locator('#planRun').isDisabled(),true);
+ assert.equal(await page.locator('#chooseFolder').isDisabled(),true);
  await page.unroute('**/api/state*',unreachable);
  await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent==='');
 
@@ -197,6 +207,11 @@ try {
  assert.match(await page.locator('#runWorkerRole').textContent(),/Worker · codex \/ fixture-model · 구현 중/);
  assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 검토 대기/);
  assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 검토 대기/);
+ // CASE G: Worker intervention is run-local and survives extension disconnect.
+ fixture.extensionAuthenticated=false; await page.reload();
+ await page.fill('#workerInterventionText','Use the existing helper.');
+ assert.equal(await page.locator('#sendWorkerIntervention').isDisabled(),false);
+ fixture.extensionAuthenticated=true; await page.reload();
  await page.emulateMedia({reducedMotion:'reduce'});
  assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'none');
  await page.emulateMedia({reducedMotion:'no-preference'});
@@ -222,7 +237,10 @@ try {
  await page.check('#recoveryConfirm');
  await screenshot('08-recovery'); await page.click('#abandonRun'); await enabled('newRun');
  assert.equal(fixture.mutations.at(-1).body.type,'run.abandon');
- fixture.phase='HOLD'; await page.reload(); await visible('runPanel'); await enabled('retryRun');
+ fixture.phase='HOLD'; fixture.judgeReviewerAvailability='UNAVAILABLE'; await page.reload(); await visible('runPanel');
+ assert.equal(await page.locator('#retryRun').isDisabled(),true,
+   're-audit requires both configured reviewer providers to be currently available');
+ fixture.judgeReviewerAvailability='AVAILABLE'; await page.reload(); await enabled('retryRun');
  assert.equal(await page.locator('#runPrimaryTier').isVisible(),true);
  assert.equal(await page.locator('#retryRun').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
  assert.equal(await page.locator('#runSecondaryTier').evaluate(el=>el.open),false);
@@ -233,7 +251,20 @@ try {
  assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
  assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
  assert.equal(fixture.mutations.at(-1).body.payload.expectedVersion,fixture.version-1);
- fixture.phase='AWAITING_APPLY'; await page.reload(); await stage('stepResult');
+ fixture.phase='AWAITING_APPLY'; fixture.extensionAuthenticated=false; await page.reload(); await stage('stepResult');
+ assert.equal(await page.locator('#applyCode').isDisabled(),false,
+   'established apply authority must not depend on current Web extension availability');
+ assert.equal(await page.locator('#stopRun').isDisabled(),false);
+ assert.equal(await page.locator('#exportEvidence').isDisabled(),false);
+ await page.fill('#reviewDiscussionText','Explain the review.');
+ assert.equal(await page.locator('#sendReviewDiscussion').isDisabled(),true);
+ fixture.extensionAuthenticated=true; fixture.judgeReviewerAvailability='UNAVAILABLE'; await page.reload();
+ await page.fill('#reviewDiscussionText','Explain the review.');
+ assert.equal(await page.locator('#sendReviewDiscussion').isDisabled(),true);
+ await page.selectOption('#reviewDiscussionRole','CRITIC');
+ assert.equal(await page.locator('#sendReviewDiscussion').isDisabled(),false,
+   'Judge provider loss must not disable an available Critic discussion');
+ fixture.judgeReviewerAvailability='AVAILABLE'; await page.selectOption('#reviewDiscussionRole','JUDGE');
  assert.match(await page.locator('#runJudgeRole').textContent(),/현재 후보 검토 완료/);
  assert.match(await page.locator('#runCriticRole').textContent(),/현재 후보 검토 완료/);
  assert.equal(await page.locator('#runPrimaryTier').isVisible(),true);

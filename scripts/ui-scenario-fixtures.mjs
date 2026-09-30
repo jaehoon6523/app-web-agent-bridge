@@ -3,6 +3,7 @@ export function createUiScenarioFixture(targetRoot) {
   const at = '2026-09-13T00:00:00Z';
   let preparation = null, phase = null, version = 1, offline = false;
   let extensionAuthenticated = true, lastWebBinding = null, runtimeAvailable = true;
+  let judgeReviewerAvailability = 'AVAILABLE', criticReviewerAvailability = 'AVAILABLE';
   const mutations = [];
   const run = () => ({ runId: 'active', version, mode: 'CODE_CHANGE', phase, objective: 'UI scenario task',
     createdAt: at, updatedAt: at, requirements: { items: [] }, findings: [],
@@ -14,8 +15,10 @@ export function createUiScenarioFixture(targetRoot) {
       ? { phase: 'ROUND0', activeRole: 'JUDGE', auditManifestHash: 'manifest-qa' }
       : { phase: 'ACCEPTED', activeRole: null, auditManifestHash: 'manifest-qa' },
     conversationBindings: [
-      { role: 'JUDGE', provider: 'CLAUDE_WEB', bindingStatus: 'BOUND', activeDeliveryId: null },
-      { role: 'CRITIC', provider: 'CHATGPT_WEB', bindingStatus: 'BOUND', activeDeliveryId: null },
+      { role: 'JUDGE', provider: 'CLAUDE_WEB', bindingStatus: 'BOUND', activeDeliveryId: null,
+        conversationUrl: 'https://claude.ai/chat/judge-fixture', conversationId: 'judge-fixture' },
+      { role: 'CRITIC', provider: 'CHATGPT_WEB', bindingStatus: 'BOUND', activeDeliveryId: null,
+        conversationUrl: 'https://chatgpt.com/c/critic-fixture', conversationId: 'critic-fixture' },
     ],
     reviewArtifacts: ['AWAITING_APPLY', 'APPLIED'].includes(phase) ? [
       { role: 'JUDGE', candidateId: 'candidate-qa' },
@@ -37,8 +40,10 @@ export function createUiScenarioFixture(targetRoot) {
       ? ['preparation.cancel', ...(preparation.state === 'DISCUSSING' ? ['preparation.reply'] : []),
         ...(preparation.state === 'AGREEMENT_READY' ? ['preparation.approve', 'preparation.reply'] : [])]
       : phase && !terminal ? phase === 'RECOVERY_REQUIRED' ? ['run.reconcile', 'run.abandon']
-        : phase === 'HOLD' ? ['code.review.retry', 'run.stop'] : ['run.stop']
-        : ['preparation.start', ...(phase === 'AWAITING_APPLY' && !old ? ['code.apply', 'evidence.get', 'run.stop'] : [])];
+        : phase === 'HOLD' ? ['code.review.retry', 'run.stop']
+          : phase === 'WORKER_RUNNING' ? ['run.stop', 'code.worker.intervene'] : ['run.stop']
+        : ['preparation.start', ...(phase === 'AWAITING_APPLY' && !old
+          ? ['code.apply', 'evidence.get', 'evidence.export', 'code.review.discuss', 'run.stop'] : [])];
     const runs = phase ? [{ runId: 'old', phase: 'CANCELLED', objective: 'Previous task' }, run()] : [];
     return { workflow, preparation, run: selected, runs,
       runtimeAvailability: runtimeAvailable
@@ -51,9 +56,12 @@ export function createUiScenarioFixture(targetRoot) {
         lastWebBinding,
       },
       commandCapabilities: caps, messages: [], events: [], findings: [], assessments: [], deliveries: [],
+      workerRuntime: phase === 'WORKER_RUNNING' ? { turnId: 'worker-turn-fixture' } : null,
       reviewerRuntimes: {
-        JUDGE: { provider: 'CLAUDE_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED' },
-        CRITIC: { provider: 'CHATGPT_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED' },
+        JUDGE: { provider: 'CLAUDE_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED',
+          availability: judgeReviewerAvailability, errorCode: judgeReviewerAvailability === 'AVAILABLE' ? null : 'REVIEWER_PROVIDER_UNAVAILABLE' },
+        CRITIC: { provider: 'CHATGPT_WEB', providerEvidence: 'ADAPTER_IMPLEMENTATION', model: null, modelEvidence: 'UNOBSERVED',
+          availability: criticReviewerAvailability, errorCode: criticReviewerAvailability === 'AVAILABLE' ? null : 'REVIEWER_PROVIDER_UNAVAILABLE' },
       },
       evidence: selected?.phase === 'AWAITING_APPLY' ? [{ evidenceId: 'evidence-qa', kind: 'PATCH', producer: 'CONTROLLER',
         candidateId: 'candidate-qa', createdAt: at, result: {} }] : [] };
@@ -65,6 +73,8 @@ export function createUiScenarioFixture(targetRoot) {
     set extensionAuthenticated(value) { extensionAuthenticated = value === true; },
     set lastWebBinding(value) { lastWebBinding = value ? structuredClone(value) : null; },
     set runtimeAvailable(value) { runtimeAvailable = value === true; },
+    set judgeReviewerAvailability(value) { judgeReviewerAvailability = value; },
+    set criticReviewerAvailability(value) { criticReviewerAvailability = value; },
     set phase(value) { phase = value; version++; },
     discuss() {
       preparation.state = 'DISCUSSING'; preparation.version++;

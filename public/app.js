@@ -5,6 +5,7 @@ import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normali
 import { createRunActionLayout } from "./run-action-layout.js";
 import { projectRunListKnowledge } from "./dashboard-run-list-knowledge.js";
 import { projectDashboardStartActions } from "./dashboard-start-actions.js";
+import { projectPreparationActions, projectReviewerActions, projectRunCommandActions, reviewerProviderMatches } from "./dashboard-action-capabilities.js";
 import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-context-view.js";
 import {
   DashboardSessionState, ExtensionState, StateReadState, TransportState,
@@ -267,6 +268,16 @@ async function refresh() {
 }
 function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
 function webConnected() { return connected && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
+function currentPreparationActions() {
+  const knowledge = projectDashboardKnowledge(connectionState);
+  return projectPreparationActions({
+    serverReachable:knowledge.transport.currentlyReachable,
+    dashboardAuthenticated:knowledge.session.currentlyVerified,
+    stateAvailable:knowledge.stateRead.currentlyAvailable,
+    extensionAuthenticated:snapshot?.preflight?.checks?.extensionAuthenticated === true,
+    commandCapabilities:snapshot?.commandCapabilities ?? [],
+  });
+}
 function renderPreparationPersistence() {
   const element = $("preparationPersistence");
   if (!element) return;
@@ -416,10 +427,16 @@ function workerRuntimeStatus(runtime) {
 }
 function evidenceLinks(container, refs) {
   const links = node("div", "", "links");
+  const knowledge = projectDashboardKnowledge(connectionState);
+  const actions = projectRunCommandActions({
+    stateAvailable:knowledge.stateRead.currentlyAvailable,
+    runPresent:Boolean(snapshot?.run),
+    commandCapabilities:snapshot?.commandCapabilities ?? [],
+  });
   for (const id of refs ?? []) {
     const button = node("button", `근거 ${id.slice(-8)}`);
-    button.disabled = !connected || (operations.runCommand !== "IDLE");
-    button.title = !connected ? "최신 상태 확인 후 근거를 열 수 있습니다."
+    button.disabled = !actions.openEvidence || (operations.runCommand !== "IDLE");
+    button.title = !actions.openEvidence ? "최신 실행 상태와 근거 조회 권한을 확인해야 합니다."
       : (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나면 근거를 열 수 있습니다." : "근거 원문을 엽니다.";
     button.addEventListener("click", () => openEvidence(id)); links.append(button);
   }
@@ -504,6 +521,23 @@ function render() {
   signal("cliSignal", "CLI", connected ? workerStatus.state : "warn",
     !connected ? "상태 확인 필요" : workerStatus.detail);
   const webAuthenticated = checks?.extensionAuthenticated === true;
+  const runActions = projectRunCommandActions({
+    stateAvailable:knowledge.stateRead.currentlyAvailable,
+    runPresent:Boolean(run),
+    commandCapabilities:[...caps],
+    workerTurnAvailable:Boolean(snapshot?.workerRuntime?.turnId ?? run?.workerTurnId),
+    archived:Boolean(run?.archivedAt),
+  });
+  const reviewerActionsFor = (role, exactBindingAvailable = false, exactDiscardDeliveryAvailable = false) => projectReviewerActions({
+    stateAvailable:knowledge.stateRead.currentlyAvailable,
+    runPresent:Boolean(run),
+    extensionAuthenticated:webAuthenticated,
+    commandCapabilities:[...caps],
+    reviewerRuntimes:snapshot?.reviewerRuntimes,
+    role,
+    exactBindingAvailable,
+    exactDiscardDeliveryAvailable,
+  });
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
     !connected ? "상태 확인 필요" : webAuthenticated ? "연결됨" : "연결 대기");
   const lastBinding = preflight?.lastWebBinding;
@@ -645,7 +679,7 @@ function render() {
         + (preparation.error.details ? "\n실패 진단: " + JSON.stringify(preparation.error.details) : ""));
     }
   }
-  $("chooseFolder").disabled = !connected || operations.folderPicker !== "IDLE" || preparation?.lifecycle === "ACTIVE";
+  $("chooseFolder").disabled = !currentPreparationActions().chooseFolder || operations.folderPicker !== "IDLE";
   $("newRun").disabled = !startActions.canOpenNewRun || operations.preparationStart !== "IDLE" || operations.runCommand !== "IDLE";
   text("newRunReason", !knowledge.stateRead.currentlyAvailable ? "최신 상태 확인 후 새 작업을 시작할 수 있습니다."
     : !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인한 뒤 새 작업을 시작할 수 있습니다."
@@ -682,23 +716,34 @@ function render() {
   const discussionActive = ["HOLD","AWAITING_APPLY"].includes(run?.phase) && Boolean(run?.candidate?.candidateId);
   const unresolvedDiscussion = [...(run?.reviewDiscussions ?? [])].reverse().find((item) => item.status === "UNCONFIRMED") ?? null;
   const discussionRole = $("reviewDiscussionRole").value;
+  const discussionRuntime = snapshot?.reviewerRuntimes?.[discussionRole] ?? null;
   const discussionBinding = (run?.conversationBindings ?? []).find((item) =>
-    item.role === discussionRole && item.conversationUrl && item.conversationId && item.activeDeliveryId === null);
+    item.role === discussionRole && item.conversationUrl && item.conversationId && item.activeDeliveryId === null
+      && reviewerProviderMatches(item.provider, discussionRuntime?.provider));
+  const unresolvedRuntime = unresolvedDiscussion ? snapshot?.reviewerRuntimes?.[unresolvedDiscussion.role] ?? null : null;
+  const unresolvedBinding = unresolvedDiscussion ? (run?.conversationBindings ?? []).find((item) =>
+    item.role === unresolvedDiscussion.role && item.activeDeliveryId === unresolvedDiscussion.discussionId
+      && item.sessionId && item.conversationUrl
+      && reviewerProviderMatches(item.provider, unresolvedRuntime?.provider)) : null;
   const discussionText = $("reviewDiscussionText").value.trim();
+  const discussionActions = reviewerActionsFor(discussionRole, Boolean(discussionBinding));
+  const unresolvedActions = reviewerActionsFor(unresolvedDiscussion?.role ?? null, false, Boolean(unresolvedBinding));
   $("reviewDiscussionPanel").hidden = !discussionActive;
-  $("sendReviewDiscussion").disabled = !discussionActive || !connected || operations.runCommand !== "IDLE"
-    || !caps.has("code.review.discuss") || !discussionBinding || !discussionText || Boolean(unresolvedDiscussion);
+  $("sendReviewDiscussion").disabled = !discussionActive || operations.runCommand !== "IDLE"
+    || !discussionActions.discuss || !discussionText || Boolean(unresolvedDiscussion);
   $("reviewDiscussionRecovery").hidden = !unresolvedDiscussion;
   text("reviewDiscussionRecoveryDetail", unresolvedDiscussion
     ? `${unresolvedDiscussion.role} · ${unresolvedDiscussion.discussionId} · 전송 결과 미확인. 자동 재전송하지 않습니다.`
     : "");
-  $("discardReviewDiscussion").disabled = !unresolvedDiscussion || !caps.has("code.review.discuss.discard")
+  $("discardReviewDiscussion").disabled = !unresolvedDiscussion || !unresolvedActions.discardDiscussion
     || operations.runCommand !== "IDLE" || !$("reviewDiscussionUnresolved").checked
     || !$("reviewDiscussionNoResend").checked || $("reviewDiscussionDiscardReason").value.trim().length < 3;
   if (!discussionActive) {
     text("reviewDiscussionStatus", "");
   } else if (unresolvedDiscussion) {
     text("reviewDiscussionStatus", "이전 감사자 대화 전송 결과가 미확인이라 새 질문을 보내지 않습니다. 아래에서 결과 미확인과 자동 재전송 금지를 확인한 뒤 폐기할 수 있습니다.");
+  } else if (snapshot?.reviewerRuntimes?.[discussionRole]?.availability !== "AVAILABLE") {
+    text("reviewDiscussionStatus", `${discussionRole} 감사 provider를 현재 사용할 수 없습니다. 다른 역할의 연결 상태와는 별개입니다.`);
   } else if (!discussionBinding) {
     text("reviewDiscussionStatus", `${discussionRole}의 기존 대화 연결이 아직 확인되지 않았습니다. 다른 역할을 선택하거나 감사자 연결 상태를 확인하세요.`);
   } else if (!connected) {
@@ -730,7 +775,7 @@ function render() {
       for (const candidate of reviewerCandidates) {
         const button = node("button", `${candidate.provider} · tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`}`);
         button.type = "button"; button.title = candidate.url ?? reviewerBinding?.conversationUrl ?? "";
-        button.disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("code.review.rebind");
+        button.disabled = operations.runCommand !== "IDLE" || !reviewerActionsFor(reviewerRole).rebind;
         button.addEventListener("click", () => {
           if (!button.disabled) command("code.review.rebind", { role:reviewerRole, selectedTabId:candidate.tabId });
         });
@@ -750,8 +795,8 @@ function render() {
     $("operatorNoteText").value = "";
   }
   const noteText = $("operatorNoteText").value.trim();
-  $("addOperatorNote").disabled = !run || !connected || operations.runCommand !== "IDLE"
-    || !caps.has("run.note.add") || !noteText;
+  $("addOperatorNote").disabled = operations.runCommand !== "IDLE"
+    || !runActions.operatorNote || !noteText;
   text("operatorNoteStatus", run
     ? "메모와 결정은 append-only 작업 기록입니다. 에이전트에게 전달하려면 위 전용 대화·개입 기능을 사용하세요."
     : "");
@@ -774,8 +819,8 @@ function render() {
   const interventionTurnId = snapshot?.workerRuntime?.turnId ?? run?.workerTurnId ?? null;
   const scopeChange = interventionKind === "REQUIREMENTS_CHANGE";
   $("workerInterventionPanel").hidden = !interventionActive;
-  $("sendWorkerIntervention").disabled = !interventionActive || !connected || operations.runCommand !== "IDLE"
-    || !caps.has("code.worker.intervene") || !interventionTurnId || !interventionText || scopeChange;
+  $("sendWorkerIntervention").disabled = !interventionActive || operations.runCommand !== "IDLE"
+    || !runActions.interveneWorker || !interventionText || scopeChange;
   if (!interventionActive) {
     text("workerInterventionStatus", "");
   } else if (scopeChange) {
@@ -807,23 +852,23 @@ function render() {
       label.append(answer); container.append(label);
     }
   }
-  $("submitDecision").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("code.decision.reply")
+  $("submitDecision").disabled = operations.runCommand !== "IDLE" || !reviewerActionsFor(null).decisionReply
     || !decisionQuestions.length || [...$("decisionQuestions").querySelectorAll("textarea")].some((item) => !item.value.trim());
-  $("reconcileRun").disabled = !connected || operations.runCommand !== "IDLE" || !caps.has("run.reconcile");
+  $("reconcileRun").disabled = operations.runCommand !== "IDLE" || !runActions.reconcileRun;
   $("retryRun").textContent = "Worker 다시 실행";
   if (run?.phase === "RECOVERY_REQUIRED") {
     const recoveryConfirmed = $("recoveryConfirm").checked;
-    const abandonBlocked = (operations.runCommand !== "IDLE") || !caps.has("run.abandon") || !recoveryConfirmed;
+    const abandonBlocked = (operations.runCommand !== "IDLE") || !runActions.abandonRun || !recoveryConfirmed;
     const abandonReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
       : !connected ? "최신 상태 확인 후 실행을 폐기할 수 있습니다."
-      : !caps.has("run.abandon") ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
+      : !runActions.abandonRun ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
       : !recoveryConfirmed ? "외부 작업 종료·대상 저장소 상태 확인·실행 폐기를 한 번에 확인하세요."
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
     actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 다시 시도할 수 있습니다."
       : caps.has("run.retry") ? "실패한 격리 작업 공간을 정리하고 같은 요구사항으로 Worker를 다시 실행합니다."
       : "변경사항이 고정되기 전 Worker 실패가 안전하게 확인된 경우에만 Worker를 다시 실행할 수 있습니다.";
-    actionState("retryRun", (operations.runCommand !== "IDLE") || !caps.has("run.retry"), retryReason, retryReason);
+    actionState("retryRun", (operations.runCommand !== "IDLE") || !runActions.retryWorker, retryReason, retryReason);
   } else if (run?.phase === "HOLD" && caps.has("code.review.retry")) {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
@@ -833,19 +878,20 @@ function render() {
       : needsReviewerTabSelection ? "감사자 대화 탭이 여러 개입니다. 먼저 위 복구 영역에서 사용할 탭을 선택하세요."
       : !webConnected() ? "브라우저 확장과 해당 감사자의 대화 연결을 복구해야 현재 변경사항의 독립 검토를 다시 시작할 수 있습니다."
       : "Worker를 다시 실행하지 않고 현재 후보를 같은 요구사항으로 다시 감사합니다. REWORK 판정이면 기존 수정 루프를 이어갑니다.";
-    actionState("retryRun", (operations.runCommand !== "IDLE") || needsReviewerTabSelection || !webConnected(), retryReason, retryReason);
+    actionState("retryRun", (operations.runCommand !== "IDLE") || needsReviewerTabSelection
+      || !reviewerActionsFor(null).retryReview, retryReason, retryReason);
   } else {
     $("abandonRun").disabled = true;
     $("abandonRun").title = "";
     $("retryRun").disabled = true;
     $("retryRun").title = "";
   }
-  for (const [id, capability] of [["stopRun", "run.stop"], ["applyCode", "code.apply"], ["exportEvidence", "evidence.export"], ["deleteRun", "run.delete"]]) {
-    $(id).disabled = !run || operations.runCommand !== "IDLE" || !caps.has(capability);
+  for (const [id, allowed] of [["stopRun", runActions.stopRun], ["applyCode", runActions.applyCode],
+    ["exportEvidence", runActions.exportEvidence], ["deleteRun", runActions.deleteRun]]) {
+    $(id).disabled = operations.runCommand !== "IDLE" || !allowed;
   }
-  const archiveCapability = run?.archivedAt ? "run.unarchive" : "run.archive";
   $("archiveRun").textContent = run?.archivedAt ? "보관 해제" : "기록 보관";
-  $("archiveRun").disabled = !run || operations.runCommand !== "IDLE" || !caps.has(archiveCapability);
+  $("archiveRun").disabled = operations.runCommand !== "IDLE" || !runActions.archiveRun;
   if (!run) return;
   $("continueProject").hidden = run.phase !== "APPLIED" || Boolean(run.archivedAt);
   $("continueProject").disabled = $("newRun").disabled;
@@ -923,7 +969,7 @@ function render() {
     : caps.has("run.stop") ? "작업을 중단합니다. 기록은 보존됩니다."
     : run.phase === "APPLYING" ? "적용 중에는 중단할 수 없습니다."
     : "현재 단계에서는 중단할 수 없습니다.";
-  actionState("stopRun", (operations.runCommand !== "IDLE") || !caps.has("run.stop"), stopReason, stopReason);
+  actionState("stopRun", (operations.runCommand !== "IDLE") || !runActions.stopRun, stopReason, stopReason);
   text("stopReason", stopReason);
 
   const applyReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
@@ -931,13 +977,13 @@ function render() {
     : caps.has("code.apply") ? "검토 통과 변경사항을 프로젝트에 적용합니다."
     : run.phase === "AWAITING_APPLY" ? "현재 적용할 수 없습니다. 상태를 확인하세요."
     : "검토 통과 후 적용할 수 있습니다.";
-  actionState("applyCode", (operations.runCommand !== "IDLE") || !caps.has("code.apply"), applyReason, applyReason);
+  actionState("applyCode", (operations.runCommand !== "IDLE") || !runActions.applyCode, applyReason, applyReason);
 
   const exportReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
     : !connected ? "최신 상태 확인 후 다운로드할 수 있습니다."
     : !caps.has("evidence.export") ? "다운로드할 감사 기록이 없습니다."
     : "감사 기록을 다운로드합니다.";
-  actionState("exportEvidence", (operations.runCommand !== "IDLE") || !caps.has("evidence.export"), exportReason, exportReason);
+  actionState("exportEvidence", (operations.runCommand !== "IDLE") || !runActions.exportEvidence, exportReason, exportReason);
   text("commandReason", "");
   syncRunInformationArchitecture(run);
   const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
@@ -992,11 +1038,12 @@ async function openEvidence(id, startLine = 1) {
 
 function proposalControls() {
   const caps = capabilities();
+  const actions = currentPreparationActions();
   $("proposeRequirements").hidden = true;
-  actionState("reviseRequirements", !webConnected() || !caps.has("preparation.reply") || operations.webTurn !== "IDLE",
+  actionState("reviseRequirements", !actions.reply || operations.webTurn !== "IDLE",
     !webConnected() ? "브릿지 확장 연결이 확인돼야 답변을 전송할 수 있습니다." : "현재 전송이나 복구 확인이 끝나야 답변을 보낼 수 있습니다.",
     "같은 ChatGPT 대화에 답변을 전송합니다.");
-  const approvalDisabled = !caps.has("preparation.approve") || operations.approval !== "IDLE";
+  const approvalDisabled = !actions.approve || operations.approval !== "IDLE";
   actionState("saveProject", approvalDisabled,
     !caps.has("preparation.approve")
       ? agreement?.status === "READY"
@@ -1004,7 +1051,7 @@ function proposalControls() {
         : "확인 질문을 모두 정리해 요구사항 검토 단계가 되어야 작업을 시작할 수 있습니다."
       : "작업 시작 요청을 처리 중입니다.",
     "현재 요구사항을 승인하고 작업을 시작합니다.");
-  const cancelDisabled = !caps.has("preparation.cancel") || operations.preparationStart !== "IDLE";
+  const cancelDisabled = !actions.cancel || operations.preparationStart !== "IDLE";
   actionState("closeProject", cancelDisabled,
     !connected ? "최신 상태 확인 후 준비를 종료할 수 있습니다."
       : !caps.has("preparation.cancel") ? "현재 응답 또는 전송 처리가 끝난 뒤 준비를 취소할 수 있습니다."
@@ -1017,7 +1064,7 @@ function proposalControls() {
   ));
   $("discardPanel").hidden = !discardVisible;
   text("discardDelivery", discardVisible ? `준비 ID: ${preparation.preparationId} · 전송 ID: ${activeDelivery.deliveryId} · 세션: ${activeDelivery.sessionId} · 대화: ${activeDelivery.conversationId ?? preparation.webSession?.conversationUrl ?? "확인되지 않음"}` : "");
-  $("discardDeliveryButton").disabled = !discardVisible || !caps.has("preparation.discard") || operations.preparationStart !== "IDLE"
+  $("discardDeliveryButton").disabled = !discardVisible || !actions.discard || operations.preparationStart !== "IDLE"
     || !$("discardUnresolved").checked || !$("discardNoResend").checked || $("discardReason").value.trim().length < 3;
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
 }
@@ -1324,7 +1371,7 @@ $("discardDeliveryButton").addEventListener("click", () => preparationMutation("
   }));
 $("reloadProject").addEventListener("click", refresh);
 $("chooseFolder").addEventListener("click", async () => {
-  if (!connected || operations.folderPicker !== "IDLE") return;
+  if (!currentPreparationActions().chooseFolder || operations.folderPicker !== "IDLE") return;
   operations.folderPicker = "RUNNING"; render();
   text("folderStatus", "열린 파일 탐색기에서 프로젝트 폴더를 선택하세요.");
   try {

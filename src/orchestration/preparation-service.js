@@ -158,7 +158,7 @@ export function filterPreparationCapabilitiesForRuntimeContext({
 }) {
   if (!Array.isArray(capabilities)) throw new TypeError("capabilities must be an array.");
   return capabilities.filter((capability) => {
-    if (capability === "preparation.start") return canStart && runtimeAvailable;
+    if (capability === "preparation.start") return !showingRun && canStart && runtimeAvailable;
     if (capability === "preparation.approve") return !showingRun && runtimeAvailable;
     return !showingRun;
   });
@@ -811,11 +811,11 @@ export class PreparationService {
     const active = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
     const tabSelection = context.error?.code === "WEB_TAB_SELECTION_REQUIRED"
       && active?.state === "FAILED" && context.error?.details?.browserDispatchStarted === false;
-    if (active && !tabSelection && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
+    if (this.available() && active && !tabSelection && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
       || context.error?.code === "DELIVERY_RECOVERY_UNCONFIRMED"
       || context.error?.code === "REBIND_DURING_ACTIVE_DELIVERY")) caps.push("preparation.discard");
     if (tabSelection && !this.jobs.has(context.preparationId)) caps.push("preparation.cancel");
-    if (context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
+    if (this.available() && context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
       && context.diagnostics?.canRecover && (active?.response || active?.stopped)) caps.push("preparation.cancel");
     if (!context.webSession.activeDeliveryId && !this.jobs.has(context.preparationId)) {
       if (context.agreement.status !== "APPROVED") {
