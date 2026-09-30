@@ -30,6 +30,15 @@ const browser=await chromium.launch({ ...(process.env.UI_BROWSER_EXECUTABLE
 const page=await browser.newPage({viewport:{width:1280,height:960}});
 const errors=[]; page.on('pageerror',e=>errors.push(e.message));
 const screenshot=async(name)=>page.screenshot({path:path.join(output,name+'.png'),fullPage:true});
+const expectNetworkUnavailable=async(targetPage)=>{
+ await targetPage.waitForFunction(
+   ()=>document.getElementById('apiHealth').classList.contains('error'),
+   null,
+   {timeout:20000},
+ );
+ assert.equal(await targetPage.locator('#sessionHealth').evaluate(el=>el.classList.contains('unknown')),true);
+ assert.match(await targetPage.locator('#connectionNotice').textContent(),/서버 응답 없음/u);
+};
 try {
  // CASE 0: no snapshot has ever been observed. A cold-start state failure must render safely and polling must recover.
  const coldPage=await browser.newPage({viewport:{width:1280,height:960}});
@@ -114,9 +123,7 @@ try {
  // CASE B: a network-level failure is a distinct transport failure and still is not mutation UNKNOWN_RESULT.
  const unreachable=route=>route.abort();
  await page.route('**/api/state*',unreachable);
- await page.waitForFunction(()=>document.getElementById('connectionNotice').textContent.includes('서버 응답 없음'),null,{timeout:20000});
- assert.equal(await page.locator('#apiHealth').evaluate(el=>el.classList.contains('error')),true);
- assert.equal(await page.locator('#sessionHealth').evaluate(el=>el.classList.contains('unknown')),true);
+ await expectNetworkUnavailable(page);
  assert.doesNotMatch(await page.locator('#connectionNotice').textContent(),/UNKNOWN_RESULT/u);
  assert.equal(await page.locator('#planRun').isDisabled(),true);
  assert.equal(await page.locator('#chooseFolder').isDisabled(),true);
@@ -225,7 +232,7 @@ try {
  assert.equal(await page.locator('#newRun').isDisabled(),true);
  await page.click('#showUnfinishedRun'); await stage('stepWork');
  await page.locator('#runSecondaryTier > summary').click();
- fixture.offline=true; await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('unknown'));
+ fixture.offline=true; await expectNetworkUnavailable(page);
  assert.equal(await page.locator('#stopRun').isDisabled(),true); await screenshot('07-disconnected');
  fixture.offline=false; await enabled('stopRun'); await page.click('#stopRun'); await stage('stepResult');
  assert.equal(fixture.mutations.at(-1).body.type,'run.stop');
