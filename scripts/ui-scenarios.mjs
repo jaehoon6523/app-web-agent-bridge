@@ -195,8 +195,8 @@ try {
  assert.equal(fixture.mutations.at(-1).pathname,'/api/preparations/prep-qa/approve');
  await screenshot('06-working');
  assert.match(await page.locator('#runWorkerRole').textContent(),/Worker · codex \/ fixture-model · 구현 중/);
- assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 감사 대기/);
- assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 감사 대기/);
+ assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 검토 대기/);
+ assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 검토 대기/);
  await page.emulateMedia({reducedMotion:'reduce'});
  assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'none');
  await page.emulateMedia({reducedMotion:'no-preference'});
@@ -229,7 +229,7 @@ try {
  await page.click('#retryRun');
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='웹 감사 중');
  assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 감사 중/);
- assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 감사 대기/);
+ assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 검토 대기/);
  assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
  assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
  assert.equal(fixture.mutations.at(-1).body.payload.expectedVersion,fixture.version-1);
