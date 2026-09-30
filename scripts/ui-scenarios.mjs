@@ -101,6 +101,10 @@ try {
  const folderWhileStateUnavailable=route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({targetRoot:target})});
  await page.route('**/api/project/folder',folderWhileStateUnavailable);
  await page.click('#chooseFolder');
+ await page.waitForFunction(
+   expected=>document.getElementById('startRoot').value===expected,
+   target,
+ );
  assert.equal(await page.inputValue('#startRoot'),target,
    'folder selection remains usable while state read is unavailable but server/session are current');
  await page.unroute('**/api/project/folder',folderWhileStateUnavailable);
