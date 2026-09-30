@@ -257,7 +257,7 @@ try {
  assert.equal(await page.locator('#runSecondaryTier').evaluate(el=>el.open),false);
  await page.click('#retryRun');
  await page.waitForFunction(()=>document.getElementById('runStatus').textContent==='독립 검토 중');
- assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 감사 중/);
+ assert.match(await page.locator('#runJudgeRole').textContent(),/Judge · Claude Web · 검토 중/);
  assert.match(await page.locator('#runCriticRole').textContent(),/Critic · ChatGPT Web · 검토 대기/);
  assert.equal(fixture.mutations.at(-1).body.type,'code.review.retry');
  assert.equal(fixture.mutations.at(-1).body.payload.runId,'active');
@@ -276,8 +276,8 @@ try {
  assert.equal(await page.locator('#sendReviewDiscussion').isDisabled(),false,
    'Judge provider loss must not disable an available Critic discussion');
  fixture.judgeReviewerAvailability='AVAILABLE'; await page.selectOption('#reviewDiscussionRole','JUDGE');
- assert.match(await page.locator('#runJudgeRole').textContent(),/현재 후보 검토 완료/);
- assert.match(await page.locator('#runCriticRole').textContent(),/현재 후보 검토 완료/);
+ assert.match(await page.locator('#runJudgeRole').textContent(),/현재 변경사항 검토 완료/);
+ assert.match(await page.locator('#runCriticRole').textContent(),/현재 변경사항 검토 완료/);
  assert.equal(await page.locator('#runPrimaryTier').isVisible(),true);
  assert.equal(await page.locator('#applyCode').evaluate(el=>el.parentElement?.id),'runPrimaryActionSlot');
  assert.equal(await page.locator('#applyCode').evaluate(el=>el.classList.contains('primary')),true);
