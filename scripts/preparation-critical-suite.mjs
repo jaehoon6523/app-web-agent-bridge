@@ -20,7 +20,7 @@ const CRITICAL_PIPELINE = Object.freeze([
 ]);
 
 function readIncident(name) {
-  return fs.readFileSync(new URL(name, INCIDENT_ROOT), "utf8");
+  return fs.readFileSync(new URL(name, INCIDENT_ROOT), "utf8").replace(/\r\n?/gu, "\n");
 }
 
 function sha256(value) {
@@ -133,6 +133,7 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
     events: [],
     outcome: null,
     commandCapabilities: [],
+    dataKnowledge: { runs: { status: "AVAILABLE_EMPTY" } },
     preflight: { checks: { extensionAuthenticated: true } },
   });
   const dashboard = await browser.openDashboard(projection);
