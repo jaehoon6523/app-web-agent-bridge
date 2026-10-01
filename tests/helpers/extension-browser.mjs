@@ -1,13 +1,34 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { once } from 'node:events';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { WebSocketServer } from 'ws';
 import { ChatGptWebSessionAdapter, WebExtensionTransport, WebSessionAdapter } from '../../src/runtime/web/index.js';
 
 const extensionRoot = new URL('../../extension/', import.meta.url);
 const publicRoot = new URL('../../public/', import.meta.url);
+const publicRootPath = fileURLToPath(publicRoot);
 const secret = 'browser-fixture-only-0123456789abcdef';
 const identity = 'browser-fixture-extension';
+
+function dashboardFixtureAsset(pathname) {
+  let asset;
+  try {
+    asset = pathname === '/' ? 'index.html' : decodeURIComponent(pathname.slice(1));
+  } catch {
+    return null;
+  }
+  if (!asset || asset.includes('\0')) return null;
+  const resolved = path.resolve(publicRootPath, asset);
+  const relative = path.relative(publicRootPath, resolved);
+  if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  const extension = path.extname(resolved).toLowerCase();
+  const contentType = extension === '.js' ? 'text/javascript'
+    : extension === '.css' ? 'text/css'
+      : extension === '.html' ? 'text/html' : null;
+  return contentType ? { resolved, contentType } : null;
+}
 
 // Real production modules, HMAC, WebSocket and DOM. Only Chrome APIs and the
 // provider page are fixtures; this is not evidence of live ChatGPT behavior.
@@ -129,11 +150,11 @@ export async function extensionBrowser(t, {
       if (url.pathname === '/api/state') {
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify(dashboardSnapshot) });
       }
-      const asset = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
-      if (!['index.html', 'app.js', 'dashboard-model.js', 'preparation-view.js', 'conversation-view.js', 'project-overview-view.js', 'run-action-layout.js', 'styles.css'].includes(asset)) return route.abort();
-      const contentType = asset.endsWith('.js') ? 'text/javascript'
-        : asset.endsWith('.css') ? 'text/css' : 'text/html';
-      return route.fulfill({ contentType, body: await readFile(new URL(asset, publicRoot), 'utf8') });
+      const asset = dashboardFixtureAsset(url.pathname);
+      if (!asset) return route.abort();
+      const info = await stat(asset.resolved).catch(() => null);
+      if (!info?.isFile()) return route.abort();
+      return route.fulfill({ contentType: asset.contentType, body: await readFile(asset.resolved, 'utf8') });
     }
     if (url.hostname === '127.0.0.1') {
       if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<script type="module" src="/extension/background.js"></script>' });
@@ -230,8 +251,25 @@ export async function extensionBrowser(t, {
     async openDashboard(snapshot) {
       dashboardSnapshot = structuredClone(snapshot);
       const dashboard = await context.newPage();
-      await dashboard.goto('https://dashboard.fixture/');
-      await dashboard.locator('#projectPanel').waitFor({ state: 'visible' });
+      const loadFailure = new Promise((_, reject) => {
+        dashboard.on('pageerror', error => {
+          errors.push(error.message);
+          reject(new Error(`Dashboard fixture page error: ${error.message}`));
+        });
+        dashboard.on('requestfailed', request => {
+          const requestUrl = new URL(request.url());
+          if (requestUrl.hostname !== 'dashboard.fixture'
+            || !['document', 'script', 'stylesheet'].includes(request.resourceType())) return;
+          const detail = `${request.url()}: ${request.failure()?.errorText ?? 'request failed'}`;
+          diagnostics.push(detail);
+          reject(new Error(`Dashboard fixture asset failed: ${detail}`));
+        });
+      });
+      const dashboardReady = (async () => {
+        await dashboard.goto('https://dashboard.fixture/');
+        await dashboard.locator('#projectPanel').waitFor({ state: 'visible' });
+      })();
+      await Promise.race([dashboardReady, loadFailure]);
       return dashboard;
     },
     async prepare(runId = 'r1') {
