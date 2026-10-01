@@ -164,8 +164,8 @@ test("task conversation attributes each turn to its role and reviewed candidate 
   const cards = ui.elements.get("conversationTimeline").children;
   assert.deepEqual(cards.map((card) => card.children[0].textContent),
     ["사용자 · 요구사항", "웹 설계자 · 요구사항", "구현자 보고", "Judge 의견", "Critic 의견", "사용자 답변", "감사 판정"]);
-  assert.match(renderedText(cards[3]), /ROUND0 · 후보 candidate-2 · 감사 기준 manifest-2/u);
-  assert.match(renderedText(cards[4]), /ROUND1 · 후보 candidate-2/u);
+  assert.match(renderedText(cards[3]), /1차 독립 검토/u);
+  assert.match(renderedText(cards[4]), /교차 검토/u);
   assert.match(renderedText(cards[5]), /질문 q1/u);
   assert.match(renderedText(cards[6]), /판정: PASS/u);
   assert.doesNotMatch(renderedText(cards[2]), /판정: PASS/u);
@@ -279,7 +279,7 @@ test("timeout inspects request outcome and prevents duplicate reply", async () =
 test("missing server workflow fails closed without constructing a preparation", async () => {
   const ui = await dashboard({ runs: [], preflight: {}, commandCapabilities: ["preparation.start"] });
   assert.equal(ui.elements.get("planRun").disabled, true);
-  assert.match(ui.elements.get("connectionNotice").textContent, /WORKFLOW_CONTRACT/);
+  assert.match(ui.elements.get("connectionNotice").textContent, /상태 응답 해석 실패 · 기술 진단을 확인하세요/u);
 });
 test("ambiguous preparation renders eligible ChatGPT tabs and sends the selected tab identity", async () => {
   const state = prepared();
@@ -318,7 +318,7 @@ test("approval is a single mutation carrying the canonical version", async () =>
 test("blank conversation URL starts at the ChatGPT root and keeps automatic approval intent", async () => {
   const state = { workflow: { stage: "START", state: "START_IDLE" }, preparation: null,
     run: null, runs: [], preflight: { checks: { extensionAuthenticated: true } },
-    commandCapabilities: ["preparation.start"] };
+    runtimeAvailability:{ ready:true }, commandCapabilities: ["preparation.start"] };
   const ui = await dashboard(state);
   ui.elements.get("objective").value = "Make a page";
   ui.elements.get("startRoot").value = "C:/project";
@@ -336,7 +336,7 @@ test("blank conversation URL starts at the ChatGPT root and keeps automatic appr
 });
 test("a saved project conversation is selected for the same folder and can be explicitly replaced", async () => {
   const state = { workflow:{ stage:"START", state:"START_IDLE" }, preparation:null, run:null, runs:[],
-    preflight:{ checks:{ extensionAuthenticated:true } }, commandCapabilities:["preparation.start"],
+    preflight:{ checks:{ extensionAuthenticated:true } }, runtimeAvailability:{ ready:true }, commandCapabilities:["preparation.start"],
     projectConversations:[{ targetRoot:"C:/project", conversationUrl:"https://chatgpt.com/c/project-thread",
       conversationId:"project-thread", updatedAt:"2026-09-25T00:00:00Z" }] };
   const ui = await dashboard(state);
@@ -477,6 +477,14 @@ function stateFor(run, capabilities) {
     events: [], messages: [], assessments: [], findings: [], evidence: [] };
 }
 
+function withAvailableReviewers(state) {
+  state.reviewerRuntimes = {
+    JUDGE:{ availability:"AVAILABLE", provider:"CHATGPT_WEB" },
+    CRITIC:{ availability:"AVAILABLE", provider:"CHATGPT_WEB" },
+  };
+  return state;
+}
+
 test("project view groups tasks, surfaces pending action, and opens the selected task", async () => {
   const active = { runId:"active", version:4, phase:"AWAITING_APPLY", objective:"Add greeting",
     projectRef:{ targetRoot:"C:/project" }, createdAt:"2026-09-25T00:00:00Z", updatedAt:"2026-09-25T01:00:00Z" };
@@ -494,7 +502,7 @@ test("project view groups tasks, surfaces pending action, and opens the selected
   assert.match(ui.elements.get("overviewSummary").textContent, /기록 2건 · 확인할 작업 1건/);
   assert.equal(ui.elements.get("newProjectTask").disabled, true);
   assert.equal(ui.elements.get("openProjectBlocker").hidden, false);
-  assert.match(renderedText(ui.elements.get("overviewTasks")), /통과 후보의 근거를 확인/);
+  assert.match(renderedText(ui.elements.get("overviewTasks")), /검토 통과 · 적용 대기/u);
   assert.match(renderedText(ui.elements.get("overviewTasks")), /이어짐: Initial app/u);
   assert.match(renderedText(ui.elements.get("overviewTasks")), /후속 작업 2건/u);
   assert.equal(storage.get("bridge.project.view"), "C:/project");
@@ -528,6 +536,7 @@ test("continue applied task sends its identity and shows the new approval bounda
   assert.equal(ui.elements.get("continueProject").disabled, false);
   const navigating = ui.elements.get("continueProject").listeners.click();
   state.workflow = { stage:"START", state:"START_IDLE" }; state.run = null;
+  state.runtimeAvailability = { ready:true };
   state.commandCapabilities = ["preparation.start"];
   await navigating;
   assert.equal(ui.run("followUpSource?.runId"), "applied-1");
@@ -613,7 +622,7 @@ test("a held reviewer question accepts a human answer with the exact run and que
   const run = { runId:"run-question", version:4, phase:"HOLD", objective:"Implement greeting",
     terminationReason:"USER_DECISION_REQUIRED", candidate:{ candidateId:"candidate-1" },
     missingInformation:[{ requestItemId:"question-1", status:"NEEDS_USER_DECISION", reason:"Which greeting?" }] };
-  const state = stateFor(run, ["code.decision.reply"]);
+  const state = withAvailableReviewers(stateFor(run, ["code.decision.reply"]));
   const ui = await dashboard(state, async () => ({ payload:{ status:"USER_DECISION_ACCEPTED" } }));
   assert.equal(ui.elements.get("decisionPanel").hidden, false);
   assert.equal(ui.elements.get("submitDecision").disabled, true);
@@ -652,10 +661,10 @@ test("settled audit exposes free-form Judge/Critic discussion without changing a
   const run = { runId:"run-chat", version:5, phase:"HOLD", objective:"Implement greeting",
     terminationReason:"REPORT_REPAIR_LIMIT", candidate:{ candidateId:"candidate-1" },
     conversationBindings:[
-      { role:"JUDGE", conversationUrl:"https://chatgpt.com/c/judge", conversationId:"judge", activeDeliveryId:null },
-      { role:"CRITIC", conversationUrl:"https://chatgpt.com/c/critic", conversationId:"critic", activeDeliveryId:null },
+      { role:"JUDGE", provider:"CHATGPT_WEB", conversationUrl:"https://chatgpt.com/c/judge", conversationId:"judge", activeDeliveryId:null },
+      { role:"CRITIC", provider:"CHATGPT_WEB", conversationUrl:"https://chatgpt.com/c/critic", conversationId:"critic", activeDeliveryId:null },
     ], reviewDiscussions:[] };
-  const state = stateFor(run, ["code.review.discuss","code.review.retry","run.stop"]);
+  const state = withAvailableReviewers(stateFor(run, ["code.review.discuss","code.review.retry","run.stop"]));
   const ui = await dashboard(state, async (url, options) => {
     const body=JSON.parse(options.body);
     if(body.type==="code.review.discuss")return{payload:{status:"DELIVERED",discussionId:"discussion-1",role:body.payload.role,response:"Answer"}};
@@ -687,7 +696,7 @@ test("ambiguous reviewer binding offers only controller-recorded tab choices bef
       {role:"JUDGE",provider:"CHATGPT_WEB",conversationUrl:"https://chatgpt.com/c/judge",conversationId:"judge",activeDeliveryId:null},
       {role:"CRITIC",provider:"CHATGPT_WEB",conversationUrl:"https://chatgpt.com/c/critic",conversationId:"critic",activeDeliveryId:null},
     ],reviewDiscussions:[]};
-  const state=stateFor(run,["code.review.rebind","run.stop"]);
+  const state=withAvailableReviewers(stateFor(run,["code.review.rebind","run.stop"]));
   const ui=await dashboard(state,async(url,options)=>{
     const body=JSON.parse(options.body);
     if(body.type==="code.review.rebind")return{payload:{status:"REBOUND",role:"JUDGE",tabId:body.payload.selectedTabId}};
@@ -707,7 +716,7 @@ test("audit hold → retry → pass → apply: commands use one run and the revi
   const run = { runId: "run-trace", version: 4, phase: "HOLD", objective: "Greeting",
     candidate: { candidateId: "candidate-1" }, capture: { artifact: { sha256: "patch-1" } },
     reviews: [{ reviewId: "review-1" }], baseCommit: "base-1" };
-  const state = stateFor(run, ["code.review.retry"]);
+  const state = withAvailableReviewers(stateFor(run, ["code.review.retry"]));
   const effects = [];
   const ui = await dashboard(state, async (url, options) => {
     assert.equal(url, "/api/commands");
@@ -791,5 +800,5 @@ test("uncertain audit retry is not sent twice without a settled receipt", async 
   await ui.elements.get("retryRun").listeners.click();
   assert.equal(ui.calls.filter(({ url }) => url === "/api/commands").length, 1);
   assert.ok(ui.calls.some(({ url }) => url === "/api/state?requestId=request-1"), JSON.stringify({ calls: ui.calls, connected: ui.run("connected"), state: ui.run("operations.runCommand") }));
-  assert.match(ui.elements.get("commandResult").textContent, /자동 재전송하지 않습니다/);
+  assert.match(ui.elements.get("commandResult").textContent, /같은 요청을 자동으로 다시 보내지 않습니다/u);
 });
