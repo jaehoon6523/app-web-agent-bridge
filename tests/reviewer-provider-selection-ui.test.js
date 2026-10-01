@@ -17,7 +17,8 @@ test("reviewer provider selection is explicit, preparation-bound, and keeps prep
   assert.match(html, /id="judgeReviewerProvider"/u);
   assert.match(html, /id="criticReviewerProvider"/u);
   assert.match(html, /value="CLAUDE_WEB"/u);
-  assert.match(html, /준비 대화는 계속 ChatGPT/u);
+  assert.match(html, /기존 ChatGPT 대화 URL \(선택\)/u);
+  assert.match(app, /conversationUrl = \$\("conversationUrl"\)\.value\.trim\(\) \|\| "https:\/\/chatgpt\.com\/"/u);
   assert.match(app, /reviewers:\{\s*JUDGE:\{ provider:\$\("judgeReviewerProvider"\)\.value \},\s*CRITIC:\{ provider:\$\("criticReviewerProvider"\)\.value \}/su);
   assert.match(app, /workflow\.stage !== "START".*reviewerProvidersLocked/su);
   assert.match(app, /snapshot\?\.preflight\?\.project/su);

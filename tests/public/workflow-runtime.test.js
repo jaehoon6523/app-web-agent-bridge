@@ -2,16 +2,49 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
+import * as dashboardActionCapabilities from "../../public/dashboard-action-capabilities.js";
+import * as dashboardConnectionState from "../../public/dashboard-connection-state.js";
 import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
+import * as dashboardRunListKnowledge from "../../public/dashboard-run-list-knowledge.js";
+import * as dashboardStartActions from "../../public/dashboard-start-actions.js";
 import { renderProjectOverview } from "../../public/project-overview-view.js";
 import { createRunActionLayout } from "../../public/run-action-layout.js";
+import * as runContextView from "../../public/run-context-view.js";
 import { workflowForRun } from "../../src/orchestration/preparation-service.js";
+
+function inlineModule(source) {
+  const lines = [];
+  let importing = false;
+  for (const line of source.split(/\r?\n/u)) {
+    if (!importing && /^\s*import\b/u.test(line)) {
+      importing = !/;\s*$/u.test(line);
+      continue;
+    }
+    if (importing) {
+      if (/;\s*$/u.test(line)) importing = false;
+      continue;
+    }
+    if (/^\s*export\s*\{/u.test(line)) continue;
+    lines.push(line.replace(/^(\s*)export\s+/u, "$1"));
+  }
+  return lines.join("\n");
+}
+
+function withRunKnowledge(state) {
+  if (!Array.isArray(state?.runs) || state.dataKnowledge != null) return state;
+  return {
+    ...state,
+    dataKnowledge: { runs: { status: state.runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
+  };
+}
 
 export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
   const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
   const source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
   const conversationSource = await readFile(new URL("../../public/conversation-view.js", import.meta.url), "utf8");
   const preparationSource = await readFile(new URL("../../public/preparation-view.js", import.meta.url), "utf8");
+  const healthPresentationSource = await readFile(new URL("../../public/dashboard-health-presentation.js", import.meta.url), "utf8");
+  const auditPresentationSource = await readFile(new URL("../../public/dashboard-audit-presentation.js", import.meta.url), "utf8");
   const elements = new Map(), all = [], calls = [];
   class Element {
     constructor(tagName = "") {
@@ -62,6 +95,11 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
   const context = vm.createContext({
+    ...dashboardActionCapabilities,
+    ...dashboardConnectionState,
+    ...dashboardRunListKnowledge,
+    ...dashboardStartActions,
+    ...runContextView,
     externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
@@ -75,11 +113,18 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     fetch: async (url, options) => {
       calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
       const body = url === "/api/dashboard/session" ? { token: "test" }
-        : url.startsWith("/api/state") ? state : await mutate(url, options);
+        : url.startsWith("/api/state") ? withRunKnowledge(state) : await mutate(url, options);
       return { ok: true, json: async () => body };
     },
   });
-  vm.runInContext(conversationSource.replace("export function", "function") + preparationSource.replace("export function", "function") + source.replace(/^(?:import .*;\r?\n)+/, "").replace(/\r?\npoll\(\);\s*$/, ""), context);
+  const executableSource = [
+    inlineModule(conversationSource),
+    inlineModule(preparationSource),
+    inlineModule(healthPresentationSource),
+    inlineModule(auditPresentationSource),
+    inlineModule(source).replace(/\r?\npoll\(\);\s*$/, ""),
+  ].join("\n");
+  vm.runInContext(executableSource, context);
   await vm.runInContext("refresh()", context);
   return { elements, calls, context, run: (code) => vm.runInContext(code, context) };
 }

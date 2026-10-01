@@ -408,7 +408,8 @@ test("result projection never attaches an unrelated preparation or its commands"
   const automatic = await f.service.project(snapshot);
   assert.equal(automatic.workflow.preparationId, null);
   assert.equal(automatic.preparation, null);
-  assert.ok(automatic.commandCapabilities.includes("preparation.start"));
+  assert.equal(automatic.workflow.stage, "RESULT");
+  assert.deepEqual(automatic.commandCapabilities, ["state.get"]);
 });
 
 test("first response must be stored and acknowledged before preparation is shown", async (t) => {

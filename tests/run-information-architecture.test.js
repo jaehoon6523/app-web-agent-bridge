@@ -43,8 +43,6 @@ test("run dashboard separates primary, contextual, recovery, secondary and techn
   assert.match(layout, /runRecoveryTier.*reviewDiscussionRecovery.*reviewBindingRecoveryPanel.*recoveryPanel/su);
   assert.doesNotMatch(layout, /cloneNode|addEventListener|fetch\(|localStorage|sessionStorage/u);
   assert.doesNotMatch(context, /fetch\(|localStorage|sessionStorage/u);
-  assert.match(app, /async function request\(url, options = \{\}, \{ mutation = false \} = \{\}\)/u);
-  assert.match(app, /code: mutation \? "UNKNOWN_RESULT" : "READ_UNAVAILABLE"/u);
 });
 
 test("run action projection hides actions that are meaningless for settled and recovery states", () => {
