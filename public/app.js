@@ -1,18 +1,19 @@
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
-import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
+import { filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
 import { createRunActionLayout } from "./run-action-layout.js";
 import { projectRunListKnowledge } from "./dashboard-run-list-knowledge.js";
 import { projectDashboardStartActions } from "./dashboard-start-actions.js";
 import { projectPreparationActions, projectReviewerActions, projectRunCommandActions, reviewerProviderMatches } from "./dashboard-action-capabilities.js";
 import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-context-view.js";
+import { createDashboardAuditPresentation } from "./dashboard-audit-presentation.js";
+import { createDashboardHealthPresentation } from "./dashboard-health-presentation.js";
 import {
-  DashboardSessionState, ExtensionState, StateReadState, TransportState,
   classifyDashboardFailure, connectionNoticeFor, dashboardStateReady,
   initialDashboardConnectionState, markDashboardSessionAuthenticated,
   markDashboardSessionPending, markStateReadReady, markStateReadStarted,
-  projectBrowserState, projectDashboardKnowledge, requestFailureCode,
+  projectDashboardKnowledge, requestFailureCode,
 } from "./dashboard-connection-state.js";
 const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
@@ -34,6 +35,15 @@ let requestedView = "";
 const unknownRequests = new Map();
 
 const openFindings = new Set();
+const { bindHealthInteractions, health, signal, runAppearance, workerRuntimeStatus } = createDashboardHealthPresentation({
+  $, text, time, getConnectionState:() => connectionState, getConnected:() => connected,
+  getSnapshot:() => snapshot, getLastConfirmed:() => lastConfirmed,
+});
+bindHealthInteractions();
+const { renderAudit, renderLog } = createDashboardAuditPresentation({
+  $, text, node, time, openFindings, openEvidence,
+  getConnectionState:() => connectionState, getSnapshot:() => snapshot, getOperations:() => operations,
+});
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
 const labels = { CREATED:"접수됨", PROVISIONING:"작업 환경 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"변경사항 고정 중", VERIFYING:"검증 중", REVIEW_RUNNING:"독립 검토 중", REPORT_REPAIR:"검토 응답 확인 중", EVIDENCE_SUPPLEMENT:"검토 근거 보완 중", REWORK:"수정 대기", HOLD:"확인 필요", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 상태로 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"이전 작업 기록" };
 const phaseReasons = {
@@ -308,185 +318,6 @@ function disabledWebReason(action) {
   if (preparation?.diagnostics?.exactConversation !== true) return "정확한 대화 탭 연결이 필요합니다.";
   if (!capabilities().has(action)) return "현재 이 웹 작업을 사용할 수 없습니다.";
   return "";
-}
-function projectConnectionIndicator(id, state, detail) {
-  const serverReachable = connectionState.transport === TransportState.REACHABLE;
-  const serverUnreachable = connectionState.transport === TransportState.UNREACHABLE;
-  const sessionAuthenticated = serverReachable && connectionState.session === DashboardSessionState.AUTHENTICATED;
-  const sessionRejected = connectionState.session === DashboardSessionState.REJECTED;
-  const sessionInvalid = connectionState.session === DashboardSessionState.AUTH_INVALID;
-  const stateReadFailed = connectionState.stateRead === StateReadState.FAILED;
-  if (id === "apiHealth" || id === "serverSignal") {
-    return serverReachable
-      ? { state:"ok", detail:id === "serverSignal" ? "응답 정상" : "서버 응답 확인됨" }
-      : serverUnreachable
-        ? { state:"error", detail:id === "serverSignal" ? "응답 없음 · npm start 및 포트 확인 필요" : "서버 응답 없음" }
-        : { state:"unknown", detail:"확인 전" };
-  }
-  if (id === "sessionHealth") {
-    return sessionAuthenticated ? { state:"ok", detail:"대시보드 인증됨" }
-      : connectionState.session === DashboardSessionState.PENDING ? { state:"unknown", detail:"대시보드 인증 확인 중" }
-        : sessionInvalid ? { state:"warn", detail:"대시보드 인증 실패" }
-          : sessionRejected ? { state:"warn", detail:"브라우저 세션 거부됨" }
-            : { state:"unknown", detail:"인증 확인 전" };
-  }
-  if (id === "channelHealth") {
-    if (!connected) return { state:"unknown", detail:"최신 상태 확인 필요" };
-    const browser = projectBrowserState(snapshot?.preflight);
-    return browser.extension === ExtensionState.AUTHENTICATED
-      ? { state:"ok", detail:"확장 인증됨" }
-      : browser.extension === ExtensionState.DISCONNECTED
-        ? { state:"warn", detail:"확장 연결 대기" }
-        : { state:"unknown", detail:"확인 전" };
-  }
-  if (["cliSignal", "webSignal", "webBindingSignal"].includes(id) && !connected) {
-    if (serverUnreachable) return { state:"warn", detail:"서버 응답 없음" };
-    if (sessionInvalid || sessionRejected) return { state:"warn", detail:"대시보드 인증 확인 필요" };
-    if (stateReadFailed && serverReachable) return { state:"warn", detail:"최신 상태 확인 필요" };
-  }
-  if (id === "refreshSignal" && !connected) {
-    return stateReadFailed
-      ? { state:"warn", detail:`상태 조회 실패 · 마지막 정상 확인 ${lastConfirmed ? time(lastConfirmed) : "없음"}` }
-      : { state:"unknown", detail:`확인 전 · 마지막 정상 확인 ${lastConfirmed ? time(lastConfirmed) : "없음"}` };
-  }
-  return { state, detail };
-}
-function health(id, name, state, detail) {
-  ({ state, detail } = projectConnectionIndicator(id, state, detail));
-  const el = $(id);
-  el.className = `health ${state}`;
-  el.textContent = name;
-  el.setAttribute("aria-label", `${name}: ${detail}`);
-  text(`${id}Detail`, detail);
-}
-function signal(id, label, state, detail) {
-  ({ state, detail } = projectConnectionIndicator(id, state, detail));
-  const el = $(id);
-  text(id, `${label} · ${detail}`);
-  el.className = `health ${state}`;
-  el.setAttribute("aria-label", `${label}: ${detail}`);
-}
-function closeHealthDetails(restoreFocus = false) {
-  for (const id of ["apiHealth", "sessionHealth", "engineHealth", "channelHealth"]) {
-    const summary = $(id), details = summary.parentElement;
-    if (details?.open) { details.open = false; if (restoreFocus) summary.focus(); }
-  }
-}
-document.addEventListener("click", (event) => {
-  if (!$("systemHealth").contains(event.target)) closeHealthDetails();
-});
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && $("systemHealth").contains(event.target)) {
-    closeHealthDetails(true); event.preventDefault();
-  }
-});
-function runAppearance(phase) {
-  if (phase === "FAILED") return "error";
-  if (["HOLD", "INCONCLUSIVE", "RECOVERY_REQUIRED", "STOPPING"].includes(phase)) return "warn";
-  if (["APPLIED", "COMPLETE", "AWAITING_APPLY"].includes(phase)) return "ok";
-  if (["WORKER_RUNNING", "CANDIDATE_CAPTURE", "VERIFYING", "REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK", "APPLYING"].includes(phase)) return connected ? "ok running" : "unknown";
-  return "unknown";
-}
-function workerRuntimeStatus(runtime) {
-  if (!connected || !runtime) return { state:"unknown", detail:"확인 전" };
-  if (!runtime.configured) return { state:"warn", detail:"경로 설정 필요" };
-  const activityAt = runtime.lastActivityAt ? ` · ${time(runtime.lastActivityAt)}` : "";
-  const diff = runtime.diff;
-  const diffSize = diff && Number.isSafeInteger(diff.patchBytes)
-    ? (() => {
-      const bytes = diff.patchBytes;
-      const size = bytes < 1024 ? `${bytes} B`
-        : bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB`
-          : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-      const binary = diff.binaryFiles ? ` · binary ${diff.binaryFiles}` : "";
-      return ` · diff ${diff.changedFiles ?? 0} files · +${diff.additions ?? 0}/-${diff.deletions ?? 0}${binary} · ${size}`;
-    })() : "";
-  const runtimeSuffix = `${diffSize}${activityAt}`;
-  const toolLabels = {
-    commandExecution:"명령 실행", fileChange:"파일 변경", mcpToolCall:"도구 호출",
-    dynamicToolCall:"도구 호출", collabToolCall:"협업 도구", collabAgentToolCall:"협업 에이전트",
-    webSearch:"웹 검색", imageView:"이미지 확인",
-  };
-  const tool = toolLabels[runtime.toolType] ?? runtime.toolType ?? "도구";
-  if (runtime.processState === "UNCONFIGURED") return { state:"warn", detail:"경로 설정 필요" };
-  if (runtime.processState === "STARTING") return { state:"ok running", detail:"Codex 프로세스 시작 중" };
-  if (runtime.processState === "DISCONNECTED") return { state:"warn", detail:`Codex 연결 끊김${runtimeSuffix}` };
-  if (runtime.processState === "RECOVERY_REQUIRED") return { state:"warn", detail:"최근 Worker 상태 복구 필요" };
-  if (runtime.activity === "TOOL_RUNNING") return { state:"ok running", detail:`실행 확인됨 · ${tool} 진행 중${runtimeSuffix}` };
-  if (runtime.activity === "TOOL_COMPLETED") return { state:"ok running", detail:`실행 확인됨 · ${tool} 완료${runtimeSuffix}` };
-  if (runtime.activity === "APPROVAL_WAIT") return { state:"warn", detail:`실행 확인됨 · Codex 승인 대기${runtimeSuffix}` };
-  if (runtime.activity === "CANDIDATE_CAPTURE") return { state:"ok running", detail:"Worker 완료 · 변경사항 고정 중" };
-  if (runtime.activity === "VERIFYING") return { state:"ok running", detail:"Worker 완료 · 변경사항 검증 중" };
-  if (runtime.activity === "WEB_AUDIT") return { state:"ok running", detail:"Worker 완료 · 독립 검토 진행 중" };
-  if (runtime.activity === "AWAITING_APPLY") return { state:"ok", detail:"구현·독립 검토 완료 · 적용 대기" };
-  if (runtime.activity === "APPLIED") return { state:"ok", detail:"구현·독립 검토 완료 · 적용됨" };
-  if (runtime.turnState === "ACTIVE") return { state:"ok running", detail:`실행 확인됨 · Worker turn 진행 중${runtimeSuffix}` };
-  if (runtime.sessionState === "READY" && runtime.processState === "RUNNING") return { state:"ok running", detail:`Codex 실행 확인 · 세션 준비됨${runtimeSuffix}` };
-  if (runtime.processState === "COMPLETE") return { state:"ok", detail:"Worker 실행 완료" };
-  return { state:"ok", detail:"경로 설정됨 · 실행 전" };
-}
-function evidenceLinks(container, refs) {
-  const links = node("div", "", "links");
-  const knowledge = projectDashboardKnowledge(connectionState);
-  const actions = projectRunCommandActions({
-    stateAvailable:knowledge.stateRead.currentlyAvailable,
-    runPresent:Boolean(snapshot?.run),
-    commandCapabilities:snapshot?.commandCapabilities ?? [],
-  });
-  for (const id of refs ?? []) {
-    const button = node("button", `근거 ${id.slice(-8)}`);
-    button.disabled = !actions.openEvidence || (operations.runCommand !== "IDLE");
-    button.title = !actions.openEvidence ? "최신 실행 상태와 근거 조회 권한을 확인해야 합니다."
-      : (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나면 근거를 열 수 있습니다." : "근거 원문을 엽니다.";
-    button.addEventListener("click", () => openEvidence(id)); links.append(button);
-  }
-  container.append(links);
-}
-function renderAudit() {
-  const run = snapshot?.run;
-  const assessments = $("assessments"), findings = $("findings"), evidence = $("evidenceList");
-  assessments.replaceChildren(); findings.replaceChildren(); evidence.replaceChildren();
-  for (const req of run?.requirements?.items ?? []) {
-    const a = snapshot.assessments?.find((a) => a.requirementId === req.requirementId);
-    const row = node("article", "", "record");
-    row.append(node("strong", `${req.requirementId} · ${req.required ? "필수" : "선택"} · ${a?.verdict ?? "아직 판정 없음"}`), node("p", req.statement), node("p", a?.reason ?? req.acceptanceCriteria));
-    if (a?.missingInformation) row.append(node("p", `부족한 정보: ${a.missingInformation}`, "muted"));
-    evidenceLinks(row, a?.evidenceRefs);
-    for (const suggestion of run?.reviews?.at(-1)?.report?.suggestions ?? []) {
-      if (suggestion.requirementId === req.requirementId) row.append(node("p", `선택 개선 제안: ${suggestion.description}`, "muted"));
-    }
-    assessments.append(row);
-  }
-  if (!assessments.children.length) assessments.append(node("p", run?.requirements
-    ? "아직 요구사항별 감사 결과가 없습니다." : "요구사항 기록이 없습니다. 확인 가능한 대화와 상태 변경은 ‘진행 기록’에서 확인하세요.", "muted"));
-  for (const f of snapshot?.findings ?? []) {
-    const row = node("article", "", "record");
-    row.append(node("strong", `${f.findingId} · ${f.status}${f.status === "RESOLVED" && f.verifiedCandidateId !== run.candidate?.candidateId ? " · 새 후보 재검증 필요" : ""}`), node("p", f.problem), node("p", `해결 조건: ${f.resolutionCriteria}`));
-    evidenceLinks(row, f.evidenceRefs);
-    const history = node("details", ""); history.append(node("summary", "처리 이력"));
-    history.open = openFindings.has(f.findingId);
-    history.addEventListener("toggle", () => { if (history.open) openFindings.add(f.findingId); else openFindings.delete(f.findingId); });
-    for (const h of f.history) history.append(node("p", `${time(h.at)} · ${h.status} · ${h.reason} · ${h.candidateId}`));
-    row.append(history); findings.append(row);
-  }
-  if (!findings.children.length) findings.append(node("p", run?.requirements
-    ? "등록된 감사 지적이 없습니다." : "요구사항별 감사 지적 기록이 없습니다.", "muted"));
-  for (const e of snapshot?.evidence ?? []) {
-    const row = node("article", "", "record");
-    row.append(node("strong", `${e.kind} · ${e.producer}${e.valid === false ? " · 후보 증거로 무효" : ""}`), node("p", `${e.candidateId} · ${time(e.createdAt)}`, "muted"), node("p", JSON.stringify(e.result)));
-    evidenceLinks(row, [e.evidenceId]); evidence.append(row);
-  }
-  text("candidateDetails", JSON.stringify({ project:run?.projectRef, requirements:run?.requirements, worker:run?.worker, workerTurns:run?.workerTurns, candidate:run?.candidate, latestReview:run?.reviews?.at(-1), missingInformation:run?.missingInformation, application:run?.application, recovery:run?.recovery }, null, 2));
-}
-function renderLog() {
-  const log = $("eventLog"); log.replaceChildren();
-  const records = [...(snapshot?.events ?? []).map((e) => ({ at:e.createdAt, title:e.type, content:JSON.stringify(e.payload) })),
-    ...(snapshot?.messages ?? []).map((m) => ({ at:m.createdAt, title:m.fromActor ?? "CONTROLLER", content:m.content })),
-    ...externalEventRecords(snapshot?.run, snapshot?.evidence ?? [])].sort((a,b) => String(a.at).localeCompare(String(b.at)));
-  for (const record of records) {
-    const row = node("article", "", "record"); row.append(node("time", time(record.at)), node("p", record.title), node("pre", record.content)); log.append(row);
-  }
-  if (!records.length) log.append(node("p", "아직 수신한 실행 기록이 없습니다.", "muted"));
 }
 function render() {
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
