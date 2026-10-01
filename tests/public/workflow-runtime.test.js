@@ -156,7 +156,7 @@ test("task conversation attributes each turn to its role and reviewed candidate 
     ], requests:[
       { requestId:"judge-1", phase:"ROUND0", candidateId:"candidate-2", auditManifestHash:"manifest-2" },
       { requestId:"critic-1", phase:"ROUND1", candidateId:"candidate-2", auditManifestHash:"manifest-2" },
-    ], userDecisions:[{ at:"2026-01-01T00:05:00Z", candidateId:"candidate-2", responses:[{ requestItemId:"q1", answer:"이 문구입니다" }] }],
+    ], missingInformation:[{ requestItemId:"q1", question:"표시할 문구는 무엇인가요?" }], userDecisions:[{ at:"2026-01-01T00:05:00Z", candidateId:"candidate-2", responses:[{ requestItemId:"q1", answer:"이 문구입니다" }] }],
     reviews:[{ decision:"PASS", candidateId:"candidate-2", auditManifestHash:"manifest-2", createdAt:"2026-01-01T00:06:00Z" }],
   };
   const state = { workflow:workflowForRun(run), run, runs:[run], commandCapabilities:[], preflight:{ checks:{} } };
@@ -166,9 +166,11 @@ test("task conversation attributes each turn to its role and reviewed candidate 
     ["사용자 · 요구사항", "웹 설계자 · 요구사항", "구현자 보고", "Judge 의견", "Critic 의견", "사용자 답변", "감사 판정"]);
   assert.match(renderedText(cards[3]), /1차 독립 검토/u);
   assert.match(renderedText(cards[4]), /교차 검토/u);
-  assert.match(renderedText(cards[5]), /질문 q1/u);
-  assert.match(renderedText(cards[6]), /판정: PASS/u);
-  assert.doesNotMatch(renderedText(cards[2]), /판정: PASS/u);
+  assert.match(renderedText(cards[5]), /표시할 문구는 무엇인가요\?/u);
+  assert.match(renderedText(cards[5]), /이 문구입니다/u);
+  assert.doesNotMatch(renderedText(cards[5]), /q1/u);
+  assert.match(renderedText(cards[6]), /검토 통과/u);
+  assert.doesNotMatch(renderedText(cards[2]), /검토 통과/u);
   ui.elements.get("showAudit").listeners.click();
   assert.equal(ui.elements.get("conversationPanel").hidden, true);
   assert.equal(ui.elements.get("auditPanel").hidden, false);
@@ -534,16 +536,16 @@ test("continue applied task sends its identity and shows the new approval bounda
   const state = stateFor(done, []);
   const ui = await dashboard(state);
   assert.equal(ui.elements.get("continueProject").disabled, false);
-  const navigating = ui.elements.get("continueProject").listeners.click();
+  // The next GET must observe START readiness before refresh captures its response.
   state.workflow = { stage:"START", state:"START_IDLE" }; state.run = null;
   state.runtimeAvailability = { ready:true };
   state.commandCapabilities = ["preparation.start"];
-  await navigating;
+  await ui.elements.get("continueProject").listeners.click();
+  assert.equal(ui.elements.get("planRun").disabled, false);
   assert.equal(ui.run("followUpSource?.runId"), "applied-1");
   assert.match(ui.elements.get("followUpSource").textContent, /Initial app · 새 부탁과 요구사항은 다시 승인/u);
   ui.elements.get("objective").value = "Add settings";
-  ui.elements.get("startForm").listeners.submit({ preventDefault() {} });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  await ui.elements.get("startForm").listeners.submit({ preventDefault() {} });
   const sent = ui.calls.find((call) => call.url === "/api/preparations");
   assert.equal(sent.body.followUpRunId, "applied-1");
   assert.equal(sent.body.targetRoot, "C:/project");
