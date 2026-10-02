@@ -5,6 +5,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { DashboardController } from "../../src/orchestration/dashboard-controller.js";
 
 const serverUrl = new URL("../../src/server.js", import.meta.url).href;
 const token = "response-deadline-dashboard-token-0123456789";
@@ -92,10 +93,25 @@ test("fault: pending runtime initialization must not leave authenticated state u
   assert.ok([200, 503].includes(state.status), "bounded degraded response must be HTTP 200 or 503");
   if (state.status === 200) {
     assert.equal(state.body.runtimeAvailability.ready, false);
+    assert.equal(state.body.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
     assert.equal(state.body.dataKnowledge.runs.status, "UNAVAILABLE");
     assert.equal(state.body.commandCapabilities.includes("preparation.start"), false);
   } else {
     assert.equal(typeof state.body.error, "string");
     assert.ok(state.body.error.length > 0);
   }
+});
+
+
+test("runtime read deadline preserves initialization and a later snapshot observes its completion", { timeout:10000 }, async () => {
+  let finishInitialization;
+  const pending = new Promise(resolve => { finishInitialization = resolve; });
+  const controller = new DashboardController({ getRuntime:() => pending, preflight:() => ({}) });
+  const degraded = await controller.snapshot();
+  assert.equal(degraded.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
+  assert.equal(degraded.dataKnowledge.runs.status, "UNAVAILABLE");
+  finishInitialization({ store:{ listRuns:() => [] }, composition:{} });
+  const recovered = await controller.snapshot();
+  assert.equal(recovered.runtimeAvailability.ready, true);
+  assert.equal(recovered.dataKnowledge.runs.status, "AVAILABLE_EMPTY");
 });

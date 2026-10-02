@@ -67,8 +67,18 @@ export class DashboardController {
 
   async snapshot(runId = null) {
     let live;
+    let runtimeReadTimer;
     try {
-      live = await this.#getRuntime();
+      // Bound this read only; runtime initialization remains shared with commands.
+      live = await Promise.race([
+        this.#getRuntime(),
+        new Promise((_, rejectRead) => {
+          runtimeReadTimer = setTimeout(() => rejectRead(Object.assign(
+            new Error("Live runtime initialization is still pending."),
+            { code:"LIVE_RUNTIME_READ_TIMEOUT" },
+          )), 2000);
+        }),
+      ]);
     } catch (error) {
       return {
         run:null,
@@ -91,6 +101,8 @@ export class DashboardController {
         starting:this.#starting,
         drafts:{},
       };
+    } finally {
+      clearTimeout(runtimeReadTimer);
     }
     const store = live.store;
     const codeRuns = live.codeChanges?.list() ?? [];
