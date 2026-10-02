@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { persistPreparation } from "./preparation-persistence.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
@@ -176,7 +177,7 @@ export class PreparationService {
     this.db = new DatabaseSync(filename);
     // Initialization runs on the /api/state read path: lock contention must fail
     // closed immediately rather than block every HTTP endpoint on this thread.
-    // Restore the existing mutation lock-wait policy only after initialization.
+    // Mutation lock waits yield in persistPreparation; native calls never wait.
     try {
       this.db.exec("PRAGMA busy_timeout=0; CREATE TABLE IF NOT EXISTS preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT;");
       const row = this.db.prepare("SELECT json FROM preparation_state WHERE id=1").get();
@@ -190,8 +191,7 @@ export class PreparationService {
           context.version++; context.updatedAt = stamp();
         }
       }
-      this.save();
-      this.db.exec("PRAGMA busy_timeout=5000");
+      this.saveSync();
     } catch (error) {
       this.db.close();
       throw error;
@@ -201,17 +201,24 @@ export class PreparationService {
       if (this.closed || !context || event.type !== "TEXT_DELTA" || event.sessionId !== context.webSession.sessionId) return;
       const delivery = context.deliveries.find((d) => d.deliveryId === event.turnId && d.deliveryId === context.webSession.activeDeliveryId);
       if (delivery && ["DISPATCHING", "SUBMITTED"].includes(delivery.state)) {
-        delivery.state = "RESPONSE_STARTED"; this.touch(context);
+        delivery.state = "RESPONSE_STARTED"; void this.touch(context).catch(error => { context.error = {code:error.code ?? "PREPARATION_FAILED",message:error.message}; });
       }
     });
   }
   get current() { return this.data.contexts[this.data.currentId] ?? null; }
   get busy() { return this.jobs.size > 0 || this.current?.lifecycle === "ACTIVE"; }
-  save() {
+  saveSync(data = this.data) {
     if (this.closed) return;
-    this.db.prepare("INSERT INTO preparation_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json=excluded.json").run(canonicalJson(this.data));
+    this.db.prepare("INSERT INTO preparation_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json=excluded.json").run(canonicalJson(data));
   }
-  touch(context) { context.version++; context.updatedAt = stamp(); this.save(); }
+  save() { return persistPreparation(this.db, () => canonicalJson(this.data), () => {}, () => this.closed); }
+  saveReceipt(requestId, receipt) {
+    return persistPreparation(this.db,
+      () => canonicalJson({ ...this.data, receipts:{ ...this.data.receipts, [requestId]:receipt } }),
+      () => { this.data.receipts[requestId] = receipt; }, () => this.closed);
+  }
+  async touch(context) { context.version++; context.updatedAt = stamp(); await this.save(); }
+  touchSync(context) { context.version++; context.updatedAt = stamp(); this.saveSync(); }
   snapshot() {
     const context = this.current;
     let changed = false;
@@ -235,7 +242,7 @@ export class PreparationService {
         }
       }
     }
-    if (changed) this.save();
+    if (changed) this.saveSync();
     return structuredClone(context);
   }
   receipt(requestId) {
@@ -257,17 +264,24 @@ export class PreparationService {
     }
     if (this.jobs.has("mutation")) fail("Another preparation command is processing.");
     const receipt = { hash, status: "PROCESSING", result: null, error: null };
-    this.data.receipts[input.requestId] = receipt; this.save();
+    // Hold command ownership while the initial write waits. Publish the receipt
+    // only after commit: a failed pre-dispatch write is known not to have run.
     this.jobs.set("mutation", true);
     try {
-      const result = await this.dispatch(type, input);
-      receipt.result = structuredClone(result); receipt.status = "COMPLETED"; this.save();
+      await this.saveReceipt(input.requestId, receipt);
+      let result;
+      try { result = await this.dispatch(type, input); }
+      catch (error) {
+        await this.saveReceipt(input.requestId, {
+          ...receipt, status:"FAILED", error:{code:error.code ?? "PREPARATION_FAILED",message:error.message},
+        });
+        throw error;
+      }
+      await this.saveReceipt(input.requestId, {...receipt, result:structuredClone(result), status:"COMPLETED"});
       return result;
-    } catch (error) {
-      receipt.error = { code: error.code ?? "PREPARATION_FAILED", message: error.message };
-      receipt.status = "FAILED"; this.save(); throw error;
     } finally { this.jobs.delete("mutation"); }
   }
+
   context(input) {
     const context = this.current;
     if (!context || context.preparationId !== input.preparationId) fail("Preparation identity changed.");
@@ -323,7 +337,7 @@ export class PreparationService {
       };
       this.data.currentId = preparationId; this.data.contexts[preparationId] = context;
       console.info("[bridge:preparation:start]", { preparationId, sessionId: context.webSession.sessionId });
-      this.reserve(context, input.objective, input.requestId);
+      await this.reserve(context, input.objective, input.requestId);
       return this.snapshot();
     }
     const context = this.context(input);
@@ -332,7 +346,7 @@ export class PreparationService {
     if (type === "preparation.reply") {
       if (!this.capabilities().includes(type)) fail("Reply is unavailable.");
       if (typeof input.content !== "string" || !input.content.trim()) fail("Enter an answer.", "INVALID_INPUT");
-      this.reserve(context, input.content, input.requestId); return this.snapshot();
+      await this.reserve(context, input.content, input.requestId); return this.snapshot();
     }
     if (type === "preparation.discard") {
       const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
@@ -366,7 +380,7 @@ export class PreparationService {
       context.state = "RECOVERY_REQUIRED"; context.error = { code: "RECOVERY_DISCARDED", message: "Unresolved delivery was explicitly discarded by the operator." };
       context.recovery = { kind: "RECOVERY_DISCARDED", deliveryId: delivery.deliveryId,
         at: delivery.discardedAt, reason: delivery.discardReason, evidence: delivery.discardEvidence };
-      this.touch(context); return this.snapshot();
+      await this.touch(context); return this.snapshot();
     }
     if (type === "preparation.cancel") {
       if (!this.capabilities().includes(type)) fail("Inspect and stop the active delivery before cancellation.");
@@ -379,7 +393,7 @@ export class PreparationService {
         context.webSession.activeDeliveryId = null;
         context.lifecycle = "ABANDONED";
         context.error = { code: "UNSENT_BINDING_CANCELLED", message: "The unsent ChatGPT binding request was cancelled." };
-        this.touch(context); return this.snapshot();
+        await this.touch(context); return this.snapshot();
       }
       if (delivery) {
         const observed = await this.web.inspectDelivery(); this.setDiagnostics(context, observed);
@@ -390,33 +404,33 @@ export class PreparationService {
           || ack.conversationUrl !== context.webSession.conversationUrl) fail("Cancellation ACK is not confirmed.");
         delivery.state = "ACKNOWLEDGED"; delivery.cancelled = true; context.webSession.activeDeliveryId = null;
       }
-      context.lifecycle = "ABANDONED"; this.touch(context); return this.snapshot();
+      context.lifecycle = "ABANDONED"; await this.touch(context); return this.snapshot();
     }
     if (type === "preparation.approve") {
       if (!this.capabilities().includes(type)) fail("Agreement is not ready for approval.");
       await this.assertStart();
       context.state = "APPROVING"; context.agreement.status = "APPROVED";
-      context.reservedRunId ??= "code_" + randomUUID(); this.touch(context);
+      context.reservedRunId ??= "code_" + randomUUID(); await this.touch(context);
       try {
         const result = await this.approveRun(structuredClone(context));
         context.repository = result.repository; context.resultingRunId = result.runId;
         context.agreement.status = "APPROVED"; context.stage = "WORK"; context.lifecycle = "COMPLETED";
-        this.touch(context); return { runId: result.runId };
+        await this.touch(context); return { runId: result.runId };
       } catch (error) {
         const run = await this.findRun(context.reservedRunId);
         if (run) {
           context.resultingRunId = run.runId; context.agreement.status = "APPROVED";
-          context.stage = "WORK"; context.lifecycle = "COMPLETED"; this.touch(context);
+          context.stage = "WORK"; context.lifecycle = "COMPLETED"; await this.touch(context);
           return { runId: run.runId };
         }
         context.state = "FAILED"; context.error = { code: error.code ?? "APPROVAL_FAILED", message: error.message };
-        this.touch(context); throw error;
+        await this.touch(context); throw error;
       }
     }
     if (type.startsWith("web.")) return this.webCommand(context, type, input);
     fail("Unsupported preparation command.", "INVALID_COMMAND");
   }
-  reserve(context, content, commandRequestId) {
+  async reserve(context, content, commandRequestId) {
     const session = context.webSession, deliveryId = "delivery_" + randomUUID();
     context.error = null; context.diagnostics = null;
     context.agreement.status = "DISCUSSING"; context.state = "INITIALIZING";
@@ -424,14 +438,14 @@ export class PreparationService {
       sequence: context.discussion.length + 1, actor: "USER", content, deliveryId: null, createdAt: stamp() });
     context.deliveries.push({ commandRequestId, deliveryId, preparationId: context.preparationId, sessionId: session.sessionId,
       conversationId: session.conversationId, state: "RESERVED", response: null, createdAt: stamp() });
-    session.activeDeliveryId = deliveryId; this.touch(context);
+    session.activeDeliveryId = deliveryId; await this.touch(context);
     this.launchDelivery(context, deliveryId);
   }
   launchDelivery(context, deliveryId, preparedBinding = null) {
     const session = context.webSession;
     // No Web response is awaited by the HTTP request. The intent is durable first.
     const job = new Promise((resolve) => setImmediate(resolve)).then(() => this.generate(context, deliveryId, preparedBinding))
-      .catch((rawError) => {
+      .catch(async (rawError) => {
         if (this.closed) return;
         const error = normalizePreparationWebFailure(rawError, {
           sessionId: session.sessionId,
@@ -453,7 +467,7 @@ export class PreparationService {
             details: { ...(error.details ?? {}), originalCode: error.code ?? "AMBIGUOUS",
               browserDispatchStarted: false, candidates },
           };
-          this.touch(context);
+          await this.touch(context);
           return;
         }
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
@@ -472,7 +486,14 @@ export class PreparationService {
           blockingSessionId: error.details?.sessionId ?? null,
           blockingRunId: error.details?.runId ?? null,
         });
-        this.touch(context);
+        await this.touch(context);
+      }).catch((error) => {
+        if (this.closed) return;
+        // A recovery write can fail too. Keep the uncertain delivery blocked,
+        // expose it in memory, and never restart the Web operation.
+        context.state = "RECOVERY_REQUIRED";
+        session.bindingState = "RECOVERY_REQUIRED";
+        context.error = {code:error.code ?? "PREPARATION_PERSISTENCE_FAILED",message:error.message};
       }).finally(() => this.jobs.delete(context.preparationId));
     this.jobs.set(context.preparationId, job);
   }
@@ -482,7 +503,7 @@ export class PreparationService {
     const runId = context.preparationId;
     let binding = preparedBinding;
     if (!binding) {
-      session.bindingState = "BINDING"; this.touch(context);
+      session.bindingState = "BINDING"; await this.touch(context);
       console.info("[bridge:preparation:binding]", { preparationId: runId, sessionId: session.sessionId, deliveryId });
       // Exact conversations stay background-safe. Root bootstrap is user-visible:
       // focus/open ChatGPT so the user does not wait on a page that is not present.
@@ -507,7 +528,7 @@ export class PreparationService {
       documentId: binding.documentId, frameId: binding.frameId,
     });
     context.conversationUrl = binding.conversationUrl;
-    delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; this.touch(context);
+    delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; await this.touch(context);
     const instructions = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. packet 내부는 JSON.parse가 성공하는 엄격한 JSON이어야 한다. Windows 경로는 C:/path 형식의 슬래시를 우선 사용하고, 역슬래시를 쓸 때는 JSON 문자열에서 \\\\로 escape한다. 태그에 Markdown escape나 코드 fence를 붙이지 않는다. 출력 직전에 JSON 문자열과 독립된 태그 줄을 스스로 검증한다. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n';
     const responseFormatFallback = '중요: 요구사항 제안 packet을 정확히 만들 수 없거나 필요한 정보가 부족하면 <controller_packet>을 추측해서 만들지 말고, 태그가 전혀 없는 평문으로 부족한 정보와 질문만 설명한다. 평문 응답은 오류가 아니라 사용자 확인을 위한 정상적인 대화 응답이다.\n';
     const projectConversationBoundary = context.projectConversationSource
@@ -536,7 +557,7 @@ export class PreparationService {
     const handle = await this.web.submitTurn({ runId, turnId: deliveryId, controllerMessageId: deliveryId, text: responseFormatFallback + jsonPathRule + controllerFacts + text,
       parseResponse: (raw) => ({ body: raw, packetText: raw, packet: { type: "PLANNING_RESPONSE" } }) });
     if (delivery.state === "DISPATCHING") delivery.state = "SUBMITTED";
-    this.touch(context);
+    await this.touch(context);
     const response = await handle.completion;
     if (this.closed) return;
     if (response.turnId !== deliveryId || response.binding?.sessionId !== session.sessionId
@@ -548,7 +569,7 @@ export class PreparationService {
     });
     context.conversationUrl = session.conversationUrl;
     delivery.conversationId = session.conversationId;
-    delivery.response = response; delivery.trace = response.trace; delivery.state = "RESPONSE_COMPLETED"; this.touch(context);
+    delivery.response = response; delivery.trace = response.trace; delivery.state = "RESPONSE_COMPLETED"; await this.touch(context);
     await this.complete(context, delivery);
   }
   async complete(context, delivery) {
@@ -602,7 +623,7 @@ export class PreparationService {
       confidenceCheck.evidence = "VALID_FINAL_CONTROLLER_PACKET";
     }
     delivery.validation = { status: checks.every(item => item.passed) ? "CONFIRMED" : "FAILED", checks };
-    this.touch(context);
+    await this.touch(context);
     if (delivery.validation.status === "FAILED") {
       const failed = checks.filter(item => !item.passed);
       console.warn("[bridge:completion:unconfirmed]", { deliveryId: delivery.deliveryId, checks: failed });
@@ -612,7 +633,7 @@ export class PreparationService {
     if (packetParseError) {
       delivery.validation.format = "INVALID";
       delivery.validation.formatError = packetFormatError(packetParseError);
-      this.touch(context);
+      await this.touch(context);
       fail("응답에 준비 제안 형식이 없습니다. 원문은 보존되어 있으며 승인할 수 없습니다.", "INVALID_AGREEMENT");
     }
     if (!isValidRequirementsProposal(parsed)) {
@@ -621,12 +642,12 @@ export class PreparationService {
         code: "INVALID_REQUIREMENTS_PROPOSAL",
         message: "The packet JSON is valid but does not satisfy the requirements proposal contract.",
       };
-      this.touch(context);
+      await this.touch(context);
       fail("Invalid designer response.", "INVALID_AGREEMENT");
     }
     delivery.validation.format = "CONFIRMED";
     delete delivery.validation.formatError;
-    delivery.processingState = "ACK_PENDING"; this.touch(context);
+    delivery.processingState = "ACK_PENDING"; await this.touch(context);
     if (pointerMatches) {
       await this.web.acknowledgeDelivery({ turnId: delivery.deliveryId });
       const ack = await this.web.inspectDelivery();
@@ -652,7 +673,7 @@ export class PreparationService {
       conversationUrl:session.conversationUrl, conversationId:session.conversationId,
       preparationId:context.preparationId, updatedAt:stamp(),
     };
-    context.state = context.agreement.status === "READY" ? "AGREEMENT_READY" : "DISCUSSING"; this.touch(context);
+    context.state = context.agreement.status === "READY" ? "AGREEMENT_READY" : "DISCUSSING"; await this.touch(context);
   }
   setDiagnostics(context, observed) {
     const session = context.webSession;
@@ -725,7 +746,7 @@ export class PreparationService {
       context.conversationUrl = rebound.conversationUrl;
       context.error = null; context.diagnostics = null; context.state = "INITIALIZING";
       delivery.state = "RESERVED"; delivery.conversationId = rebound.conversationId;
-      this.touch(context);
+      await this.touch(context);
       this.launchDelivery(context, delivery.deliveryId, rebound);
       return this.snapshot();
     }
@@ -735,14 +756,14 @@ export class PreparationService {
     const refreshCompleted = type === "web.reconcile";
     const observed = await this.web.inspectDelivery({ refreshCompleted,
       adoptManualFollowup: refreshCompleted && type === "web.reconcile" });
-    this.setDiagnostics(context, observed); this.touch(context);
+    this.setDiagnostics(context, observed); await this.touch(context);
     const completed = observed.completedDelivery;
     if (completed && completed.turnId === session.activeDeliveryId && completed.binding?.sessionId === session.sessionId
       && completed.binding?.runId === context.preparationId && completed.binding?.conversationId === session.conversationId) {
       const delivery = context.deliveries.find((d) => d.deliveryId === session.activeDeliveryId);
       if (delivery && (!delivery.response || type === "web.reconcile")) {
         if (delivery.response) (delivery.responseHistory ??= []).push(delivery.response);
-        delivery.response = completed; delivery.state = "RESPONSE_COMPLETED"; this.touch(context);
+        delivery.response = completed; delivery.state = "RESPONSE_COMPLETED"; await this.touch(context);
       }
     }
     if (type === "web.inspect") return this.snapshot();
@@ -752,9 +773,9 @@ export class PreparationService {
     if (type === "web.focus") await this.web.focusDelivery(expected);
     else if (type === "web.stop") {
       if (!context.diagnostics.canStop) fail("Generating delivery is not confirmed.");
-      this.setDiagnostics(context, await this.web.stopDelivery(expected)); this.touch(context);
+      this.setDiagnostics(context, await this.web.stopDelivery(expected)); await this.touch(context);
       const delivery = context.deliveries.find((d) => d.deliveryId === session.activeDeliveryId);
-      if (delivery) { delivery.stopped = true; this.touch(context); }
+      if (delivery) { delivery.stopped = true; await this.touch(context); }
     } else if (type === "web.reconcile") {
       const delivery = context.deliveries.find((d) => d.deliveryId === session.activeDeliveryId);
       if (!delivery?.response || this.jobs.has(context.preparationId)) fail("No durable completed response; inspect the conversation. No clear or resend.", "RECOVERY_REQUIRED");
@@ -807,7 +828,7 @@ export class PreparationService {
           lastObservedUserMessageId:rebound.lastObservedUserMessageId,
           lastObservedAssistantMessageId:rebound.lastObservedAssistantMessageId,
         });
-        this.touch(context);
+        await this.touch(context);
       }
       await this.complete(context, delivery);
     }
@@ -851,15 +872,17 @@ export class PreparationService {
       const existing = await this.findRun(context.reservedRunId);
       if (existing) {
         context.resultingRunId = existing.runId; context.agreement.status = "APPROVED";
-        context.lifecycle = "COMPLETED"; context.stage = "WORK"; this.touch(context);
+        context.lifecycle = "COMPLETED"; context.stage = "WORK"; this.touchSync(context);
       }
     }
     if (context?.resultingRunId) {
-      for (const receipt of Object.values(this.data.receipts)) {
+      for (const [requestId, receipt] of Object.entries(this.data.receipts)) {
         if (receipt.status !== "PROCESSING") continue;
         const command = JSON.parse(receipt.hash);
         if (command.type === "preparation.approve" && command.input.preparationId === context.preparationId) {
-          receipt.status = "COMPLETED"; receipt.result = { runId: context.resultingRunId }; this.save();
+          const completed = {...receipt, status:"COMPLETED", result:{runId:context.resultingRunId}};
+          this.saveSync({...this.data, receipts:{...this.data.receipts, [requestId]:completed}});
+          this.data.receipts[requestId] = completed;
         }
       }
     }

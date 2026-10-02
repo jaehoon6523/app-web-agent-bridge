@@ -47,9 +47,9 @@ test("a failing diagnostic sink cannot change authentication or HTTP results",as
 });
 
 
-test("successful preparation initialization restores the existing mutation lock-wait policy",t=>{
+test("successful preparation initialization keeps native SQLite calls fail-fast",t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"bridge-preparation-lock-policy-"));
   const service=new PreparationService({filename:path.join(root,"preparation.sqlite"),web:null,available:()=>false,assertStart:async()=>{},approve:async()=>{},findRun:async()=>null});
   t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true})});
-  assert.equal(service.db.prepare("PRAGMA busy_timeout").get().timeout,5000);
+  assert.equal(service.db.prepare("PRAGMA busy_timeout").get().timeout,0);
 });

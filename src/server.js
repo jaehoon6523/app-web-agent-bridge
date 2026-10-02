@@ -335,9 +335,12 @@ export function createBridgeServer({
       if (typeof command !== "string" || (type === "web" && !["web.inspect", "web.focus", "web.stop", "web.reconcile", "web.rebind"].includes(command))) {
         throw Object.assign(new Error("Invalid Web command."), { code: "INVALID_COMMAND" });
       }
+      diagnostics.stage(req, "preparation.mutation.started");
       const result = await preparations().execute(command, input);
+      diagnostics.stage(req, "preparation.mutation.completed");
       res.status(type === "preparation.start" || type === "preparation.reply" ? 202 : 200).json(result);
     } catch (error) {
+      diagnostics.stage(req, "preparation.mutation.failed");
       res.status(error.code === "INVALID_INPUT" || error.code === "INVALID_COMMAND" ? 400 : 409).json({
         code: error.code ?? "PREPARATION_FAILED", message: redactForEvidence(error.message),
         retryable: false, workflowStage: preparationService?.current?.stage ?? "START",

@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 function routeLabel(url) {
   const pathname = String(url ?? "").split("?")[0];
   if (["/api/state", "/api/preflight", "/api/health", "/api/dashboard/session", "/api/commands"].includes(pathname)) return pathname;
+  if (pathname === "/api/preparations" || /^\/api\/preparations\/[^/]+\/(?:reply|discard|cancel|approve)$/u.test(pathname) || pathname === "/api/preparations/web") return "preparation-mutation";
   return pathname.startsWith("/api/") ? "other-api" : "static";
 }
 
@@ -32,5 +33,6 @@ export function createServerObserver(sink) {
     if (detail) emit("request.express", detail);
     next();
   }
-  return { emit, received, middleware };
+  function stage(req, type) { emit(type, requests.get(req) ?? {}); }
+  return { emit, received, middleware, stage };
 }

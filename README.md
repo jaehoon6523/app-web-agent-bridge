@@ -69,7 +69,7 @@ npm run diagnose:server
 
 `watchdog.unresponsive`는 heartbeat 누락이며 CPU 정지·프로세스 pause·IPC 문제를 단독으로 구분하지 못합니다. 회복 후 `watchdog.resumed`의 event-loop 지연과 마지막 단계를 함께 확인하세요. HTTP probe 성공도 state/runtime/reviewer 준비를 증명하지 않습니다. Node의 `connection.accepted`는 OS 수준의 accept 전체를 추적하는 기록이 아니므로, 해당 이벤트가 없다고 TCP 연결 시도 자체가 없었다고 단정하지 않습니다.
 
-수정 전 실제 SQLite exclusive lock이 preparation 초기화를 막으면, 동기 `busy_timeout=5000` 동안 같은 서버의 독립 endpoint도 응답하지 못하는 경로가 재현됐습니다. 초기화의 lock 충돌은 이제 즉시 실패하여 state 503으로 닫으며, 초기화 성공 후 mutation의 기존 5000ms lock-wait 정책은 복원합니다. CPU stall도 같은 유형의 증상을 만들며, 진단 도구는 이를 탐지합니다. 모든 동기 filesystem/SQLite/CPU 작업을 비동기화한 변경은 아닙니다. 사용자의 과거 동시 무응답 사건이 SQLite lock이었다는 판정은 당시 환경의 추가 증거가 필요합니다.
+수정 전 실제 SQLite exclusive lock이 preparation 초기화를 막으면, 동기 `busy_timeout=5000` 동안 같은 서버의 독립 endpoint도 응답하지 못하는 경로가 재현됐습니다. 초기화의 lock 충돌은 이제 즉시 실패하여 state 503으로 닫으며, mutation의 기존 5000ms contention 예산은 native busy wait 대신 비동기 대기 사이의 no-wait SQLite transaction 시도로 유지합니다. command나 Web 전송을 자동 재실행하지 않으며, rollback이 확인되지 않은 쓰기는 재시도하지 않습니다. 최초 receipt는 commit 성공 후에만 등록하여 실행 전 저장 실패가 PROCESSING으로 남지 않습니다. CPU stall도 같은 유형의 증상을 만들며, 진단 도구는 이를 탐지합니다. 모든 동기 filesystem/SQLite/CPU 작업을 비동기화한 변경은 아닙니다. 사용자의 과거 동시 무응답 사건이 SQLite lock이었다는 판정은 당시 환경의 추가 증거가 필요합니다.
 
 ## 화면 시나리오 검증
 
