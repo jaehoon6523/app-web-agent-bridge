@@ -1,3 +1,4 @@
+import { DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS, MIN_CONFIGURED_DASHBOARD_RUNTIME_READ_TIMEOUT_MS, MAX_DASHBOARD_RUNTIME_READ_TIMEOUT_MS } from "./domain/dashboard-read-policy.js";
 import path from "node:path";
 import process from "node:process";
 import dotenv from "dotenv";
@@ -124,6 +125,8 @@ export function loadConfig({
     }),
     dashboard: Object.freeze({
       token: optionalStrongToken(env, "DASHBOARD_TOKEN"),
+      runtimeReadTimeoutMs: integer(env, "DASHBOARD_RUNTIME_READ_TIMEOUT_MS", DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS,
+        { min:MIN_CONFIGURED_DASHBOARD_RUNTIME_READ_TIMEOUT_MS, max:MAX_DASHBOARD_RUNTIME_READ_TIMEOUT_MS }),
     }),
     demoMode,
     webExtension: Object.freeze({

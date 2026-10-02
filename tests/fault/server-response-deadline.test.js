@@ -11,7 +11,7 @@ const serverUrl = new URL("../../src/server.js", import.meta.url).href;
 const token = "response-deadline-dashboard-token-0123456789";
 const responseDeadlineMs = 5000;
 
-async function startServer(t, stalledRuntime = false) {
+async function startServer(t, stalledRuntime = false, readTimeoutEnv = null) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-response-deadline-"));
   const probe = net.createServer();
   await new Promise((resolve, reject) => { probe.once("error", reject); probe.listen(0, "127.0.0.1", resolve); });
@@ -29,6 +29,11 @@ async function startServer(t, stalledRuntime = false) {
   const script = `
     import { main, createBridgeServer } from ${JSON.stringify(serverUrl)};
     const config = ${JSON.stringify(config)};
+    const readTimeoutEnv = ${JSON.stringify(readTimeoutEnv)};
+    if (readTimeoutEnv !== null) {
+      const { loadConfig } = await import(${JSON.stringify(new URL("../../src/config.js", import.meta.url).href)});
+      config.dashboard.runtimeReadTimeoutMs = loadConfig({ env:{ DASHBOARD_RUNTIME_READ_TIMEOUT_MS:readTimeoutEnv } }).dashboard.runtimeReadTimeoutMs;
+    }
     if (${stalledRuntime}) {
       const bridge = createBridgeServer({ runtimeConfig:config, createLiveRuntime:() => new Promise(() => {}) });
       await bridge.listen();
@@ -106,7 +111,7 @@ test("fault: pending runtime initialization must not leave authenticated state u
 test("runtime read deadline preserves initialization and a later snapshot observes its completion", { timeout:10000 }, async () => {
   let finishInitialization;
   const pending = new Promise(resolve => { finishInitialization = resolve; });
-  const controller = new DashboardController({ getRuntime:() => pending, preflight:() => ({}) });
+  const controller = new DashboardController({ getRuntime:() => pending, preflight:() => ({}), runtimeReadTimeoutMs:25 });
   const degraded = await controller.snapshot();
   assert.equal(degraded.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
   assert.equal(degraded.dataKnowledge.runs.status, "UNAVAILABLE");
@@ -114,4 +119,25 @@ test("runtime read deadline preserves initialization and a later snapshot observ
   const recovered = await controller.snapshot();
   assert.equal(recovered.runtimeAvailability.ready, true);
   assert.equal(recovered.dataKnowledge.runs.status, "AVAILABLE_EMPTY");
+});
+
+
+test("configuration: parsed read budget reaches the HTTP snapshot through explicit server configuration", { timeout:10000 }, async t => {
+  const baseUrl = await startServer(t, true, "100");
+  const response = await fetch(`${baseUrl}/api/state`, {
+    headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(1000),
+  });
+  assert.equal(response.status, 200);
+  const body = await response.json();
+  assert.equal(body.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
+  assert.equal(body.dataKnowledge.runs.status, "UNAVAILABLE");
+  assert.equal(body.commandCapabilities.includes("preparation.start"), false);
+});
+
+test("configuration: maximum allowed read budget still returns degraded state inside the five-second HTTP deadline", { timeout:15000 }, async t => {
+  const baseUrl = await startServer(t, true, "4000");
+  const response = await readResponse(baseUrl, "/api/state", {authorization:`Bearer ${token}`});
+  assert.equal(response.status,200);
+  assert.equal(response.body.runtimeAvailability.code,"LIVE_RUNTIME_READ_TIMEOUT");
+  assert.equal(response.body.dataKnowledge.runs.status,"UNAVAILABLE");
 });

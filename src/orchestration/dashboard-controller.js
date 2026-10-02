@@ -1,3 +1,4 @@
+import { DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS, validateDashboardRuntimeReadTimeout } from "../domain/dashboard-read-policy.js";
 import { createDiscussionRunPolicy } from "../domain/run-policy.js";
 import { isTerminalRunPhase } from "../domain/run-state-machine.js";
 import { canonicalConversationUrl } from "../runtime/web/binding.js";
@@ -46,6 +47,7 @@ function dashboardRunSummary(run) {
 /** Authenticated dashboard projection and commands over the existing runtime. */
 export class DashboardController {
   #getRuntime;
+  #runtimeReadTimeoutMs;
   #preflight;
   #webSession;
   #transport;
@@ -56,7 +58,8 @@ export class DashboardController {
   #drafts = new Map();
   #receipts = new Map();
 
-  constructor({ getRuntime, preflight, webSession, transport }) {
+  constructor({ getRuntime, preflight, webSession, transport, runtimeReadTimeoutMs = DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS }) {
+    this.#runtimeReadTimeoutMs = validateDashboardRuntimeReadTimeout(runtimeReadTimeoutMs);
     this.#getRuntime = getRuntime;
     this.#preflight = preflight;
     this.#webSession = webSession;
@@ -76,7 +79,7 @@ export class DashboardController {
           runtimeReadTimer = setTimeout(() => rejectRead(Object.assign(
             new Error("Live runtime initialization is still pending."),
             { code:"LIVE_RUNTIME_READ_TIMEOUT" },
-          )), 2000);
+          )), this.#runtimeReadTimeoutMs);
         }),
       ]);
     } catch (error) {

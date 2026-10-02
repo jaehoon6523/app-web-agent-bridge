@@ -34,6 +34,7 @@ npm start
 | `DEMO_MODE` | 기본값 있음 | `true`이면 static/smoke 전용이며 live runtime은 비활성화 |
 | `WEB_EXTENSION_SHARED_SECRET` | Web 연동 시 identity와 함께 필수 | 확장과 일치하는 32 UTF-8 바이트 이상의 secret |
 | `WEB_EXTENSION_EXPECTED_IDENTITY` | Web 연동 시 secret과 함께 필수 | 확장 popup에 표시된 identity |
+| `DASHBOARD_RUNTIME_READ_TIMEOUT_MS` | 기본값 있음 | `GET /api/state` snapshot의 runtime 대기 제한. 기본 `2000` ms 유지. 허용 범위 `100..4000` ms: 기존 5초 응답 예산에서 projection/전송용 1초를 예약. 5초 전체 응답 시간의 보장은 아니며 HTTP 회귀 테스트로 감시. 초기화 자체, mutation, legacy `state.get` command에는 적용하지 않음. 범위 밖의 값은 시작 시 거부 |
 | `DASHBOARD_TOKEN` | 선택 | headless CLI/API 자동화용 stable token. 브라우저 콘솔은 임시 session token을 자동 발급받음 |
 | `AUDIT_PROJECT_FILE` | 선택 | 기존 프로젝트 JSON. 콘솔에서 저장한 설정이 우선 |
 | `CODEX_EXECUTABLE` | 실제 Codex 기능 사용 시 필수 | Codex 실행 파일 경로. 미설정이면 해당 기능만 not-ready |
@@ -51,6 +52,24 @@ npm start
 설정은 컨트롤러 데이터 폴더의 `audit-project.json`에 저장되어 재시작 후에도 유지됩니다. 요구사항 변경 시 기준 버전을 올려 주세요. 기존의 복잡한 JSON 설정은 전체 설정 편집으로 보존하며, 다른 탭에서 변경한 설정을 오래된 화면이 덮어쓰지 않도록 저장 버전을 확인합니다.
 
 새 작업이 미종료 작업 때문에 막혔다면 실행 기록의 **미종료 작업 확인 · 중단**을 눌러 해당 작업을 열고, 항상 표시되는 **작업 중단** 버튼을 사용하세요. 외부 종료가 불확실한 경우에는 복구 확인 후 실행 폐기 절차가 표시됩니다.
+
+## 서버 동시 무응답 진단
+
+시작 로그의 `HTTP server listening`은 TCP listen 완료만 의미합니다. HTTP 응답, dashboard state projection, runtime 준비, 확장 연결, reviewer 준비는 서로 다른 상태입니다. 확인하지 않은 준비 상태를 성공으로 출력하지 않습니다.
+
+무응답 재발을 조사할 때 기존 `npm start` 서버를 종료한 뒤 같은 저장소·설정으로 다음 명령을 대신 실행하세요. 이 명령은 실제 서버를 시작하며 동일한 persistence를 사용합니다.
+
+```powershell
+npm run diagnose:server
+```
+
+로그는 `.agent-controller/diagnostics/server-<timestamp>.jsonl`에 생성됩니다. 별도 파일을 지정하려면 `npm run diagnose:server -- --output C:/temp/bridge-new.jsonl`을 사용하세요. 기존 파일은 덮어쓰지 않습니다.
+
+서버 내부에서 TCP 연결 수락, Node HTTP 요청 수신, Express 진입, 응답 완료/닫힘, preparation/runtime 초기화, snapshot/projection 단계를 기록합니다. URL query, headers, body, 인증 token은 기록하지 않습니다. 별도 supervisor 프로세스가 heartbeat와 `/api/preflight`·`/api/health`의 실제 응답 본문 완료를 감시합니다. GET probe만 반복하며 mutation이나 session 발급을 자동 재전송하지 않습니다.
+
+`watchdog.unresponsive`는 heartbeat 누락이며 CPU 정지·프로세스 pause·IPC 문제를 단독으로 구분하지 못합니다. 회복 후 `watchdog.resumed`의 event-loop 지연과 마지막 단계를 함께 확인하세요. HTTP probe 성공도 state/runtime/reviewer 준비를 증명하지 않습니다. Node의 `connection.accepted`는 OS 수준의 accept 전체를 추적하는 기록이 아니므로, 해당 이벤트가 없다고 TCP 연결 시도 자체가 없었다고 단정하지 않습니다.
+
+수정 전 실제 SQLite exclusive lock이 preparation 초기화를 막으면, 동기 `busy_timeout=5000` 동안 같은 서버의 독립 endpoint도 응답하지 못하는 경로가 재현됐습니다. 초기화의 lock 충돌은 이제 즉시 실패하여 state 503으로 닫으며, 초기화 성공 후 mutation의 기존 5000ms lock-wait 정책은 복원합니다. CPU stall도 같은 유형의 증상을 만들며, 진단 도구는 이를 탐지합니다. 모든 동기 filesystem/SQLite/CPU 작업을 비동기화한 변경은 아닙니다. 사용자의 과거 동시 무응답 사건이 SQLite lock이었다는 판정은 당시 환경의 추가 증거가 필요합니다.
 
 ## 화면 시나리오 검증
 

@@ -2,6 +2,7 @@ import { PreparationService } from "./orchestration/preparation-service.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
+import { createServerObserver } from "./diagnostics/server-observer.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
@@ -45,14 +46,16 @@ function writeUpgradeRejection(socket, statusLine, message = "") {
   socket.destroy();
 }
 
-/** @param {{runtimeConfig?: RuntimeConfig, createLiveRuntime?: typeof createLiveDiscussionRuntime}} [options] */
+/** @param {{runtimeConfig?: RuntimeConfig, createLiveRuntime?: typeof createLiveDiscussionRuntime, onDiagnostic?: (event:any) => void}} [options] */
 export function createBridgeServer({
   runtimeConfig,
   createLiveRuntime = createLiveDiscussionRuntime,
+  onDiagnostic,
 } = {}) {
   if (!runtimeConfig || typeof runtimeConfig !== "object") {
     throw new TypeError("createBridgeServer requires runtimeConfig.");
   }
+  const diagnostics = createServerObserver(onDiagnostic);
   const projectSettings = new AuditProjectSettings({
     filename: path.join(runtimeConfig.persistence?.databasePath
       ? path.dirname(runtimeConfig.persistence.databasePath) : path.join(runtimeConfig.workspace || process.cwd(), ".agent-controller"), "audit-project.json"),
@@ -134,14 +137,27 @@ export function createBridgeServer({
     }
     if (liveRuntime !== null) return liveRuntime;
     if (liveRuntimePromise === null) {
-      liveRuntimePromise = createLiveRuntime({
-        runtimeConfig:{ ...runtimeConfig, auditProject:auditSettings.project },
-        webSession,
-        reviewerWebProviders,
-      })
+      diagnostics.emit("runtime.initialization.started");
+      let initialization;
+      try {
+        initialization = createLiveRuntime({
+          runtimeConfig:{ ...runtimeConfig, auditProject:auditSettings.project },
+          webSession,
+          reviewerWebProviders,
+        });
+      } catch (error) {
+        diagnostics.emit("runtime.initialization.failed");
+        throw error;
+      }
+      liveRuntimePromise = initialization
         .then((runtime) => {
           liveRuntime = runtime;
+          diagnostics.emit("runtime.initialization.completed");
           return runtime;
+        })
+        .catch((error) => {
+          diagnostics.emit("runtime.initialization.failed");
+          throw error;
         })
         .finally(() => {
           liveRuntimePromise = null;
@@ -152,6 +168,7 @@ export function createBridgeServer({
 
   const app = express();
   app.disable("x-powered-by");
+  app.use(diagnostics.middleware);
   app.use(express.json({ limit: "1mb" }));
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -226,6 +243,7 @@ export function createBridgeServer({
 
   const dashboard = new DashboardController({
     getRuntime: getLiveRuntime,
+    runtimeReadTimeoutMs: runtimeConfig.dashboard?.runtimeReadTimeoutMs,
     preflight: livePreflight,
     webSession,
     transport: extensionTransport,
@@ -234,41 +252,48 @@ export function createBridgeServer({
   let preparationService = null;
   function preparations() {
     if (preparationService) return preparationService;
-    preparationService = new PreparationService({
-      filename: path.join(path.dirname(projectSettings.filename), "preparations.sqlite"),
-      web: webSession,
-      available: () => Boolean(extensionTransport?.authenticated),
-      assertStart: async () => {
-        const live = await getLiveRuntime();
-        if (dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) {
-          throw Object.assign(new Error("진행 중인 작업을 먼저 종료하세요."), { code: "RUN_BUSY" });
-        }
-      },
-      findRun: async (id) => (await getLiveRuntime()).codeChanges?.get(id) ?? null,
-      approve: async (context) => {
-        const live = await getLiveRuntime();
-        if (!live.codeChanges || !livePreflight().readyForDiscussion) throw new Error("CLI와 웹 연결 상태를 확인하세요.");
-        const repository = GitChangeWorkspace.prepareTarget(context.targetRoot);
-        const projectId = context.preparationId;
-        const project = {
-          projectId, targetRoot: context.targetRoot,
-          requirements: { requirementsId: projectId + "-requirements", revision: String(context.version),
-            authority: "REQUIREMENTS_JSON", sourceRoles: [], unresolvedQuestions: [],
-            items: context.agreement.requirements.map((item, index) => ({
-              requirementId: "R" + (index + 1), statement: item.statement, acceptanceCriteria: item.acceptanceCriteria,
-              required: true, sourceRefs: [],
-              verificationMethod: { kinds: ["CODE_SNAPSHOT"], description: "코드 스냅샷 검토 (실행 검증 없음)" },
-            })) },
-          policy: { maxIterations: 3, maxEvidenceRounds: 3, maxFormatRepairs: 2, totalTimeoutMs: 1800000, turnTimeoutMs: 600000 },
-          reviewers: structuredClone(context.reviewers ?? auditSettings.project?.reviewers ?? defaultReviewerConfiguration()),
-          verifications: [],
-        };
-        auditSettings = projectSettings.save(project, projectSettings.snapshot().version);
-        live.codeChanges.project = structuredClone(auditSettings.project);
-        const result = await live.codeChanges.startPrepared({ objective: context.objective, conversationUrl: context.conversationUrl }, context);
-        return { ...result, repository };
-      },
-    });
+    diagnostics.emit("preparation.initialization.started");
+    try {
+      preparationService = new PreparationService({
+        filename: path.join(path.dirname(projectSettings.filename), "preparations.sqlite"),
+        web: webSession,
+        available: () => Boolean(extensionTransport?.authenticated),
+        assertStart: async () => {
+          const live = await getLiveRuntime();
+          if (dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) {
+            throw Object.assign(new Error("진행 중인 작업을 먼저 종료하세요."), { code: "RUN_BUSY" });
+          }
+        },
+        findRun: async (id) => (await getLiveRuntime()).codeChanges?.get(id) ?? null,
+        approve: async (context) => {
+          const live = await getLiveRuntime();
+          if (!live.codeChanges || !livePreflight().readyForDiscussion) throw new Error("CLI와 웹 연결 상태를 확인하세요.");
+          const repository = GitChangeWorkspace.prepareTarget(context.targetRoot);
+          const projectId = context.preparationId;
+          const project = {
+            projectId, targetRoot: context.targetRoot,
+            requirements: { requirementsId: projectId + "-requirements", revision: String(context.version),
+              authority: "REQUIREMENTS_JSON", sourceRoles: [], unresolvedQuestions: [],
+              items: context.agreement.requirements.map((item, index) => ({
+                requirementId: "R" + (index + 1), statement: item.statement, acceptanceCriteria: item.acceptanceCriteria,
+                required: true, sourceRefs: [],
+                verificationMethod: { kinds: ["CODE_SNAPSHOT"], description: "코드 스냅샷 검토 (실행 검증 없음)" },
+              })) },
+            policy: { maxIterations: 3, maxEvidenceRounds: 3, maxFormatRepairs: 2, totalTimeoutMs: 1800000, turnTimeoutMs: 600000 },
+            reviewers: structuredClone(context.reviewers ?? auditSettings.project?.reviewers ?? defaultReviewerConfiguration()),
+            verifications: [],
+          };
+          auditSettings = projectSettings.save(project, projectSettings.snapshot().version);
+          live.codeChanges.project = structuredClone(auditSettings.project);
+          const result = await live.codeChanges.startPrepared({ objective: context.objective, conversationUrl: context.conversationUrl }, context);
+          return { ...result, repository };
+        },
+      });
+      diagnostics.emit("preparation.initialization.completed");
+    } catch (error) {
+      diagnostics.emit("preparation.initialization.failed");
+      throw error;
+    }
     return preparationService;
   }
 
@@ -407,9 +432,13 @@ export function createBridgeServer({
         return;
       }
       const service = preparations();
+      diagnostics.emit("state.snapshot.started");
       const baseSnapshot = await dashboard.snapshot(req.query.runId || null);
+      diagnostics.emit("state.snapshot.completed");
+      diagnostics.emit("state.projection.started");
       const snapshot = await service.project(baseSnapshot,
         { runId: req.query.runId || null, start: req.query.view === "start" });
+      diagnostics.emit("state.projection.completed");
       if (typeof req.query.requestId === "string") {
         snapshot.requestResult = service.receipt(req.query.requestId);
         if (snapshot.requestResult.status === "NOT_FOUND") {
@@ -429,6 +458,7 @@ export function createBridgeServer({
       }
       res.json(snapshot);
     } catch (error) {
+      diagnostics.emit("state.read.failed");
       res.status(503).json({ error: redactForEvidence(error.message) });
     }
   });
@@ -448,6 +478,8 @@ export function createBridgeServer({
   });
 
   const server = http.createServer(app);
+  server.prependListener("request", diagnostics.received);
+  server.on("connection", () => diagnostics.emit("connection.accepted"));
   const extensionWss = new WebSocketServer({
     noServer: true,
     clientTracking: true,
@@ -544,6 +576,7 @@ export function createBridgeServer({
       };
       const onListening = () => {
         server.off("error", onError);
+        diagnostics.emit("server.listening");
         resolve(server.address());
       };
       server.once("error", onError);
@@ -564,12 +597,17 @@ export function createBridgeServer({
   });
 }
 
-export async function main(runtimeConfig = loadConfig()) {
-  const bridge = createBridgeServer({ runtimeConfig });
+/** @param {RuntimeConfig} [runtimeConfig] @param {{onDiagnostic?: (event:any) => void}} [options] */
+export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) {
+  const bridge = createBridgeServer({ runtimeConfig, onDiagnostic });
   await bridge.listen();
 
-  console.log(`\nApp/Web Agent Bridge running at ${runtimeConfig.baseUrl}`);
+  console.log(`\nHTTP server listening at ${runtimeConfig.baseUrl}`);
+  console.log("Dashboard API responsiveness: not yet verified");
+  console.log("Runtime initialization: not started (lazy)");
   console.log(`Mode: ${runtimeConfig.demoMode ? "DEMO (transport disabled)" : "LIVE"}`);
+  console.log(`Extension connection: ${bridge.extensionTransport?.authenticated ? "connected" : "disconnected"}`);
+  console.log("Reviewer readiness: not yet verified");
   console.log(`Extension integration: ${bridge.extensionTransport ? "configured" : "not configured"}`);
   console.log("");
 

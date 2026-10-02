@@ -174,19 +174,28 @@ export class PreparationService {
     this.approveRun = approve; this.findRun = findRun; this.jobs = new Map(); this.closed = false;
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     this.db = new DatabaseSync(filename);
-    this.db.exec("PRAGMA busy_timeout=5000; CREATE TABLE IF NOT EXISTS preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT;");
-    const row = this.db.prepare("SELECT json FROM preparation_state WHERE id=1").get();
-    this.data = row ? JSON.parse(String(row.json)) : { currentId: null, contexts: {}, receipts: {}, projectConversations: {} };
-    this.data.projectConversations ??= {};
-    for (const context of Object.values(this.data.contexts)) {
-      if (context.lifecycle !== "ACTIVE") continue;
-      if (context.resultingRunId) continue;
-      if (context.webSession.activeDeliveryId || context.state === "APPROVING") {
-        context.state = "RECOVERY_REQUIRED"; context.webSession.bindingState = "RECOVERY_REQUIRED";
-        context.version++; context.updatedAt = stamp();
+    // Initialization runs on the /api/state read path: lock contention must fail
+    // closed immediately rather than block every HTTP endpoint on this thread.
+    // Restore the existing mutation lock-wait policy only after initialization.
+    try {
+      this.db.exec("PRAGMA busy_timeout=0; CREATE TABLE IF NOT EXISTS preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT;");
+      const row = this.db.prepare("SELECT json FROM preparation_state WHERE id=1").get();
+      this.data = row ? JSON.parse(String(row.json)) : { currentId: null, contexts: {}, receipts: {}, projectConversations: {} };
+      this.data.projectConversations ??= {};
+      for (const context of Object.values(this.data.contexts)) {
+        if (context.lifecycle !== "ACTIVE") continue;
+        if (context.resultingRunId) continue;
+        if (context.webSession.activeDeliveryId || context.state === "APPROVING") {
+          context.state = "RECOVERY_REQUIRED"; context.webSession.bindingState = "RECOVERY_REQUIRED";
+          context.version++; context.updatedAt = stamp();
+        }
       }
+      this.save();
+      this.db.exec("PRAGMA busy_timeout=5000");
+    } catch (error) {
+      this.db.close();
+      throw error;
     }
-    this.save();
     this.unsubscribe = web?.onEvent?.((event) => {
       const context = this.current;
       if (this.closed || !context || event.type !== "TEXT_DELTA" || event.sessionId !== context.webSession.sessionId) return;
