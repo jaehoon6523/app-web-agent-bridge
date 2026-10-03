@@ -81,20 +81,29 @@ export async function followup(f,setup) {
   saveEvidence(f,'followup-boundary',context);
 }
 export async function lock(t,f) {
-  let db, release, readback, commitRetries = 0;
-  t.after(async()=>{await release?.catch(()=>{});try{db?.exec('ROLLBACK');}catch{}db?.close();});
-  const setup=await preparationHarness(t,f,{beforeStart:async()=>{
-    db=new DatabaseSync(path.join(f.server.workspace,'.agent-controller/preparations.sqlite'));
-    db.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE');
-    const start=Date.now();
-    readback=new Promise((resolve,reject)=>setTimeout(()=>{fetch(f.server.baseUrl+'/api/preflight',{signal:AbortSignal.timeout(1500)}).then(async r=>{assert.equal(r.status,200);await r.json();resolve(Date.now()-start);},reject);},200));
-    release=wait(900).then(()=>commitExternalLock(db,{onBusy:()=>{commitRetries++;}}));
-    release.catch(()=>{}); readback.catch(()=>{});
-  }});
-  await release;const latency=await readback;assert.ok(latency<1500);
-  assert.equal(setup.context.deliveries.length,1);assert.equal(setup.context.deliveries[0].state,'ACKNOWLEDGED');
-  assert.equal(setup.extension.frames.filter(x=>x.type==='web.prompt.result').length,1);
-  saveEvidence(f,'lock-boundary',{latency,commitRetries,delivery:setup.context.deliveries[0],externalWriter:true});
+  let db, release, readback, evidence, commitRetries = 0;
+  // Dashboard cleanup was registered first; a later t.after(close) would run
+  // after workspace deletion. Close this connection before the flow returns.
+  try {
+    const setup=await preparationHarness(t,f,{beforeStart:async()=>{
+      db=new DatabaseSync(path.join(f.server.workspace,'.agent-controller/preparations.sqlite'));
+      db.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE');
+      const start=Date.now();
+      readback=new Promise((resolve,reject)=>setTimeout(()=>{fetch(f.server.baseUrl+'/api/preflight',{signal:AbortSignal.timeout(1500)}).then(async r=>{assert.equal(r.status,200);await r.json();resolve(Date.now()-start);},reject);},200));
+      release=wait(900).then(()=>commitExternalLock(db,{onBusy:()=>{commitRetries++;}}));
+      release.catch(()=>{}); readback.catch(()=>{});
+    }});
+    await release;const latency=await readback;assert.ok(latency<1500);
+    assert.equal(setup.context.deliveries.length,1);assert.equal(setup.context.deliveries[0].state,'ACKNOWLEDGED');
+    assert.equal(setup.extension.frames.filter(x=>x.type==='web.prompt.result').length,1);
+    evidence={latency,commitRetries,delivery:setup.context.deliveries[0],externalWriter:true};
+  } finally {
+    await release?.catch(()=>{});
+    try { db?.exec('ROLLBACK'); } catch {}
+    db?.close();
+    if (db) assert.equal(db.isOpen,false);
+  }
+  saveEvidence(f,'lock-boundary',{...evidence,externalConnectionClosed:true});
 }
 export async function auth(f) {
   const failed=f.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/state'&&[401,403].includes(r.status()));

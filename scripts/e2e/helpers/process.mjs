@@ -53,7 +53,7 @@ export async function productionProcess({ configured = false, fault = null, work
       child.stdout.on('data', chunk => { stdout += chunk; });
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.on('error', error => { spawnError = error; });
-      exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+      exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
     };
     launch();
     const alive = () => {
@@ -62,7 +62,7 @@ export async function productionProcess({ configured = false, fault = null, work
       assert.equal(child.signalCode, null, 'production process was killed');
     };
     const stop = async () => {
-      if (child.exitCode !== null || child.signalCode !== null || spawnError) return shutdown;
+      if (child.exitCode !== null || child.signalCode !== null || spawnError) { shutdown = await exited; return shutdown; }
       child.kill('SIGTERM');
       const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
       try { shutdown = await exited; } finally { clearTimeout(timer); }
