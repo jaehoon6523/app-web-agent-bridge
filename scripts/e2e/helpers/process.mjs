@@ -30,10 +30,14 @@ export async function productionProcess({ configured = false, fault = null, work
       CODE_WORKER_ARGS:JSON.stringify([path.join(repository, 'scripts/e2e/fixtures/worker.mjs'), path.join(workspace, 'worker-observed.json')]) });
     if (worker === 'active') {
       fs.mkdirSync(path.join(workspace, '.agent-controller'), { recursive:true });
-      const shim = path.join(workspace, '.agent-controller', 'worker-executable');
-      const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-      fs.writeFileSync(shim, '#!/bin/sh\nexec ' + [process.execPath, path.join(repository, 'scripts/e2e/fixtures/active-worker.mjs'), path.join(workspace, 'worker-observed.json')].map(quote).join(' ') + ' "$@"\n', { mode:0o700 });
-      Object.assign(env, { CODE_WORKER_PROVIDER:'codex', CODEX_EXECUTABLE:shim });
+      // The production Codex manager starts its pinned executable with
+      // ["app-server"] and cwd=the isolated Git worktree. Node(.exe) is a real
+      // native executable on both platforms; the tracked disposable target
+      // entrypoint is copied into that worktree by normal Git checkout.
+      const entry = path.join(workspace, 'app-server');
+      const fixture = new URL('../fixtures/active-worker.mjs', import.meta.url).href;
+      fs.writeFileSync(entry, 'process.argv[2] = ' + JSON.stringify(path.join(workspace, 'worker-observed.json')) + ';\nimport(' + JSON.stringify(fixture) + ');\n');
+      Object.assign(env, { CODE_WORKER_PROVIDER:'codex', CODEX_EXECUTABLE:process.execPath });
       delete env.CODE_WORKER_EXECUTABLE; delete env.CODE_WORKER_ARGS;
     }
     if (fault) {

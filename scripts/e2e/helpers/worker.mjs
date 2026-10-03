@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { preparationHarness } from './preparation.mjs';
+import { waitForState, canonicalText } from './observations.mjs';
 
 export async function workerHarness(t, f, { reviewReply = () => new Promise(() => {}), beforeCandidate = null } = {}) {
   // Approval performs all production workspace setup/capture. Only initialize the disposable input Git target.
@@ -12,17 +13,16 @@ export async function workerHarness(t, f, { reviewReply = () => new Promise(() =
   git('init','--quiet'); git('config','user.name','E2E'); git('config','user.email','e2e@example.invalid');
   fs.writeFileSync(path.join(f.server.workspace, 'README.md'), 'Disposable target\n');
   fs.writeFileSync(path.join(f.server.workspace, '.gitignore'), '.agent-controller/\nworker-observed.json\nworker-history.json\n');
-  git('add','README.md','.gitignore'); git('commit','-m','Initial target');
+  git('add','README.md','.gitignore', ...(fs.existsSync(path.join(f.server.workspace,'app-server')) ? ['app-server'] : [])); git('commit','-m','Initial target');
   const before = git('rev-parse','HEAD');
   const prepared = await preparationHarness(t, f, { revise:true, afterPreparationReply:reviewReply });
   assert.equal(fs.existsSync(path.join(f.server.workspace, 'worker-observed.json')), false);
   const approve = f.page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/approve'));
-  const captured = f.page.waitForResponse(async r => new URL(r.url()).pathname === '/api/state' && r.status() === 200 && Boolean((await r.json()).run?.candidate), { timeout:90000 });
   await f.page.locator('#saveProject').click();
   const approvalResponse = await approve;
   assert.equal(approvalResponse.status(), 200, JSON.stringify(await approvalResponse.json()));
   await beforeCandidate?.(prepared);
-  const body = await (await captured).json(), run = body.run;
+  const body = await waitForState(f.page, body => Boolean(body.run?.candidate)), run = body.run;
   assert.ok(run.candidate.candidateId);
   assert.equal(run.candidate.runId, run.runId);
   assert.equal(run.candidate.baseCommit, before);
@@ -36,7 +36,7 @@ export async function workerHarness(t, f, { reviewReply = () => new Promise(() =
   t.after(() => fs.rmSync(expectedWorktree, { recursive:true, force:true }));
   assert.notEqual(peer.workspaceRoot, f.server.workspace);
   assert.deepEqual(peer.requirementIds, run.requirements.items.map(item => item.requirementId));
-  assert.equal(fs.readFileSync(path.join(peer.workspaceRoot, 'clock.txt'), 'utf8'), 'Controlled worker candidate: hours minutes seconds\n');
+  assert.equal(canonicalText(fs.readFileSync(path.join(peer.workspaceRoot, 'clock.txt'), 'utf8')), 'Controlled worker candidate: hours minutes seconds\n');
   assert.equal(fs.existsSync(path.join(f.server.workspace, 'clock.txt')), false);
   assert.equal(git('rev-parse','HEAD'), before);
   const db = new DatabaseSync(path.join(f.server.workspace, '.agent-controller/controller.sqlite'), { readOnly:true });

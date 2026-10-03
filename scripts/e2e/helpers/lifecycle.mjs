@@ -5,13 +5,11 @@ import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'node:crypto';
 import { workerHarness } from './worker.mjs';
+import { waitForState, canonicalText } from './observations.mjs';
 
 export function saveEvidence(f, name, value) { fs.writeFileSync(path.join(f.output, name + '.json'), JSON.stringify(value, null, 2)); }
 export function git(f, ...args) { return execFileSync('git',['-C',f.server.workspace,...args],{encoding:'utf8'}).trim(); }
-export async function state(f, predicate) {
-  const response = await f.page.waitForResponse(async r => new URL(r.url()).pathname === '/api/state' && r.status() === 200 && predicate(await r.json()), { timeout:90000 });
-  return response.json();
-}
+export function state(f, predicate) { return waitForState(f.page, predicate); }
 export function storedRun(f, id) {
   const db = new DatabaseSync(path.join(f.server.workspace,'.agent-controller/controller.sqlite'),{readOnly:true});
   try { return JSON.parse(db.prepare('SELECT record_json FROM code_change_runs WHERE run_id=?').get(id).record_json); } finally { db.close(); }
@@ -103,7 +101,7 @@ export async function applyRun(t,f,setup) {
   assert.equal(git(f,'write-tree'),run.candidate.candidateTree);
   assert.equal(git(f,'rev-parse','HEAD'),before);
   assert.notEqual(git(f,'write-tree'),tree);
-  assert.equal(fs.readFileSync(path.join(f.server.workspace,'clock.txt'),'utf8'),git(f,'show',run.candidate.candidateTree+':clock.txt')+'\n');
+  assert.equal(canonicalText(fs.readFileSync(path.join(f.server.workspace,'clock.txt'),'utf8')),canonicalText(git(f,'show',run.candidate.candidateTree+':clock.txt')+'\n'));
   assert.equal(storedRun(f,run.runId).stage,'APPLIED');
   assert.equal(final.application.candidateId,run.candidate.candidateId);
   assert.equal(await f.page.locator('#applyCode').isDisabled(),true);

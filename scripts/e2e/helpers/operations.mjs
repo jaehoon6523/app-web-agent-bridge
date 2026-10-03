@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { setTimeout as wait } from 'node:timers/promises';
+import { commitExternalLock } from './external-lock.mjs';
 import { preparationHarness, preparationPackets } from './preparation.mjs';
 import { state, storedRun, saveEvidence, git, envelope } from './lifecycle.mjs';
 
@@ -79,19 +81,20 @@ export async function followup(f,setup) {
   saveEvidence(f,'followup-boundary',context);
 }
 export async function lock(t,f) {
-  let db, timer, readback;
-  t.after(()=>{clearTimeout(timer);try{db?.exec('ROLLBACK');}catch{}db?.close();});
+  let db, release, readback, commitRetries = 0;
+  t.after(async()=>{await release?.catch(()=>{});try{db?.exec('ROLLBACK');}catch{}db?.close();});
   const setup=await preparationHarness(t,f,{beforeStart:async()=>{
     db=new DatabaseSync(path.join(f.server.workspace,'.agent-controller/preparations.sqlite'));
-    db.exec('BEGIN IMMEDIATE');
+    db.exec('PRAGMA busy_timeout=0; BEGIN IMMEDIATE');
     const start=Date.now();
     readback=new Promise((resolve,reject)=>setTimeout(()=>{fetch(f.server.baseUrl+'/api/preflight',{signal:AbortSignal.timeout(1500)}).then(async r=>{assert.equal(r.status,200);await r.json();resolve(Date.now()-start);},reject);},200));
-    timer=setTimeout(()=>db.exec('COMMIT'),900);
+    release=wait(900).then(()=>commitExternalLock(db,{onBusy:()=>{commitRetries++;}}));
+    release.catch(()=>{}); readback.catch(()=>{});
   }});
-  const latency=await readback;assert.ok(latency<1500);
+  await release;const latency=await readback;assert.ok(latency<1500);
   assert.equal(setup.context.deliveries.length,1);assert.equal(setup.context.deliveries[0].state,'ACKNOWLEDGED');
   assert.equal(setup.extension.frames.filter(x=>x.type==='web.prompt.result').length,1);
-  saveEvidence(f,'lock-boundary',{latency,delivery:setup.context.deliveries[0],externalWriter:true});
+  saveEvidence(f,'lock-boundary',{latency,commitRetries,delivery:setup.context.deliveries[0],externalWriter:true});
 }
 export async function auth(f) {
   const failed=f.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/state'&&[401,403].includes(r.status()));
