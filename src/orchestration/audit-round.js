@@ -13,7 +13,7 @@ import { buildCodeReviewPrompt, buildPlanProposalPrompt, buildPlanReviewPrompt, 
 
 const REVIEW_ROLES = Object.freeze(["JUDGE", "CRITIC"]);
 const MAX_PLAN_ROUNDS = 2;
-const BINDING_WAIT_CODES = new Set(["NEEDS_REBIND","AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED","AUTH_REQUIRED","EXPLICIT_REBIND_REQUIRED","WEB_SESSION_BINDING_MISMATCH","WEB_DOCUMENT_CHANGED","ROOT_NOT_READY","EXTENSION_NOT_AUTHENTICATED","WEB_RESPONSE_TIMEOUT"]);
+const BINDING_WAIT_CODES = new Set(["NEEDS_REBIND","AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED","AUTH_REQUIRED","EXPLICIT_REBIND_REQUIRED","WEB_SESSION_BINDING_MISMATCH","WEB_DOCUMENT_CHANGED","ROOT_NOT_READY","SESSION_AUTH_REQUIRED","EXTENSION_NOT_AUTHENTICATED","WEB_RESPONSE_TIMEOUT"]);
 const REVIEW_TAB_SELECTION_CODES = new Set(["AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED"]);
 
 /**
@@ -172,7 +172,7 @@ async function activateRole(service, runId, role) {
   } catch (error) {
     const typedError = coordinationError(error);
     if (!typedError.code || !BINDING_WAIT_CODES.has(typedError.code)) throw error;
-    const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED"].includes(typedError.code) ? typedError.code : "NEEDS_REBIND";
+    const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED","SESSION_AUTH_REQUIRED"].includes(typedError.code) ? (typedError.code === "SESSION_AUTH_REQUIRED" ? "AUTH_REQUIRED" : typedError.code) : "NEEDS_REBIND";
     const failed = { ...record, bindingStatus, activeDeliveryId:null, updatedAt:new Date().toISOString() };
     const bindingCandidates = selectableReviewTabs(typedError, record);
     run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, failed) });
@@ -366,7 +366,7 @@ async function activateSettledRole(service, runId, role) {
     }));
   } catch (error) {
     const typedError = coordinationError(error);
-    const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED"].includes(typedError.code) ? typedError.code : "NEEDS_REBIND";
+    const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED","SESSION_AUTH_REQUIRED"].includes(typedError.code) ? (typedError.code === "SESSION_AUTH_REQUIRED" ? "AUTH_REQUIRED" : typedError.code) : "NEEDS_REBIND";
     const failed = { ...record, bindingStatus, activeDeliveryId:null, updatedAt:new Date().toISOString() };
     run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, failed) });
     throw Object.assign(new Error(`${role} conversation could not be rebound for discussion: ${typedError.message}`), {

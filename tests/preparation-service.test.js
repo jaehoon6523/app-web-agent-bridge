@@ -79,9 +79,9 @@ function fixture(t) {
     command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), preparationId: service.current.preparationId, ...extras }); },
   };
 }
-test("follow-up preparation binds an applied task in the same folder and keeps a new approval boundary", async (t) => {
+test("follow-up accepts the raw APPLIED stage from production findRun and keeps a new approval boundary", async (t) => {
   const f = fixture(t);
-  f.runs.set("applied-1", { runId:"applied-1", phase:"APPLIED", projectRef:{ targetRoot:f.root },
+  f.runs.set("applied-1", { runId:"applied-1", stage:"APPLIED", projectRef:{ targetRoot:f.root },
     objective:"첫 인사", candidate:{ candidateId:"candidate-1" },
     requirements:{ items:[{ statement:"인사 표시", acceptanceCriteria:"화면에 표시" }] } });
   await f.service.execute("preparation.start", { requestId:"follow-up", objective:"인사를 바꿔줘",

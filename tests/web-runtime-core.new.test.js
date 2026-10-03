@@ -594,6 +594,7 @@ test("submitTurn returns a TurnHandle before Web response and emits only canonic
   });
   const completed = await turnHandle.completion;
   assert.equal(completed.text, "Reviewed");
+  assert.equal(completed.body, "Reviewed", "audit reasoning must use the same parsed bytes as text");
   assert.deepEqual(completed.packet, ACCEPT_PACKET);
   assert.equal(completed.rawText, controllerResponse());
   assert.ok(runtimeEvents.every((event) => RUNTIME_EVENT_TYPES.includes(event.type)));

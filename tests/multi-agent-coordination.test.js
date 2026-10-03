@@ -154,3 +154,15 @@ test("evidence-driven manifest restarts still consume the run evidence budget", 
   assert.equal(run.terminationReason,"EVIDENCE_LIMIT");
   assert.equal(run.evidenceRounds,1);
 });
+
+
+test("Critic session authentication failure stays role-scoped HOLD", async (t) => {
+  const f=setupAudit(t,{reviewVerdicts:["SATISFIED"],resume({binding}){
+    if(binding.sessionId.endsWith("_critic")) throw Object.assign(new Error("Sign in required"),{code:"SESSION_AUTH_REQUIRED"});
+  }});
+  const run=await f.run();
+  assert.equal(run.stage,"HOLD");
+  assert.equal(run.coordination.activeRole,"CRITIC");
+  assert.equal(run.conversationBindings.find(b=>b.role==="CRITIC").bindingStatus,"AUTH_REQUIRED");
+  assert.ok(run.reviewArtifacts.some(a=>a.role==="JUDGE"));
+});

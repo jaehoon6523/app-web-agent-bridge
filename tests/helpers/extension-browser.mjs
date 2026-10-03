@@ -38,40 +38,53 @@ export async function extensionBrowser(t, {
   initialUrl = 'https://chatgpt.com/',
   reply = () => 'Observed fixture reply',
   providerHtml = null,
+  production = null,
+  autoConnect = true,
 } = {}) {
   const browser = await chromium.launch({
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE }
       : { channel: process.env.UI_BROWSER_CHANNEL || 'chrome' }), headless: true,
     // Routed fixture documents have no network address space. This applies only
-    // to this disposable browser; all HTTP requests are intercepted below.
+    // to this disposable browser; production HTTP remains real when configured.
     args: ['--disable-features=LocalNetworkAccessChecks'],
   });
   t.after(() => browser.close());
   const context = await browser.newContext();
   const manifest = JSON.parse(await readFile(new URL('manifest.json', extensionRoot), 'utf8'));
   const scripts = await Promise.all(manifest.content_scripts[0].js.map(file => readFile(new URL(file, extensionRoot), 'utf8')));
-  const transport = new WebExtensionTransport({ sharedSecret: secret, expectedExtensionIdentity: identity });
-  const server = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-  await once(server, 'listening');
+  const transport = production ? null : new WebExtensionTransport({ sharedSecret: secret, expectedExtensionIdentity: identity });
+  const server = production ? null : new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  if (server) await once(server, 'listening');
   const frames = [];
-  server.on('connection', socket => {
+  server?.on('connection', socket => {
     socket.on('message', raw => frames.push(JSON.parse(String(raw))));
     transport.attach(socket);
   });
-  const createAdapter = provider => provider === 'CHATGPT_WEB'
+  const createAdapter = provider => {
+    if (production) throw new Error('Production transport is owned by src/server.js');
+    return provider === 'CHATGPT_WEB'
     ? new ChatGptWebSessionAdapter({ transport, responseTimeoutMs: 8_000 })
     : new WebSessionAdapter({ transport, provider, responseTimeoutMs: 8_000 });
-  const adapter = createAdapter('CHATGPT_WEB');
+  };
+  const adapter = production ? null : createAdapter('CHATGPT_WEB');
   t.after(async () => {
+    if (!server) return;
     await adapter.close(); transport.close();
     for (const socket of server.clients) socket.terminate();
     await new Promise(resolve => server.close(resolve));
   });
-  let stored = { controllerUrl: `ws://127.0.0.1:${server.address().port}/ws/extension`,
-    sharedSecret: secret, extensionIdentity: identity };
+  let stored = { controllerUrl: production ? production.baseUrl.replace(/^http/, 'ws') + '/ws/extension' : `ws://127.0.0.1:${server.address().port}/ws/extension`,
+    sharedSecret: production?.sharedSecret ?? secret, extensionIdentity: production?.extensionIdentity ?? identity };
   const page = await context.newPage();
   const background = await context.newPage();
+  if (production) background.on('websocket', socket => {
+    for (const event of ['framesent', 'framereceived']) socket.on(event, frame => {
+      const message = JSON.parse(String(frame.payload));
+      frames.push({ direction:event, type:message.type, requestId:message.requestId ?? null });
+    });
+  });
   const pages = new Map([[7, page]]);
+  const unavailableTabs = new Set();
   let nextTabId = 8;
   const errors = [];
   const diagnostics = [];
@@ -131,19 +144,21 @@ export async function extensionBrowser(t, {
     await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id }) => {
       globalThis.fixtureBackgroundListener?.(message, { tab: { id }, frameId: 0 }, () => {});
     }, { message, id }));
-    await providerPage.exposeBinding('fixtureReply', (_source, text) => reply(text));
-    await providerPage.addInitScript(() => {
+    await providerPage.exposeBinding('fixtureReply', (_source, text) => reply(text, { page:providerPage, tabId:id }));
+    await providerPage.addInitScript(({ id, production }) => {
+      globalThis.fixtureConversationId = production && id !== 7 ? 'created-' + id : 'created';
       globalThis.chrome = { runtime: {
         onMessage: { addListener(listener) { globalThis.fixtureContentListener = listener; } },
         sendMessage: message => fixtureProgress(message),
       } };
-    });
+    }, { id, production:Boolean(production) });
   }
   await configureProviderPage(page, 7);
   let dashboardSnapshot = null;
   await context.route('**/*', async route => {
     const url = new URL(route.request().url());
     if (url.hostname === 'dashboard.fixture') {
+      if (production) throw new Error('Fixture Dashboard API is forbidden in production mode');
       if (url.pathname === '/api/dashboard/session') {
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ token: 'fixture-dashboard-token' }) });
       }
@@ -157,11 +172,14 @@ export async function extensionBrowser(t, {
       return route.fulfill({ contentType: asset.contentType, body: await readFile(asset.resolved, 'utf8') });
     }
     if (url.hostname === '127.0.0.1') {
-      if (url.pathname === '/') return route.fulfill({ contentType: 'text/html', body: '<script type="module" src="/extension/background.js"></script>' });
+      if (url.pathname === (production ? '/__bridge_e2e__/background.html' : '/')) return route.fulfill({ contentType: 'text/html', body: '<script type="module" src="/extension/background.js"></script>' });
+      if (production && !url.pathname.startsWith('/extension/')) return route.continue();
       if (!/^\/extension\/[a-z0-9/.-]+\.js$/i.test(url.pathname) || url.pathname.includes('..')) throw new Error('Invalid fixture module path');
       return route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(url.pathname.slice('/extension/'.length), extensionRoot), 'utf8') });
     }
     if (url.hostname === 'chatgpt.com') {
+      const tab = [...pages.entries()].find(([, value]) => value === route.request().frame().page());
+      if (tab && unavailableTabs.has(tab[0])) return route.fulfill({ contentType:'text/html', body:'<main>Log in to ChatGPT</main>' + scripts.map(source => '<script>' + source.replaceAll('</script', '<\\/script') + '</script>').join('') });
       if (providerHtml !== null) {
         const injected = scripts.map(source => `<script>${source.replaceAll('</script', '<\\/script')}</script>`).join('');
         const body = providerHtml.includes('</body>')
@@ -173,7 +191,8 @@ export async function extensionBrowser(t, {
         <main id="messages"></main><textarea id="prompt-textarea"></textarea>
         <button data-testid="send-button">Send</button><script>
         const navigation = ${JSON.stringify(navigation)}, variant = ${JSON.stringify(variant)};
-        function appendMessage(role, id, text) {
+        const preserveHistory = ${JSON.stringify(Boolean(production))};
+        function appendMessage(role, id, text, record = true) {
           const article = document.createElement('article'); article.id = id;
           if (variant === 'roles') article.setAttribute('data-message-author-role', role);
           else { article.setAttribute('data-testid', 'conversation-turn-' + id);
@@ -181,9 +200,16 @@ export async function extensionBrowser(t, {
             else { const heading = document.createElement('h2'); heading.textContent = role === 'user' ? 'You said:' : 'ChatGPT said:'; article.append(heading); } }
           const body = document.createElement('div'); body.setAttribute('data-message-content', ''); body.style.whiteSpace = 'pre-wrap'; body.textContent = text;
           article.append(body); document.querySelector('#messages').append(article);
+          if (preserveHistory && record) {
+            const messages = JSON.parse(sessionStorage.getItem('fixtureMessages') || '[]');
+            messages.push({ role, id, text }); sessionStorage.setItem('fixtureMessages', JSON.stringify(messages));
+          }
         }
         window.appendFixtureMessage = appendMessage;
-        if (sessionStorage.getItem('submitted')) {
+        const savedMessages = preserveHistory ? JSON.parse(sessionStorage.getItem('fixtureMessages') || '[]') : [];
+        if (savedMessages.length) {
+          for (const message of savedMessages) appendMessage(message.role, message.id, message.text, false);
+        } else if (sessionStorage.getItem('submitted')) {
           appendMessage('user', 'u1', sessionStorage.getItem('submitted'));
           appendMessage('assistant', 'a1', 'Observed fixture reply');
         }
@@ -198,7 +224,7 @@ export async function extensionBrowser(t, {
               sessionStorage.setItem('temporaryConversationUrl', location.href);
               await new Promise(resolve => setTimeout(resolve, 250));
             }
-            history.pushState({}, '', '/c/created');
+            history.pushState({}, '', '/c/' + globalThis.fixtureConversationId);
           }
           const sequence = sessionStorage.getItem('clicks');
           appendMessage('user', 'u' + sequence, text);
@@ -240,15 +266,22 @@ export async function extensionBrowser(t, {
     return route.abort();
   });
   await page.goto(initialUrl);
-  const authenticated = once(transport, 'authenticated', { signal: AbortSignal.timeout(5_000) });
-  await background.goto(`http://127.0.0.1:${server.address().port}/`);
-  await authenticated.catch(async error => {
-    const lastError = await background.evaluate(() => globalThis.fixturePopupState?.lastError);
-    throw new Error(`Extension authentication failed: ${lastError}; ${errors.join('; ')}; ${diagnostics.join('; ')}; ${error.message}`);
-  });
-  return { adapter, createAdapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
+  async function connect() {
+    const authenticated = production ? null : once(transport, 'authenticated', { signal: AbortSignal.timeout(5_000) });
+    await background.goto(production ? `${production.baseUrl}/__bridge_e2e__/background.html` : `http://127.0.0.1:${server.address().port}/`);
+    await (production ? production.waitAuthenticated() : authenticated).catch(async error => {
+      const lastError = await background.evaluate(() => globalThis.fixturePopupState?.lastError);
+      throw new Error(`Extension authentication failed: ${lastError}; ${errors.join('; ')}; ${diagnostics.join('; ')}; ${error.message}`);
+    });
+  }
+  if (autoConnect) await connect();
+  return { connect, adapter, createAdapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
     readStorage: () => structuredClone(stored),
+    providerPages: () => [...pages.entries()],
+    setProviderUnavailable: (id, value) => value ? unavailableTabs.add(id) : unavailableTabs.delete(id),
+    createProviderTab: url => background.evaluate(url => chrome.tabs.create({ url }), url),
     async openDashboard(snapshot) {
+      if (production) throw new Error('Use the actual production Dashboard browser');
       dashboardSnapshot = structuredClone(snapshot);
       const dashboard = await context.newPage();
       const loadFailure = new Promise((_, reject) => {
@@ -273,11 +306,13 @@ export async function extensionBrowser(t, {
       return dashboard;
     },
     async prepare(runId = 'r1') {
+      if (production) throw new Error('Use the production Dashboard preparation action');
       await adapter.resume({ binding: { sessionId: 's1', runId, tabId: null, windowId: null,
         documentId: null, frameId: null, conversationUrl: null, conversationId: null,
         title: null, lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: 'NEEDS_REBIND' } });
     },
     async submit(turnId = 'd1') {
+      if (production) throw new Error('Use the production Dashboard submission action');
       const handle = await adapter.submitTurn({ turnId, controllerMessageId: turnId, runId: 'r1', text: 'Read this controlled prompt',
         timeoutMs: 8_000, stableMs: 1_000, parseResponse: raw => ({ body: raw, packetText: raw, packet: { type: 'FIXTURE_REPLY' } }) });
       return handle.completion;

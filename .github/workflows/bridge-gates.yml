@@ -32,6 +32,7 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
+      - run: npm run test:e2e
       - run: npm run test:ui
       - run: npm run test:browser
       - run: npm run test:sabotage

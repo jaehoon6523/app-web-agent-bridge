@@ -603,6 +603,7 @@ export class WebSessionAdapter {
       return Object.freeze({
         turnId,
         text: parsed.body,
+        body: parsed.body,
         rawText: message.payload.text,
         packet: parsed.packet,
         packetText: parsed.packetText,

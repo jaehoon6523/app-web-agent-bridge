@@ -1,0 +1,1607 @@
+[
+  {
+    "id": "UF-01A",
+    "title": "Fresh startup",
+    "given": "설정 없는 새 workspace",
+    "when": "서버를 실행하고 Dashboard를 연다",
+    "then": "서버/auth 정상; runtime 준비 필요; 확장 연결 대기; 입력해도 Web action 차단",
+    "callPath": "main → loadConfig → listen → refresh → POST /api/dashboard/session → GET /api/state → DashboardController.snapshot → PreparationService.project → render",
+    "sources": [
+      "src/server.js",
+      "src/config.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#startPanel",
+        "#apiHealth",
+        "#sessionHealth",
+        "#engineHealth",
+        "#channelHealth"
+      ],
+      "enabled": [
+        "#chooseFolder"
+      ],
+      "disabled": [
+        "#planRun",
+        "#newRun"
+      ],
+      "hidden": [
+        "#applyCode",
+        "#saveProject",
+        "#startRun"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "UNAVAILABLE",
+        "extension": "NOT CONFIGURED",
+        "provider": "not exercised",
+        "workflow": "START"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": false,
+    "skeleton": "scripts/e2e/startup.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "N/A",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-01B",
+    "title": "Configured startup",
+    "given": "확장 secret/identity와 Worker 실행 경로 설정 존재; 미연결",
+    "when": "Dashboard를 연다",
+    "then": "서버/auth/runtime 정상; 확장 연결 대기; 준비 시작 차단",
+    "callPath": "loadConfig → createBridgeServer → WebExtensionTransport constructor → GET /api/state → getLiveRuntime → createLiveDiscussionRuntime → DashboardController.snapshot → PreparationService.project → refresh → render",
+    "sources": [
+      "src/config.js",
+      "src/server.js",
+      "src/runtime/live-discussion-runtime.js"
+    ],
+    "render": {
+      "objects": [
+        "#engineHealth",
+        "#channelHealth",
+        "#startPanel"
+      ],
+      "enabled": [
+        "#chooseFolder"
+      ],
+      "disabled": [
+        "#planRun"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "DISCONNECTED",
+        "provider": "not exercised",
+        "workflow": "START"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "DOWN",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-01C",
+    "title": "Connected startup",
+    "given": "확장이 인증된 상태; 실행/프로젝트 전제조건은 별도",
+    "when": "Dashboard를 연다",
+    "then": "확장 인증 표시; runtime/Worker 등 나머지 전제조건을 충족한 action만 활성",
+    "callPath": "WebExtensionTransport.attach → authentication → GET /api/state → livePreflight → DashboardController.snapshot → PreparationService.project → refresh → render",
+    "sources": [
+      "src/runtime/web/session-adapter.js",
+      "src/server.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#channelHealth",
+        "#webSignal",
+        "#planRun"
+      ],
+      "enabled": [
+        "#chooseFolder"
+      ],
+      "disabled": [
+        "#applyCode"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "START"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport + background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM: connection readiness only",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL: initial + connected capability",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-02",
+    "title": "Runtime degraded",
+    "given": "확장 configured; artifact 디렉터리 생성이 실패",
+    "when": "Dashboard를 열고 상태 상세를 확인한다",
+    "then": "서버/auth 정상; runtime 준비 필요; local 폴더 선택 유지; runtime 의존 시작 차단",
+    "callPath": "GET /api/state → DashboardController.snapshot → getLiveRuntime → createLiveDiscussionRuntime → ArtifactStore initialization failure → degraded snapshot → PreparationService.project → refresh → render",
+    "sources": [
+      "src/server.js",
+      "src/runtime/live-discussion-runtime.js",
+      "src/orchestration/dashboard-controller.js"
+    ],
+    "render": {
+      "objects": [
+        "#apiHealth",
+        "#sessionHealth",
+        "#engineHealth",
+        "#startPanel"
+      ],
+      "enabled": [
+        "#chooseFolder"
+      ],
+      "disabled": [
+        "#planRun"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "UNAVAILABLE",
+        "extension": "actual state/unknown after failed read",
+        "provider": "not exercised",
+        "workflow": "START/degraded"
+      }
+    },
+    "gap": null,
+    "fault": "runtime-artifact",
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "DOWN",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL",
+      "Fault": "FAULT INJECTION",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-03",
+    "title": "Extension disconnected",
+    "given": "서버/auth/runtime 정상; 확장 configured지만 WebSocket disconnected",
+    "when": "Dashboard를 열고 목표/폴더를 입력한다",
+    "then": "확장 연결 대기; Web action 차단; 폴더 선택 유지; runtime 정상 유지",
+    "callPath": "GET /api/state → livePreflight → DashboardController.snapshot → PreparationService.project → refresh → render → startRoot input → render",
+    "sources": [
+      "src/server.js",
+      "public/app.js",
+      "public/dashboard-health-presentation.js"
+    ],
+    "render": {
+      "objects": [
+        "#channelHealth",
+        "#engineHealth",
+        "#startPanel"
+      ],
+      "enabled": [
+        "#chooseFolder"
+      ],
+      "disabled": [
+        "#planRun"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "DISCONNECTED",
+        "provider": "not exercised",
+        "workflow": "START"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "DOWN",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-04",
+    "title": "Extension connect",
+    "given": "서버 실행; 확장 설정 존재; 미인증",
+    "when": "확장에서 연결을 시작한다",
+    "then": "challenge/auth 완료 후 확장 인증 표시; 다른 장애를 정상으로 덮지 않음",
+    "callPath": "extension/background.js connect → WebSocket /ws/extension → server upgrade → WebExtensionTransport.attach → challenge/auth → livePreflight → GET /api/state → render",
+    "sources": [
+      "extension/background.js",
+      "src/server.js",
+      "src/runtime/web/session-adapter.js"
+    ],
+    "render": {
+      "objects": [
+        "#channelHealth",
+        "#webSignal"
+      ],
+      "enabled": [
+        "#chooseFolder"
+      ],
+      "disabled": [
+        "#applyCode"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "START after connect"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport + background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM: connection readiness only",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL: initial + connected capability",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-05",
+    "title": "Preparation start",
+    "given": "확장 인증; 준비 시작 capability 충족; 유효한 프로젝트 폴더",
+    "when": "목표/폴더 입력 후 준비 대화 시작을 클릭한다",
+    "then": "요구사항 정리 화면; 응답 summary/질문/기준 표시; delivery 귀속; 자동 승인 profile은 별도",
+    "callPath": "#startForm submit → beginPreparation → preparationMutation → POST /api/preparations → preparationRoute → PreparationService.execute → dispatch → reserve → generate → WebSessionAdapter.resume/submitTurn → extension background/content → provider DOM → complete → persistPreparation → GET /api/state → project → renderPreparation",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/preparation-service.js",
+      "src/orchestration/preparation-persistence.js",
+      "src/runtime/web/session-adapter.js",
+      "extension/content.js"
+    ],
+    "render": {
+      "objects": [
+        "#projectPanel",
+        "#proposalStatus",
+        "#proposalSummary",
+        "#projectRequirements"
+      ],
+      "enabled": [
+        "#reloadProject"
+      ],
+      "disabled": [
+        "#saveProject (합의 전)"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "PREPARE"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport + background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM + REQUIREMENTS_PROPOSAL replies",
+      "Persistence": "REAL FLOW: preparation mutation + ACK/receipt + SQLite/HTTP readback",
+      "Render": "REAL: preparation flow",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: preparation delivery/ACK/receipt and readback; server restart durability NOT VERIFIED"
+  },
+  {
+    "id": "UF-06",
+    "title": "Preparation revise",
+    "given": "합의 제안이 표시되고 같은 preparation context가 ACTIVE",
+    "when": "proposalFeedback 입력 후 답변 보내기를 클릭한다",
+    "then": "같은 목표/폴더/대화 유지; 새로운 응답 표시; 대기 중 중복 reply 차단",
+    "callPath": "#reviseRequirements click → preparationMutation → POST /api/preparations/:id/reply → execute → dispatch → reserve → generate → WebSessionAdapter.submitTurn → provider DOM → complete → persistPreparation → project → renderPreparation",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#projectPanel",
+        "#proposalSummary",
+        "#projectRequirements",
+        "#proposalStatus"
+      ],
+      "enabled": [
+        "#reviseRequirements (settled + 입력 후)"
+      ],
+      "disabled": [
+        "#reviseRequirements (진행 중)"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "PREPARE"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport + background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM + REQUIREMENTS_PROPOSAL replies",
+      "Persistence": "REAL FLOW: preparation mutation + ACK/receipt + SQLite/HTTP readback",
+      "Render": "REAL: preparation flow",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: preparation delivery/ACK/receipt and readback; server restart durability NOT VERIFIED"
+  },
+  {
+    "id": "UF-07",
+    "title": "Approve to Worker",
+    "given": "합의 완료; unresolved 질문 없음; 명시적 승인 profile",
+    "when": "합의 승인하고 작업 시작을 클릭한다",
+    "then": "Worker 작업 화면; 승인한 기준과 run 연결; 자동 적용 없음",
+    "callPath": "#projectForm submit → preparationMutation → POST /api/preparations/:id/approve → execute/dispatch → server approve callback → GitChangeWorkspace.prepareTarget → AuditProjectSettings.save → CodeChangeService.startPrepared → start → execute → executeIterations → createRegisteredCodeWorker → persist/capture → project → render",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/preparation-service.js",
+      "src/orchestration/code-change-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#runPanel",
+        "#runObjective",
+        "#runStatus",
+        "#workerProvenance"
+      ],
+      "enabled": [
+        "#stopRun (capability 있을 때)"
+      ],
+      "disabled": [
+        "#applyCode"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "WORK"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL adapter + external CONTROLLED JSONL executable (qwen route; not real model)",
+      "Provider": "CONTROLLED preparation DOM/replies; review pending, NOT VERIFIED",
+      "Persistence": "REAL FLOW: approve/run/candidate + SQLite readback",
+      "Render": "REAL: approve/Worker/candidate",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: actual approval/run/candidate capture and SQLite readback; restart/independent review NOT VERIFIED",
+    "workerHarness": true
+  },
+  {
+    "id": "UF-08",
+    "title": "Candidate independent review",
+    "given": "Worker 완료; candidate와 evidence 고정",
+    "when": "자동 검토 진행과 결과를 확인한다",
+    "then": "같은 candidate에 Judge/Critic 결과; provider/역할 구분; 판정 전 적용 차단",
+    "callPath": "executeIterations → workspace.assertCandidate → candidate/evidence persistence → ensureCandidateCodeSnapshots → performVerification → auditCandidate → reviewRole/submitRoleTurn → role provider → persisted review → snapshot → render",
+    "sources": [
+      "src/orchestration/code-change-service.js",
+      "src/orchestration/audit-round.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#candidateDetails",
+        "#assessments",
+        "#evidenceList",
+        "#runJudgeRole",
+        "#runCriticRole"
+      ],
+      "enabled": [
+        "#exportEvidence (capability 있을 때)"
+      ],
+      "disabled": [
+        "#applyCode (판정 전)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "REVIEW"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL adapter + external CONTROLLED JSONL executable (qwen route; not real model)",
+      "Provider": "CONTROLLED independent Judge/Critic DOM; production assertions/ACK",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: independent review PASS setup",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "REAL FLOW: candidate-bound review/ACK/artifact readback and reload; restart NOT VERIFIED",
+    "workerHarness": true,
+    "reviewHarness": true
+  },
+  {
+    "id": "UF-09",
+    "title": "Rework",
+    "given": "candidate 검토에 필수 미해결 finding 존재",
+    "when": "수정·재검토 진행을 확인한다",
+    "then": "REWORK 단계 및 finding 이력; 새 candidate; 재검토 전 적용 금지",
+    "callPath": "auditCandidate → planRework → persisted frozen AGREED_WORK_ORDER → executeIterations → assertReworkAuthority → Worker → new candidate → auditCandidate → snapshot → render",
+    "sources": [
+      "src/orchestration/audit-round.js",
+      "src/orchestration/code-change-service.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#runStatus",
+        "#findings",
+        "#candidateDetails",
+        "#assessments"
+      ],
+      "enabled": [
+        "#stopRun (capability 있을 때)"
+      ],
+      "disabled": [
+        "#applyCode (재검토 전)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "REWORK → REVIEW"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "workerHarness": true,
+    "reviewHarness": true,
+    "closure": true
+  },
+  {
+    "id": "UF-10",
+    "title": "Pass and explicit apply",
+    "given": "schema v3 독립 검토 PASS; AWAITING_APPLY; target base 동일",
+    "when": "Apply 전 target를 확인한 뒤 적용 버튼을 클릭한다",
+    "then": "PASS는 아직 미적용; 클릭 후 APPLIED; 승인 candidate만 실제 target에 반영",
+    "callPath": "#applyCode click → command(code.apply) → POST /api/commands → DashboardController.executeDurable → execute → CodeChangeService.command → assertApprovalCandidate → GitChangeWorkspace.apply → store → snapshot → render",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/dashboard-controller.js",
+      "src/orchestration/code-change-service.js",
+      "src/repository/git-change-workspace.js"
+    ],
+    "render": {
+      "objects": [
+        "#applyCode",
+        "#runStatus",
+        "#candidateDetails"
+      ],
+      "enabled": [
+        "#applyCode (PASS 및 capability 충족)"
+      ],
+      "disabled": [
+        "#applyCode (적용 중/후)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "AWAITING_APPLY → APPLIED"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "workerHarness": true,
+    "reviewHarness": true,
+    "closure": true
+  },
+  {
+    "id": "UF-11",
+    "title": "Restart recovery",
+    "given": "preparation 또는 run 진행; receipt가 persist됨",
+    "when": "서버 종료 후 같은 workspace에서 재시작하고 Dashboard를 연다",
+    "then": "작업/context 복구; 불확실 delivery 복구 필요; 자동 재전송 없음",
+    "callPath": "SIGTERM → server.close → same workspace main → PreparationService constructor/SQLite read → CodeChangeService.recover → Dashboard new session → GET /api/state → project → renderPreparation/render",
+    "sources": [
+      "src/server.js",
+      "src/orchestration/preparation-service.js",
+      "src/orchestration/code-change-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#runList",
+        "#proposalStatus",
+        "#preparationException",
+        "#runStatus"
+      ],
+      "enabled": [
+        "#reloadProject"
+      ],
+      "disabled": [
+        "#saveProject (복구 전)",
+        "#applyCode (권한 복구 전)"
+      ],
+      "hidden": [
+        "#startRun"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "recovered stage / RECOVERY_REQUIRED"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; settled run restart",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "REAL profile-specific recovery"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true
+  },
+  {
+    "id": "UF-12",
+    "title": "Stale binding",
+    "given": "전송이 가능한 정확한 tab/document binding",
+    "when": "provider tab을 reload/navigation 후 재전송과 rebind를 시도한다",
+    "then": "과거 document에 send 없음; binding 복구 안내; 선택한 tab에만 명시적 rebind",
+    "callPath": "provider navigation → extension content document-binding/ background current-target → WebSessionAdapter binding validation → PreparationService.webCommand → POST /api/preparations/web web.rebind → project → renderPreparation",
+    "sources": [
+      "extension/background.js",
+      "extension/runtime/document-binding.js",
+      "extension/runtime/current-target.js",
+      "src/runtime/web/session-adapter.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#preparationException",
+        "#webBindingSignal",
+        "#preparationDiagnosticsBody"
+      ],
+      "enabled": [
+        "web.rebind (eligible tab 있을 때)"
+      ],
+      "disabled": [
+        "#reviseRequirements (stale)"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "PREPARE + NEEDS_REBIND/recovery"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport + background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "REAL profile-specific recovery"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true
+  },
+  {
+    "id": "UF-13",
+    "title": "State degradation",
+    "given": "HTTP 정상; session 정상; preparation SQLite 손상",
+    "when": "Dashboard를 열어 실패를 확인하고 손상 파일을 제거해 복구시킨다",
+    "then": "서버/auth 정상; 상태 조회 실패; 잘못된 server-down 안내 없음; 다음 실제 poll에서 복구",
+    "callPath": "refresh → session → GET /api/state → preparations constructor SQLite failure → route catch 503 → request typed error → refresh catch → connection state reducer → health render → retry GET /api/state → actual recovered render",
+    "sources": [
+      "src/server.js",
+      "src/orchestration/preparation-service.js",
+      "public/app.js",
+      "public/dashboard-connection-state.js",
+      "public/dashboard-health-presentation.js"
+    ],
+    "render": {
+      "objects": [
+        "#apiHealth",
+        "#sessionHealth",
+        "#refreshSignal",
+        "#connectionNotice"
+      ],
+      "enabled": [
+        "#chooseFolder (서버/auth 전제만 충족)"
+      ],
+      "disabled": [
+        "#planRun"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "UNKNOWN/current state not assumed",
+        "extension": "actual state/unknown after failed read",
+        "provider": "not exercised",
+        "workflow": "state unknown → recovered START"
+      }
+    },
+    "gap": null,
+    "fault": "state-database",
+    "configured": false,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "N/A",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL PATH + INITIALIZATION RECOVERY",
+      "Render": "REAL",
+      "Fault": "FAULT INJECTION",
+      "Recovery": "REAL: state retry"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "INITIALIZATION FAILURE/RECOVERY VERIFIED; workflow durability NOT VERIFIED"
+  },
+  {
+    "id": "UF-14",
+    "title": "Server transport down",
+    "given": "정상 Dashboard 화면; production process alive",
+    "when": "실제 server process를 종료하고 열린 Dashboard를 관찰한다",
+    "then": "실제 transport 응답 없음; mutation 차단; 정상 상태를 현재 상태처럼 표시하지 않음",
+    "callPath": "production SIGTERM → server.close → existing browser poll → fetch rejection → request TRANSPORT failure → refresh catch → dashboard connection state → health render",
+    "sources": [
+      "src/server.js",
+      "public/app.js",
+      "public/dashboard-connection-state.js",
+      "public/dashboard-health-presentation.js"
+    ],
+    "render": {
+      "objects": [
+        "#apiHealth",
+        "#serverSignal",
+        "#connectionNotice"
+      ],
+      "enabled": [],
+      "disabled": [
+        "#chooseFolder",
+        "#planRun",
+        "#applyCode"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [],
+      "health": {
+        "server": "UNREACHABLE",
+        "dashboard": "AUTHENTICATED before transport loss",
+        "runtime": "UNKNOWN/current state not assumed",
+        "extension": "actual state/unknown after failed read",
+        "provider": "not exercised",
+        "workflow": "last known phase stale"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": false,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "N/A",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "NOT VERIFIED: workflow mutation/durability/restart semantics"
+  },
+  {
+    "id": "UF-15",
+    "title": "SQLite contention",
+    "given": "실제 준비 mutation 가능; 외부 connection이 SQLite write lock 보유",
+    "when": "준비/reply mutation을 보내고 동시에 독립 API를 조회한다",
+    "then": "wait/retry 동안 서버 UI responsive; deadline 충족; lock 해제 후 dispatch 1회 및 receipt 일치",
+    "callPath": "UI preparationMutation → real route → PreparationService.execute → saveReceipt/reserve → persistPreparation busy retry → independent /api/health/preflight/state → release lock → committed receipt → generate → extension → project → render",
+    "sources": [
+      "src/server.js",
+      "src/orchestration/preparation-service.js",
+      "src/orchestration/preparation-persistence.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#proposalStatus",
+        "#preparationPersistence",
+        "#apiHealth"
+      ],
+      "enabled": [
+        "#reloadProject"
+      ],
+      "disabled": [
+        "#reviseRequirements (mutation 진행 중)"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "PREPARE mutation waiting"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM/REPLY: preparation prompt/result/ACK",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true
+  },
+  {
+    "id": "UF-16",
+    "title": "Partial provider failure",
+    "given": "Judge provider 정상; Critic provider unavailable; 검토 단계",
+    "when": "역할 상태와 복구 action을 확인한다",
+    "then": "서버/auth/runtime 전체 장애로 표현 금지; 실패 role 표시; PASS/apply 차단; unrelated action은 capability별 유지",
+    "callPath": "auditCandidate → createReviewerProviderRouter.resolve → activateRole/reviewRole → Critic typed failure → HOLD/review evidence persistence → CodeChangeService.snapshot → DashboardController.snapshot → render role/health/action",
+    "sources": [
+      "src/orchestration/reviewer-provider-router.js",
+      "src/orchestration/audit-round.js",
+      "src/orchestration/code-change-service.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#runJudgeRole",
+        "#runCriticRole",
+        "#runStatus",
+        "#apiHealth"
+      ],
+      "enabled": [
+        "#exportEvidence (capability 있을 때)"
+      ],
+      "disabled": [
+        "#applyCode"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "Critic unavailable; Judge actual state",
+        "workflow": "HOLD with role failure"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "REAL profile-specific recovery"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "workerHarness": true,
+    "reviewHarness": true,
+    "closure": true
+  },
+  {
+    "id": "UF-17",
+    "title": "Dashboard authentication failure",
+    "given": "서버 정상; 별도 Dashboard credential이 invalid/rejected",
+    "when": "무효 session으로 상태를 조회하고 정상 session으로 다시 연결한다",
+    "then": "인증 실패/거부 표시; 서버 정상; mutation 차단; 정상 session 이후 복구",
+    "callPath": "refresh → request /api/dashboard/session or /api/state → verifyLocalBrowser/verifyDashboardAuthorization → LocalAuthError → sendDashboardAuthFailure → refresh catch → render",
+    "sources": [
+      "src/server.js",
+      "src/security/local-auth.js",
+      "public/app.js"
+    ],
+    "render": {
+      "objects": [
+        "#apiHealth",
+        "#sessionHealth",
+        "#connectionNotice"
+      ],
+      "enabled": [],
+      "disabled": [
+        "#chooseFolder",
+        "#planRun"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTH_INVALID/REJECTED",
+        "runtime": "UNKNOWN/current state not assumed",
+        "extension": "actual state/unknown after failed read",
+        "provider": "not exercised",
+        "workflow": "state unknown until authenticated"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": false,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "N/A: initial only",
+      "Worker": "N/A",
+      "Provider": "N/A",
+      "Persistence": "REAL INITIALIZATION",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "REAL profile-specific recovery"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "INITIALIZATION ONLY; no workflow mutation claimed",
+    "closure": true
+  },
+  {
+    "id": "UF-18",
+    "title": "Reviewer free discussion",
+    "given": "candidate 고정; HOLD 또는 AWAITING_APPLY; 역할 대화 capability 충족",
+    "when": "역할과 질문을 선택해 감사자에게 보낸다",
+    "then": "역할 응답/전송 상태 표시; 자연어만으로 verdict/apply 권한 변경 없음; 미확정 결과는 자동 재전송 없음",
+    "callPath": "#sendReviewDiscussion click → command(code.review.discuss) → POST /api/commands → executeDurable/execute → CodeChangeService.command → discussReviewRole → provider → persist reviewDiscussions → snapshot → render",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/code-change-service.js",
+      "src/orchestration/audit-round.js"
+    ],
+    "render": {
+      "objects": [
+        "#reviewDiscussionPanel",
+        "#reviewDiscussionStatus",
+        "#conversationPanel"
+      ],
+      "enabled": [
+        "#sendReviewDiscussion (settled 및 입력)"
+      ],
+      "disabled": [
+        "#sendReviewDiscussion (unconfirmed)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "HOLD/AWAITING_APPLY unchanged"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "workerHarness": true,
+    "reviewHarness": true,
+    "closure": true
+  },
+  {
+    "id": "UF-19",
+    "title": "Operator note and decision",
+    "given": "run 존재; 메모 기록 capability 충족",
+    "when": "NOTE 또는 DECISION을 선택해 기록한다",
+    "then": "기록 종류/내용/phase가 목록에 표시; 새로고침 후 유지; 단순 메모가 검토 verdict를 바꾸지 않음",
+    "callPath": "#addOperatorNote click → command(run.note.add) → POST /api/commands → executeDurable/execute → CodeChangeService.command → update/store → snapshot → render operatorNoteList",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/code-change-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#operatorNotePanel",
+        "#operatorNoteList",
+        "#operatorNoteStatus"
+      ],
+      "enabled": [
+        "#addOperatorNote (입력 및 capability)"
+      ],
+      "disabled": [
+        "#addOperatorNote (빈 입력)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "current phase unchanged"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true,
+    "workerHarness": true
+  },
+  {
+    "id": "UF-20",
+    "title": "Applied follow-up lineage",
+    "given": "APPLIED run과 유효한 프로젝트 경로 존재",
+    "when": "같은 폴더에서 이어서 작업을 클릭하고 새 준비를 시작한다",
+    "then": "폴더 유지; 새 목표; 이전 적용 작업 링크; follow-up lineage와 기준 handoff 유지",
+    "callPath": "#continueProject click → followUpSource → refresh start view → beginPreparation → POST /api/preparations followUpRunId → PreparationService.dispatch/findRun → followUpHandoffNotes → reserve → provider → project → render",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#startPanel",
+        "#planningFollowUp",
+        "#openFollowUp"
+      ],
+      "enabled": [
+        "#continueProject (APPLIED)"
+      ],
+      "disabled": [
+        "#continueProject (미적용)"
+      ],
+      "hidden": [
+        "#applyCode (새 준비)"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "APPLIED → new PREPARE"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true,
+    "workerHarness": true
+  },
+  {
+    "id": "UF-21",
+    "title": "Archive and restore",
+    "given": "settled terminal run; Worker/reviewer busy 아님",
+    "when": "보관 후 history filter에서 조회하고 보관을 해제한다",
+    "then": "보관 상태와 목록/필터 일치; 해제 후 다시 표시; 적용한 target 코드 변경 없음",
+    "callPath": "#archiveRun click → command(run.archive/run.unarchive) → POST /api/commands → executeDurable/execute → CodeChangeService.command → store archivedAt/event → snapshot → render/filter runList",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/code-change-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#archiveRun",
+        "#runList",
+        "#historyStatusFilter"
+      ],
+      "enabled": [
+        "#archiveRun (settled terminal)"
+      ],
+      "disabled": [
+        "#archiveRun (active)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "terminal phase unchanged"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL registry/adapter/Git capture + CONTROLLED external executable; no real model",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "N/A",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true,
+    "workerHarness": true
+  },
+  {
+    "id": "UF-22",
+    "title": "Cancel and discard preparation",
+    "given": "ACTIVE preparation; cancel 가능 상태 또는 unresolved delivery",
+    "when": "취소하거나 확인/사유를 입력하고 명시적으로 전송을 폐기한다",
+    "then": "cancel과 unresolved discard 구분; 이력과 이유 표시; 자동 재전송 없음; 새 작업 조건 갱신",
+    "callPath": "#closeProject/#discardDeliveryButton click → preparationMutation → POST /api/preparations/:id/cancel or discard → execute/dispatch → inspectDelivery/discardDelivery → persistPreparation → project → renderPreparation",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#projectPanel",
+        "#preparationException",
+        "#proposalStatus",
+        "#discardDeliveryButton"
+      ],
+      "enabled": [
+        "#discardDeliveryButton (확인 및 사유 충족)"
+      ],
+      "disabled": [
+        "#discardDeliveryButton (미확인)"
+      ],
+      "hidden": [
+        "#applyCode"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "cancel/discard lifecycle projection"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "REAL profile-specific recovery"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "closure": true
+  },
+  {
+    "id": "UF-23",
+    "title": "Worker live intervention",
+    "given": "WORKER_RUNNING; steer 가능한 Worker와 현재 turn 존재",
+    "when": "GUIDANCE/QUESTION을 입력해 전달하고 requirements 변경 요청도 확인한다",
+    "then": "현재 turn에 개입 상태 표시; stale turn/요구사항 변경 차단; 승인 기준 유지",
+    "callPath": "#sendWorkerIntervention click → command(code.worker.intervene) → POST /api/commands → executeDurable/execute → CodeChangeService.command → worker.steer → update intervention → snapshot → render",
+    "sources": [
+      "public/app.js",
+      "src/server.js",
+      "src/orchestration/code-change-service.js"
+    ],
+    "render": {
+      "objects": [
+        "#workerInterventionPanel",
+        "#workerInterventionStatus",
+        "#runWorkerRole"
+      ],
+      "enabled": [
+        "#sendWorkerIntervention (steer 지원 및 입력)"
+      ],
+      "disabled": [
+        "#sendWorkerIntervention (stale/지원 없음)"
+      ],
+      "hidden": [
+        "#saveProject"
+      ],
+      "forbidden": [
+        "서버 응답 없음",
+        "서버 연결 끊김"
+      ],
+      "health": {
+        "server": "REACHABLE",
+        "dashboard": "AUTHENTICATED",
+        "runtime": "READY under Given",
+        "extension": "AUTHENTICATED under Given; stale/disconnected tracked separately",
+        "provider": "actual selected role readiness; configuration does not imply success",
+        "workflow": "WORKER_RUNNING unchanged"
+      }
+    },
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/wave-suite.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "REAL: production transport/background/content; Chrome APIs controlled",
+      "Worker": "REAL Codex adapter + CONTROLLED external app-server executable; active turn/steer",
+      "Provider": "CONTROLLED DOM responses through production extension; no live provider",
+      "Persistence": "REAL FLOW",
+      "Render": "REAL: profile continuation and capability assertions",
+      "Fault": "REAL boundary fault",
+      "Recovery": "N/A"
+    },
+    "specWave": "W1-4 COMPLETE",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED",
+    "persistenceBehavior": "VERIFIED: profile-specific SQLite/artifact readback and recovery assertions",
+    "workerHarness": true,
+    "closure": true,
+    "workerMode": "active"
+  }
+]
