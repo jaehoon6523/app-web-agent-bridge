@@ -49,7 +49,16 @@ export async function productionProcess({ configured = false, fault = null, work
     let exited;
     const launch = () => {
       spawnError = null;
-      child = spawn(process.execPath, [path.join(repository, 'src/server.js')], { cwd:workspace, env, stdio:['ignore','pipe','pipe'] });
+      // IPC survives Windows' forceful signal semantics and invokes the real
+      // bridge.close() path, including runtime/Worker registry shutdown.
+      const entry = `import { main } from ${JSON.stringify(new URL('../../../src/server.js', import.meta.url).href)};
+        const bridge = await main();
+        process.on('message', async message => {
+          if (message?.type !== 'e2e.shutdown') return;
+          try { await bridge.close(); process.exit(0); }
+          catch (error) { console.error(error); process.exit(1); }
+        });`;
+      child = spawn(process.execPath, ['--input-type=module', '-e', entry], { cwd:workspace, env, stdio:['ignore','pipe','pipe','ipc'] });
       child.stdout.on('data', chunk => { stdout += chunk; });
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.on('error', error => { spawnError = error; });
@@ -63,7 +72,8 @@ export async function productionProcess({ configured = false, fault = null, work
     };
     const stop = async () => {
       if (child.exitCode !== null || child.signalCode !== null || spawnError) { shutdown = await exited; return shutdown; }
-      child.kill('SIGTERM');
+      if (child.connected) child.send({ type:'e2e.shutdown' }, error => { if (error) child.kill('SIGTERM'); });
+      else child.kill('SIGTERM');
       const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
       try { shutdown = await exited; } finally { clearTimeout(timer); }
       return shutdown;
@@ -72,7 +82,25 @@ export async function productionProcess({ configured = false, fault = null, work
       restart:async () => { await stop(); launch(); return handle.ready(); },
       ready:() => waitForPreflight(`${baseUrl}/api/preflight`, { checkAlive:alive }),
       logs:() => ({ stdout, stderr, shutdown }),
-      dispose:async () => { await stop(); fs.rmSync(workspace, { recursive:true, force:true }); },
+      dispose:async () => {
+        await stop();
+        // A completed turn does not imply that a persistent app-server exited.
+        const observed = path.join(workspace, 'worker-observed.json');
+        if (worker === 'active' && fs.existsSync(observed)) {
+          const { pid } = JSON.parse(fs.readFileSync(observed, 'utf8'));
+          assert.ok(Number.isInteger(pid) && pid > 0);
+          const deadline = Date.now() + 5000;
+          let exists;
+          do {
+            try { process.kill(pid, 0); exists = true; }
+            catch (error) { if (error.code !== 'ESRCH') throw error; exists = false; }
+            if (!exists) break;
+            await new Promise(resolve => setTimeout(resolve, 25));
+          } while (Date.now() < deadline);
+          assert.equal(exists, false, 'active Worker child must exit before workspace cleanup');
+        }
+        fs.rmSync(workspace, { recursive:true, force:true });
+      },
     };
     return handle;
   } catch (error) {

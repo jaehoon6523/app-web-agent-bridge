@@ -46,6 +46,7 @@ async function start(t, fault) {
     await bridge.listen();
   `],{cwd:root,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},stdio:["ignore","pipe","pipe","ipc"]});
   const events=[];
+  child.on("message",event=>{if(event?.type==="heartbeat")events.push(event);});
   const stop=watchServerProcess(child,event=>events.push(event),{intervalMs:100,staleMs:500});
   let stderr="";child.stderr.on("data",chunk=>{stderr+=chunk});
   const exited=new Promise(resolve=>child.once("exit",resolve));
@@ -53,14 +54,15 @@ async function start(t, fault) {
     stop();if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
     await exited;locker?.close();fs.rmSync(root,{recursive:true,force:true});
   });
-  async function wait(type,deadline=8000) {
+  async function wait(type,deadline=8000,predicate=()=>true) {
     const started=Date.now();
-    while(!events.some(event=>event.type===type)) {
+    while(!events.some(event=>event.type===type && predicate(event))) {
       if(Date.now()-started>deadline)throw new Error(`Missing ${type}; stderr=${stderr}`);
       await new Promise(resolve=>setTimeout(resolve,10));
     }
   }
   await wait("server.listening");
+  await wait("heartbeat");
   return {config,events,wait,child};
 }
 async function read(config,route,{authenticated=false,deadline=1000,session=false}={}) {
@@ -99,6 +101,8 @@ for(const fault of ["pending","reject","throw","corrupt-preparation","sqlite-loc
 for(const fault of ["cpu"]) {
   test(`incident reproduction: ${fault} stalls independent endpoints and external watchdog records the boundary`,{timeout:15000},async t=>{
     const {config,events,wait}=await start(t,fault);
+    // Startup can itself exceed staleMs on Windows. Observe only this incident.
+    const incidentStart = events.length;
     const state=read(config,"/api/state",{authenticated:true,deadline:800}).then(()=>false,()=>true);
     await wait(fault==="cpu"?"runtime.initialization.started":"preparation.initialization.started");
     const attempts=await Promise.allSettled([
@@ -106,10 +110,12 @@ for(const fault of ["cpu"]) {
     ]);
     assert.ok(attempts.every(item=>item.status==="rejected"),"same-thread stall must be observed by an independent client");
     assert.equal(await state,true);
-    await wait("watchdog.unresponsive");await wait("watchdog.resumed");
-    const warning=events.find(event=>event.type==="watchdog.unresponsive");
+    await wait("watchdog.resumed",8000,event=>event.loopDelayMs>=faultDuration(fault));
+    const incidentEvents=events.slice(incidentStart);
+    const warning=incidentEvents.find(event=>event.type==="watchdog.unresponsive" && event.lastStage==="runtime.initialization.started");
+    assert.ok(warning, "watchdog must observe the injected runtime stall");
     assert.equal(warning.lastStage,fault==="cpu"?"runtime.initialization.started":"preparation.initialization.started");
-    const resumed=events.find(event=>event.type==="watchdog.resumed");
+    const resumed=incidentEvents.find(event=>event.type==="watchdog.resumed" && event.loopDelayMs>=faultDuration(fault));
     assert.ok(resumed.loopDelayMs>=faultDuration(fault));
     assert.equal((await read(config,"/api/preflight")).status,200);
   });

@@ -120,7 +120,7 @@ test('browser fixture: stale document cannot click send', { timeout: 15_000 }, a
   assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), null);
 });
 
-test('fixture integration: real adapters, subprocess, Git capture and browser review drive REWORK then PASS', { timeout: 60_000 }, async t => {
+test('fixture integration: real adapters, subprocess, Git capture and browser review drive REWORK then PASS', { timeout: process.platform === 'win32' ? 120_000 : 60_000 }, async t => {
   const reviewed = [];
   const web = await extensionBrowser(t, { initialUrl: 'https://chatgpt.com/c/test', reply(text) {
     // The extension prepends controller/run markers before the prompt's
