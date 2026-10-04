@@ -127,6 +127,7 @@ export function createBridgeServer({
   let liveRuntime = null;
   let liveRuntimePromise = null;
   let closing = false;
+  const runtimeInitialization = new AbortController();
 
   async function getLiveRuntime() {
     if (closing) throw new Error("Server is shutting down.");
@@ -145,6 +146,7 @@ export function createBridgeServer({
           runtimeConfig:{ ...runtimeConfig, auditProject:auditSettings.project },
           webSession,
           reviewerWebProviders,
+          initializationSignal:runtimeInitialization.signal,
           onDiagnostic:event => diagnostics.emit(event.type, event),
         });
       } catch (error) {
@@ -253,6 +255,7 @@ export function createBridgeServer({
   const commandReceipts = new Map();
   let preparationService = null;
   function preparations() {
+    if (closing) throw Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"});
     if (preparationService) return preparationService;
     diagnostics.emit("preparation.initialization.started");
     try {
@@ -567,6 +570,7 @@ export function createBridgeServer({
   async function close() {
     if (closePromise) return closePromise;
     closing = true;
+    runtimeInitialization.abort(Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"}));
     diagnostics.beginShutdown();
     closePromise = closeSteps([
       ["dashboard.close", () => dashboard.close()],

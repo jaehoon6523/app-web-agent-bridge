@@ -31,15 +31,15 @@ function journal() {
   };
 }
 
-async function fixture(t, { diagnostics = true } = {}) {
+async function fixture(t, { diagnostics = true, dashboardToken } = {}) {
   const owner = resources(t), log = journal();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-unrequested-http-'));
   owner.add('contract workspace', () => fs.rmSync(root, {recursive:true,force:true}), 30);
-  const runtimeConfig = {...loadConfig({cwd:root,env:{WORKSPACE:root,DEMO_MODE:'false'}}),port:0};
+  const runtimeConfig = {...loadConfig({cwd:root,env:{WORKSPACE:root,DEMO_MODE:'false',DASHBOARD_TOKEN:dashboardToken}}),port:0};
   const bridge = createBridgeServer({runtimeConfig,onDiagnostic:diagnostics ? log.sink : undefined});
   owner.add('contract bridge', () => bridge.close(), 20);
   await bridge.listen();
-  return {owner,bridge,log,port:bridge.server.address().port};
+  return {owner,bridge,log,root,port:bridge.server.address().port};
 }
 
 async function connect(owner, server, port) {
@@ -120,4 +120,23 @@ test('NetworkLifecycle / unrequested TCP: shutdown drains an active HTTP request
   assert.match((await headers).toString('latin1'), /^HTTP\/1\.1 200 /u);
   await bounded(closed, 3000);
   assert.ok(log.events.some(event => event.type === 'request.completed' && event.requestId === request.requestId && event.status === 200));
+});
+
+test('NetworkLifecycle / late state request: a partial header completed after preparation close cannot reopen SQLite', {timeout:7000}, async t => {
+  const token = 'contract-late-state-token-0123456789abcdef';
+  const {owner,bridge,log,root,port} = await fixture(t, {dashboardToken:token});
+  const {client,peer} = await connect(owner, bridge.server, port);
+  const headers = readHttpHeaders(client), received = once(peer, 'data');
+  client.write(`GET /api/state HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAuthorization: Bearer ${token}\r\n`);
+  await received;
+  assert.equal(log.events.some(event => event.type === 'request.received'), false);
+  const closed = bridge.close();
+  await log.wait(event => event.type === 'shutdown.stage.done' && event.stage === 'preparationService.close');
+  await log.wait(event => event.type === 'shutdown.http.inventory' && event.phase === 'http-close-start');
+  client.write('Connection: close\r\n\r\n');
+  assert.match((await headers).toString('latin1'), /^HTTP\/1\.1 503 /u);
+  await bounded(closed, 3000);
+  assert.equal(log.events.some(event => event.type === 'preparation.initialization.started'), false);
+  assert.equal(fs.existsSync(path.join(root, '.agent-controller', 'preparations.sqlite')), false);
+  assert.equal(log.events.some(event => event.type === 'shutdown.stage.error'), false);
 });

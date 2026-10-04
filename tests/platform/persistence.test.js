@@ -5,6 +5,48 @@ import os from 'node:os';
 import path from 'node:path';
 import { loadConfig } from '../../src/config.js';
 import { createLiveDiscussionRuntime } from '../../src/runtime/live-discussion-runtime.js';
+import { DatabaseSync } from 'node:sqlite';
+import { SqliteStore } from '../../src/persistence/sqlite-store.js';
+import { CodeChangeStore } from '../../src/persistence/code-change-store.js';
+import { createBridgeServer } from '../../src/server.js';
+import { resources } from '../../scripts/e2e/helpers/resources.mjs';
+import { bounded } from '../../scripts/e2e/helpers/deadline.mjs';
+
+test('SQLite initialization: shutdown cancels a real external writer wait before publishing a runtime', {timeout:7000}, async t => {
+  const owner = resources(t), root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-bootstrap-cancel-'));
+  owner.add('contract workspace', () => fs.rmSync(root, {recursive:true,force:true}), 30);
+  const runtimeConfig = {...loadConfig({cwd:root,env:{WORKSPACE:root,DEMO_MODE:'false',
+    WEB_EXTENSION_SHARED_SECRET:'contract-bootstrap-secret-0123456789abcdef',
+    WEB_EXTENSION_EXPECTED_IDENTITY:'contract-extension'}}),port:0};
+  fs.mkdirSync(path.dirname(runtimeConfig.persistence.databasePath), {recursive:true});
+  new SqliteStore(runtimeConfig.persistence.databasePath).close();
+  new CodeChangeStore(runtimeConfig.persistence.databasePath).close();
+  const locker = new DatabaseSync(runtimeConfig.persistence.databasePath);
+  let locked = true;
+  locker.exec('BEGIN IMMEDIATE');
+  owner.add('contract writer', () => { if (locked) locker.exec('ROLLBACK'); locker.close(); }, 0);
+  const events = [];
+  let observedBusy;
+  const busy = new Promise(resolve => { observedBusy = resolve; });
+  const bridge = createBridgeServer({runtimeConfig,onDiagnostic:event => {
+    events.push(event);
+    if (event.type === 'runtime.initialization.sqlite-busy') observedBusy();
+  }});
+  owner.add('contract bridge', () => bridge.close(), 20);
+  await bridge.listen();
+  const initializing = bridge.getLiveRuntime();
+  initializing.catch(() => {});
+  await bounded(busy, 1000);
+  // The writer remains locked throughout close. Cancellation must not wait for
+  // the existing five-second initialization budget or create a usable runtime.
+  await bounded(bridge.close(), 1000);
+  await assert.rejects(initializing, error => error.code === 'SERVER_CLOSING');
+  assert.equal(events.some(event => event.type === 'runtime.initialization.completed'), false);
+  assert.ok(events.some(event => event.type === 'shutdown.stage.done' && event.stage === 'runtime initialization'));
+  assert.equal(events.some(event => event.type === 'shutdown.stage.error'), false);
+  assert.equal(bridge.server.listening, false);
+  locker.exec('ROLLBACK'); locked = false;
+});
 
 test('runtime close rejection still closes both real SQLite handles before workspace deletion', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-platform-sqlite-'));

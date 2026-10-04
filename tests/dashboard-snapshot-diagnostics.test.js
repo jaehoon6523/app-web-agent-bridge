@@ -87,7 +87,7 @@ test("snapshot runtime rejection remains a degraded result while diagnostics rec
   assert.equal(events.some(event => event.type === "state.snapshot.code-runs.started"), false);
 });
 
-test("real SQLite initialization contention is correlated to HTTP snapshot acquisition by the external watchdog", {timeout:20000}, async t => {
+test("real controller SQLite contention preserves independent HTTP responses and recovers the same snapshot contract", {timeout:20000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-snapshot-diagnostic-"));
   const probe = net.createServer();
   await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
@@ -136,15 +136,23 @@ test("real SQLite initialization contention is correlated to HTTP snapshot acqui
   // journal mode, server deadlines or persistence implementation.
   const pending = read(); pending.catch(() => {});
   const start = await until(event => event.type === "state.snapshot.runtime.started");
-  const stall = await until(event => event.type === "watchdog.unresponsive" && event.lastStage === "runtime.initialization.started");
-  assert.equal(stall.requestId, start.requestId);
-  assert.equal(stall.route, "/api/state");
+  const probes = await Promise.all(["/api/preflight", "/api/health"].map(async route => {
+    const response = await fetch(runtimeConfig.baseUrl+route, {signal:AbortSignal.timeout(1000)});
+    await response.arrayBuffer();
+    return response.status;
+  }));
+  assert.deepEqual(probes, [200, 200]);
   assert.equal(events.some(event => event.snapshotId === start.snapshotId && event.stepId === start.stepId
     && event.type === "state.snapshot.runtime.completed"), false);
-  locker.exec("COMMIT"); locked = false;
   const response = await pending; assert.equal(response.status, 200);
-  assert.equal((await response.json()).runtimeAvailability.ready, true);
-  const completed = await until(event => event.type === "state.snapshot.runtime.completed" && event.snapshotId === start.snapshotId);
+  const unavailable = await response.json();
+  assert.equal(unavailable.runtimeAvailability.ready, false);
+  assert.equal(unavailable.dataKnowledge.runs.status, "UNAVAILABLE");
+  assert.equal(events.some(event => event.type === "watchdog.unresponsive" && event.requestId === start.requestId), false);
+  locker.exec("COMMIT"); locked = false;
+  const recovered = await read(); assert.equal(recovered.status, 200);
+  assert.equal((await recovered.json()).runtimeAvailability.ready, true);
+  const completed = await until(event => event.type === "state.snapshot.runtime.completed" && event.snapshotId > start.snapshotId);
   assert.doesNotMatch(fs.readFileSync(path.join(root, "events.jsonl"), "utf8"), new RegExp(token));
-  t.diagnostic(JSON.stringify({snapshot:start, watchdog:stall, completed}));
+  t.diagnostic(JSON.stringify({snapshot:start, independentHttp:probes, unavailable:unavailable.runtimeAvailability, completed}));
 });

@@ -45,6 +45,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
   const preparationSource = await readFile(new URL("../../public/preparation-view.js", import.meta.url), "utf8");
   const healthPresentationSource = await readFile(new URL("../../public/dashboard-health-presentation.js", import.meta.url), "utf8");
   const auditPresentationSource = await readFile(new URL("../../public/dashboard-audit-presentation.js", import.meta.url), "utf8");
+  const statusSource = await readFile(new URL("../../public/dashboard-status-view.js", import.meta.url), "utf8");
   const elements = new Map(), all = [], calls = [];
   class Element {
     constructor(tagName = "") {
@@ -104,6 +105,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
+    window: { location: { origin:"http://127.0.0.1:8787", reload:() => {} } },
     document: {
       getElementById: (id) => elements.get(id),
       createElement: (tagName) => new Element(tagName), addEventListener() {},
@@ -122,7 +124,8 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     inlineModule(preparationSource),
     inlineModule(healthPresentationSource),
     inlineModule(auditPresentationSource),
-    inlineModule(source).replace(/\r?\npoll\(\);\s*$/, ""),
+    inlineModule(statusSource),
+    inlineModule(source).replace(/\r?\n(?:void\s+)?poll\(\);\s*$/, ""),
   ].join("\n");
   vm.runInContext(executableSource, context);
   await vm.runInContext("refresh()", context);

@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson, sha256CanonicalJson } from "../domain/canonical-json.js";
 
 function historyHash(runId, version, recordHash, previousHash) {
@@ -33,9 +34,14 @@ function checkedRecord(database, row) {
 }
 
 export class CodeChangeStore {
-  constructor(filename) {
+  constructor(filename, {busyTimeoutMs = 5000} = {}) {
     this.database = new DatabaseSync(filename);
-    this.database.exec(`PRAGMA busy_timeout=5000;
+    try { this.#initialize(busyTimeoutMs); }
+    catch (error) { this.database.close(); throw error; }
+  }
+  #initialize(busyTimeoutMs) {
+    setSqliteBusyTimeout(this.database, busyTimeoutMs);
+    this.database.exec(`
       CREATE TABLE IF NOT EXISTS code_change_runs (
         run_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
         record_json TEXT NOT NULL, record_hash TEXT NOT NULL
@@ -85,6 +91,7 @@ export class CodeChangeStore {
     return this.database.prepare("SELECT * FROM code_change_runs ORDER BY rowid").all()
       .map((row) => checkedRecord(this.database, row));
   }
+  setBusyTimeout(milliseconds) { setSqliteBusyTimeout(this.database, milliseconds); }
   get(runId) {
     if (typeof runId !== "string" || !runId) return null;
     const row = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);

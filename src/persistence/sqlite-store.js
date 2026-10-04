@@ -1,4 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
+import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { decodeCanonicalJson } from "./canonical-record.js";
 import { validateAgentRun } from "../domain/contracts.js";
@@ -139,7 +140,7 @@ export class SqliteStore {
 
     try {
       this.#database.exec("PRAGMA journal_mode = WAL");
-      initializeSqliteSchema(this.#database);
+      initializeSqliteSchema(this.#database, {busyTimeoutMs:options.busyTimeoutMs ?? 5000});
       if (options.verifyOnOpen !== false) {
         this.verifyEventChains();
         this.verifyAgentCommunicationLinks();
@@ -161,6 +162,11 @@ export class SqliteStore {
   get schemaVersion() {
     this.#assertOpen();
     return readSqliteSchemaVersion(this.#database);
+  }
+
+  setBusyTimeout(milliseconds) {
+    this.#assertOpen();
+    setSqliteBusyTimeout(this.#database, milliseconds);
   }
 
   close() {

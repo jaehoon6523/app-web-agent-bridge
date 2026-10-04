@@ -30,7 +30,9 @@ export async function connectedExtension(t, f, { reply, probeReload = true, obje
   });
   await extension.connect();
   if (path.basename(f.output) === 'UF-01C') await f.page.reload();
-  await f.page.waitForFunction(() => document.getElementById('channelHealth').getAttribute('aria-label').includes('확장 인증됨'));
+  // Reload reaches the document before the first projection assigns aria-label.
+  // Keep the authenticated user-visible oracle; an unfinished render is pending.
+  await f.page.waitForFunction(() => document.getElementById('channelHealth')?.getAttribute('aria-label')?.includes('확장 인증됨') === true);
   assert.match(await f.page.locator('#apiHealth').getAttribute('aria-label'), /서버 응답 확인됨/u);
   assert.match(await f.page.locator('#sessionHealth').getAttribute('aria-label'), /인증됨/u);
   assert.equal(await f.page.locator('#chooseFolder').isDisabled(), false);

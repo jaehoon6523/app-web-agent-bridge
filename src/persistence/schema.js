@@ -1,4 +1,5 @@
 import { RunPhase, isVocabularyValue } from "../domain/vocabulary.js";
+import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 
 export const SQLITE_SCHEMA_VERSION = 6;
 
@@ -455,9 +456,9 @@ function migrateVersion5ToVersion6(database) {
   database.exec(TERMINAL_RESPONSE_EXCLUSIVITY_SQL);
 }
 
-export function initializeSqliteSchema(database) {
+export function initializeSqliteSchema(database, {busyTimeoutMs = 5000} = {}) {
   database.exec("PRAGMA foreign_keys = ON");
-  database.exec("PRAGMA busy_timeout = 5000");
+  setSqliteBusyTimeout(database, busyTimeoutMs);
 
   const version = readSchemaVersion(database);
   if (version > SQLITE_SCHEMA_VERSION) {

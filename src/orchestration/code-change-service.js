@@ -29,8 +29,8 @@ const REVIEWER_READ_DEGRADATION_CODES = new Set([
 ]);
 
 export class CodeChangeService {
-  constructor({ filename, artifactStore, webSession, reviewerWebSessions = null, reviewerWebProviders = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker, onDiagnostic = null }) {
-    this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
+  constructor({ filename, store = null, artifactStore, webSession, reviewerWebSessions = null, reviewerWebProviders = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker, onDiagnostic = null }) {
+    this.store = store ?? new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
     this.project = project; this.workerConfig = workerConfig ?? { provider: "codex", model: null };
     const reviewers = createReviewerWebRuntime({ webSession, reviewerWebSessions, reviewerWebProviders,
       configuredProvider:(role) => this.project?.reviewers?.[role]?.provider ?? null });
