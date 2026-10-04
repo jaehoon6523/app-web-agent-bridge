@@ -1,3 +1,5 @@
+import { waitForState } from './observations.mjs';
+import { resources } from './resources.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -12,12 +14,8 @@ export const preparationPackets = [
 const raw = packet => `<controller_packet>\n${JSON.stringify(packet)}\n</controller_packet>`;
 
 async function observedPreparation(f, predicate) {
-  const response = await f.page.waitForResponse(async r => {
-    if (new URL(r.url()).pathname !== '/api/state' || r.status() !== 200) return false;
-    const body = await r.json();
-    return body.preparation && predicate(body.preparation);
-  }, { timeout:20000 });
-  return (await response.json()).preparation;
+  const body = await waitForState(f.page, body => body.preparation && predicate(body.preparation), {timeout:20000});
+  return body.preparation;
 }
 function persisted(f, context) {
   const db = new DatabaseSync(path.join(f.server.workspace, '.agent-controller/preparations.sqlite'), { readOnly:true });
@@ -96,7 +94,7 @@ export async function preparationHarness(t, f, { revise = false, afterPreparatio
   let responseCount = 0, releaseSecond, receivedSecond;
   const secondArrived = new Promise(resolve => { receivedSecond = resolve; });
   const secondReleased = new Promise(resolve => { releaseSecond = resolve; });
-  t.after(() => releaseSecond());
+  resources(t).add('provider gate', () => releaseSecond());
   const extension = await connectedExtension(t, f, {
     probeReload:false,
     objective:preparationObjective,

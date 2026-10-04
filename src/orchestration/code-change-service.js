@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { closeSteps } from "../diagnostics/shutdown.js";
 import { CodeChangeStore } from "../persistence/code-change-store.js";
 import { GitChangeWorkspace } from "../repository/git-change-workspace.js";
 import { createRegisteredCodeWorker } from "../runtime/workers/registry.js";
@@ -28,15 +29,16 @@ const REVIEWER_READ_DEGRADATION_CODES = new Set([
 ]);
 
 export class CodeChangeService {
-  constructor({ filename, artifactStore, webSession, reviewerWebSessions = null, reviewerWebProviders = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker }) {
+  constructor({ filename, artifactStore, webSession, reviewerWebSessions = null, reviewerWebProviders = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker, onDiagnostic = null }) {
     this.store = new CodeChangeStore(filename); this.artifactStore = artifactStore; this.web = webSession; this.codex = codex;
     this.project = project; this.workerConfig = workerConfig ?? { provider: "codex", model: null };
     const reviewers = createReviewerWebRuntime({ webSession, reviewerWebSessions, reviewerWebProviders,
       configuredProvider:(role) => this.project?.reviewers?.[role]?.provider ?? null });
     this.reviewerWeb = reviewers.adapter; this.reviewerWebAdapters = reviewers.adapters;
     this.createWorker = createWorker;
+    this.onDiagnostic = onDiagnostic;
     this.jobs = new Map(); this.workers = new Map(); this.controls = new Map();
-    this.workerInspections = new Map(); this.closed = false;
+    this.workerInspections = new Map(); this.closed = false; this.closePromise = null;
     this.recover();
   }
   list() { return this.store.list(); }
@@ -998,11 +1000,24 @@ export class CodeChangeService {
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 && hasMultiReviewAuthority(record) ? ["code.apply"] : [])] });
   }
   async close() {
-    if (this.closed) return;
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
-    for (const id of this.jobs.keys()) await this.terminate(id);
-    await Promise.allSettled([...this.jobs.values()]);
-    this.workerInspections.clear();
-    this.store.close();
+    this.closePromise = closeSteps([
+      ["registered workers close", async () => {
+        const failures = [];
+        for (const id of new Set([...this.jobs.keys(), ...this.workers.keys()])) {
+          try {
+            const results = await this.terminate(id);
+            for (const result of results) if (result.actor === "CLI" && !result.confirmed) {
+              failures.push(new Error(`Worker resource closure failed: ${result.reason}`));
+            }
+          } catch (error) { failures.push(error); }
+        }
+        if (failures.length) throw new AggregateError(failures, "Worker resource closure failed");
+      }],
+      ["worker jobs settle", () => Promise.allSettled([...this.jobs.values()])],
+      ["worker SQLite store close", () => { this.workerInspections.clear(); this.store.close(); }],
+    ], (type,detail) => this.onDiagnostic?.({type,...detail}));
+    return this.closePromise;
   }
 }

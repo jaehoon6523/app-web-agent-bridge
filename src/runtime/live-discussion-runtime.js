@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { closeSteps } from '../diagnostics/shutdown.js';
 import { ArtifactStore } from "../evidence/artifact-store.js";
 import { LiveDiscussionComposition } from "../orchestration/live-discussion-composition.js";
 import { SqliteStore } from "../persistence/sqlite-store.js";
@@ -23,12 +24,13 @@ export class LiveDiscussionRuntimeError extends Error {
  * Creates the production composition without opening a thread or submitting a
  * prompt. provisionRun() is the explicit effect boundary.
  */
-/** @param {{runtimeConfig: any, webSession: any, reviewerWebSessions?: {JUDGE?: any, CRITIC?: any} | null, reviewerWebProviders?: Record<string, any> | null}} input */
+/** @param {{runtimeConfig: any, webSession: any, reviewerWebSessions?: {JUDGE?: any, CRITIC?: any} | null, reviewerWebProviders?: Record<string, any> | null, onDiagnostic?: (event: any) => void}} input */
 export async function createLiveDiscussionRuntime({
   runtimeConfig,
   webSession,
   reviewerWebSessions = null,
   reviewerWebProviders = null,
+  onDiagnostic,
 }) {
   if (runtimeConfig?.demoMode === true) {
     throw new LiveDiscussionRuntimeError("Demo mode cannot create a live discussion runtime.", "DEMO_MODE_FORBIDDEN");
@@ -66,13 +68,13 @@ export async function createLiveDiscussionRuntime({
     createWebSession: () => webSession,
   });
 
-  let closed = false;
+  let closePromise;
   const codeChanges = new CodeChangeService({ filename: runtimeConfig.persistence.databasePath,
     artifactStore, webSession, reviewerWebSessions, reviewerWebProviders,
     project: runtimeConfig.auditProject ?? readAuditProject(runtimeConfig.auditProjectFile).project, codex: {
       executablePath: runtimeConfig.codex?.executablePath, authPathKeys: runtimeConfig.codex?.authPathKeys,
       approvalPolicy: runtimeConfig.codex?.approvalPolicy,
-    }, workerConfig: runtimeConfig.codeWorker });
+    }, workerConfig: runtimeConfig.codeWorker, onDiagnostic });
   return Object.freeze({
     codeChanges,
     artifactStore,
@@ -80,12 +82,13 @@ export async function createLiveDiscussionRuntime({
     get manager() { return manager; },
     store,
     async close() {
-      if (closed) return;
-      closed = true;
-      composition.close();
-      await codeChanges.close();
-      try { await manager?.close(); }
-      finally { store.close(); }
+      if (!closePromise) closePromise = closeSteps([
+        ['composition.close',()=>composition.close()],
+        ['worker registry close',()=>codeChanges.close()],
+        ['Codex process close',()=>manager?.close()],
+        ['controller store close',()=>store.close()],
+      ], (type,detail)=>onDiagnostic?.({type,...detail}));
+      return closePromise;
     },
   });
 }

@@ -28,6 +28,13 @@ test('state observation does not turn malformed JSON into a passing or synthetic
   page.emit('response',response(async()=>{throw new SyntaxError('Invalid JSON');}));
   await assert.rejects(pending,/Invalid JSON/u);assert.equal(page.listenerCount('response'),0);
 });
+test('navigation-like errors from the state oracle are never swallowed as discarded response bodies', async () => {
+  const page=new EventEmitter();
+  const error=new Error('No resource with given identifier found in canonical state');
+  const pending=waitForState(page,()=>{throw error;},{timeout:1000});
+  page.emit('response',response(async()=>({workflow:{stage:'START'}})));
+  await assert.rejects(pending,cause=>cause===error);
+});
 test('canonical text permits checkout CRLF but preserves content differences',()=>{
   assert.equal(canonicalText('clock\r\n'),canonicalText('clock\n'));
   assert.notEqual(canonicalText('wrong\r\n'),canonicalText('clock\n'));

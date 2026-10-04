@@ -23,7 +23,11 @@ jobs:
       - run: npm run test:integration
 
   browser:
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
@@ -32,13 +36,19 @@ jobs:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm run test:e2e
-      - run: npm run test:ui
-      - run: npm run test:browser
-      - run: npm run test:sabotage
-      - if: failure()
+      - run: npx playwright-core install --with-deps chromium
+      - run: npm run test:platform
+      - run: npm run test:platform:browser
+      - run: npm run test:e2e:ci
+      - if: runner.os == 'Linux'
+        run: npm run test:ui
+      - if: runner.os == 'Linux'
+        run: npm run test:browser
+      - if: runner.os == 'Linux'
+        run: npm run test:sabotage
+      - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-failure
+          name: ui-evidence-${{ matrix.os }}
           path: .agent-controller/ui-qa/
           if-no-files-found: ignore

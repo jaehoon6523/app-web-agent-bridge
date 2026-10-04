@@ -10,15 +10,17 @@ export function waitForState(page, predicate, { timeout = 90000 } = {}) {
     const closed = () => finish(new Error('Dashboard closed while waiting for state'));
     const observe = async response => {
       if (settled || new URL(response.url()).pathname !== '/api/state' || response.status() !== 200) return;
+      let body;
       try {
-        const body = await response.json();
-        if (!settled && await predicate(body)) finish(null, body);
+        body = await response.json();
       } catch (error) {
         // An old document's in-flight body may disappear during reload. Wait for
         // the new document's next actual state response; never synthesize state.
         if (/No resource with given identifier|No data found for resource|Response body is not available|navigated away/u.test(error.message)) return;
-        finish(error);
+        finish(error); return;
       }
+      try { if (!settled && await predicate(body)) finish(null, body); }
+      catch (error) { finish(error); }
     };
     page.on('response', observe); page.once('close', closed);
     timer = setTimeout(() => finish(new Error(`Dashboard state predicate did not match within ${timeout}ms`)), timeout);

@@ -4,10 +4,12 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { extensionCredentials } from './process.mjs';
 import { extensionBrowser } from '../../../tests/helpers/extension-browser.mjs';
+import { resources } from './resources.mjs';
 
 // Server owns the production transport. Only Chrome APIs and provider DOM are controlled.
 export async function connectedExtension(t, f, { reply, probeReload = true, objective = 'Production extension connection request' } = {}) {
   const extension = await extensionBrowser(t, {
+    cleanup:resources(t),
     autoConnect:false,
     ...(reply ? { reply } : {}),
     production:{

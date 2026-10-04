@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
+import { observeChildClose, waitChildClose } from '../child-close.js';
 import { normalizeWorkerCompletion, validateWorkerAdapter } from "./contract.js";
 
 export async function createGenericJsonlWorker({
@@ -43,6 +44,8 @@ export async function createGenericJsonlWorker({
     },
   });
   const lines = readline.createInterface({ input: processHandle.stdout });
+  const closeObservation = observeChildClose(processHandle);
+  let closePromise;
   const pending = new Map();
   let stderr = "";
   let closed = false;
@@ -141,34 +144,15 @@ export async function createGenericJsonlWorker({
       return { provider, model, sessionId, closed, pid: processHandle.pid, malformedProtocolLines };
     },
     async close() {
-      if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
+      if(closePromise)return closePromise;
       closed = true;
       try { lines.close(); } catch {}
-      /** @type {() => void} */
-      let cleanupExitWait = () => {};
-      /** @type {Promise<void>} */
-      const exited = new Promise((resolve, reject) => {
-        const timer = setTimeout(() => {
-          cleanup();
-          reject(new Error(`${provider} worker did not exit after termination request.`));
-        }, 5000);
-        const onExit = () => {
-          cleanup();
-          resolve();
-        };
-        const cleanup = () => {
-          clearTimeout(timer);
-          processHandle.off("exit", onExit);
-        };
-        cleanupExitWait = cleanup;
-        processHandle.once("exit", onExit);
-      });
-      if (!processHandle.kill()) {
-        cleanupExitWait();
-        if (processHandle.exitCode !== null || processHandle.signalCode !== null) return;
-        throw new Error(`${provider} worker termination request was not accepted.`);
-      }
-      await exited;
+      // Generic JSONL close is a termination request, not a cooperative EOF contract.
+      closePromise = waitChildClose(processHandle,closeObservation,{timeoutMs:5000,request:()=>{
+        if(processHandle.exitCode!==null || processHandle.signalCode!==null)return;
+        if(!processHandle.kill())throw new Error(`${provider} worker termination request was not accepted.`);
+      }}).catch(error=>{processHandle.stdout.destroy();processHandle.stderr.destroy();throw error;});
+      await closePromise;
     },
   };
   await spawned;

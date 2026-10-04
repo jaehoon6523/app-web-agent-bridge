@@ -1,3 +1,4 @@
+import { resources } from './resources.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -33,7 +34,7 @@ export async function workerHarness(t, f, { reviewReply = () => new Promise(() =
   const peer = JSON.parse(fs.readFileSync(path.join(f.server.workspace, 'worker-observed.json')));
   const expectedWorktree = path.join(path.dirname(f.server.workspace), '.bridge-worktrees', run.runId);
   assert.equal(peer.workspaceRoot, expectedWorktree);
-  t.after(() => fs.rmSync(expectedWorktree, { recursive:true, force:true }));
+  resources(t).add('worker worktree', () => fs.rmSync(expectedWorktree, { recursive:true, force:true }), 40);
   assert.notEqual(peer.workspaceRoot, f.server.workspace);
   assert.deepEqual(peer.requirementIds, run.requirements.items.map(item => item.requirementId));
   assert.equal(canonicalText(fs.readFileSync(path.join(peer.workspaceRoot, 'clock.txt'), 'utf8')), 'Controlled worker candidate: hours minutes seconds\n');

@@ -3,6 +3,7 @@ import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
 import { createServerObserver } from "./diagnostics/server-observer.js";
+import { closeSteps } from "./diagnostics/shutdown.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
@@ -144,6 +145,7 @@ export function createBridgeServer({
           runtimeConfig:{ ...runtimeConfig, auditProject:auditSettings.project },
           webSession,
           reviewerWebProviders,
+          onDiagnostic:event => diagnostics.emit(event.type, event),
         });
       } catch (error) {
         diagnostics.emit("runtime.initialization.failed");
@@ -482,7 +484,12 @@ export function createBridgeServer({
 
   const server = http.createServer(app);
   server.prependListener("request", diagnostics.received);
-  server.on("connection", () => diagnostics.emit("connection.accepted"));
+  const sockets = new Set();
+  server.on("connection", socket => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+    diagnostics.emit("connection.accepted");
+  });
   const extensionWss = new WebSocketServer({
     noServer: true,
     clientTracking: true,
@@ -548,32 +555,31 @@ export function createBridgeServer({
   let closePromise = null;
   async function close() {
     if (closePromise) return closePromise;
-    closePromise = (async () => {
-      closing = true;
-      dashboard.close();
-      preparationService?.close();
-      for (const ws of extensionWss.clients) {
+    closing = true;
+    closePromise = closeSteps([
+      ["dashboard.close", () => dashboard.close()],
+      ["preparationService.close", () => preparationService?.close()],
+      ["extension websocket terminate", () => { for (const ws of extensionWss.clients) {
         // CLOSING peers may never finish their TCP half-close. Shutdown owns
         // these upgraded sockets too; do not wait for the peer close timeout.
         if (ws.readyState !== WebSocket.CLOSED) {
           ws.terminate();
         }
-      }
-      await webSession?.close();
-      if (liveRuntimePromise) await liveRuntimePromise.catch(() => {});
-      await liveRuntime?.close();
-      /** @type {Promise<void>} */
-      const websocketClose = new Promise((resolve, reject) => {
-        extensionWss.close(() => {
-          if (!server.listening) {
-            resolve();
-            return;
-          }
-          server.close((error) => (error ? reject(error) : resolve()));
+      } }],
+      ["webSession.close", () => webSession?.close()],
+      ["runtime initialization", async () => { if (liveRuntimePromise) await liveRuntimePromise.catch(() => {}); }],
+      ["runtime.close", () => liveRuntime?.close()],
+      ["extension websocket close", () => new Promise(resolve => extensionWss.close(resolve))],
+      ["HTTP server close", () => {
+        diagnostics.emit("shutdown.http.inventory", {
+          sockets:sockets.size,
+          readableEnded:[...sockets].filter(socket => socket.readableEnded).length,
+          writableEnded:[...sockets].filter(socket => socket.writableEnded).length,
         });
-      });
-      await websocketClose;
-    })();
+        if (!server.listening) return;
+        return new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve(undefined)));
+      }],
+    ], diagnostics.emit);
     return closePromise;
   }
 
@@ -608,7 +614,17 @@ export function createBridgeServer({
 
 /** @param {RuntimeConfig} [runtimeConfig] @param {{onDiagnostic?: (event:any) => void}} [options] */
 export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) {
-  const bridge = createBridgeServer({ runtimeConfig, onDiagnostic });
+  const pendingStages = new Set(), failedStages = new Set();
+  const report = event => {
+    if (event.type.startsWith("shutdown.")) {
+      if (event.type === "shutdown.stage.start") pendingStages.add(event.stage);
+      if (event.type === "shutdown.stage.done" || event.type === "shutdown.stage.error") pendingStages.delete(event.stage);
+      if (event.type === "shutdown.stage.error") failedStages.add(event.stage);
+      console.error(`[bridge.shutdown] ${JSON.stringify(event)}`);
+    }
+    try { onDiagnostic?.(event); } catch { /* Diagnostics are observational. */ }
+  };
+  const bridge = createBridgeServer({ runtimeConfig, onDiagnostic:report });
   await bridge.listen();
 
   console.log(`\nHTTP server listening at ${runtimeConfig.baseUrl}`);
@@ -628,11 +644,16 @@ export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) 
       // Preserve bounded production shutdown; only the failure path forces exit.
       const failsafe = setTimeout(() => {
         console.error("Graceful shutdown deadline exceeded.");
+        report({type:"shutdown.deadline", pendingStages:[...pendingStages], failedStages:[...failedStages],
+          activeResources:process.getActiveResourcesInfo().reduce((counts, type) => {
+            counts[type] = (counts[type] ?? 0) + 1; return counts;
+          }, {})});
         process.exit(1);
       }, 5000);
       failsafe.unref();
       try {
         await bridge.close();
+        report({type:"shutdown.bridge.done"});
         process.exitCode = 0;
       } catch (error) {
         console.error("Shutdown error:", error);
@@ -643,7 +664,9 @@ export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) 
         process.off("SIGTERM", onSigterm);
         process.off("message", onProcessMessage);
         // Release the IPC channel after resources close; let Node drain naturally.
+        report({type:"shutdown.ipc.start", connected:process.connected ?? false});
         if (process.connected) process.disconnect();
+        report({type:"shutdown.ipc.done"});
       }
     })();
     return shutdownPromise;

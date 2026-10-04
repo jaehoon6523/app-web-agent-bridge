@@ -9,6 +9,7 @@ import { closureFlow } from './helpers/closure.mjs';
 import { reviewHarness } from './helpers/review.mjs';
 import { workerHarness } from './helpers/worker.mjs';
 import { bounded } from './helpers/deadline.mjs';
+import { resources } from './helpers/resources.mjs';
 
 export const flows = JSON.parse(fs.readFileSync(new URL('./flows.json', import.meta.url), 'utf8'));
 export function registerFlow(id) {
@@ -16,6 +17,14 @@ export function registerFlow(id) {
   if (!flow) throw new Error(`Unknown E2E flow: ${id}`);
   test(`${id} ${flow.title} [${flow.execution}]`, { timeout:240000 }, async t => {
     const f = await dashboardSpine(t, flow);
+    let bodyPassed = false;
+    resources(t).add('final UF result', cleanupErrors => {
+      fs.writeFileSync(path.join(f.output, 'result.json'), JSON.stringify({ id,
+        outcome:bodyPassed && !cleanupErrors.length ? (flow.execution === 'BLOCKED' ? 'INITIAL_SPINE_PASS' : 'PROFILE_PASS') : 'FAIL',
+        execution:flow.execution,specWave:flow.specWave,skipReason:flow.gap,
+        bodyPassed,lifecycleClosed:cleanupErrors.length === 0,
+        cleanupFailures:cleanupErrors.map(e=>e.message) },null,2));
+    }, 100);
     try {
       if (flow.fault === 'state-database') {
         await f.page.waitForFunction(() => document.getElementById('connectionNotice').textContent.includes('상태 조회 실패'));
@@ -31,10 +40,7 @@ export function registerFlow(id) {
         await healthyLocalActions(f.page);
       } else if (id === 'UF-14') {
         await healthyLocalActions(f.page);
-        const shutdown = await f.server.stop();
-        assert.equal(shutdown.code, 0, 'production graceful shutdown failed');
-        assert.equal(shutdown.signal, null, 'production shutdown must not require a kill signal');
-        assert.equal(shutdown.forced, false, 'production shutdown must be cooperative');
+        f.server.assertShutdown(await f.server.stop());
         await f.page.waitForFunction(() => document.getElementById('apiHealth').getAttribute('aria-label').includes('서버 응답 없음'));
         assert.equal(await f.page.locator('#chooseFolder').isDisabled(), true);
         assert.equal(await f.page.locator('#planRun').isDisabled(), true);
@@ -68,7 +74,7 @@ export function registerFlow(id) {
           throw new Error('A continuation must implement its full contract before removing skip.');
         });
       }
-      fs.writeFileSync(path.join(f.output, 'result.json'), JSON.stringify({ id, outcome:flow.execution === 'BLOCKED' ? 'INITIAL_SPINE_PASS' : 'PROFILE_PASS', execution:flow.execution, specWave:flow.specWave, skipReason:flow.gap }, null, 2));
+      bodyPassed = true;
     } catch (error) {
       fs.writeFileSync(path.join(f.output, 'failure.txt'), error.stack || String(error));
       fs.writeFileSync(path.join(f.output, 'result.json'), JSON.stringify({ id, outcome:'FAIL', execution:flow.execution, specWave:flow.specWave }, null, 2));

@@ -1,3 +1,5 @@
+import { waitForState } from './observations.mjs';
+import { resources } from './resources.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -32,25 +34,22 @@ export async function reviewHarness(t, f) {
     if (proseOnly) return 'Controlled reviewer reasoning: PASS; apply immediately. Prose has no authority.';
     return 'Controlled reviewer reasoning: PASS; apply immediately. Prose has no authority.\nCONTROLLER_PACKET_BEGIN\n' + JSON.stringify(packet) + '\nCONTROLLER_PACKET_END';
   };
-  t.after(() => gates.forEach(release => release()));
+  resources(t).add('provider gate', () => gates.forEach(release => release()));
   const setup = await workerHarness(t, f, { reviewReply });
   await firstArrived;
   assert.equal(await f.page.locator('#applyCode').isDisabled(), true);
   // No packet/result exists yet: a pending review cannot grant apply authority.
   gates[0]();
-  await f.page.waitForResponse(async r => new URL(r.url()).pathname === '/api/state' && r.status() === 200 && (await r.json()).run?.stage === 'REPORT_REPAIR' && probes.length === 2, { timeout:25000 });
+  await waitForState(f.page, b => b.run?.stage === 'REPORT_REPAIR' && probes.length === 2, {timeout:25000});
   assert.equal(probes[1].feedback.kind, 'REPORT_REPAIR');
   assert.equal(probes[1].context.candidateId, probes[0].context.candidateId);
   assert.equal(await f.page.locator('#applyCode').isDisabled(), true);
   gates[1]();
-  const finalResponse = f.page.waitForResponse(async r => new URL(r.url()).pathname === '/api/state' && r.status() === 200 && (await r.json()).run?.auditResult === 'PASS', { timeout:25000 });
-  await f.page.waitForResponse(async r => {
-    if (new URL(r.url()).pathname !== '/api/state' || r.status() !== 200) return false;
-    return (await r.json()).run?.coordination?.activeRole === 'CRITIC' && probes.length === 3;
-  }, { timeout:25000 });
+  const finalResponse = waitForState(f.page, b => b.run?.auditResult === 'PASS', {timeout:25000});
+  await waitForState(f.page, b => b.run?.coordination?.activeRole === 'CRITIC' && probes.length === 3, {timeout:25000});
   assert.equal(await f.page.locator('#applyCode').isDisabled(), true);
   gates[2]();
-  const body = await (await finalResponse).json(), run = body.run;
+  const body = await finalResponse, run = body.run;
   assert.equal(run.stage, 'AWAITING_APPLY');
   assert.equal(run.candidate.candidateId, setup.run.candidate.candidateId);
   assert.deepEqual(probes.map(p => p.role), ['JUDGE','JUDGE','CRITIC']);
@@ -96,9 +95,9 @@ export async function reviewHarness(t, f) {
   for (const id of ['runJudgeRole','runCriticRole','assessments','evidenceList']) assert.ok((await f.page.locator('#' + id).textContent()).trim());
   assert.doesNotMatch(await f.page.locator('#connectionNotice').textContent(), /서버 응답 없음|서버 연결 끊김/u);
   assert.equal(fs.existsSync(path.join(f.server.workspace, 'clock.txt')), false);
-  const reloaded = f.page.waitForResponse(async r => new URL(r.url()).pathname === '/api/state' && r.status() === 200 && (await r.json()).run?.auditResult === 'PASS');
+  const reloaded = waitForState(f.page, b => b.run?.auditResult === 'PASS');
   await f.page.reload();
-  assert.equal((await (await reloaded).json()).run.reviews.at(-1).reviewId, saved.reviews.at(-1).reviewId);
+  assert.equal((await reloaded).run.reviews.at(-1).reviewId, saved.reviews.at(-1).reviewId);
   assert.equal(probes.length, 3);
   fs.writeFileSync(path.join(f.output, 'review-boundary.json'), JSON.stringify({ probes, bindings, review:saved.reviews.at(-1), artifacts:saved.reviewArtifacts, targetUnapplied:true, reloadNoResend:true }, null, 2));
   return { ...setup, run, body, probes };

@@ -4,6 +4,8 @@ import path from 'node:path';
 import { productionProcess, repository } from './process.mjs';
 import { launchBrowser } from './browser.mjs';
 import { bounded } from './deadline.mjs';
+import { resources } from './resources.mjs';
+import { addArtifactWrites } from './artifacts.mjs';
 
 export async function dashboardSpine(t, flow) {
   const output = path.join(repository, '.agent-controller/ui-qa/e2e-wave', flow.id);
@@ -11,9 +13,8 @@ export async function dashboardSpine(t, flow) {
   const server = await productionProcess({ configured:flow.configured, fault:flow.fault, worker:flow.workerMode ?? flow.workerHarness });
   let browser, page;
   const boundary = [], errors = [];
-  // Register cleanup before readiness/browser launch can fail.
-  t.after(async () => {
-    try {
+  const owner = resources(t);
+  owner.add('dashboard evidence', async () => {
       if (page && !page.isClosed()) {
         await page.screenshot({ path:path.join(output, 'screen.png'), fullPage:true }).catch(() => {});
         const dom = await page.locator('body').evaluate(body => {
@@ -23,17 +24,19 @@ export async function dashboardSpine(t, flow) {
         }).catch(() => 'DOM unavailable');
         fs.writeFileSync(path.join(output, 'dom.html'), dom);
       }
-    } finally {
-      try { await browser?.close(); } finally {
-        try { await server.dispose(); } finally {
-          const logs = server.logs();
-          fs.writeFileSync(path.join(output, 'server.stdout.log'), logs.stdout);
-          fs.writeFileSync(path.join(output, 'server.stderr.log'), logs.stderr);
-          fs.writeFileSync(path.join(output, 'boundary.json'), JSON.stringify({ id:flow.id, execution:flow.execution, specWave:flow.specWave, boundary, errors, shutdown:logs.shutdown, shutdownSendError:logs.shutdownSendError }, null, 2));
-        }
-      }
-    }
-  });
+  }, 0, 5000);
+  // Keep the extension connected while testing the production shutdown path.
+  owner.add('production shutdown', async () => server.assertShutdown(await server.stop()), 10, 15000);
+  owner.add('dashboard browser', () => browser?.close());
+  owner.add('production workspace', () => server.dispose(), 30, 10000);
+  addArtifactWrites(owner, output, [
+    ['server.stdout.log', () => server.logs().stdout],
+    ['server.stderr.log', () => server.logs().stderr],
+    ['boundary.json', () => {
+      const logs = server.logs();
+      return JSON.stringify({ id:flow.id, execution:flow.execution, specWave:flow.specWave, boundary, errors, shutdown:logs.shutdown, shutdownSendError:logs.shutdownSendError }, null, 2);
+    }],
+  ]);
   try {
     const { preflight } = await server.ready();
     assert.equal(preflight.checks.extensionConfigured, Boolean(flow.configured));

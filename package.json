@@ -33,7 +33,11 @@
     "diagnose:server": "node scripts/diagnose-server.mjs",
     "test:e2e:startup": "node scripts/e2e/startup.mjs",
     "test:e2e:wave": "node scripts/e2e/suite.mjs --wave-only",
-    "test:e2e": "node scripts/e2e/suite.mjs"
+    "test:e2e": "node scripts/e2e/suite.mjs",
+    "test:e2e:ci": "node scripts/e2e/with-browser.mjs scripts/e2e/suite.mjs",
+    "test:e2e:shutdown": "node scripts/e2e/with-browser.mjs scripts/e2e/suite.mjs --flow=UF-04",
+    "test:platform": "node --test --experimental-test-isolation=none tests/e2e/graceful-shutdown.test.js tests/e2e/portability.test.js tests/e2e/active-worker-cleanup.test.js tests/e2e/preflight-readiness.test.js tests/e2e/execution-summary.test.js tests/platform/lifecycle.test.js tests/platform/persistence.test.js tests/platform/runner.test.js tests/contract/network-lifecycle/http-headers.test.js",
+    "test:platform:browser": "node scripts/e2e/with-browser.mjs --test tests/platform/browser.contract.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",

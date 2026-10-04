@@ -1,3 +1,4 @@
+import { resources } from './resources.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -49,7 +50,7 @@ export async function reviewedRun(t, f, {rework=false, criticFault=false} = {}) 
     assert.equal(await f.page.locator('#applyCode').isDisabled(),true);
     return envelope(assertions(data,rework && data.candidate.iteration===1?'UNSATISFIED':'SATISFIED'));
   };
-  t.after(()=>{releaseFirst();recoverCritic?.('Unavailable response');});
+  resources(t).add('provider gate', ()=>{releaseFirst();recoverCritic?.('Unavailable response');});
   const setup=await workerHarness(t,f,{reviewReply});
   assert.equal(await f.page.locator('#applyCode').isDisabled(),true);
   const completed=state(f,b=>b.run?.stage===(criticFault?'HOLD':'AWAITING_APPLY'));

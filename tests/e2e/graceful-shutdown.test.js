@@ -3,6 +3,7 @@ import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { CodexProcessManager } from '../../src/runtime/codex/process-manager.js';
 import { productionProcess, repository } from '../../scripts/e2e/helpers/process.mjs';
+import { readHttpHeaders } from '../helpers/socket-headers.mjs';
 
 test('production IPC stop drains HTTP resources and exits naturally without a kill', {timeout:15000}, async t => {
   const server=await productionProcess();
@@ -81,7 +82,8 @@ test(`production shutdown failsafe exits nonzero after ${mode} with an HTTP hand
 
 }
 
-test('production shutdown closes an extension peer that leaves its TCP half open', {timeout:15000}, async t => {
+// NetworkLifecycle contract; retained here to avoid an unrelated directory move.
+test('NetworkLifecycle / TCP half-close: production shutdown is bounded for a closing extension peer', {timeout:15000}, async t => {
   const net=await import('node:net');
   const {once}=await import('node:events');
   const server=await productionProcess({configured:true});
@@ -92,17 +94,18 @@ test('production shutdown closes an extension peer that leaves its TCP half open
   socket=net.createConnection({host:url.hostname,port:Number(url.port),allowHalfOpen:true});
   socket.on('error',()=>{});
   await once(socket,'connect');
-  let received=Buffer.alloc(0);
-  socket.on('data',chunk=>{received=Buffer.concat([received,chunk]);});
-  const upgraded=once(socket,'data');
+  const upgraded=readHttpHeaders(socket);
   socket.write(`GET /ws/extension HTTP/1.1\r\nHost: ${url.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
-  await upgraded;
-  assert.match(received.toString(),/101 Switching Protocols/u);
+  const headers=await upgraded;
+  assert.match(headers.toString('latin1'),/^HTTP\/1\.1 101(?: [^\r\n]*)?\r\n/u);
   // A masked empty close frame. Keep the writable half open after server FIN,
   // reproducing a peer that has begun closing but never finishes TCP teardown.
   const ended=once(socket,'end');
   socket.write(Buffer.from([0x88,0x80,0,0,0,0]));
   await ended;
+  assert.equal(socket.writableEnded,false,'the peer must leave its writable TCP half open');
+  assert.equal(socket.destroyed,false,'the half-open peer must remain present until shutdown');
   const result=await server.stop();
+  // forced describes harness containment, not the production WebSocket close policy.
   assert.deepEqual(result,{code:0,signal:null,forced:false},JSON.stringify(server.logs()));
 });

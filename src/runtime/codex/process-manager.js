@@ -8,6 +8,7 @@ import {
 import { createCodexChildEnvironment } from "./environment.js";
 import { resolvePinnedExecutable, verifyPinnedExecutable } from "./executable.js";
 import { JsonlRpcPeer } from "./jsonl-rpc-peer.js";
+import { observeChildClose, waitChildClose } from '../child-close.js';
 import { CodexApprovalBridge } from "./approval-bridge.js";
 
 const DEFAULT_CLIENT_INFO = Object.freeze({
@@ -64,6 +65,7 @@ export class CodexProcessManager extends EventEmitter {
   #generation = 0;
   #closing = false;
   #closePromise = null;
+  #ownedProcess = null;
 
   /** @param {CodexProcessCreateOptions} [options] */
   static async create({
@@ -187,7 +189,8 @@ export class CodexProcessManager extends EventEmitter {
     if (this.#closePromise) return this.#closePromise;
     this.#closePromise = (async () => {
       this.#closing = true;
-      const proc = this.#process;
+      const proc = this.#ownedProcess?.proc ?? this.#process;
+      const requestedEOF = proc !== null && proc === this.#process;
       const peer = this.#peer;
       this.#process = null;
       this.#peer = null;
@@ -195,15 +198,20 @@ export class CodexProcessManager extends EventEmitter {
       this.#approvalBridge = null;
       peer?.close(new CodexTransportClosedError("Codex app-server closed by controller"));
       try {
-        if (proc && proc.exitCode === null && proc.signalCode === null) {
-          let forced = false;
-          const closed = new Promise(resolve => proc.once("close", resolve));
-          // Persistent app-server sessions end on controller close, not turn completion.
-          proc.stdin.end();
-          const deadline = setTimeout(() => { forced = true; proc.kill("SIGKILL"); }, 3000);
-          try { await closed; } finally { clearTimeout(deadline); }
-          if (forced) throw new CodexTransportClosedError("Codex app-server did not exit after stdin EOF");
-          if (proc.exitCode !== 0 || proc.signalCode !== null) throw new CodexTransportClosedError("Codex app-server did not exit cleanly after stdin EOF");
+        if (proc) {
+          try {
+            const result = await waitChildClose(proc,this.#ownedProcess.observation,{timeoutMs:3000,
+              request:()=>{if(proc.exitCode===null && proc.signalCode===null)proc.stdin.end();}});
+            // An earlier abnormal exit is already surfaced to the run/session.
+            // Cleanup still drains its pipes; only our EOF request requires exit 0.
+            if (requestedEOF && (result.code !== 0 || result.signal !== null)) throw new CodexTransportClosedError("Codex app-server did not exit cleanly after stdin EOF");
+          } catch(error) {
+            if(error.code==='CHILD_CLOSE_DEADLINE') {
+              proc.stdout?.destroy(); proc.stderr?.destroy();
+              throw new CodexTransportClosedError("Codex app-server did not exit after stdin EOF");
+            }
+            throw error;
+          }
         }
       } finally {
         this.#setStatus("STOPPED");
@@ -231,6 +239,7 @@ export class CodexProcessManager extends EventEmitter {
       throw error;
     }
     this.#process = proc;
+    this.#ownedProcess = {proc,observation:observeChildClose(proc)};
     this.#generation += 1;
     const generation = this.#generation;
 

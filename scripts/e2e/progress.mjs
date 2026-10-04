@@ -18,6 +18,7 @@ export function createProgress(ids, write) {
   print('starting');
   return {
     complete,
+    get finished() { return done.size === ids.length; },
     status: () => current,
     consume(chunk) {
       pending += String(chunk);

@@ -6,6 +6,8 @@ import { launchBrowser } from './helpers/browser.mjs';
 import { productionProcess } from './helpers/process.mjs';
 import { bounded } from './helpers/deadline.mjs';
 import { waitForPreflight } from './preflight-readiness.mjs';
+import { createResourceOwner } from './helpers/resources.mjs';
+import { addArtifactWrites } from './helpers/artifacts.mjs';
 
 // UF-01A: no server factory, injected runtime, API interception, or synthetic snapshot.
 const repository = fileURLToPath(new URL('../../', import.meta.url));
@@ -17,6 +19,23 @@ const { workspace, baseUrl, alive } = production;
 const boundary = [], pageErrors = [], consoleErrors = [];
 let browser, page, outcome = 'FAIL', shutdown, snapshot;
 async function stop() { shutdown = await production.stop(); }
+const owner = createResourceOwner();
+owner.add('production shutdown', async () => { await stop(); production.assertShutdown(shutdown); }, 10, 15000);
+owner.add('startup browser', () => browser?.close());
+owner.add('startup workspace', () => production.dispose(), 30);
+addArtifactWrites(owner, output, [
+  ['server.stdout.log', () => production.logs().stdout],
+  ['server.stderr.log', () => production.logs().stderr],
+]);
+owner.add('startup result', cleanupErrors => {
+  if (cleanupErrors.length) outcome = 'FAIL';
+  fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ testId:'E2E-UF01A-FRESH-STARTUP', specWave:'W1-4 COMPLETE', execution:'RUNNABLE', outcome,
+    fixture:'fresh LIVE installation; no extension/provider configuration; no mocked boundary',
+    boundary, pageErrors, consoleErrors, shutdown, lifecycleClosed:cleanupErrors.length === 0,
+    cleanupFailures:cleanupErrors.map(error => error.message),
+    state:snapshot ? { runtimeAvailability:snapshot.runtimeAvailability, workflow:snapshot.workflow,
+      dataKnowledge:snapshot.dataKnowledge, commandCapabilities:snapshot.commandCapabilities } : null }, null, 2));
+}, 100);
 try {
   const { preflight } = await waitForPreflight(`${baseUrl}/api/preflight`, { checkAlive:alive });
   assert.equal(preflight.checks.extensionConfigured, false);
@@ -81,11 +100,8 @@ try {
   assert.deepEqual(consoleErrors, []);
   await page.screenshot({ path:path.join(output, 'first-screen.png'), fullPage:true });
   await alive();
-  await browser.close(); browser = null;
   await stop();
-  assert.equal(shutdown.code, 0, 'production graceful shutdown failed');
-  assert.equal(shutdown.signal, null, 'production shutdown must not require a kill signal');
-  assert.equal(shutdown.forced, false, 'production shutdown must be cooperative');
+  production.assertShutdown(shutdown);
   outcome = 'PASS';
 } catch (error) {
   fs.writeFileSync(path.join(output, 'failure.txt'), error.stack || String(error));
@@ -102,16 +118,6 @@ try {
   }
   throw error;
 } finally {
-  if (browser) await browser.close().catch(() => {});
-  await stop();
-  const { stdout, stderr } = production.logs();
-  fs.writeFileSync(path.join(output, 'server.stdout.log'), stdout);
-  fs.writeFileSync(path.join(output, 'server.stderr.log'), stderr);
-  fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ testId:'E2E-UF01A-FRESH-STARTUP', specWave:'W1-4 COMPLETE', execution:'RUNNABLE', outcome,
-    fixture:'fresh LIVE installation; no extension/provider configuration; no mocked boundary',
-    boundary, pageErrors, consoleErrors, shutdown,
-    state:snapshot ? { runtimeAvailability:snapshot.runtimeAvailability, workflow:snapshot.workflow,
-      dataKnowledge:snapshot.dataKnowledge, commandCapabilities:snapshot.commandCapabilities } : null }, null, 2));
-  await production.dispose();
+  await owner.close();
 }
 console.log('E2E-UF01A-FRESH-STARTUP PASS: process → session → state → render → first interaction → shutdown');

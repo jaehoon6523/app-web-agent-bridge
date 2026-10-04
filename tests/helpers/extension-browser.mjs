@@ -40,6 +40,7 @@ export async function extensionBrowser(t, {
   providerHtml = null,
   production = null,
   autoConnect = true,
+  cleanup = null,
 } = {}) {
   const browser = await chromium.launch({
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE }
@@ -48,7 +49,8 @@ export async function extensionBrowser(t, {
     // to this disposable browser; production HTTP remains real when configured.
     args: ['--disable-features=LocalNetworkAccessChecks'],
   });
-  t.after(() => browser.close());
+  const after = dispose => cleanup ? cleanup.add('extension browser resource', dispose) : t.after(dispose);
+  after(() => browser.close());
   const context = await browser.newContext();
   const manifest = JSON.parse(await readFile(new URL('manifest.json', extensionRoot), 'utf8'));
   const scripts = await Promise.all(manifest.content_scripts[0].js.map(file => readFile(new URL(file, extensionRoot), 'utf8')));
@@ -67,7 +69,7 @@ export async function extensionBrowser(t, {
     : new WebSessionAdapter({ transport, provider, responseTimeoutMs: 8_000 });
   };
   const adapter = production ? null : createAdapter('CHATGPT_WEB');
-  t.after(async () => {
+  after(async () => {
     if (!server) return;
     await adapter.close(); transport.close();
     for (const socket of server.clients) socket.terminate();
