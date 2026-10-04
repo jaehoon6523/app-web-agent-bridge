@@ -78,6 +78,7 @@ test(`production shutdown failsafe exits nonzero after ${mode} with an HTTP hand
   child.send({type:'bridge.shutdown'});
   assert.deepEqual(await closed,[1,null]);
   assert.match(errors,/Graceful shutdown deadline exceeded/u);
+  assert.match(errors,/"type":"shutdown.http.inventory"[^\n]*"phase":"deadline"/u);
 });
 
 }

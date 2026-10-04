@@ -17,6 +17,11 @@ small reproduction of that boundary's invariant, not a relaxed UF oracle.
   incomplete EOF, socket errors, idle deadlines and the header size limit over
   real TCP sockets. `tests/helpers/socket-headers.mjs` waits for `\r\n\r\n`,
   rather than treating the first `data` event as a complete upgrade response.
+- NetworkLifecycle / socket observation:
+  `tests/contract/network-lifecycle/socket-observation.test.js` covers a real
+  pre-request TCP connection, HTTP keep-alive reuse and an unfinished response,
+  accepted extension WebSocket ownership, an upgrade rejected during shutdown,
+  and diagnostic sink/error isolation without consuming socket data.
 - ProcessLifecycle: `tests/e2e/graceful-shutdown.test.js` and
   `tests/e2e/active-worker-cleanup.test.js` cover IPC shutdown, persistent child
   EOF cleanup and failing/stuck children. `tests/platform/runner.test.js`
@@ -73,3 +78,50 @@ web session, runtime, worker registry, Codex process, extension WebSocket and
 HTTP close. Retain process/stdio and IPC evidence. Diagnose the missing done
 or the rejecting stage before another production shutdown change. The TCP
 half-close contract alone does not establish the Windows failure's cause.
+
+## Diagnosing the remaining HTTP socket
+
+The server observer assigns a stable `socketId` when TCP is accepted. IDs are
+local to the server process; correlate them with the event's `pid`. It retains
+the accepted timestamp and local/remote ports, HTTP request count and active
+response state, upgrade outcome and WebSocket state. Routes use fixed labels;
+queries, arbitrary paths, headers, bodies, WebSocket payloads and error messages
+are excluded.
+
+`shutdown.http.inventory` includes `socketDetails` at `shutdown-start`,
+`http-close-start`, `http-close-callback` and the production `deadline`.
+During shutdown, `shutdown.socket.event` records accepted/request/upgrade,
+response finish/close, TCP end/finish/close/error and WebSocket close/error.
+Each open TCP connection retains at most 16 recent events; closed connections
+are removed from the active inventory. The observer adds no timers, data
+readers, end/destroy calls or ordinary error handlers. `errorMonitor` observes
+an error without changing whether it is handled.
+
+An HTTP close callback can run before the socket observer's close listeners.
+Rows with `destroyed:true` can therefore briefly remain in its callback inventory;
+use the later TCP close events and deadline snapshot rather than row count alone.
+
+Start with the deadline's remaining socket ID, then trace that same ID in the
+earlier inventory and shutdown events:
+
+- `http-server-unclassified`, zero HTTP requests and no upgrade: TCP was
+  accepted but no parsed HTTP request or upgrade was observed. `bytesRead`
+  distinguishes no received bytes from received bytes that did not produce a
+  request. This is not proof of a browser preconnect or TCP half-close.
+- `http-server`: inspect active requests, request completion and response
+  headers/writable-ended/writable-finished state. A finished keep-alive response
+  and an unfinished response must remain distinguishable.
+- `http-upgrade`: inspect PENDING/REJECTED and the controlled rejection status.
+- `extension-websocket`: inspect ACCEPTED, the WebSocket state and the raw TCP
+  close event. A WebSocket callback alone is not proof of all TCP closure.
+
+`shutdown.websocket.close.callback` and `shutdown.http.close.callback` retain
+only a sanitized callback error code. The instrumentation preserves existing
+callback success/failure policy; observing an error does not convert it into
+a new shutdown outcome. In particular, the current WebSocket close wrapper's
+fulfilled promise must not be treated as proof of a null callback error.
+
+The existing five-second production failsafe, process result oracle and UF
+cleanup ordering are unchanged. After collecting actual Windows UF-04 evidence,
+reduce the observed remaining-socket path to its own lifecycle contract before
+changing ownership or termination policy.

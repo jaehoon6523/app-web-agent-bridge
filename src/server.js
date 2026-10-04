@@ -2,7 +2,7 @@ import { PreparationService } from "./orchestration/preparation-service.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
-import { createServerObserver } from "./diagnostics/server-observer.js";
+import { createServerObserver, diagnosticErrorCode } from "./diagnostics/server-observer.js";
 import { closeSteps } from "./diagnostics/shutdown.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -484,12 +484,7 @@ export function createBridgeServer({
 
   const server = http.createServer(app);
   server.prependListener("request", diagnostics.received);
-  const sockets = new Set();
-  server.on("connection", socket => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-    diagnostics.emit("connection.accepted");
-  });
+  server.on("connection", diagnostics.connected);
   const extensionWss = new WebSocketServer({
     noServer: true,
     clientTracking: true,
@@ -497,55 +492,58 @@ export function createBridgeServer({
   });
 
   server.on("upgrade", (req, socket, head) => {
+    diagnostics.upgrade(req);
+    const rejectUpgrade = (statusLine, message = "") => {
+      diagnostics.upgrade(req, "REJECTED", Number(statusLine.slice(0, 3)));
+      writeUpgradeRejection(socket, statusLine, message);
+    };
     if (closing) {
-      writeUpgradeRejection(socket, "503 Service Unavailable", "Server is shutting down.");
+      rejectUpgrade("503 Service Unavailable", "Server is shutting down.");
       return;
     }
     let url;
     try {
       url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
     } catch {
-      writeUpgradeRejection(socket, "400 Bad Request");
+      rejectUpgrade("400 Bad Request");
       return;
     }
 
     if (url.pathname === "/ws/dashboard") {
-      writeUpgradeRejection(socket, "503 Service Unavailable", LIVE_ORCHESTRATION_UNAVAILABLE);
+      rejectUpgrade("503 Service Unavailable", LIVE_ORCHESTRATION_UNAVAILABLE);
       return;
     }
 
     if (url.pathname === "/ws/extension") {
       if (url.search !== "") {
-        writeUpgradeRejection(
-          socket,
+        rejectUpgrade(
           "400 Bad Request",
           "The extension WebSocket URL must not contain a query string.",
         );
         return;
       }
       if (runtimeConfig.demoMode) {
-        writeUpgradeRejection(
-          socket,
+        rejectUpgrade(
           "409 Conflict",
           "Demo mode does not accept extension connections.",
         );
         return;
       }
       if (!extensionTransport) {
-        writeUpgradeRejection(
-          socket,
+        rejectUpgrade(
           "503 Service Unavailable",
           "Web extension integration is not configured.",
         );
         return;
       }
       extensionWss.handleUpgrade(req, socket, head, (ws) => {
+        diagnostics.upgrade(req, "ACCEPTED", 101, ws);
         extensionWss.emit("connection", ws, req);
       });
       return;
     }
 
-    writeUpgradeRejection(socket, "404 Not Found");
+    rejectUpgrade("404 Not Found");
   });
 
   extensionWss.on("connection", (ws) => {
@@ -556,6 +554,7 @@ export function createBridgeServer({
   async function close() {
     if (closePromise) return closePromise;
     closing = true;
+    diagnostics.beginShutdown();
     closePromise = closeSteps([
       ["dashboard.close", () => dashboard.close()],
       ["preparationService.close", () => preparationService?.close()],
@@ -569,15 +568,20 @@ export function createBridgeServer({
       ["webSession.close", () => webSession?.close()],
       ["runtime initialization", async () => { if (liveRuntimePromise) await liveRuntimePromise.catch(() => {}); }],
       ["runtime.close", () => liveRuntime?.close()],
-      ["extension websocket close", () => new Promise(resolve => extensionWss.close(resolve))],
+      ["extension websocket close", () => new Promise(resolve => extensionWss.close(error => {
+        diagnostics.emit("shutdown.websocket.close.callback", {errorCode:diagnosticErrorCode(error)});
+        // Preserve the existing close policy; expose callback errors as evidence.
+        resolve(undefined);
+      }))],
       ["HTTP server close", () => {
-        diagnostics.emit("shutdown.http.inventory", {
-          sockets:sockets.size,
-          readableEnded:[...sockets].filter(socket => socket.readableEnded).length,
-          writableEnded:[...sockets].filter(socket => socket.writableEnded).length,
-        });
+        diagnostics.emit("shutdown.http.inventory", diagnostics.socketInventory("http-close-start"));
         if (!server.listening) return;
-        return new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve(undefined)));
+        return new Promise((resolve, reject) => server.close(error => {
+          diagnostics.emit("shutdown.http.close.callback", {errorCode:diagnosticErrorCode(error)});
+          diagnostics.emit("shutdown.http.inventory", diagnostics.socketInventory("http-close-callback"));
+          if (error) reject(error);
+          else resolve(undefined);
+        }));
       }],
     ], diagnostics.emit);
     return closePromise;
@@ -609,6 +613,7 @@ export function createBridgeServer({
     getLiveRuntime,
     server,
     webSession,
+    socketInventory:diagnostics.socketInventory,
   });
 }
 
@@ -644,6 +649,7 @@ export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) 
       // Preserve bounded production shutdown; only the failure path forces exit.
       const failsafe = setTimeout(() => {
         console.error("Graceful shutdown deadline exceeded.");
+        report({type:"shutdown.http.inventory", ...bridge.socketInventory("deadline")});
         report({type:"shutdown.deadline", pendingStages:[...pendingStages], failedStages:[...failedStages],
           activeResources:process.getActiveResourcesInfo().reduce((counts, type) => {
             counts[type] = (counts[type] ?? 0) + 1; return counts;
