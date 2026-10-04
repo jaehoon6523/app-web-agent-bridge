@@ -48,7 +48,7 @@ export async function createLiveDiscussionRuntime({
   // Only unpublished SQLite setup is retried. Recovery, provider commands and
   // user mutations run once, after both handles have been acquired.
   const {store, codeStore, artifactStore} = await initializeSqlite(() => {
-    const store = new SqliteStore({filename:runtimeConfig.persistence.databasePath, busyTimeoutMs:0});
+    const store = new SqliteStore({filename:runtimeConfig.persistence.databasePath, busyTimeoutMs:0, onDiagnostic});
     try {
       let artifactStore;
       try { artifactStore = new ArtifactStore(runtimeConfig.persistence.artifactDirectory); }
@@ -56,7 +56,7 @@ export async function createLiveDiscussionRuntime({
         throw new LiveDiscussionRuntimeError("Artifact store initialization failed before runtime startup.",
           "ARTIFACT_STORE_INITIALIZATION_FAILED", {cause});
       }
-      const codeStore = new CodeChangeStore(runtimeConfig.persistence.databasePath, {busyTimeoutMs:0});
+      const codeStore = new CodeChangeStore(runtimeConfig.persistence.databasePath, {busyTimeoutMs:0, onDiagnostic});
       return {store, codeStore, artifactStore};
     } catch (error) { store.close(); throw error; }
   }, {signal:initializationSignal, onBusy:() => onDiagnostic?.({type:"runtime.initialization.sqlite-busy"})});

@@ -1,3 +1,4 @@
+import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -39,7 +40,7 @@ export class CodeChangeService {
     this.onDiagnostic = onDiagnostic;
     this.jobs = new Map(); this.workers = new Map(); this.controls = new Map();
     this.workerInspections = new Map(); this.closed = false; this.closePromise = null;
-    this.recover();
+    observeSynchronousStage(onDiagnostic, "runtime.initialization.code-recovery", () => this.recover());
   }
   list() { return this.store.list(); }
   get(id) { return this.store.get(id); }

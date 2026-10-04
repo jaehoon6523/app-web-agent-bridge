@@ -1,3 +1,4 @@
+import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import { DatabaseSync } from "node:sqlite";
 import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson, sha256CanonicalJson } from "../domain/canonical-json.js";
@@ -34,10 +35,14 @@ function checkedRecord(database, row) {
 }
 
 export class CodeChangeStore {
-  constructor(filename, {busyTimeoutMs = 5000} = {}) {
-    this.database = new DatabaseSync(filename);
-    try { this.#initialize(busyTimeoutMs); }
+  constructor(filename, {busyTimeoutMs = 5000, onDiagnostic = null} = {}) {
+    this.onDiagnostic = onDiagnostic;
+    this.database = this.#observe("open", () => new DatabaseSync(filename));
+    try { this.#observe("initialize", () => this.#initialize(busyTimeoutMs)); }
     catch (error) { this.database.close(); throw error; }
+  }
+  #observe(stage, operation) {
+    return observeSynchronousStage(this.onDiagnostic, `persistence.code-store.${stage}`, operation);
   }
   #initialize(busyTimeoutMs) {
     setSqliteBusyTimeout(this.database, busyTimeoutMs);
@@ -61,6 +66,9 @@ export class CodeChangeStore {
     const historyColumns = this.database.prepare("PRAGMA table_info(code_change_history)").all();
     if (!historyColumns.some((column) => column.name === "previous_hash")) this.database.exec("ALTER TABLE code_change_history ADD COLUMN previous_hash TEXT");
     if (!historyColumns.some((column) => column.name === "entry_hash")) this.database.exec("ALTER TABLE code_change_history ADD COLUMN entry_hash TEXT");
+    this.#observe("history-verify-migrate", () => this.#initializeHistory());
+  }
+  #initializeHistory() {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       for (const current of this.database.prepare("SELECT * FROM code_change_runs").all()) {
@@ -88,8 +96,9 @@ export class CodeChangeStore {
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }
   }
   list() {
-    return this.database.prepare("SELECT * FROM code_change_runs ORDER BY rowid").all()
-      .map((row) => checkedRecord(this.database, row));
+    const rows = this.#observe("list-read", () =>
+      this.database.prepare("SELECT * FROM code_change_runs ORDER BY rowid").all());
+    return this.#observe("list-verify", () => rows.map((row) => checkedRecord(this.database, row)));
   }
   setBusyTimeout(milliseconds) { setSqliteBusyTimeout(this.database, milliseconds); }
   get(runId) {

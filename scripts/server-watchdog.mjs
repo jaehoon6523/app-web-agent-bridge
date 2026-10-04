@@ -20,7 +20,7 @@ export function watchServerProcess(child, record, { intervalMs=250, staleMs=1500
       lastStage = event.type;
       request = {requestId:event.requestId, route:event.route};
     }
-    if (/^(?:runtime|preparation)\.initialization\.|^preparation\.mutation\.|^state\./u.test(event.type)) {
+    if (/^(?:runtime|preparation)\.initialization\.|^preparation\.mutation\.|^state\.|^persistence\./u.test(event.type)) {
       lastStage = event.type;
       if (event.requestId !== undefined) request = {requestId:event.requestId,route:event.route};
     }

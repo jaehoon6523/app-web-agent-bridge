@@ -1,3 +1,4 @@
+import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import { DatabaseSync } from "node:sqlite";
 import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson } from "../domain/canonical-json.js";
@@ -136,21 +137,22 @@ export class SqliteStore {
     const options = normalizeConstructorInput(input);
     requireNonEmptyString(options.filename, "filename");
     this.filename = options.filename;
-    this.#database = new DatabaseSync(options.filename);
-
+    const observe = (stage, operation) => observeSynchronousStage(options.onDiagnostic,
+      `runtime.initialization.controller-store.${stage}`, operation);
+    this.#database = observe("open", () => new DatabaseSync(options.filename));
     try {
-      this.#database.exec("PRAGMA journal_mode = WAL");
-      initializeSqliteSchema(this.#database, {busyTimeoutMs:options.busyTimeoutMs ?? 5000});
+      observe("journal", () => this.#database.exec("PRAGMA journal_mode = WAL"));
+      observe("schema", () => initializeSqliteSchema(this.#database, {busyTimeoutMs:options.busyTimeoutMs ?? 5000}));
       if (options.verifyOnOpen !== false) {
-        this.verifyEventChains();
-        this.verifyAgentCommunicationLinks();
-        this.verifyProposalArtifacts();
-        this.verifyRunOutcomes();
-        this.verifyDiscussionResponseLinks();
-        this.verifyAgentPacketRejections();
-        this.verifyTurnQueueLinks();
-        this.verifyControlSideRecordLinks();
-        this.rebuildRunProjections({ compare: true });
+        observe("verifyEventChains", () => this.verifyEventChains());
+        observe("verifyAgentCommunicationLinks", () => this.verifyAgentCommunicationLinks());
+        observe("verifyProposalArtifacts", () => this.verifyProposalArtifacts());
+        observe("verifyRunOutcomes", () => this.verifyRunOutcomes());
+        observe("verifyDiscussionResponseLinks", () => this.verifyDiscussionResponseLinks());
+        observe("verifyAgentPacketRejections", () => this.verifyAgentPacketRejections());
+        observe("verifyTurnQueueLinks", () => this.verifyTurnQueueLinks());
+        observe("verifyControlSideRecordLinks", () => this.verifyControlSideRecordLinks());
+        observe("projections", () => this.rebuildRunProjections({ compare: true }));
       }
     } catch (error) {
       this.#database.close();
