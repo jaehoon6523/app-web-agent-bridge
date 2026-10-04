@@ -22,6 +22,12 @@ small reproduction of that boundary's invariant, not a relaxed UF oracle.
   pre-request TCP connection, HTTP keep-alive reuse and an unfinished response,
   accepted extension WebSocket ownership, an upgrade rejected during shutdown,
   and diagnostic sink/error isolation without consuming socket data.
+- NetworkLifecycle / unrequested TCP shutdown:
+  `tests/contract/network-lifecycle/http-unrequested-shutdown.test.js` holds a
+  real accepted TCP connection open without sending HTTP bytes. Production IPC
+  shutdown must close it and exit naturally, without harness containment. The
+  same close policy must work without a diagnostic sink and must preserve
+  partially received headers and active request bodies until they complete.
 - ProcessLifecycle: `tests/e2e/graceful-shutdown.test.js` and
   `tests/e2e/active-worker-cleanup.test.js` cover IPC shutdown, persistent child
   EOF cleanup and failing/stuck children. `tests/platform/runner.test.js`
@@ -44,8 +50,8 @@ dedicated contract yet. Keep user-visible assertions in existing UFs.
 
 The E2E process result's `forced` flag records harness containment after failed
 process or stdio closure. `forced:false` does not prove that every subordinate
-resource closed cooperatively. Production may terminate an owned upgraded
-WebSocket during bounded shutdown. A production failsafe can also exit with
+resource closed cooperatively. Production may terminate an owned silent TCP
+connection or upgraded WebSocket during bounded shutdown. A production failsafe can also exit with
 code 1 while `forced:false`; the exit code still makes the contract fail.
 
 `lifecycleClosed` means the registered finalizers completed successfully. It
@@ -125,3 +131,19 @@ The existing five-second production failsafe, process result oracle and UF
 cleanup ordering are unchanged. After collecting actual Windows UF-04 evidence,
 reduce the observed remaining-socket path to its own lifecycle contract before
 changing ownership or termination policy.
+
+## Observed unrequested TCP failure
+
+The supplied Windows UF-04 diagnostic log leaves one accepted connection with
+zero requests, no upgrade, and zero bytes read or written at the deadline.
+Only `HTTP server close` remains pending. Holding the same kind of real TCP
+connection open reproduces the five-second production exit-1 failure on Linux
+Node 24.19.0. This is a shared HTTP ownership defect; the log does not identify
+the client as Chromium or establish the same cause for every other UF.
+
+The HTTP server tracks unrequested connections independently of diagnostics.
+After stopping acceptance, it destroys only unrequested connections whose
+`bytesRead` is zero. Received partial headers and parsed HTTP requests retain
+the existing drain policy; upgraded sockets retain their protocol owner.
+The production deadline and failure oracle are unchanged. Windows execution
+of this correction remains required before claiming the Windows UF is fixed.

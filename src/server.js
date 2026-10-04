@@ -485,6 +485,18 @@ export function createBridgeServer({
   const server = http.createServer(app);
   server.prependListener("request", diagnostics.received);
   server.on("connection", diagnostics.connected);
+  // Own accepted TCP connections that have not reached an HTTP request or
+  // upgrade. Node's HTTP idle-connection close does not reap every such peer.
+  // This ownership is independent of diagnostic instrumentation.
+  const unrequestedSockets = new Set();
+  let httpClosing = false;
+  server.on("connection", socket => {
+    unrequestedSockets.add(socket);
+    socket.once("close", () => unrequestedSockets.delete(socket));
+    if (httpClosing && socket.bytesRead === 0) socket.destroy();
+  });
+  server.prependListener("request", req => unrequestedSockets.delete(req.socket));
+  server.prependListener("upgrade", req => unrequestedSockets.delete(req.socket));
   const extensionWss = new WebSocketServer({
     noServer: true,
     clientTracking: true,
@@ -576,12 +588,20 @@ export function createBridgeServer({
       ["HTTP server close", () => {
         diagnostics.emit("shutdown.http.inventory", diagnostics.socketInventory("http-close-start"));
         if (!server.listening) return;
-        return new Promise((resolve, reject) => server.close(error => {
+        httpClosing = true;
+        const closed = new Promise((resolve, reject) => server.close(error => {
           diagnostics.emit("shutdown.http.close.callback", {errorCode:diagnosticErrorCode(error)});
           diagnostics.emit("shutdown.http.inventory", diagnostics.socketInventory("http-close-callback"));
           if (error) reject(error);
           else resolve(undefined);
         }));
+        // Stop accepting before reclaiming silent connections. A partial HTTP
+        // header has bytesRead > 0 and must retain the existing drain policy;
+        // parsed requests and upgraded sockets already have their own owner.
+        for (const socket of unrequestedSockets) {
+          if (socket.bytesRead === 0) socket.destroy();
+        }
+        return closed;
       }],
     ], diagnostics.emit);
     return closePromise;
