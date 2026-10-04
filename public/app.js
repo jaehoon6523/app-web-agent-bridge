@@ -1,3 +1,4 @@
+import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
@@ -214,6 +215,7 @@ async function request(url, options = {}) {
 async function refresh() {
   const current = ++sequence, target = selected;
   let phase = token ? "STATE" : "SESSION";
+  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed });
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
@@ -260,6 +262,7 @@ async function refresh() {
     text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음"));
   }
   render();
+  updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
   if (autoApprovalPreparationId
@@ -372,9 +375,8 @@ function render() {
   signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
     !connected ? "상태 확인 필요" : webAuthenticated ? "연결됨" : "연결 대기");
   const lastBinding = preflight?.lastWebBinding;
-  signal("webBindingSignal", "대화 탭", !connected || !webAuthenticated || !["BOUND", "ROOT_READY"].includes(lastBinding?.bindingStatus) ? "warn" : "ok",
-    !connected ? "상태 확인 필요" : !webAuthenticated ? "확장 연결 대기"
-      : lastBinding ? `연결됨 · ${lastBinding.bindingStatus}` : "연결 필요");
+  const bindingStatus = bindingPresentation({ connected, webAuthenticated, binding:lastBinding, workflowStage:workflow.stage });
+  signal("webBindingSignal", "대화 탭", bindingStatus.state, bindingStatus.detail);
   signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
     connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
   const runListKnowledge = snapshot
@@ -1360,5 +1362,10 @@ for (const [button, panel] of [["showConversation", "conversationPanel"], ["show
 }
 $("closeEvidence").addEventListener("click", () => $("evidenceDialog").close());
 $("nextEvidence").addEventListener("click", () => { if (evidencePage?.target === snapshot?.run?.runId) openEvidence(evidencePage.id, evidencePage.next); });
-async function poll() { await refresh(); setTimeout(poll, 2500); }
-poll();
+$("refreshDashboard").addEventListener("click", () => { if ($("dashboardPageError").hidden) void refresh().catch(showDashboardPageError); });
+async function poll() {
+  try { await refresh(); }
+  catch (error) { connected = false; showDashboardPageError(error); }
+  finally { if ($("dashboardPageError").hidden) setTimeout(poll, 2500); }
+}
+void poll();

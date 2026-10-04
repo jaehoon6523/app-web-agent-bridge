@@ -197,7 +197,7 @@ test("dashboard starts mutation controls disabled until a canonical state arrive
   ]) {
     assert.match(html, new RegExp(`id="${id}"[^>]*disabled`));
   }
-  assert.match(html, /로컬 서버에 연결하고 있습니다/);
+  assert.match(html, /대시보드 인증과 작업 상태를 확인하고 있습니다/);
   assert.doesNotMatch(html, /id="(?:pauseRun|resumeRun|reviewThreshold|targetRoot)"/);
 });
 

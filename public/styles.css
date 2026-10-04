@@ -126,3 +126,55 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
 .run-role.ok { color:var(--text); border-color:var(--live); }
 .run-role.warn { color:var(--warn); border-color:var(--warn); }
 @media(max-width:760px) { .run-role-summary { grid-template-columns:1fr; } }
+
+/* Dashboard connection and workspace hierarchy. */
+button,input,textarea,select { border-radius:8px; }
+select { font:inherit; color:var(--text); background:var(--panel); border:1px solid var(--line); padding:10px 12px; max-width:100%; }
+button { transition:border-color .15s,background .15s; }
+button:hover:enabled { background:#ffffff08; }
+button.primary:hover:enabled { background:#68e4b3; }
+.brand { display:flex; flex-direction:column; gap:2px; }
+.brand strong { font-size:17px; letter-spacing:-.02em; }
+.brand span { font-size:12px; color:var(--muted); }
+.top { flex-wrap:wrap; }
+.system-health { gap:10px; }
+.system-health > span { display:none; }
+.system-health .health-card { border:1px solid var(--line); border-radius:8px; background:var(--panel); min-width:125px; padding:9px 12px; }
+.system-health .health-card > .health { font-size:12px; padding:0; }
+.system-health .health-card p { position:static; width:auto; max-width:260px; margin:5px 0 0; padding:0; font-size:11px; border:0; box-shadow:none; color:var(--muted); }
+.system-health details[open] { border-color:#46536a; }
+.connection-panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px 22px; margin-bottom:24px; }
+.connection-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+.connection-heading h2 { margin:0; font-size:15px; }
+.connection-heading .muted { margin:4px 0; }
+.connection-heading button { flex-shrink:0; }
+#connectionNotice { margin:10px 0 0; }
+#connectionNotice:empty { display:none; }
+#connectionDiagnostics { margin-top:12px; border-bottom:0; padding-bottom:0; }
+#connectionDiagnostics dl { display:grid; grid-template-columns:140px minmax(0,1fr); gap:9px 18px; font-size:12px; }
+#connectionDiagnostics dt { color:var(--muted); }
+#connectionDiagnostics dd { margin:0; overflow-wrap:anywhere; }
+.page-error { background:#2a1d21; color:var(--text); border-left:3px solid var(--error); padding:14px 16px; }
+.skip-link { position:absolute; top:-100px; left:16px; z-index:20; padding:12px; background:var(--panel); color:var(--text); }
+.skip-link:focus { top:12px; }
+#startPanel > .muted { max-width:660px; }
+#startForm { padding:22px 26px; background:var(--panel); border:1px solid var(--line); border-radius:12px; }
+#startForm label:first-child { margin-top:0; }
+#startForm input,#startForm textarea,#startForm select { background:var(--bg); }
+#chooseFolder { margin-top:8px; }
+#planRun { width:100%; }
+.workflow { flex-wrap:wrap; gap:10px; }
+.workflow li { min-width:110px; font-size:12px; }
+.history-tools select { width:100%; }
+.history-tools label { margin-top:12px; }
+@media(max-width:760px) {
+  .system-health { width:100%; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .system-health .health-card { min-width:0; }
+  .connection-panel { padding:16px; }
+  .connection-heading { align-items:flex-start; flex-wrap:wrap; }
+  #connectionDiagnostics dl { grid-template-columns:1fr; gap:4px; }
+  #connectionDiagnostics dd { margin-bottom:8px; }
+  #startForm { padding:18px; }
+  .workflow li { flex:1 1 100px; }
+}
+@media(prefers-reduced-motion:reduce) { button { transition:none; } }
