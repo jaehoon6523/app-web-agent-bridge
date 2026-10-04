@@ -83,12 +83,9 @@ try {
   await alive();
   await browser.close(); browser = null;
   await stop();
-  if (process.platform === 'win32') {
-    // Node kill(SIGTERM) terminates the child on Windows; it does not deliver a POSIX signal.
-    assert.equal(shutdown.signal, 'SIGTERM', 'Windows child termination failed');
-  } else {
-    assert.equal(shutdown.code, 0, 'production graceful shutdown failed');
-  }
+  assert.equal(shutdown.code, 0, 'production graceful shutdown failed');
+  assert.equal(shutdown.signal, null, 'production shutdown must not require a kill signal');
+  assert.equal(shutdown.forced, false, 'production shutdown must be cooperative');
   outcome = 'PASS';
 } catch (error) {
   fs.writeFileSync(path.join(output, 'failure.txt'), error.stack || String(error));

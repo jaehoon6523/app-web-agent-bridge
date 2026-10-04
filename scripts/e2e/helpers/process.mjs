@@ -46,23 +46,14 @@ export async function productionProcess({ configured = false, fault = null, work
       else if (fault === 'state-database') fs.writeFileSync(path.join(workspace, '.agent-controller/preparations.sqlite'), 'not a SQLite database');
       else throw new Error(`Unknown fault: ${fault}`);
     }
-    let exited;
+    let exited, forced = false, sendError = null;
     const launch = () => {
-      spawnError = null;
-      // IPC survives Windows' forceful signal semantics and invokes the real
-      // bridge.close() path, including runtime/Worker registry shutdown.
-      const entry = `import { main } from ${JSON.stringify(new URL('../../../src/server.js', import.meta.url).href)};
-        const bridge = await main();
-        process.on('message', async message => {
-          if (message?.type !== 'e2e.shutdown') return;
-          try { await bridge.close(); process.exit(0); }
-          catch (error) { console.error(error); process.exit(1); }
-        });`;
-      child = spawn(process.execPath, ['--input-type=module', '-e', entry], { cwd:workspace, env, stdio:['ignore','pipe','pipe','ipc'] });
+      spawnError = null; forced = false; sendError = null;
+      child = spawn(process.execPath, [path.join(repository, 'src/server.js')], { cwd:workspace, env, stdio:['ignore','pipe','pipe','ipc'] });
       child.stdout.on('data', chunk => { stdout += chunk; });
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.on('error', error => { spawnError = error; });
-      exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
+      exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal, forced })));
     };
     launch();
     const alive = () => {
@@ -72,18 +63,24 @@ export async function productionProcess({ configured = false, fault = null, work
     };
     const stop = async () => {
       if (child.exitCode !== null || child.signalCode !== null || spawnError) { shutdown = await exited; return shutdown; }
-      if (child.connected) child.send({ type:'e2e.shutdown' }, error => { if (error) child.kill('SIGTERM'); });
-      else child.kill('SIGTERM');
-      const timer = setTimeout(() => child.kill('SIGKILL'), 8000);
+      try {
+        if (child.connected) child.send({ type:'bridge.shutdown' }, error => { if (error) sendError = error.code ?? 'IPC_SEND_FAILED'; });
+        else sendError = 'IPC_DISCONNECTED';
+      } catch (error) { sendError = error.code ?? 'IPC_SEND_FAILED'; }
+      // A send/disconnect race is diagnostic only; force termination at deadline.
+      const timer = setTimeout(() => { forced = true; child.kill('SIGKILL'); }, 8000);
       try { shutdown = await exited; } finally { clearTimeout(timer); }
       return shutdown;
     };
     const handle = { workspace, baseUrl, alive, stop,
       restart:async () => { await stop(); launch(); return handle.ready(); },
       ready:() => waitForPreflight(`${baseUrl}/api/preflight`, { checkAlive:alive }),
-      logs:() => ({ stdout, stderr, shutdown }),
+      logs:() => ({ stdout, stderr, shutdown, shutdownSendError:sendError }),
       dispose:async () => {
-        await stop();
+        const result = await stop();
+        assert.equal(result.code, 0, 'production graceful shutdown failed');
+        assert.equal(result.signal, null, 'production shutdown used a kill signal');
+        assert.equal(result.forced, false, 'production shutdown exceeded its deadline or lost IPC');
         // A completed turn does not imply that a persistent app-server exited.
         const observed = path.join(workspace, 'worker-observed.json');
         if (worker === 'active' && fs.existsSync(observed)) {

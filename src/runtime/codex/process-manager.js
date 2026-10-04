@@ -63,6 +63,7 @@ export class CodexProcessManager extends EventEmitter {
   #status = "STOPPED";
   #generation = 0;
   #closing = false;
+  #closePromise = null;
 
   /** @param {CodexProcessCreateOptions} [options] */
   static async create({
@@ -183,20 +184,37 @@ export class CodexProcessManager extends EventEmitter {
   }
 
   async close() {
-    this.#closing = true;
-    const proc = this.#process;
-    const peer = this.#peer;
-    this.#process = null;
-    this.#peer = null;
-    this.#approvalBridge?.disconnect(new CodexTransportClosedError("Codex app-server closed by controller"));
-    this.#approvalBridge = null;
-    peer?.close(new CodexTransportClosedError("Codex app-server closed by controller"));
-    if (proc && !proc.killed) proc.kill();
-    this.#setStatus("STOPPED");
-    this.#closing = false;
+    if (this.#closePromise) return this.#closePromise;
+    this.#closePromise = (async () => {
+      this.#closing = true;
+      const proc = this.#process;
+      const peer = this.#peer;
+      this.#process = null;
+      this.#peer = null;
+      this.#approvalBridge?.disconnect(new CodexTransportClosedError("Codex app-server closed by controller"));
+      this.#approvalBridge = null;
+      peer?.close(new CodexTransportClosedError("Codex app-server closed by controller"));
+      try {
+        if (proc && proc.exitCode === null && proc.signalCode === null) {
+          let forced = false;
+          const closed = new Promise(resolve => proc.once("close", resolve));
+          // Persistent app-server sessions end on controller close, not turn completion.
+          proc.stdin.end();
+          const deadline = setTimeout(() => { forced = true; proc.kill("SIGKILL"); }, 3000);
+          try { await closed; } finally { clearTimeout(deadline); }
+          if (forced) throw new CodexTransportClosedError("Codex app-server did not exit after stdin EOF");
+          if (proc.exitCode !== 0 || proc.signalCode !== null) throw new CodexTransportClosedError("Codex app-server did not exit cleanly after stdin EOF");
+        }
+      } finally {
+        this.#setStatus("STOPPED");
+        this.#closing = false;
+      }
+    })();
+    return this.#closePromise;
   }
 
   async #startInternal() {
+    this.#closePromise = null;
     await verifyPinnedExecutable(this.#pin);
     this.#setStatus("STARTING");
     let proc;

@@ -101,7 +101,7 @@ export async function lock(t,f) {
     await release?.catch(()=>{});
     try { db?.exec('ROLLBACK'); } catch {}
     db?.close();
-    if (db) assert.equal(db.isOpen,false);
+    if (db) assert.throws(()=>db.prepare('SELECT 1'), {code:'ERR_INVALID_STATE'}, 'external SQLite connection must be closed');
   }
   saveEvidence(f,'lock-boundary',{...evidence,externalConnectionClosed:true});
 }

@@ -614,25 +614,42 @@ export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) 
   console.log(`Extension integration: ${bridge.extensionTransport ? "configured" : "not configured"}`);
   console.log("");
 
-  let shuttingDown = false;
-  async function shutdown(signal) {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    console.log(`\nReceived ${signal}; shutting down.`);
-    const failsafe = setTimeout(() => process.exit(1), 5000);
-    failsafe.unref();
-    try {
-      await bridge.close();
-      clearTimeout(failsafe);
-      process.exit(0);
-    } catch (error) {
-      console.error("Shutdown error:", error);
-      process.exit(1);
-    }
+  let shutdownPromise;
+  function gracefulShutdown(reason) {
+    if (shutdownPromise) return shutdownPromise;
+    shutdownPromise = (async () => {
+      console.log(`\nReceived ${reason}; shutting down.`);
+      // Preserve bounded production shutdown; only the failure path forces exit.
+      const failsafe = setTimeout(() => {
+        console.error("Graceful shutdown deadline exceeded.");
+        process.exit(1);
+      }, 5000);
+      failsafe.unref();
+      try {
+        await bridge.close();
+        process.exitCode = 0;
+      } catch (error) {
+        console.error("Shutdown error:", error);
+        process.exitCode = 1;
+      } finally {
+        // Keep the unrefed deadline armed through rejection or leaked handles.
+        process.off("SIGINT", onSigint);
+        process.off("SIGTERM", onSigterm);
+        process.off("message", onProcessMessage);
+        // Release the IPC channel after resources close; let Node drain naturally.
+        if (process.connected) process.disconnect();
+      }
+    })();
+    return shutdownPromise;
   }
-
-  process.once("SIGINT", () => void shutdown("SIGINT"));
-  process.once("SIGTERM", () => void shutdown("SIGTERM"));
+  const onSigint = () => void gracefulShutdown("SIGINT");
+  const onSigterm = () => void gracefulShutdown("SIGTERM");
+  const onProcessMessage = message => {
+    if (message && typeof message === "object" && "type" in message && message.type === "bridge.shutdown") void gracefulShutdown("IPC");
+  };
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
+  if (process.connected) process.on("message", onProcessMessage);
   return bridge;
 }
 

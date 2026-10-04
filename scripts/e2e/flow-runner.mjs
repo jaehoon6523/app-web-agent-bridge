@@ -32,7 +32,9 @@ export function registerFlow(id) {
       } else if (id === 'UF-14') {
         await healthyLocalActions(f.page);
         const shutdown = await f.server.stop();
-        if (process.platform !== 'win32') assert.equal(shutdown.code, 0);
+        assert.equal(shutdown.code, 0, 'production graceful shutdown failed');
+        assert.equal(shutdown.signal, null, 'production shutdown must not require a kill signal');
+        assert.equal(shutdown.forced, false, 'production shutdown must be cooperative');
         await f.page.waitForFunction(() => document.getElementById('apiHealth').getAttribute('aria-label').includes('서버 응답 없음'));
         assert.equal(await f.page.locator('#chooseFolder').isDisabled(), true);
         assert.equal(await f.page.locator('#planRun').isDisabled(), true);
