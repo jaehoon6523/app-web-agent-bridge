@@ -126,6 +126,6 @@ export function createServerObserver(sink) {
     if (detail) emit("request.express", detail);
     next();
   }
-  function stage(req, type) { emit(type, requests.get(req) ?? {}); }
+  function stage(req, type, detail = {}) { emit(type, {...detail, ...requests.get(req)}); }
   return { emit, received, middleware, stage, connected, upgrade, socketInventory, beginShutdown };
 }

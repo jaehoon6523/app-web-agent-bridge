@@ -438,7 +438,8 @@ export function createBridgeServer({
       }
       const service = preparations();
       diagnostics.emit("state.snapshot.started");
-      const baseSnapshot = await dashboard.snapshot(req.query.runId || null);
+      const baseSnapshot = await dashboard.snapshot(req.query.runId || null,
+        event => diagnostics.stage(req, event.type, event));
       diagnostics.emit("state.snapshot.completed");
       diagnostics.emit("state.projection.started");
       const snapshot = await service.project(baseSnapshot,

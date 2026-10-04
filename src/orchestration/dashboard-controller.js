@@ -1,4 +1,6 @@
 import { DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS, validateDashboardRuntimeReadTimeout } from "../domain/dashboard-read-policy.js";
+import { performance } from "node:perf_hooks";
+import { diagnosticErrorCode } from "../diagnostics/server-observer.js";
 import { createDiscussionRunPolicy } from "../domain/run-policy.js";
 import { isTerminalRunPhase } from "../domain/run-state-machine.js";
 import { canonicalConversationUrl } from "../runtime/web/binding.js";
@@ -57,20 +59,46 @@ export class DashboardController {
   #closed = false;
   #drafts = new Map();
   #receipts = new Map();
+  #onDiagnostic;
+  #snapshotSequence = 0;
 
-  constructor({ getRuntime, preflight, webSession, transport, runtimeReadTimeoutMs = DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS }) {
+  constructor({ getRuntime, preflight, webSession, transport, runtimeReadTimeoutMs = DEFAULT_DASHBOARD_RUNTIME_READ_TIMEOUT_MS, onDiagnostic = undefined }) {
     this.#runtimeReadTimeoutMs = validateDashboardRuntimeReadTimeout(runtimeReadTimeoutMs);
     this.#getRuntime = getRuntime;
     this.#preflight = preflight;
     this.#webSession = webSession;
     this.#transport = transport;
+    this.#onDiagnostic = onDiagnostic;
   }
 
   isDispatching() { return this.#starting || this.#jobs.size > 0; }
 
-  async snapshot(runId = null) {
+  async snapshot(runId = null, onDiagnostic = this.#onDiagnostic) {
+    const snapshotId = ++this.#snapshotSequence;
+    let stepSequence = 0;
+    // Fixed stage names and local counters only; never include run contents,
+    // identifiers, paths or error messages. Reads retain their synchronous order.
+    const begin = (stage, detail = {}) => {
+      if (typeof onDiagnostic !== "function") return (_status, _error = undefined) => {};
+      const context = { snapshotId, stepId:++stepSequence, ...detail };
+      const started = performance.now();
+      const emit = (status, error = undefined) => {
+        try { onDiagnostic({type:`state.snapshot.${stage}.${status}`, ...context,
+          ...(status === "started" ? {} : {elapsedMs:performance.now()-started}),
+          ...(status === "failed" ? {errorCode:diagnosticErrorCode(error)} : {})}); }
+        catch { /* Diagnostic failures cannot change a snapshot or its errors. */ }
+      };
+      emit("started");
+      return emit;
+    };
+    const read = (stage, operation, detail = {}) => {
+      const finish = begin(stage, detail);
+      try { const value = operation(); finish("completed"); return value; }
+      catch (error) { finish("failed", error); throw error; }
+    };
     let live;
     let runtimeReadTimer;
+    const runtimeRead = begin("runtime");
     try {
       // Bound this read only; runtime initialization remains shared with commands.
       live = await Promise.race([
@@ -82,7 +110,9 @@ export class DashboardController {
           )), this.#runtimeReadTimeoutMs);
         }),
       ]);
+      runtimeRead("completed");
     } catch (error) {
+      runtimeRead("failed", error);
       return {
         run:null,
         runs:[],
@@ -93,7 +123,7 @@ export class DashboardController {
         events:[],
         outcome:null,
         commandCapabilities:[],
-        preflight:this.#preflight(),
+        preflight:read("preflight", () => this.#preflight()),
         error:null,
         runtimeAvailability:{
           ready:false,
@@ -108,30 +138,37 @@ export class DashboardController {
       clearTimeout(runtimeReadTimer);
     }
     const store = live.store;
-    const codeRuns = live.codeChanges?.list() ?? [];
-    const runs = [...store.listRuns(), ...codeRuns.map((r) => live.codeChanges.snapshot(r.runId, this.#preflight()).run)]
-      .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
-    const run = runId ? store.getRun(runId) : runs.at(-1) ?? null;
+    const codeRuns = read("code-runs", () => live.codeChanges?.list() ?? []);
+    const discussionRuns = read("discussion-runs", () => [...store.listRuns()]);
+    const codeSnapshots = codeRuns.map((r, index) => {
+      const preflight = read("preflight", () => this.#preflight());
+      return read("code-run", () => live.codeChanges.snapshot(r.runId, preflight).run,
+        {scope:"list", index, count:codeRuns.length});
+    });
+    const runs = read("sort", () => [...discussionRuns, ...codeSnapshots]
+      .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))));
+    const run = runId ? read("selected-run", () => store.getRun(runId)) : runs.at(-1) ?? null;
     const codeRun = codeRuns.find((r) => r.runId === (runId || run?.runId));
     if (codeRun) {
-      const snapshot = live.codeChanges.snapshot(codeRun.runId, this.#preflight());
+      const preflight = read("preflight", () => this.#preflight());
+      const snapshot = read("code-run", () => live.codeChanges.snapshot(codeRun.runId, preflight), {scope:"selected"});
       return {
         ...snapshot,
-        runs:runs.map(dashboardRunSummary),
+        runs:read("summaries", () => runs.map(dashboardRunSummary)),
         runtimeAvailability:{ ready:true, code:null, message:null },
         dataKnowledge:{ runs:{ status:runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
       };
     }
     if (runId && !run) reject("Run not found.", "RUN_NOT_FOUND");
     const commands = ["state.get", "evidence.export"];
-    const sessions = run ? store.listAgentSessions(run.runId) : [];
-    const runtimes = run ? live.composition.getRuntimeSessions(run.runId) : null;
+    const sessions = run ? read("sessions", () => store.listAgentSessions(run.runId)) : [];
+    const runtimes = run ? read("runtime-sessions", () => live.composition.getRuntimeSessions(run.runId)) : null;
     if (run && !isTerminalRunPhase(run.phase)) {
       commands.push("run.pause", "run.stop");
-      const deliveries = store.listDeliveries(run.runId);
+      const deliveries = read("deliveries", () => store.listDeliveries(run.runId));
       const restorable = !runtimes && !run.blocker && deliveries.some((d) => d.state === "PENDING")
         && deliveries.every((d) => ["PENDING", "RELAYED", "RESPONSE_COMPLETED"].includes(d.state));
-      if ((runtimes && run.paused && !this.#errors.has(run.runId)) || (restorable && this.#preflight().readyForProvisioning)) commands.push("run.resume");
+      if ((runtimes && run.paused && !this.#errors.has(run.runId)) || (restorable && read("preflight", () => this.#preflight()).readyForProvisioning)) commands.push("run.resume");
       if (run.activeActor && runtimes) commands.push("run.interrupt");
       if (run.activeActor === "CODEX_AGENT" && runtimes?.CODEX_AGENT?.steer) commands.push("run.steer");
     }
@@ -139,11 +176,11 @@ export class DashboardController {
     if (run && !run.activeActor && !this.#jobs.has(run.runId)) {
       commands.push("web.session.focus", "web.session.rebind");
     }
-    const messages = run ? store.listAgentMessages(run.runId) : [];
-    const inputs = run ? store.listAgentTurnInputs(run.runId) : [];
+    const messages = run ? read("messages", () => store.listAgentMessages(run.runId)) : [];
+    const inputs = run ? read("turn-inputs", () => store.listAgentTurnInputs(run.runId)) : [];
     return {
       run,
-      runs:runs.map(dashboardRunSummary),
+      runs:read("summaries", () => runs.map(dashboardRunSummary)),
       sessions: sessions.map((session) => ({
         ...session,
         ...(session.actor === "CHATGPT_WEB_AGENT" && this.#transport?.snapshot?.binding?.runId === run.runId
@@ -159,12 +196,12 @@ export class DashboardController {
           sequence: index + 0.5,
         })),
       ],
-      deliveries: run ? store.listDeliveries(run.runId) : [],
-      approvals: run ? store.listApprovals({ runId: run.runId }) : [],
-      events: run ? store.listDomainEvents(run.runId) : [],
-      outcome: run ? store.getRunOutcome(run.runId) : null,
+      deliveries: run ? read("deliveries", () => store.listDeliveries(run.runId)) : [],
+      approvals: run ? read("approvals", () => store.listApprovals({ runId: run.runId })) : [],
+      events: run ? read("events", () => store.listDomainEvents(run.runId)) : [],
+      outcome: run ? read("outcome", () => store.getRunOutcome(run.runId)) : null,
       commandCapabilities: commands,
-      preflight: this.#preflight(),
+      preflight: read("preflight", () => this.#preflight()),
       runtimeAvailability:{ ready:true, code:null, message:null },
       dataKnowledge:{ runs:{ status:runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
       error: run ? this.#errors.get(run.runId) ?? (runtimes || isTerminalRunPhase(run.phase)
