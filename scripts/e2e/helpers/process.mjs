@@ -78,7 +78,7 @@ export async function productionProcess({ configured = false, fault = null, work
       logs:() => ({ stdout, stderr, shutdown, shutdownSendError:sendError }),
       dispose:async () => {
         const result = await stop();
-        assert.equal(result.code, 0, 'production graceful shutdown failed');
+        assert.equal(result.code, 0, ['production graceful shutdown failed', JSON.stringify({ ...result, shutdownSendError:sendError }), 'stdout:', stdout.slice(-4000), 'stderr:', stderr.slice(-4000)].join('\n'));
         assert.equal(result.signal, null, 'production shutdown used a kill signal');
         assert.equal(result.forced, false, 'production shutdown exceeded its deadline or lost IPC');
         // A completed turn does not imply that a persistent app-server exited.

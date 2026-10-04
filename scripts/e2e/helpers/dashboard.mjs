@@ -25,11 +25,12 @@ export async function dashboardSpine(t, flow) {
       }
     } finally {
       try { await browser?.close(); } finally {
-        await server.dispose();
-        const logs = server.logs();
-        fs.writeFileSync(path.join(output, 'server.stdout.log'), logs.stdout);
-        fs.writeFileSync(path.join(output, 'server.stderr.log'), logs.stderr);
-        fs.writeFileSync(path.join(output, 'boundary.json'), JSON.stringify({ id:flow.id, execution:flow.execution, specWave:flow.specWave, boundary, errors, shutdown:logs.shutdown }, null, 2));
+        try { await server.dispose(); } finally {
+          const logs = server.logs();
+          fs.writeFileSync(path.join(output, 'server.stdout.log'), logs.stdout);
+          fs.writeFileSync(path.join(output, 'server.stderr.log'), logs.stderr);
+          fs.writeFileSync(path.join(output, 'boundary.json'), JSON.stringify({ id:flow.id, execution:flow.execution, specWave:flow.specWave, boundary, errors, shutdown:logs.shutdown, shutdownSendError:logs.shutdownSendError }, null, 2));
+        }
       }
     }
   });

@@ -490,6 +490,10 @@ export function createBridgeServer({
   });
 
   server.on("upgrade", (req, socket, head) => {
+    if (closing) {
+      writeUpgradeRejection(socket, "503 Service Unavailable", "Server is shutting down.");
+      return;
+    }
     let url;
     try {
       url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -549,7 +553,9 @@ export function createBridgeServer({
       dashboard.close();
       preparationService?.close();
       for (const ws of extensionWss.clients) {
-        if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) {
+        // CLOSING peers may never finish their TCP half-close. Shutdown owns
+        // these upgraded sockets too; do not wait for the peer close timeout.
+        if (ws.readyState !== WebSocket.CLOSED) {
           ws.terminate();
         }
       }

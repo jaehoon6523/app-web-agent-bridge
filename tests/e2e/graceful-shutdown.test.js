@@ -80,3 +80,29 @@ test(`production shutdown failsafe exits nonzero after ${mode} with an HTTP hand
 });
 
 }
+
+test('production shutdown closes an extension peer that leaves its TCP half open', {timeout:15000}, async t => {
+  const net=await import('node:net');
+  const {once}=await import('node:events');
+  const server=await productionProcess({configured:true});
+  let socket;
+  t.after(async()=>{socket?.destroy();await server.dispose();});
+  await server.ready();
+  const url=new URL(server.baseUrl);
+  socket=net.createConnection({host:url.hostname,port:Number(url.port),allowHalfOpen:true});
+  socket.on('error',()=>{});
+  await once(socket,'connect');
+  let received=Buffer.alloc(0);
+  socket.on('data',chunk=>{received=Buffer.concat([received,chunk]);});
+  const upgraded=once(socket,'data');
+  socket.write(`GET /ws/extension HTTP/1.1\r\nHost: ${url.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+  await upgraded;
+  assert.match(received.toString(),/101 Switching Protocols/u);
+  // A masked empty close frame. Keep the writable half open after server FIN,
+  // reproducing a peer that has begun closing but never finishes TCP teardown.
+  const ended=once(socket,'end');
+  socket.write(Buffer.from([0x88,0x80,0,0,0,0]));
+  await ended;
+  const result=await server.stop();
+  assert.deepEqual(result,{code:0,signal:null,forced:false},JSON.stringify(server.logs()));
+});
