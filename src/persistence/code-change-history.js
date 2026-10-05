@@ -10,7 +10,7 @@ export function verifyHistory(database, current, {migrate = false, checkCancelle
   const runId = current.run_id;
   const counts = database.prepare(`SELECT COUNT(*) AS count,
     SUM(entry_hash IS NULL AND previous_hash IS NULL) AS unchained
-    FROM code_change_history WHERE run_id=?`).get(runId);
+    FROM main.code_change_history WHERE run_id=?`).get(runId);
   if (!counts.count || Number(counts.count) !== Number(current.version)) {
     throw new Error("Code change history has missing versions.");
   }
@@ -19,11 +19,11 @@ export function verifyHistory(database, current, {migrate = false, checkCancelle
     throw Object.assign(new Error("Code change history requires verified migration."), {code:"CODE_CHANGE_HISTORY_MIGRATION_REQUIRED"});
   }
   let previousHash = null, latest, version = 0;
-  const update = legacy ? database.prepare("UPDATE code_change_history SET previous_hash=?,entry_hash=? WHERE run_id=? AND version=?") : null;
+  const update = legacy ? database.prepare("UPDATE main.code_change_history SET previous_hash=?,entry_hash=? WHERE run_id=? AND version=?") : null;
   // Keyset reads also work on the declared Node 22.5 minimum: SQLite's native
   // StatementSync.iterate() was added later. Each read uses the existing PK.
-  const first = database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version LIMIT 1");
-  const next = database.prepare("SELECT * FROM code_change_history WHERE run_id=? AND version>? ORDER BY version LIMIT 1");
+  const first = database.prepare("SELECT * FROM main.code_change_history WHERE run_id=? ORDER BY version LIMIT 1");
+  const next = database.prepare("SELECT * FROM main.code_change_history WHERE run_id=? AND version>? ORDER BY version LIMIT 1");
   for (let row = first.get(runId); row; row = next.get(runId, row.version)) {
     checkCancelled();
     version++;
@@ -45,7 +45,7 @@ export function verifyHistory(database, current, {migrate = false, checkCancelle
 
 export function verifyHistories(database, options = {}) {
   const verified = [];
-  for (const current of database.prepare("SELECT * FROM code_change_runs ORDER BY rowid").all()) {
+  for (const current of database.prepare("SELECT * FROM main.code_change_runs ORDER BY rowid").all()) {
     verified.push(verifyHistory(database, current, options));
   }
   return verified;

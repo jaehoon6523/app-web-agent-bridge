@@ -7,19 +7,21 @@ import { DatabaseSync } from "node:sqlite";
 import { CodeChangeStore } from "../../src/persistence/code-change-store.js";
 import { CodeChangeHistoryJob } from "../../src/persistence/code-change-history-job.js";
 import { canonicalJson, sha256CanonicalJson } from "../../src/domain/canonical-json.js";
+import { resources } from "../../scripts/e2e/helpers/resources.mjs";
+import { bounded } from "../../scripts/e2e/helpers/deadline.mjs";
 import { seedHistory } from "../helpers/code-history-fixture.js";
 
 function fixture(t, options) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-history-contract-"));
   const filename = path.join(root, "state.sqlite");
-  t.after(() => fs.rmSync(root, {recursive:true, force:true}));
+  resources(t).add("history workspace", () => fs.rmSync(root, {recursive:true, force:true}), 30);
   return {filename, ...seedHistory(filename, options)};
 }
 
 test("verified history is reused through reads, own appends and receipts without changing durable proof", async t => {
   const {filename, record, headHash} = fixture(t), events = [];
   const store = new CodeChangeStore(filename, {verification:"background", onDiagnostic:event => events.push(event)});
-  t.after(() => store.close());
+  resources(t).add("history store", () => store.close(), 20);
   assert.throws(() => store.list(), {code:"CODE_CHANGE_HISTORY_UNVERIFIED"});
   await Promise.all([store.prepareForRead(), store.prepareForRead()]);
   const first = store.get(record.runId); first.events[0].detail = "caller mutation";
@@ -45,7 +47,7 @@ for (const connection of ["external", "same"]) {
   test(`${connection} connection changing only old history invalidates reads and writes; corruption remains rejected`, async t => {
     const {filename, record} = fixture(t);
     const store = new CodeChangeStore(filename, {verification:"background"});
-    t.after(() => store.close());
+    resources(t).add("history store", () => store.close(), 20);
     await store.prepareForRead();
     const db = connection === "same" ? store.database : new DatabaseSync(filename);
     try { db.exec("UPDATE code_change_history SET entry_hash='corrupt' WHERE version=1"); }
@@ -60,7 +62,7 @@ for (const connection of ["external", "same"]) {
 
 test("an external valid append is reverified and becomes the same current durable record", async t => {
   const {filename, record} = fixture(t);
-  const store = new CodeChangeStore(filename, {verification:"background"}); t.after(() => store.close());
+  const store = new CodeChangeStore(filename, {verification:"background"}); resources(t).add("history store", () => store.close(), 20);
   await store.prepareForRead();
   const writer = new CodeChangeStore(filename);
   let appended;
@@ -74,7 +76,7 @@ test("an external valid append is reverified and becomes the same current durabl
 for (const verification of ["synchronous", "background"]) {
   test(`${verification}: caller-owned provisional history cannot acquire or reuse a committed proof`, async t => {
     const {filename, record, headHash} = fixture(t);
-    const store = new CodeChangeStore(filename, {verification}); t.after(() => store.close());
+    const store = new CodeChangeStore(filename, {verification}); resources(t).add("history store", () => store.close(), 20);
     await store.prepareForRead();
     store.database.exec("BEGIN; UPDATE code_change_history SET entry_hash='uncommitted-corrupt' WHERE version=1");
     try {
@@ -104,7 +106,7 @@ test("a transaction opened during worker verification prevents publishing its co
       store.database.exec("BEGIN; UPDATE code_change_history SET entry_hash='uncommitted-corrupt' WHERE version=1");
     }
   }});
-  t.after(() => store.close());
+  resources(t).add("history store", () => store.close(), 20);
   try {
     await assert.rejects(store.prepareForRead(), {code:"CODE_CHANGE_TRANSACTION_ACTIVE"});
     assert.equal(opened, true);
@@ -126,7 +128,7 @@ test("a commit during a real verification discards the snapshot proof before pub
       finally { writer.close(); }
     }
   }});
-  t.after(() => store.close());
+  resources(t).add("history store", () => store.close(), 20);
   await assert.rejects(store.prepareForRead(), /integrity/u);
   assert.equal(changed, true);
   assert.ok(events.some(event => event.type === "persistence.code-store.history-background.invalidated"));
@@ -136,7 +138,7 @@ test("a commit during a real verification discards the snapshot proof before pub
 
 test("trigger side effects are not treated as the known two-row append", async t => {
   const {filename, record} = fixture(t);
-  const store = new CodeChangeStore(filename, {verification:"background"}); t.after(() => store.close());
+  const store = new CodeChangeStore(filename, {verification:"background"}); resources(t).add("history store", () => store.close(), 20);
   await store.prepareForRead();
   store.database.exec(`CREATE TRIGGER unexpected_history_change AFTER INSERT ON code_change_history
     BEGIN UPDATE code_change_history SET entry_hash='corrupt' WHERE version=1; END`);
@@ -149,7 +151,7 @@ test("trigger side effects are not treated as the known two-row append", async t
 
 test("failed append rolls back durable state and cannot publish a provisional hash head", async t => {
   const {filename, record, headHash} = fixture(t);
-  const store = new CodeChangeStore(filename, {verification:"background"}); t.after(() => store.close());
+  const store = new CodeChangeStore(filename, {verification:"background"}); resources(t).add("history store", () => store.close(), 20);
   store.database.exec("CREATE TRIGGER reject_append BEFORE INSERT ON code_change_history BEGIN SELECT RAISE(ABORT,'rejected append'); END");
   await store.prepareForRead();
   assert.throws(() => store.save(record, record.version), /rejected append/u);
@@ -178,8 +180,9 @@ test("cancelling an active history verifier awaits natural thread exit and file 
     events.push(event);
     if (event.type === "persistence.code-store.history-background.progress") observe();
   }});
+  resources(t).add("active history store", () => store.close(), 20);
   const pending = store.prepareForRead(); pending.catch(() => {});
-  await progress;
+  await bounded(Promise.race([progress, pending.then(() => { throw new Error("Verifier completed before the cancellation checkpoint."); })]), 10000);
   await store.close();
   await assert.rejects(pending, {code:"CODE_CHANGE_HISTORY_CANCELLED"});
   assert.ok(events.some(event => event.type === "persistence.code-store.history-background.closed" && event.forced === false));

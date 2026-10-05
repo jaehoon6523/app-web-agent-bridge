@@ -1,5 +1,5 @@
 import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "./sqlite-database.js";
 import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { decodeCanonicalJson } from "./canonical-record.js";

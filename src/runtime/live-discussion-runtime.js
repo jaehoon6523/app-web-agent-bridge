@@ -58,7 +58,11 @@ export async function createLiveDiscussionRuntime({
       }
       const codeStore = new CodeChangeStore(runtimeConfig.persistence.databasePath, {busyTimeoutMs:0, onDiagnostic, verification:"background"});
       return {store, codeStore, artifactStore};
-    } catch (error) { store.close(); throw error; }
+    } catch (error) {
+      try { store.close(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "Runtime setup and controller store close failed.", {cause:error}); }
+      throw error;
+    }
   }, {signal:initializationSignal, onBusy:() => onDiagnostic?.({type:"runtime.initialization.sqlite-busy"})});
   let manager;
   try {
@@ -105,7 +109,10 @@ export async function createLiveDiscussionRuntime({
       },
     });
   } catch (error) {
-    try { await codeStore.close(); } finally { store.close(); }
+    const errors = [error];
+    try { await codeStore.close(); } catch (cleanup) { errors.push(cleanup); }
+    try { store.close(); } catch (cleanup) { errors.push(cleanup); }
+    if (errors.length > 1) throw new AggregateError(errors, "Runtime initialization and resource cleanup failed.", {cause:error});
     throw error;
   }
 }

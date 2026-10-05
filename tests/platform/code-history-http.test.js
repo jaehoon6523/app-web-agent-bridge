@@ -13,7 +13,7 @@ import { runDiagnosticServer } from "../../scripts/diagnose-server.mjs";
 import { seedHistory } from "../helpers/code-history-fixture.js";
 import { canonicalJson, sha256CanonicalJson } from "../../src/domain/canonical-json.js";
 
-async function serverFixture(t) {
+async function serverFixture(t, {corrupt = false} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-history-http-"));
   const probe = net.createServer();
   await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
@@ -23,7 +23,12 @@ async function serverFixture(t) {
   const config = loadConfig({cwd:root, env:{WORKSPACE:root,CONTROLLER_DATA_DIR:root,PORT:String(port),DASHBOARD_TOKEN:token,
     WEB_EXTENSION_SHARED_SECRET:"history-extension-secret-0123456789abcdef", WEB_EXTENSION_EXPECTED_IDENTITY:"history-extension"}});
   new SqliteStore(config.persistence.databasePath).close();
-  const {record} = seedHistory(config.persistence.databasePath, {versions:1000, eventBytes:1024});
+  const {record} = seedHistory(config.persistence.databasePath, corrupt ? {versions:8} : {versions:1000, eventBytes:1024});
+  if (corrupt) {
+    const writer = new DatabaseSync(config.persistence.databasePath);
+    try { writer.exec("UPDATE code_change_history SET record_json='{broken' WHERE version=1"); }
+    finally { writer.close(); }
+  }
   const events = [], changed = new EventEmitter();
   const child = runDiagnosticServer({runtimeConfig:config, outputFile:path.join(root, "events.jsonl"),
     onEvent:event => { events.push(event); changed.emit("event", event); }});
@@ -103,6 +108,23 @@ test("cold and invalidated real history verification keep independent HTTP respo
   assert.equal(server.events.filter(event => event.type === "persistence.code-store.history-background.completed").length, 2,
     "Recovery and subsequent snapshots must reuse the verified generation.");
   t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,phases}));
+});
+
+test("first-row corruption before progress produces unavailable knowledge while health and natural shutdown remain available", {timeout:15000}, async t => {
+  const server = await serverFixture(t, {corrupt:true});
+  const response = await server.read();
+  assert.equal(response.status,200);
+  const state=await response.json();
+  assert.equal(state.runtimeAvailability.ready,false);
+  assert.equal(state.dataKnowledge.runs.status,"UNAVAILABLE");
+  assert.equal(server.events.some(event=>event.type==='persistence.code-store.history-background.progress'),false);
+  assert.equal(server.events.some(event=>event.type==='persistence.code-store.history-background.completed'),false);
+  for(const route of ['/api/health','/api/preflight']) {
+    const probe=await fetch(server.config.baseUrl+route,{signal:AbortSignal.timeout(1000)});
+    assert.equal(probe.status,200); await probe.arrayBuffer();
+  }
+  assert.deepEqual(await server.stop(),{code:0,signal:null});
+  assert.equal(server.events.some(event=>event.type==='shutdown.stage.error' || event.type==='shutdown.deadline'),false);
 });
 
 test("production shutdown during real history verification cancels the worker and closes every database handle", {timeout:30000}, async t => {

@@ -9,6 +9,18 @@ permissions:
   contents: read
 
 jobs:
+  minimum-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.5.0'
+          cache: npm
+      - run: npm ci
+      - run: node --experimental-sqlite --test tests/platform/sqlite-database.test.js tests/platform/sqlite-startup.test.js
+
   verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 40

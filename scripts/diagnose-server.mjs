@@ -24,7 +24,7 @@ export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {
   const childEnvironment = Object.fromEntries(Object.entries(process.env)
     .filter(([key]) => inheritedKeys.has(key.toUpperCase())));
   const child = fork(fileURLToPath(new URL("./diagnose-server-child.mjs", import.meta.url)), [], {
-    cwd:process.cwd(), execArgv:[],
+    cwd:process.cwd(), execArgv:["--experimental-sqlite"],
     env:childEnvironment,
     stdio:["ignore", "inherit", "inherit", "ipc"],
   });

@@ -16,7 +16,7 @@ CLI 구현 → 고정 후보·실행 증거 → 웹 감사 → 지적 → 수정
 
 ## 실행 설정
 
-Node.js는 `package.json`의 engines 조건을 사용합니다. 이 환경에서 검증한 설치 버전과 호환 여부는 실제 검사 결과로 판단합니다.
+Node.js는 `package.json`의 engines 조건을 사용합니다. Node 22.5의 내장 SQLite는 `--experimental-sqlite`가 필요하므로 서버·진단 실행 명령이 이 옵션을 지정합니다. 직접 `src/server.js`를 실행할 때도 이 옵션을 사용하세요. CI의 전체 gate는 Node 24에서 실행하며, 최소 버전의 시작 확인과 전체 환경 검증은 구분합니다. 검증한 설치 버전과 호환 여부는 실제 검사 결과로 판단합니다.
 
 ```powershell
 npm ci

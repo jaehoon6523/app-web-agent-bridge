@@ -1,5 +1,5 @@
 import { parentPort, workerData } from "node:worker_threads";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "./sqlite-database.js";
 import { verifyHistories } from "./code-change-history.js";
 
 const cancellation = new Int32Array(workerData.cancellation);

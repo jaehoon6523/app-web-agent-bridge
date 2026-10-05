@@ -18,8 +18,8 @@ export class CodeChangeHistoryJob {
         this.exited = true;
         clearTimeout(this.deadline); clearTimeout(this.cleanupDeadline);
         signal?.removeEventListener("abort", abort);
-        if (this.forced) reject(Object.assign(new Error("History verifier required forced cleanup."), {code:"CODE_CHANGE_HISTORY_FORCED_CLEANUP"}));
-        else if (code !== 0 || fault) reject(Object.assign(new Error("History verifier exited abnormally."), {code:"CODE_CHANGE_HISTORY_WORKER_EXIT"}));
+        if (this.forced) reject(Object.assign(new Error("History verifier required forced cleanup.", {cause:this.cancelReason}), {code:"CODE_CHANGE_HISTORY_FORCED_CLEANUP"}));
+        else if (code !== 0 || fault) reject(Object.assign(new Error("History verifier exited abnormally.", {cause:fault}), {code:"CODE_CHANGE_HISTORY_WORKER_EXIT"}));
         else resolve(undefined);
       });
     });

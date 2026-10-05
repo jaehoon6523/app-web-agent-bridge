@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync } from "../persistence/sqlite-database.js";
 import { persistPreparation } from "./preparation-persistence.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";

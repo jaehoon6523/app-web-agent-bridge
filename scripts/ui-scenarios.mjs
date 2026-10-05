@@ -80,21 +80,21 @@ try {
  await page.goto(config.baseUrl); await page.locator('#startPanel').waitFor({state:'visible'});
  await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
  await screenshot('01-first-use');
- // The health disclosure controls remain usable with a keyboard and outside clicks.
- await page.click('#apiHealth'); await page.keyboard.press('Escape');
- assert.equal(await page.locator('#apiHealthDetail').isVisible(),false);
- assert.equal(await page.locator('#apiHealth').evaluate(el=>document.activeElement===el),true);
- await page.click('#channelHealth'); await page.locator('.top strong').click();
- assert.equal(await page.locator('#channelHealthDetail').isVisible(),false);
- // QA-149: Space toggles native disclosure controls without submitting anything.
- await page.locator('#engineHealth').focus(); await page.keyboard.press('Space');
- assert.equal(await page.locator('#engineHealthDetail').isVisible(),true);
- // QA-147: Desktop disclosure stays below its trigger and within the viewport.
- const desktopDetail=await page.locator('#engineHealthDetail').boundingBox();
- const desktopTrigger=await page.locator('#engineHealth').boundingBox();
- assert.ok(desktopDetail.y>=desktopTrigger.y+desktopTrigger.height);
- assert.ok(desktopDetail.x>=0 && desktopDetail.x+desktopDetail.width<=1280);
- await page.keyboard.press('Space');assert.equal(await page.locator('#engineHealthDetail').isVisible(),false);
+ // 5200750 replaced disclosure menus with persistent health cards. Verify
+ // the user-visible status and viewport bounds rather than obsolete toggles.
+ for (const id of ['apiHealth','sessionHealth','engineHealth','channelHealth']) {
+   assert.equal(await page.locator('#'+id+'Detail').isVisible(),true);
+   assert.ok((await page.locator('#'+id+'Detail').textContent()).trim());
+   const detail=await page.locator('#'+id+'Detail').boundingBox();
+   const label=await page.locator('#'+id).boundingBox();
+   assert.ok(detail.y>=label.y+label.height);
+   assert.ok(detail.x>=0 && detail.x+detail.width<=1280);
+ }
+ // The real connection-diagnostics disclosure remains keyboard operable.
+ await page.locator('#connectionDiagnostics summary').focus(); await page.keyboard.press('Space');
+ assert.equal(await page.locator('#connectionDiagnostics').evaluate(el=>el.open),true);
+ await page.keyboard.press('Space');
+ assert.equal(await page.locator('#connectionDiagnostics').evaluate(el=>el.open),false);
  // QA-150: No duplicate IDs can redirect a status update to another element.
  assert.equal(await page.evaluate(()=>{const ids=[...document.querySelectorAll('[id]')].map(el=>el.id);return ids.length===new Set(ids).size;}),true);
  // CASE A: a received 503 is state degradation, not proof that the HTTP server is down.
@@ -155,8 +155,8 @@ try {
 
  // CASE D: authenticated extension without a bound conversation is not an extension failure.
  assert.equal(await page.locator('#channelHealth').evaluate(el=>el.classList.contains('ok')),true);
- assert.equal(await page.locator('#webBindingSignal').evaluate(el=>el.classList.contains('warn')),true);
- assert.match(await page.locator('#webBindingSignal').getAttribute('aria-label'),/연결 필요/u);
+ assert.equal(await page.locator('#webBindingSignal').evaluate(el=>el.classList.contains('unknown')),true);
+ assert.match(await page.locator('#webBindingSignal').getAttribute('aria-label'),/준비 시작 시 연결/u);
  assert.equal(await page.locator('#planRun').isDisabled(),false,
    'preparation may bootstrap a new conversation when no exact binding exists yet');
 
@@ -301,8 +301,8 @@ try {
    'commands must each have a unique request identity');
  await screenshot('10-applied');
  await page.setViewportSize({width:390,height:844}); await page.click('#newRun'); await visible('startPanel');
- await page.click('#engineHealth'); const mobile=await page.locator('#engineHealthDetail').boundingBox();
- assert.ok(mobile.x>=0 && mobile.x+mobile.width<=390); await page.keyboard.press('Escape');
+ assert.equal(await page.locator('#engineHealthDetail').isVisible(),true); const mobile=await page.locator('#engineHealthDetail').boundingBox();
+ assert.ok(mobile.x>=0 && mobile.x+mobile.width<=390);
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth),true);
  await screenshot('11-mobile');
  assert.deepEqual(errors,[]);
