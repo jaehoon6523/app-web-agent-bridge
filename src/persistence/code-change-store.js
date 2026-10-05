@@ -2,40 +2,28 @@ import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import { DatabaseSync } from "node:sqlite";
 import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson, sha256CanonicalJson } from "../domain/canonical-json.js";
+import { historyHash, verifyHistory, verifyHistories } from "./code-change-history.js";
+import { CodeChangeHistoryJob, HISTORY_VERIFICATION_DEADLINE_MS } from "./code-change-history-job.js";
+import { setTimeout as wait } from "node:timers/promises";
 
-function historyHash(runId, version, recordHash, previousHash) {
-  return sha256CanonicalJson({ kind:"CODE_CHANGE_HISTORY", runId, version, recordHash, previousHash });
-}
-
-function verifyRows(runId, rows, current) {
-  if (!rows.length || rows.length !== Number(current.version)) throw new Error("Code change history has missing versions.");
-  let previousHash = null;
-  for (const [index, row] of rows.entries()) {
-    const record = JSON.parse(String(row.record_json));
-    if (row.run_id !== runId || Number(row.version) !== index + 1 || record.runId !== runId
-      || record.version !== index + 1 || sha256CanonicalJson(record) !== row.record_hash
-      || row.previous_hash !== previousHash
-      || row.entry_hash !== historyHash(runId, index + 1, row.record_hash, previousHash)) {
-      throw new Error("Code change history integrity check failed.");
-    }
-    previousHash = row.entry_hash;
-  }
-  const latest = rows.at(-1);
-  if (latest.record_hash !== current.record_hash || latest.record_json !== current.record_json
-    || Number(latest.version) !== Number(current.version)) throw new Error("Code change current record differs from history.");
-}
-
-function checkedRecord(database, row) {
-  const value = JSON.parse(String(row.record_json));
-  if (sha256CanonicalJson(value) !== row.record_hash || value.version !== Number(row.version)
-    || value.runId !== row.run_id) throw new Error("Code change record integrity check failed.");
-  verifyRows(row.run_id,
-    database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(row.run_id), row);
-  return value;
-}
+const changed = () => Object.assign(new Error("Code change history must be verified before use."), {code:"CODE_CHANGE_HISTORY_UNVERIFIED"});
+const same = (left, right) => left !== null && left.data === right.data && left.changes === right.changes && left.schema === right.schema;
 
 export class CodeChangeStore {
-  constructor(filename, {busyTimeoutMs = 5000, onDiagnostic = null} = {}) {
+  #verified = new Map();
+  #stamp = null;
+  #complete = false;
+  #job = null;
+  #preparing = null;
+  #closed = false;
+  #closing = null;
+  #closureFailure = null;
+  constructor(filename, {busyTimeoutMs = 5000, onDiagnostic = null, verification = "synchronous"} = {}) {
+    if (!["synchronous", "background"].includes(verification) || (verification === "background" && filename === ":memory:")) {
+      throw new TypeError("History verification requires a supported mode and a shared database file.");
+    }
+    this.filename = filename;
+    this.verification = verification;
     this.onDiagnostic = onDiagnostic;
     this.database = this.#observe("open", () => new DatabaseSync(filename));
     try { this.#observe("initialize", () => this.#initialize(busyTimeoutMs)); }
@@ -66,67 +54,176 @@ export class CodeChangeStore {
     const historyColumns = this.database.prepare("PRAGMA table_info(code_change_history)").all();
     if (!historyColumns.some((column) => column.name === "previous_hash")) this.database.exec("ALTER TABLE code_change_history ADD COLUMN previous_hash TEXT");
     if (!historyColumns.some((column) => column.name === "entry_hash")) this.database.exec("ALTER TABLE code_change_history ADD COLUMN entry_hash TEXT");
-    this.#observe("history-verify-migrate", () => this.#initializeHistory());
+    if (this.verification === "synchronous") this.#observe("history-verify-migrate", () => this.#initializeHistory());
+    else {
+      // Preserve atomic, no-wait writer acquisition during unpublished setup;
+      // expensive verification never holds this main-thread writer transaction.
+      this.database.exec("BEGIN IMMEDIATE; COMMIT");
+    }
+  }
+  #generation() {
+    if (this.#closed) throw Object.assign(new Error("Code change store is closed."), {code:"CODE_CHANGE_STORE_CLOSED"});
+    return {
+      data:this.database.prepare("PRAGMA data_version").get().data_version,
+      changes:this.database.prepare("SELECT total_changes() AS count").get().count,
+      // Reading the schema also detects same-connection DDL (including triggers).
+      schema:JSON.stringify(this.database.prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name").all()),
+    };
+  }
+  #invalidate() { this.#verified.clear(); this.#stamp = null; this.#complete = false; }
+  #fresh(stamp = this.#generation()) {
+    if (!same(this.#stamp, stamp)) this.#invalidate();
+    return this.#stamp !== null;
   }
   #initializeHistory() {
     this.database.exec("BEGIN IMMEDIATE");
     try {
-      for (const current of this.database.prepare("SELECT * FROM code_change_runs").all()) {
-        const rows = this.database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(current.run_id);
-        const unchained = rows.every((row) => row.entry_hash === null && row.previous_hash === null);
-        if (unchained) {
-          if (rows.length !== Number(current.version)) throw new Error("Legacy code change history has missing versions.");
-          let previousHash = null;
-          for (const [index, row] of rows.entries()) {
-            const record = JSON.parse(String(row.record_json));
-            if (Number(row.version) !== index + 1 || record.runId !== current.run_id
-              || record.version !== index + 1 || sha256CanonicalJson(record) !== row.record_hash) {
-              throw new Error("Legacy code change history integrity check failed.");
-            }
-            const entryHash = historyHash(current.run_id, index + 1, row.record_hash, previousHash);
-            this.database.prepare("UPDATE code_change_history SET previous_hash=?, entry_hash=? WHERE run_id=? AND version=?")
-              .run(previousHash, entryHash, current.run_id, index + 1);
-            previousHash = entryHash;
-          }
-        }
-        verifyRows(current.run_id,
-          this.database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(current.run_id), current);
-      }
+      const before = this.#generation();
+      let verified = verifyHistories(this.database, {migrate:true});
+      // Migration writes can fire triggers. Verify the committed representation,
+      // rather than trusting the rows read before those writes.
+      if (this.#generation().changes !== before.changes) verified = verifyHistories(this.database);
       this.database.exec("COMMIT");
+      const after = this.#generation();
+      if (after.data === before.data && after.schema === before.schema) {
+        this.#verified = new Map(verified.map(entry => [entry.runId, entry]));
+        this.#stamp = after; this.#complete = true;
+      }
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }
   }
+  #read(operation) {
+    const before = this.#generation();
+    this.#fresh(before);
+    const result = operation();
+    const after = this.#generation();
+    if (!same(before, after)) { this.#invalidate(); throw changed(); }
+    this.#stamp = after;
+    return result;
+  }
+  #checked(row) {
+    let entry = this.#verified.get(row.run_id);
+    if (!entry || entry.version !== Number(row.version) || entry.recordHash !== row.record_hash) {
+      if (this.verification === "background") throw changed();
+      entry = this.#observe("history-verify", () => verifyHistory(this.database, row));
+      this.#verified.set(row.run_id, entry);
+    }
+    // Fresh JSON on every read; callers never own cached verification authority.
+    return JSON.parse(String(row.record_json));
+  }
+  #finishWrite(before, expectedChanges) {
+    const after = this.#generation();
+    if (!same(this.#stamp, before) || after.data !== before.data || after.schema !== before.schema
+      || Number(after.changes)-Number(before.changes) !== expectedChanges) {
+      this.#invalidate(); return false;
+    }
+    this.#stamp = after; return true;
+  }
+  #mutationStamp() {
+    const stamp = this.#generation();
+    this.#fresh(stamp);
+    if (this.verification === "background" && !this.#complete) throw changed();
+    return stamp;
+  }
+  #emit(type, detail = {}) {
+    try { this.onDiagnostic?.({type:`persistence.code-store.${type}`, ...detail}); }
+    catch { /* Diagnostics cannot change verification or canonical state. */ }
+  }
+  #startJob(options) {
+    const job = new CodeChangeHistoryJob(this.filename, options);
+    job.closed.catch(error => { this.#closureFailure = error; });
+    return job;
+  }
+  /** @param {{signal?: AbortSignal}} [options] */
+  prepareForRead({signal} = {}) {
+    signal?.throwIfAborted();
+    if (this.#fresh() && this.#complete) return Promise.resolve();
+    if (!this.#preparing) {
+      this.#preparing = this.#prepare(signal).finally(() => { this.#preparing = null; });
+    }
+    return this.#preparing;
+  }
+  async #prepare(signal) {
+    const started = performance.now(), deadline = started + HISTORY_VERIFICATION_DEADLINE_MS;
+    this.#emit("history-background.started");
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        const before = this.#generation();
+        if (performance.now() >= deadline) throw Object.assign(new Error("History verification deadline exceeded."), {code:"CODE_CHANGE_HISTORY_DEADLINE"});
+        let verified;
+        try {
+          this.#job = this.#startJob({signal, timeoutMs:Math.max(1, deadline-performance.now()),
+            onProgress:verifiedVersions => this.#emit("history-background.progress", {verifiedVersions})});
+          verified = await this.#job.result;
+        } catch (error) {
+          if (error.code === "CODE_CHANGE_HISTORY_MIGRATION_REQUIRED") {
+            this.#job = this.#startJob({migrate:true, signal, timeoutMs:Math.max(1, deadline-performance.now())});
+            await this.#job.result;
+            // Take a new generation and verify a new read snapshot after the
+            // migration commit; its proof cannot be published across a write.
+            continue;
+          }
+          if (error.code !== "ERR_SQLITE_ERROR" || (error.errcode & 255) !== 5) throw error;
+          await wait(25, undefined, {signal});
+          continue;
+        } finally { this.#job = null; }
+        const after = this.#generation();
+        if (!same(before, after)) {
+          this.#invalidate(); this.#emit("history-background.invalidated"); continue;
+        }
+        this.#verified = new Map(verified.map(entry => [entry.runId, entry]));
+        this.#stamp = after; this.#complete = true;
+        this.#emit("history-background.completed", {elapsedMs:performance.now()-started, runCount:verified.length});
+        return;
+      }
+    } catch (error) {
+      this.#invalidate(); this.#emit("history-background.failed", {elapsedMs:performance.now()-started, errorCode:error.code || "HISTORY_INTEGRITY_ERROR"});
+      throw error;
+    }
+  }
   list() {
-    const rows = this.#observe("list-read", () =>
-      this.database.prepare("SELECT * FROM code_change_runs ORDER BY rowid").all());
-    return this.#observe("list-verify", () => rows.map((row) => checkedRecord(this.database, row)));
+    return this.#read(() => {
+      if (this.verification === "background" && !this.#complete) throw changed();
+      const rows = this.#observe("list-read", () => this.database.prepare("SELECT * FROM code_change_runs ORDER BY rowid").all());
+      const result = rows.map(row => this.#checked(row));
+      this.#complete = true;
+      return result;
+    });
   }
   setBusyTimeout(milliseconds) { setSqliteBusyTimeout(this.database, milliseconds); }
   get(runId) {
     if (typeof runId !== "string" || !runId) return null;
-    const row = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);
-    return row ? checkedRecord(this.database, row) : null;
+    return this.#read(() => {
+      if (this.verification === "background" && !this.#complete) throw changed();
+      const row = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);
+      return row ? this.#checked(row) : null;
+    });
   }
   history(runId) {
-    const current = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);
-    if (!current) return [];
-    const rows = this.database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(runId);
-    verifyRows(runId, rows, current);
-    return rows
-      .map((row) => {
-        const record = JSON.parse(String(row.record_json));
-        if (record.runId !== runId || record.version !== Number(row.version)
-          || sha256CanonicalJson(record) !== row.record_hash) throw new Error("Code change history integrity check failed.");
-        return record;
-      });
+    return this.#read(() => {
+      const current = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);
+      if (!current) {
+        if (this.verification === "background" && !this.#complete) throw changed();
+        return [];
+      }
+      this.#checked(current);
+      return this.database.prepare("SELECT record_json FROM code_change_history WHERE run_id=? ORDER BY version").all(runId)
+        .map(row => JSON.parse(String(row.record_json)));
+    });
   }
   historyProof(runId) {
-    const current = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);
-    if (!current) return null;
-    const rows = this.database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(runId);
-    verifyRows(runId, rows, current);
-    return { kind:"LOCAL_UNKEYED_HASH_CHAIN", runId, version:Number(current.version),
-      entries:rows.map((row) => ({ version:Number(row.version), recordHash:row.record_hash,
-        previousHash:row.previous_hash, entryHash:row.entry_hash })) };
+    return this.#read(() => {
+      const current = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(runId);
+      if (!current) {
+        if (this.verification === "background" && !this.#complete) throw changed();
+        return null;
+      }
+      this.#checked(current);
+      const rows = this.database.prepare("SELECT version,record_hash,previous_hash,entry_hash FROM code_change_history WHERE run_id=? ORDER BY version").all(runId);
+      return {kind:"LOCAL_UNKEYED_HASH_CHAIN", runId, version:Number(current.version),
+        entries:rows.map(row => ({version:Number(row.version), recordHash:row.record_hash,
+          previousHash:row.previous_hash, entryHash:row.entry_hash}))};
+    });
   }
   deleteFinished(runId, expectedVersion) {
     this.database.exec("BEGIN IMMEDIATE");
@@ -135,56 +232,75 @@ export class CodeChangeStore {
       if (!row || Number(row.version) !== expectedVersion) {
         throw Object.assign(new Error("Run changed; refresh."), { code:"RUN_VERSION_CONFLICT" });
       }
-      const stage = JSON.parse(String(row.record_json)).stage;
-      verifyRows(runId,
-        this.database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(runId), row);
+      const before = this.#mutationStamp();
+      const stage = this.#checked(row).stage;
       if (!["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"].includes(stage)) {
         throw Object.assign(new Error("Only finished runs can be deleted."), { code:"RUN_NOT_TERMINAL" });
       }
-      this.database.prepare("DELETE FROM code_change_history WHERE run_id=?").run(runId);
-      this.database.prepare("DELETE FROM code_change_runs WHERE run_id=? AND version=?").run(runId, expectedVersion);
-      this.database.prepare("DELETE FROM audit_command_receipts WHERE run_id=? AND status='COMPLETED'").run(runId);
+      let changes = Number(this.database.prepare("DELETE FROM code_change_history WHERE run_id=?").run(runId).changes);
+      changes += Number(this.database.prepare("DELETE FROM code_change_runs WHERE run_id=? AND version=?").run(runId, expectedVersion).changes);
+      changes += Number(this.database.prepare("DELETE FROM audit_command_receipts WHERE run_id=? AND status='COMPLETED'").run(runId).changes);
       for (const receipt of this.database.prepare("SELECT request_id, result_json FROM audit_command_receipts WHERE run_id IS NULL AND status='COMPLETED' AND result_json IS NOT NULL").all()) {
         try {
           if (JSON.parse(String(receipt.result_json))?.payload?.runId === runId) {
-            this.database.prepare("DELETE FROM audit_command_receipts WHERE request_id=?").run(receipt.request_id);
+            changes += Number(this.database.prepare("DELETE FROM audit_command_receipts WHERE request_id=?").run(receipt.request_id).changes);
           }
         } catch { /* Older malformed receipts are unrelated to this run. */ }
       }
       this.database.exec("COMMIT");
+      if (this.#finishWrite(before, changes)) this.#verified.delete(runId);
       return true;
-    } catch (error) { this.database.exec("ROLLBACK"); throw error; }
+    } catch (error) { this.database.exec("ROLLBACK"); this.#invalidate(); throw error; }
   }
   save(value, expectedVersion = 0) {
     const record = { ...value, version: expectedVersion + 1, updatedAt: new Date().toISOString() };
     const json = canonicalJson(record), hash = sha256CanonicalJson(record);
     this.database.exec("BEGIN IMMEDIATE");
     try {
+      const before = this.#mutationStamp();
       let previousHash = null;
       if (expectedVersion > 0) {
         const current = this.database.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(record.runId);
         if (!current || Number(current.version) !== expectedVersion) throw Object.assign(new Error("Run changed; refresh before acting."), { code:"RUN_VERSION_CONFLICT" });
-        const rows = this.database.prepare("SELECT * FROM code_change_history WHERE run_id=? ORDER BY version").all(record.runId);
-        verifyRows(record.runId, rows, current);
-        previousHash = rows.at(-1).entry_hash;
+        this.#checked(current);
+        previousHash = this.#verified.get(record.runId).headHash;
       }
       const result = expectedVersion === 0
       ? this.database.prepare("INSERT INTO code_change_runs VALUES (?, ?, ?, ?)").run(record.runId, record.version, json, hash)
       : this.database.prepare("UPDATE code_change_runs SET version=?,record_json=?,record_hash=? WHERE run_id=? AND version=?")
         .run(record.version, json, hash, record.runId, expectedVersion);
       if (Number(result.changes) !== 1) throw Object.assign(new Error("Run changed; refresh before acting."), { code: "RUN_VERSION_CONFLICT" });
+      const headHash = historyHash(record.runId, record.version, hash, previousHash);
       this.database.prepare("INSERT INTO code_change_history (run_id, version, record_json, record_hash, previous_hash, entry_hash) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(record.runId, record.version, json, hash, previousHash, historyHash(record.runId, record.version, hash, previousHash));
+        .run(record.runId, record.version, json, hash, previousHash, headHash);
       this.database.exec("COMMIT");
+      if (this.#finishWrite(before, 2)) this.#verified.set(record.runId, {runId:record.runId, version:record.version, recordHash:hash, headHash});
       return record;
-    } catch (error) { this.database.exec("ROLLBACK"); throw error; }
+    } catch (error) { this.database.exec("ROLLBACK"); this.#invalidate(); throw error; }
   }
   receipt(requestId) { return this.database.prepare("SELECT * FROM audit_command_receipts WHERE request_id=?").get(requestId); }
   beginCommand(requestId, hash, runId = null) {
+    const before = this.#generation(); this.#fresh(before);
     this.database.prepare("INSERT INTO audit_command_receipts (request_id, request_hash, status, result_json, run_id) VALUES (?, ?, 'INTENT', NULL, ?)").run(requestId, hash, runId);
+    this.#finishWrite(before, 1);
   }
   finishCommand(requestId, result) {
-    this.database.prepare("UPDATE audit_command_receipts SET status='COMPLETED', result_json=? WHERE request_id=? AND status='INTENT'").run(canonicalJson(result), requestId);
+    const before = this.#generation(); this.#fresh(before);
+    const resultRow = this.database.prepare("UPDATE audit_command_receipts SET status='COMPLETED', result_json=? WHERE request_id=? AND status='INTENT'").run(canonicalJson(result), requestId);
+    this.#finishWrite(before, Number(resultRow.changes));
   }
-  close() { this.database.close(); }
+  close() {
+    if (this.#closed) return this.#closing;
+    this.#closed = true; this.#invalidate();
+    this.#job?.cancel();
+    try { this.database.close(); }
+    finally {
+      if (this.#job) {
+        const job = this.#job;
+        this.#closing = job.closed.finally(() => this.#emit("history-background.closed", {forced:Boolean(job.forced)}));
+      }
+    }
+    if (this.#closureFailure && !this.#closing) this.#closing = Promise.reject(this.#closureFailure);
+    return this.#closing;
+  }
 }

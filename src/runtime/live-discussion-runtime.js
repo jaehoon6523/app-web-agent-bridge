@@ -56,12 +56,14 @@ export async function createLiveDiscussionRuntime({
         throw new LiveDiscussionRuntimeError("Artifact store initialization failed before runtime startup.",
           "ARTIFACT_STORE_INITIALIZATION_FAILED", {cause});
       }
-      const codeStore = new CodeChangeStore(runtimeConfig.persistence.databasePath, {busyTimeoutMs:0, onDiagnostic});
+      const codeStore = new CodeChangeStore(runtimeConfig.persistence.databasePath, {busyTimeoutMs:0, onDiagnostic, verification:"background"});
       return {store, codeStore, artifactStore};
     } catch (error) { store.close(); throw error; }
   }, {signal:initializationSignal, onBusy:() => onDiagnostic?.({type:"runtime.initialization.sqlite-busy"})});
   let manager;
   try {
+    initializationSignal?.throwIfAborted();
+    await codeStore.prepareForRead({signal:initializationSignal});
     initializationSignal?.throwIfAborted();
     const composition = new LiveDiscussionComposition({
       store,
@@ -103,7 +105,7 @@ export async function createLiveDiscussionRuntime({
       },
     });
   } catch (error) {
-    try { codeStore.close(); } finally { store.close(); }
+    try { await codeStore.close(); } finally { store.close(); }
     throw error;
   }
 }

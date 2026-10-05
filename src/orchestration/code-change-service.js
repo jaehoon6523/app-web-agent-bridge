@@ -1017,7 +1017,7 @@ export class CodeChangeService {
         if (failures.length) throw new AggregateError(failures, "Worker resource closure failed");
       }],
       ["worker jobs settle", () => Promise.allSettled([...this.jobs.values()])],
-      ["worker SQLite store close", () => { this.workerInspections.clear(); this.store.close(); }],
+      ["worker SQLite store close", () => { this.workerInspections.clear(); return this.store.close(); }],
     ], (type,detail) => this.onDiagnostic?.({type,...detail}));
     return this.closePromise;
   }

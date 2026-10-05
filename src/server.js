@@ -126,6 +126,7 @@ export function createBridgeServer({
   }
   let liveRuntime = null;
   let liveRuntimePromise = null;
+  let runtimeClosureFailure = null;
   let closing = false;
   const runtimeInitialization = new AbortController();
 
@@ -137,7 +138,10 @@ export function createBridgeServer({
     if (!webSession) {
       throw new Error("Web extension integration is not configured.");
     }
-    if (liveRuntime !== null) return liveRuntime;
+    if (liveRuntime !== null) {
+      await liveRuntime.codeChanges?.store?.prepareForRead?.({signal:runtimeInitialization.signal});
+      return liveRuntime;
+    }
     if (liveRuntimePromise === null) {
       diagnostics.emit("runtime.initialization.started");
       let initialization;
@@ -160,6 +164,7 @@ export function createBridgeServer({
           return runtime;
         })
         .catch((error) => {
+          if (["CODE_CHANGE_HISTORY_FORCED_CLEANUP", "CODE_CHANGE_HISTORY_WORKER_EXIT"].includes(error?.code)) runtimeClosureFailure = error;
           diagnostics.emit("runtime.initialization.failed");
           throw error;
         })
@@ -583,7 +588,10 @@ export function createBridgeServer({
         }
       } }],
       ["webSession.close", () => webSession?.close()],
-      ["runtime initialization", async () => { if (liveRuntimePromise) await liveRuntimePromise.catch(() => {}); }],
+      ["runtime initialization", async () => {
+        if (liveRuntimePromise) await liveRuntimePromise.catch(() => {});
+        if (runtimeClosureFailure) throw runtimeClosureFailure;
+      }],
       ["runtime.close", () => liveRuntime?.close()],
       ["extension websocket close", () => new Promise(resolve => extensionWss.close(error => {
         diagnostics.emit("shutdown.websocket.close.callback", {errorCode:diagnosticErrorCode(error)});
