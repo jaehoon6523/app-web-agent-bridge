@@ -71,6 +71,22 @@ export class CodeChangeStore {
     };
   }
   #invalidate() { this.#verified.clear(); this.#stamp = null; this.#complete = false; }
+  #assertCommittedView() {
+    if (this.#closed) throw Object.assign(new Error("Code change store is closed."), {code:"CODE_CHANGE_STORE_CLOSED"});
+    // A verifier on another connection cannot see this handle's provisional
+    // writes. Reject caller-owned transactions without rolling them back. The
+    // deferred BEGIN/ROLLBACK probe works on the declared Node 22.5 minimum and
+    // acquires no writer lock; do not depend on newer DatabaseSync properties.
+    try { this.database.exec("BEGIN"); }
+    catch (error) {
+      if (error?.code !== "ERR_SQLITE_ERROR" || !/within a transaction/u.test(error.message)) throw error;
+      this.#invalidate();
+      throw Object.assign(new Error("Finish the open SQLite transaction before using verified code change records."), {
+        code:"CODE_CHANGE_TRANSACTION_ACTIVE",
+      });
+    }
+    this.database.exec("ROLLBACK");
+  }
   #fresh(stamp = this.#generation()) {
     if (!same(this.#stamp, stamp)) this.#invalidate();
     return this.#stamp !== null;
@@ -92,9 +108,11 @@ export class CodeChangeStore {
     } catch (error) { this.database.exec("ROLLBACK"); throw error; }
   }
   #read(operation) {
+    this.#assertCommittedView();
     const before = this.#generation();
     this.#fresh(before);
     const result = operation();
+    this.#assertCommittedView();
     const after = this.#generation();
     if (!same(before, after)) { this.#invalidate(); throw changed(); }
     this.#stamp = after;
@@ -136,6 +154,7 @@ export class CodeChangeStore {
   /** @param {{signal?: AbortSignal}} [options] */
   prepareForRead({signal} = {}) {
     signal?.throwIfAborted();
+    this.#assertCommittedView();
     if (this.#fresh() && this.#complete) return Promise.resolve();
     if (!this.#preparing) {
       this.#preparing = this.#prepare(signal).finally(() => { this.#preparing = null; });
@@ -148,6 +167,7 @@ export class CodeChangeStore {
     try {
       for (;;) {
         signal?.throwIfAborted();
+        this.#assertCommittedView();
         const before = this.#generation();
         if (performance.now() >= deadline) throw Object.assign(new Error("History verification deadline exceeded."), {code:"CODE_CHANGE_HISTORY_DEADLINE"});
         let verified;
@@ -167,6 +187,7 @@ export class CodeChangeStore {
           await wait(25, undefined, {signal});
           continue;
         } finally { this.#job = null; }
+        this.#assertCommittedView();
         const after = this.#generation();
         if (!same(before, after)) {
           this.#invalidate(); this.#emit("history-background.invalidated"); continue;

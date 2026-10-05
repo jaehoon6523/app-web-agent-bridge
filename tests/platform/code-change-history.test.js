@@ -71,6 +71,49 @@ test("an external valid append is reverified and becomes the same current durabl
   assert.deepEqual(store.get(record.runId), appended);
 });
 
+for (const verification of ["synchronous", "background"]) {
+  test(`${verification}: caller-owned provisional history cannot acquire or reuse a committed proof`, async t => {
+    const {filename, record, headHash} = fixture(t);
+    const store = new CodeChangeStore(filename, {verification}); t.after(() => store.close());
+    await store.prepareForRead();
+    store.database.exec("BEGIN; UPDATE code_change_history SET entry_hash='uncommitted-corrupt' WHERE version=1");
+    try {
+      assert.throws(() => store.prepareForRead(), {code:"CODE_CHANGE_TRANSACTION_ACTIVE"});
+      for (const read of [() => store.list(), () => store.get(record.runId), () => store.history(record.runId), () => store.historyProof(record.runId)]) {
+        assert.throws(read, {code:"CODE_CHANGE_TRANSACTION_ACTIVE"});
+      }
+      // Rejection must preserve the caller's transaction and provisional write.
+      assert.equal(store.database.prepare("SELECT entry_hash FROM code_change_history WHERE version=1").get().entry_hash, "uncommitted-corrupt");
+    } finally { store.database.exec("ROLLBACK"); }
+    await store.prepareForRead();
+    assert.deepEqual(store.get(record.runId), record);
+    assert.equal(store.historyProof(record.runId).entries.at(-1).entryHash, headHash);
+    store.database.exec("SAVEPOINT caller_owned; UPDATE code_change_history SET entry_hash='committed-corrupt' WHERE version=1");
+    assert.throws(() => store.historyProof(record.runId), {code:"CODE_CHANGE_TRANSACTION_ACTIVE"});
+    store.database.exec("RELEASE caller_owned");
+    await assert.rejects(store.prepareForRead(), /integrity/u);
+  });
+}
+
+test("a transaction opened during worker verification prevents publishing its committed proof", async t => {
+  const {filename, record} = fixture(t, {versions:300, eventBytes:32});
+  let opened = false;
+  const store = new CodeChangeStore(filename, {verification:"background", onDiagnostic:event => {
+    if (!opened && event.type === "persistence.code-store.history-background.progress") {
+      opened = true;
+      store.database.exec("BEGIN; UPDATE code_change_history SET entry_hash='uncommitted-corrupt' WHERE version=1");
+    }
+  }});
+  t.after(() => store.close());
+  try {
+    await assert.rejects(store.prepareForRead(), {code:"CODE_CHANGE_TRANSACTION_ACTIVE"});
+    assert.equal(opened, true);
+    assert.throws(() => store.get(record.runId), {code:"CODE_CHANGE_TRANSACTION_ACTIVE"});
+  } finally { if (opened) store.database.exec("ROLLBACK"); }
+  await store.prepareForRead();
+  assert.deepEqual(store.get(record.runId), record);
+});
+
 test("a commit during a real verification discards the snapshot proof before publishing it", async t => {
   const {filename} = fixture(t, {versions:300, eventBytes:32});
   let changed = false; const events = [];
