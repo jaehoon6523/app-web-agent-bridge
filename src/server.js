@@ -1,3 +1,4 @@
+import { ResourceClosureError, isResourceClosureFailure } from "./persistence/resource-closure.js";
 import { PreparationService } from "./orchestration/preparation-service.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
@@ -126,9 +127,14 @@ export function createBridgeServer({
   }
   let liveRuntime = null;
   let liveRuntimePromise = null;
-  let runtimeClosureFailure = null;
+  const runtimeClosureFailures = [];
   let closing = false;
   const runtimeInitialization = new AbortController();
+
+  function retainRuntimeClosureFailure(error) {
+    if (error?.code === "LIVE_RUNTIME_CLEANUP_FAILED" && isResourceClosureFailure(error)
+      && !runtimeClosureFailures.includes(error)) runtimeClosureFailures.push(error);
+  }
 
   async function getLiveRuntime() {
     if (closing) throw new Error("Server is shutting down.");
@@ -154,6 +160,7 @@ export function createBridgeServer({
           onDiagnostic:event => diagnostics.emit(event.type, event),
         });
       } catch (error) {
+        retainRuntimeClosureFailure(error);
         diagnostics.emit("runtime.initialization.failed");
         throw error;
       }
@@ -165,7 +172,7 @@ export function createBridgeServer({
         })
         .catch((error) => {
           // Operation rejection alone does not prove failed resource closure.
-          if (error?.code === "LIVE_RUNTIME_CLEANUP_FAILED") runtimeClosureFailure = error;
+          retainRuntimeClosureFailure(error);
           diagnostics.emit("runtime.initialization.failed");
           throw error;
         })
@@ -591,7 +598,16 @@ export function createBridgeServer({
       ["webSession.close", () => webSession?.close()],
       ["runtime initialization", async () => {
         if (liveRuntimePromise) await liveRuntimePromise.catch(() => {});
-        if (runtimeClosureFailure) throw runtimeClosureFailure;
+        if (runtimeClosureFailures.length === 1) throw runtimeClosureFailures[0];
+        if (runtimeClosureFailures.length > 1) {
+          const failures = [...runtimeClosureFailures];
+          const resourceFailures = failures.flatMap(error => error.resourceFailures);
+          // Keep each attempt as its own cause graph, in observation order.
+          throw new ResourceClosureError({resourceOwner:"BridgeServer", failureStage:"runtime.initialization",
+            operationError:failures[0].operationError, cause:failures[0], errors:failures,
+            cleanupErrors:resourceFailures.map(failure => failure.error), resourceFailures,
+            code:"LIVE_RUNTIME_CLEANUP_FAILED"});
+        }
       }],
       ["runtime.close", () => liveRuntime?.close()],
       ["extension websocket close", () => new Promise(resolve => extensionWss.close(error => {

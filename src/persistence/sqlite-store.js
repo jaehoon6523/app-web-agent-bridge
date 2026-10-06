@@ -1,3 +1,4 @@
+import { ResourceClosureError } from "./resource-closure.js";
 import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import { DatabaseSync } from "./sqlite-database.js";
 import { rollbackAfterFailure } from "./transaction-cleanup.js";
@@ -131,7 +132,7 @@ function normalizeConstructorInput(input) {
 
 export class SqliteStore {
   #database;
-  #closed = false;
+  #closed = false; #closeFailure = null;
   #transactionDepth = 0;
 
   constructor(input) {
@@ -157,7 +158,8 @@ export class SqliteStore {
       }
     } catch (error) {
       try { this.#database.close(); }
-      catch (cleanup) { throw new AggregateError([error, cleanup], "SQLite initialization and close failed.", {cause:error}); }
+      catch (cleanup) { throw new ResourceClosureError({resourceOwner:"SqliteStore", failureStage:"constructor.close",
+        operationError:error, cleanupErrors:[cleanup]}); }
       finally { this.#closed = true; }
       throw error;
     }
@@ -174,8 +176,9 @@ export class SqliteStore {
   }
 
   close() {
+    if (this.#closeFailure) throw this.#closeFailure;
     if (this.#closed) return;
-    this.#database.close();
+    try { this.#database.close(); } catch (error) { this.#closeFailure = error; throw error; }
     this.#closed = true;
   }
 

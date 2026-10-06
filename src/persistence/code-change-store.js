@@ -1,3 +1,4 @@
+import { ResourceClosureError } from "./resource-closure.js";
 import path from "node:path";
 import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import { DatabaseSync } from "./sqlite-database.js";
@@ -30,7 +31,8 @@ export class CodeChangeStore {
     try { this.#observe("initialize", () => this.#initialize(busyTimeoutMs)); }
     catch (error) {
       try { this.database.close(); }
-      catch (cleanup) { throw new AggregateError([error, cleanup], "Code change initialization and close failed.", {cause:error}); }
+      catch (cleanup) { throw new ResourceClosureError({resourceOwner:"CodeChangeStore", failureStage:"constructor.close",
+        operationError:error, cleanupErrors:[cleanup]}); }
       throw error;
     }
   }

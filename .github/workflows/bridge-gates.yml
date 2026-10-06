@@ -50,6 +50,7 @@ jobs:
       - run: npm ci
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:platform
+      - run: npm run test:runtime-cleanup-contract
       - if: runner.os == 'Windows'
         run: node --test --experimental-test-isolation=none tests/persistence-cleanup.test.js tests/verification-lifecycle.test.js tests/preparation-contention.test.js
       - run: npm run test:platform:browser

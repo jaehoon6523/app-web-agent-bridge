@@ -1,3 +1,4 @@
+import { ResourceClosureError, isResourceClosureFailure } from "../persistence/resource-closure.js";
 import fs from "node:fs";
 import path from "node:path";
 import { closeSteps } from '../diagnostics/shutdown.js';
@@ -20,6 +21,19 @@ export class LiveDiscussionRuntimeError extends Error {
     this.code = code;
     this.details = details;
   }
+}
+
+// Normalize only explicit owner evidence or an error caught from an actual
+// close call. Retain both the original cause chain and every cleanup failure.
+function initializationFailure(error, resourceFailures = []) {
+  const inherited = isResourceClosureFailure(error) ? error : null;
+  if (!inherited && resourceFailures.length === 0) return error;
+  const failures = [...(inherited?.resourceFailures ?? []), ...resourceFailures];
+  return new ResourceClosureError({resourceOwner:"LiveDiscussionRuntime", failureStage:"initialization.cleanup",
+    operationError:inherited ? inherited.operationError : error, cause:error,
+    errors:[error, ...resourceFailures.map(failure => failure.error)],
+    cleanupErrors:failures.map(failure => failure.error), resourceFailures:failures,
+    code:"LIVE_RUNTIME_CLEANUP_FAILED"});
 }
 
 /**
@@ -47,7 +61,8 @@ export async function createLiveDiscussionRuntime({
   fs.mkdirSync(path.dirname(runtimeConfig.persistence.databasePath), { recursive: true });
   // Only unpublished SQLite setup is retried. Recovery, provider commands and
   // user mutations run once, after both handles have been acquired.
-  const {store, codeStore, artifactStore} = await initializeSqlite(() => {
+  let resources;
+  try { resources = await initializeSqlite(() => {
     const store = new SqliteStore({filename:runtimeConfig.persistence.databasePath, busyTimeoutMs:0, onDiagnostic});
     try {
       let artifactStore;
@@ -60,10 +75,16 @@ export async function createLiveDiscussionRuntime({
       return {store, codeStore, artifactStore};
     } catch (error) {
       try { store.close(); }
-      catch (cleanup) { throw Object.assign(new AggregateError([error, cleanup], "Runtime setup and controller store close failed.", {cause:error}), {code:"LIVE_RUNTIME_CLEANUP_FAILED"}); }
-      throw error;
+      catch (cleanup) { throw initializationFailure(error, [{resourceOwner:"SqliteStore", failureStage:"setup.close", error:cleanup}]); }
+      throw initializationFailure(error);
     }
-  }, {signal:initializationSignal, onBusy:() => onDiagnostic?.({type:"runtime.initialization.sqlite-busy"})});
+  }, {signal:initializationSignal, onBusy:() => onDiagnostic?.({type:"runtime.initialization.sqlite-busy"})}); }
+  catch (error) {
+    // Controller construction occurs before the setup try and owns its cleanup.
+    if (error?.code === "LIVE_RUNTIME_CLEANUP_FAILED" && isResourceClosureFailure(error)) throw error;
+    throw initializationFailure(error);
+  }
+  const {store, codeStore, artifactStore} = resources;
   let manager;
   try {
     initializationSignal?.throwIfAborted();
@@ -109,10 +130,9 @@ export async function createLiveDiscussionRuntime({
       },
     });
   } catch (error) {
-    const errors = [error];
-    try { await codeStore.close(); } catch (cleanup) { errors.push(cleanup); }
-    try { store.close(); } catch (cleanup) { errors.push(cleanup); }
-    if (errors.length > 1) throw Object.assign(new AggregateError(errors, "Runtime initialization and resource cleanup failed.", {cause:error}), {code:"LIVE_RUNTIME_CLEANUP_FAILED"});
-    throw error;
+    const failures = [];
+    try { await codeStore.close(); } catch (cleanup) { failures.push({resourceOwner:"CodeChangeStore", failureStage:"initialization.close", error:cleanup}); }
+    try { store.close(); } catch (cleanup) { failures.push({resourceOwner:"SqliteStore", failureStage:"initialization.close", error:cleanup}); }
+    throw initializationFailure(error, failures);
   }
 }
