@@ -112,8 +112,9 @@ test('post-dispatch persistence failure preserves uncertain authority and never 
 
 test('rollback uncertainty never retries a SQLite write',async()=>{
   let attempts=0;const busy=Object.assign(Error('busy'),{code:'ERR_SQLITE_ERROR',errcode:5});
-  const db={exec(sql){if(sql==='BEGIN IMMEDIATE')attempts++;if(sql==='COMMIT')throw busy;if(sql==='ROLLBACK')throw Error('rollback failed')},prepare(){return {run(){}}}};
-  await assert.rejects(persistPreparation(db,()=> '{}',()=>{},()=>false),e=>e===busy);assert.equal(attempts,1);
+  const cleanup=Error('rollback failed');
+  const db={exec(sql){if(sql==='BEGIN IMMEDIATE')attempts++;if(sql==='COMMIT')throw busy;if(sql==='ROLLBACK')throw cleanup},prepare(){return {run(){}}}};
+  await assert.rejects(persistPreparation(db,()=> '{}',()=>{},()=>false),e=>e instanceof AggregateError && e.cause===busy && e.errors[0]===busy && e.errors[1]===cleanup);assert.equal(attempts,1);
 });
 
 test('GET projection reconciliation fails fast on a write lock instead of spending the mutation wait budget',{timeout:10000},async t=>{

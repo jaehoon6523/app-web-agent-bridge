@@ -647,6 +647,7 @@ export async function performVerification(service, runId, workspace, verificatio
     events: [...run.events, { eventId: `event_${randomUUID()}`, type: "VERIFICATION_FINISHED", createdAt: result.record.finishedAt,
       payload: { verificationId: verification.verificationId, evidenceId: result.evidence.evidenceId, result: result.evidence.result } }] });
   service.assertActive(runId);
+  if (!result.record.terminationConfirmed) throw new Error("Verification process resource closure failed; recovery required.");
   if (!result.record.candidateUnchanged) throw new Error("Verification changed the candidate or could not establish candidate identity; recovery required.");
   return result;
 }

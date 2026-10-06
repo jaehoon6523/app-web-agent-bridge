@@ -1,5 +1,6 @@
 import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import { DatabaseSync } from "./sqlite-database.js";
+import { rollbackAfterFailure } from "./transaction-cleanup.js";
 import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { decodeCanonicalJson } from "./canonical-record.js";
@@ -155,8 +156,9 @@ export class SqliteStore {
         observe("projections", () => this.rebuildRunProjections({ compare: true }));
       }
     } catch (error) {
-      this.#database.close();
-      this.#closed = true;
+      try { this.#database.close(); }
+      catch (cleanup) { throw new AggregateError([error, cleanup], "SQLite initialization and close failed.", {cause:error}); }
+      finally { this.#closed = true; }
       throw error;
     }
   }
@@ -191,12 +193,7 @@ export class SqliteStore {
       this.#database.exec("COMMIT");
       return result;
     } catch (error) {
-      try {
-        this.#database.exec("ROLLBACK");
-      } catch {
-        // Preserve the operation error; a failed rollback cannot make it successful.
-      }
-      throw error;
+      rollbackAfterFailure(this.#database, error, "SQLite operation and rollback failed.");
     } finally {
       this.#transactionDepth = 0;
     }

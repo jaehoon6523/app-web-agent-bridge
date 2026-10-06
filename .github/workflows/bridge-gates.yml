@@ -50,6 +50,8 @@ jobs:
       - run: npm ci
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:platform
+      - if: runner.os == 'Windows'
+        run: node --test --experimental-test-isolation=none tests/persistence-cleanup.test.js tests/verification-lifecycle.test.js tests/preparation-contention.test.js
       - run: npm run test:platform:browser
       - run: npm run test:e2e:ci
       - if: runner.os == 'Linux'

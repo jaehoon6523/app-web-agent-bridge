@@ -164,7 +164,8 @@ export function createBridgeServer({
           return runtime;
         })
         .catch((error) => {
-          if (["CODE_CHANGE_HISTORY_FORCED_CLEANUP", "CODE_CHANGE_HISTORY_WORKER_EXIT"].includes(error?.code)) runtimeClosureFailure = error;
+          // Operation rejection alone does not prove failed resource closure.
+          if (error?.code === "LIVE_RUNTIME_CLEANUP_FAILED") runtimeClosureFailure = error;
           diagnostics.emit("runtime.initialization.failed");
           throw error;
         })

@@ -1,4 +1,5 @@
 import { canonicalJson, sha256Text } from "../domain/canonical-json.js";
+import { rollbackAfterFailure } from "./transaction-cleanup.js";
 import { validateAgentRun } from "../domain/contracts.js";
 
 function requireRunId(value) {
@@ -236,12 +237,7 @@ function transact(database, operation) {
     database.exec("COMMIT");
     return result;
   } catch (error) {
-    try {
-      database.exec("ROLLBACK");
-    } catch {
-      // Preserve the first failure.
-    }
-    throw error;
+    rollbackAfterFailure(database, error, "Projection rebuild and rollback failed.");
   }
 }
 

@@ -189,13 +189,13 @@ export class CodeChangeStore {
           verified = await this.#job.result;
           if (migrate) { migrate = false; continue; }
         } catch (error) {
-          if (error.code === "CODE_CHANGE_HISTORY_MIGRATION_REQUIRED") {
+          if (error?.code === "CODE_CHANGE_HISTORY_MIGRATION_REQUIRED") {
             // Migration uses the same retry/deadline/closed gate as reads.
             // Its committed write is followed by a fresh read snapshot.
             migrate = true;
             continue;
           }
-          if (error.code !== "ERR_SQLITE_ERROR" || (error.errcode & 255) !== 5) throw error;
+          if (error?.code !== "ERR_SQLITE_ERROR" || (error.errcode & 255) !== 5) throw error;
           this.#emit("history-background.busy-retry");
           await wait(25, undefined, {signal});
           continue;
@@ -211,7 +211,7 @@ export class CodeChangeStore {
         return;
       }
     } catch (error) {
-      this.#invalidate(); this.#emit("history-background.failed", {elapsedMs:performance.now()-started, errorCode:error.code || "HISTORY_INTEGRITY_ERROR"});
+      this.#invalidate(); this.#emit("history-background.failed", {elapsedMs:performance.now()-started, errorCode:error?.code || "HISTORY_INTEGRITY_ERROR"});
       throw error;
     }
   }

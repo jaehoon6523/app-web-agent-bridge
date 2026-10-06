@@ -23,7 +23,9 @@ export async function persistPreparation(db, json, committed, closed) {
     } catch (error) {
       if (began) {
         try { db.exec('ROLLBACK'); }
-        catch { throw error; } // Unknown transaction outcome cannot be retried.
+        catch (cleanup) {
+          throw new AggregateError([error, cleanup], 'Preparation persistence and rollback failed.', {cause:error});
+        } // Unknown transaction outcome cannot be retried.
       }
       if (error?.code !== 'ERR_SQLITE_ERROR' || error.errcode !== 5 || performance.now() >= deadline) throw error;
       lastBusy = error;

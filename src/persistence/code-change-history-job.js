@@ -3,6 +3,12 @@ import { Worker } from "node:worker_threads";
 export const HISTORY_VERIFICATION_DEADLINE_MS = 60_000;
 const CANCELLATION_DEADLINE_MS = 2_000;
 
+function restoreError(detail) {
+  const errors = detail.errors?.map(restoreError);
+  const error = errors ? new AggregateError(errors, detail.message, {cause:errors[0]}) : new Error(detail.message);
+  return Object.assign(error, {code:detail.code, errcode:detail.errcode});
+}
+
 // One-shot verifier owns its own SQLite handle. Completion includes natural
 // thread exit; forced cleanup is reported as a failure, never successful close.
 export class CodeChangeHistoryJob {
@@ -20,6 +26,7 @@ export class CodeChangeHistoryJob {
         signal?.removeEventListener("abort", abort);
         if (this.forced) reject(Object.assign(new Error("History verifier required forced cleanup.", {cause:this.cancelReason}), {code:"CODE_CHANGE_HISTORY_FORCED_CLEANUP"}));
         else if (code !== 0 || fault) reject(Object.assign(new Error("History verifier exited abnormally.", {cause:fault}), {code:"CODE_CHANGE_HISTORY_WORKER_EXIT"}));
+        else if (output?.cleanupFailed) reject(Object.assign(new Error("History verifier cleanup failed.", {cause:restoreError(output.error)}), {code:"CODE_CHANGE_HISTORY_CLEANUP_FAILED"}));
         else resolve(undefined);
       });
     });
@@ -35,16 +42,20 @@ export class CodeChangeHistoryJob {
     this.deadline = setTimeout(() => this.cancel(Object.assign(new Error("History verification deadline exceeded."), {
       code:"CODE_CHANGE_HISTORY_DEADLINE",
     })), timeoutMs);
-    this.result = this.closed.then(() => {
-      if (this.cancelReason) throw this.cancelReason;
+    this.result = this.closed.catch(error => {
+      if (error.code === "CODE_CHANGE_HISTORY_CLEANUP_FAILED") throw error.cause;
+      throw error;
+    }).then(() => {
+      if (this.cancelled) throw this.cancelReason;
       if (!output) throw Object.assign(new Error("History verifier returned no result."), {code:"CODE_CHANGE_HISTORY_WORKER_EXIT"});
-      if (!output.ok) throw Object.assign(new Error(output.error.message), {code:output.error.code, errcode:output.error.errcode});
+      if (!output.ok) throw restoreError(output.error);
       return output.verified;
     });
     this.result.catch(() => {});
   }
   cancel(reason = Object.assign(new Error("Code change history verification cancelled."), {code:"CODE_CHANGE_HISTORY_CANCELLED"})) {
-    if (this.cancelReason || this.exited) return;
+    if (this.cancelled || this.exited) return;
+    this.cancelled = true;
     this.cancelReason = reason;
     Atomics.store(this.cancellation, 0, 1);
     this.cleanupDeadline = setTimeout(() => {

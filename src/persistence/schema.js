@@ -1,5 +1,6 @@
 import { RunPhase, isVocabularyValue } from "../domain/vocabulary.js";
 import { setSqliteBusyTimeout } from "./sqlite-initialization.js";
+import { rollbackAfterFailure } from "./transaction-cleanup.js";
 
 export const SQLITE_SCHEMA_VERSION = 6;
 
@@ -494,8 +495,7 @@ export function initializeSqliteSchema(database, {busyTimeoutMs = 5000} = {}) {
     database.exec(`PRAGMA user_version = ${SQLITE_SCHEMA_VERSION}`);
     database.exec("COMMIT");
   } catch (error) {
-    database.exec("ROLLBACK");
-    throw error;
+    rollbackAfterFailure(database, error, "SQLite schema initialization and rollback failed.");
   }
   return SQLITE_SCHEMA_VERSION;
 }

@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { redactForEvidence } from "../security/redaction.js";
 import { exactObject, uniqueItems, nonempty } from "../domain/audit-contract.js";
+import { observeChildClose, waitChildClose } from "../runtime/child-close.js";
 
 export function validateVerifications(items) {
   uniqueItems(items, "verificationId", "verifications");
@@ -56,11 +57,11 @@ export async function executeVerification({ workspace, capture, candidateId, ver
     const environment = Object.fromEntries(Object.entries(process.env).filter(([key]) => ["PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "LANG", "PATHEXT"].includes(key.toUpperCase())));
     environment.BRIDGE_RESULT_DIR = resultRoot;
     environment.BRIDGE_EXECUTION_ID = executionId;
-    await new Promise((resolve) => {
-      if (signal?.aborted) { record.aborted = true; record.terminationConfirmed = true; resolve(null); return; }
+    if (signal?.aborted) { record.aborted = true; record.terminationConfirmed = true; }
+    else {
       const child = spawn(verification.executable, verification.args, { cwd: record.cwd, env: environment, windowsHide: true, shell: false });
+      const observation = observeChildClose(child);
       const stop = () => { record.aborted = true; child.kill("SIGTERM"); };
-      const timer = setTimeout(() => { record.timedOut = true; child.kill("SIGKILL"); }, verification.timeoutMs);
       signal?.addEventListener("abort", stop, { once: true });
       const output = (key, chunk) => {
         const remaining = 8 * 1024 * 1024 - Buffer.byteLength(record[key]);
@@ -69,11 +70,22 @@ export async function executeVerification({ workspace, capture, candidateId, ver
       };
       child.stdout.on("data", (c) => output("stdout", c)); child.stderr.on("data", (c) => output("stderr", c));
       child.on("error", (error) => { record.error = error.message; });
-      child.on("close", (code, killedBy) => {
-        clearTimeout(timer); signal?.removeEventListener("abort", stop);
-        record.exitCode = code; record.signal = killedBy; record.terminationConfirmed = true; resolve(null);
-      });
-    });
+      try {
+        await waitChildClose(child, observation, {timeoutMs:verification.timeoutMs,
+          onDeadline:() => {record.timedOut = true;}});
+      } catch (error) {
+        record.error = error.message;
+      } finally {
+        signal?.removeEventListener("abort", stop);
+        record.exitCode = child.exitCode; record.signal = child.signalCode;
+        record.terminationConfirmed = Boolean(observation.result);
+        // Closing our observation pipes does not claim descendant termination.
+        // The controller retains recovery authority when closure is unknown.
+        if (!record.terminationConfirmed) {
+          child.stdin?.destroy(); child.stdout?.destroy(); child.stderr?.destroy();
+        }
+      }
+    }
     try { workspace.assertCandidate(capture); record.candidateUnchanged = true; }
     catch (error) { record.error = error.message; }
     for (const filename of verification.resultFiles) {

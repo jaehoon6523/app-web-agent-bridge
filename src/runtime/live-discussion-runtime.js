@@ -60,7 +60,7 @@ export async function createLiveDiscussionRuntime({
       return {store, codeStore, artifactStore};
     } catch (error) {
       try { store.close(); }
-      catch (cleanup) { throw new AggregateError([error, cleanup], "Runtime setup and controller store close failed.", {cause:error}); }
+      catch (cleanup) { throw Object.assign(new AggregateError([error, cleanup], "Runtime setup and controller store close failed.", {cause:error}), {code:"LIVE_RUNTIME_CLEANUP_FAILED"}); }
       throw error;
     }
   }, {signal:initializationSignal, onBusy:() => onDiagnostic?.({type:"runtime.initialization.sqlite-busy"})});
@@ -112,7 +112,7 @@ export async function createLiveDiscussionRuntime({
     const errors = [error];
     try { await codeStore.close(); } catch (cleanup) { errors.push(cleanup); }
     try { store.close(); } catch (cleanup) { errors.push(cleanup); }
-    if (errors.length > 1) throw new AggregateError(errors, "Runtime initialization and resource cleanup failed.", {cause:error});
+    if (errors.length > 1) throw Object.assign(new AggregateError(errors, "Runtime initialization and resource cleanup failed.", {cause:error}), {code:"LIVE_RUNTIME_CLEANUP_FAILED"});
     throw error;
   }
 }

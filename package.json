@@ -36,8 +36,9 @@
     "test:e2e": "node scripts/e2e/suite.mjs",
     "test:e2e:ci": "node scripts/e2e/with-browser.mjs scripts/e2e/suite.mjs",
     "test:e2e:shutdown": "node scripts/e2e/with-browser.mjs scripts/e2e/suite.mjs --flow=UF-04",
-    "test:platform": "node --test --experimental-test-isolation=none tests/e2e/graceful-shutdown.test.js tests/e2e/portability.test.js tests/e2e/active-worker-cleanup.test.js tests/e2e/preflight-readiness.test.js tests/e2e/execution-summary.test.js tests/platform/lifecycle.test.js tests/platform/persistence.test.js tests/platform/sqlite-database.test.js tests/platform/sqlite-startup.test.js tests/platform/code-change-history.test.js tests/platform/code-history-boundary.test.js tests/platform/code-history-http.test.js tests/platform/runner.test.js tests/contract/network-lifecycle/http-headers.test.js tests/contract/network-lifecycle/socket-observation.test.js tests/contract/network-lifecycle/http-unrequested-shutdown.test.js tests/server-diagnostics.test.js",
-    "test:platform:browser": "node scripts/e2e/with-browser.mjs --test tests/platform/browser.contract.mjs"
+    "test:platform": "node --test --experimental-test-isolation=none tests/e2e/graceful-shutdown.test.js tests/e2e/portability.test.js tests/e2e/active-worker-cleanup.test.js tests/e2e/preflight-readiness.test.js tests/e2e/execution-summary.test.js tests/platform/lifecycle.test.js tests/platform/persistence.test.js tests/platform/sqlite-database.test.js tests/platform/sqlite-startup.test.js tests/platform/code-change-history.test.js tests/platform/code-history-boundary.test.js tests/platform/code-history-worker-cleanup.test.js tests/platform/code-history-error-contract.test.js tests/platform/code-history-remaining.test.js tests/platform/code-history-owner.test.js tests/platform/code-history-http.test.js tests/platform/code-history-http-closure.test.js tests/platform/runner.test.js tests/contract/network-lifecycle/http-headers.test.js tests/contract/network-lifecycle/socket-observation.test.js tests/contract/network-lifecycle/http-unrequested-shutdown.test.js tests/server-diagnostics.test.js",
+    "test:platform:browser": "node scripts/e2e/with-browser.mjs --test tests/platform/browser.contract.mjs",
+    "test:history:budget": "node --test tests/platform/history-budget.contract.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",
