@@ -11,6 +11,14 @@ import { CodeChangeStore } from '../../src/persistence/code-change-store.js';
 import { createBridgeServer } from '../../src/server.js';
 import { resources } from '../../scripts/e2e/helpers/resources.mjs';
 import { bounded } from '../../scripts/e2e/helpers/deadline.mjs';
+import { assertNativeDatabaseClosed } from '../helpers/sqlite-closure.js';
+
+test('native closure assertion rejects an open SQLite handle and accepts only a closed handle', () => {
+  const database = new DatabaseSync(':memory:');
+  try { assert.throws(() => assertNativeDatabaseClosed(database), {code:'ERR_ASSERTION'}); }
+  finally { database.close(); }
+  assertNativeDatabaseClosed(database);
+});
 
 test('SQLite initialization: shutdown cancels a real external writer wait before publishing a runtime', {timeout:7000}, async t => {
   const owner = resources(t), root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-bootstrap-cancel-'));
@@ -61,7 +69,7 @@ test('runtime close rejection still closes both real SQLite handles before works
   try {
     await assert.rejects(runtime.close(), /worker registry close/u);
     assert.equal(storeCloses, 1);
-    assert.equal(runtime.codeChanges.store.database.isOpen, false);
+    assertNativeDatabaseClosed(runtime.codeChanges.store.database);
     assert.throws(() => runtime.store.listRuns(), error => error.code === 'STORE_CLOSED');
     assert.ok(events.some(event => event.type === 'shutdown.stage.done' && event.stage === 'controller store close'));
     await assert.rejects(runtime.close());
@@ -84,7 +92,7 @@ test('unconfirmed worker close cannot become a successful registry shutdown or s
   try {
     await assert.rejects(runtime.close(),/worker registry close/u);
     assert.equal(closeCalls,1);
-    assert.equal(service.store.database.isOpen,false);
+    assertNativeDatabaseClosed(service.store.database);
     assert.ok(events.some(event=>event.type==='shutdown.stage.error' && event.stage==='registered workers close'));
     assert.ok(events.some(event=>event.type==='shutdown.stage.done' && event.stage==='worker SQLite store close'));
     await assert.rejects(service.close());

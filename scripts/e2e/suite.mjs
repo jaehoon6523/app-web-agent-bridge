@@ -58,7 +58,7 @@ for (const flow of flows) {
   try { results.set(flow.id, JSON.parse(fs.readFileSync(filename, 'utf8'))); }
   catch { /* Missing/malformed artifacts are failures, never a skip or PASS. */ }
 }
-const summary = { scope:requested.length ? `SELECTED PROFILES (${flows.map(flow => flow.id).join(', ')})` : waveOnly ? 'WAVE ONLY (UF-01A not executed)' : 'FULL SUITE',
+const summary = { environment:{node:process.version,platform:process.platform,arch:process.arch}, scope:requested.length ? `SELECTED PROFILES (${flows.map(flow => flow.id).join(', ')})` : waveOnly ? 'WAVE ONLY (UF-01A not executed)' : 'FULL SUITE',
   ...summarizeRun(flows, results, skippedTests(tap), gateFailed) };
 fs.mkdirSync(output, { recursive:true });
 fs.writeFileSync(path.join(output, requested.length ? 'e2e-selected-summary.json' : waveOnly ? 'e2e-wave-summary.json' : 'e2e-summary.json'), JSON.stringify(summary, null, 2));

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import path from 'node:path';
+import {assertSourceCopies, sourceCopyKey} from '../helpers/source-copy-identity.js';
 import {ResourceClosureError, isResourceClosureFailure} from '../../src/persistence/resource-closure.js';
 
 test('C02/C03: explicit closure evidence preserves object identity and cause', () => {
@@ -12,6 +14,19 @@ test('C02/C03: explicit closure evidence preserves object identity and cause', (
   assert.deepEqual(error.errors,[operation,cleanup]);
   assert.equal(error.cleanupErrors[0],cleanup);
   assert.equal(error.resourceFailures[0].error,cleanup);
+});
+
+test('source identity accepts only exact permitted paths on either OS', () => {
+  const allowed = ['src/persistence/sqlite-database.js','src/persistence/code-change-history-job.js'];
+  for (const filesystem of [path.posix,path.win32]) {
+    const job = filesystem.join('src','persistence','code-change-history-job.js');
+    const owner = filesystem.join('src','persistence','code-change-store.js');
+    assert.equal(sourceCopyKey(job),allowed[1]);
+    assert.doesNotThrow(() => assertSourceCopies({[job]:{production:'original',probe:'instrumented'},
+      [owner]:{production:'same',probe:'same'}},allowed));
+    assert.throws(() => assertSourceCopies({[owner]:{production:'original',probe:'unauthorized'}},allowed), {code:'ERR_ASSERTION'});
+    assert.throws(() => assertSourceCopies({[job+'.extra']:{production:'original',probe:'unauthorized'}},allowed), {code:'ERR_ASSERTION'});
+  }
 });
 
 test('C03/C06: message, code, arbitrary aggregate and a lookalike flag are not closure evidence', () => {

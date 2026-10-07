@@ -9,6 +9,30 @@ permissions:
   contents: read
 
 jobs:
+  cleanup-compatibility:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+        node: ['22.14.0', '24']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      # Full discovery includes cleanup, history HTTP and process portability.
+      - run: npm run check
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-completion-${{ matrix.os }}-${{ matrix.node }}
+          path: .agent-controller/latest-test*
+          if-no-files-found: error
+
   minimum-runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -39,20 +63,21 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025]
+        node: ['22.14.0', '24']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '24'
+          node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
       - run: npx playwright-core install --with-deps chromium
       - run: npm run test:platform
       - run: npm run test:runtime-cleanup-contract
       - if: runner.os == 'Windows'
-        run: node --test --experimental-test-isolation=none tests/persistence-cleanup.test.js tests/verification-lifecycle.test.js tests/preparation-contention.test.js
+        run: node scripts/run-tests.mjs tests/persistence-cleanup.test.js tests/verification-lifecycle.test.js tests/preparation-contention.test.js
       - run: npm run test:platform:browser
       - run: npm run test:e2e:ci
       - if: runner.os == 'Linux'
@@ -64,6 +89,6 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ui-evidence-${{ matrix.os }}
+          name: ui-evidence-${{ matrix.os }}-${{ matrix.node }}
           path: .agent-controller/ui-qa/
           if-no-files-found: ignore

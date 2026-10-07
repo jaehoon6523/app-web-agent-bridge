@@ -9,6 +9,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { runOwnedNode } from '../../scripts/e2e/platform/process.mjs';
 import { observeChildClose, waitChildClose } from '../../src/runtime/child-close.js';
 import { CodexProcessManager } from '../../src/runtime/codex/process-manager.js';
+import { inheritedPipeScript, waitForPipeHolder, assertPipeHolderAlive, stopPipeHolder } from '../helpers/inherited-pipes-fixture.js';
 
 test('normal and abnormal child closure are observed without imposing a POSIX signal oracle', async () => {
   assert.deepEqual(await runOwnedNode(['-e','process.exitCode=0'],{timeoutMs:5000}),{code:0,signal:null,forced:false});
@@ -56,29 +57,28 @@ test('a completed profile with a stuck descendant fails boundedly and cleans its
   }
 });
 
-test('Codex EOF deadline still rejects when an exited parent leaves inherited stdio open', {timeout:12000}, async () => {
+test('Codex EOF deadline still rejects when an exited parent leaves inherited stdio open', {timeout:12000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-platform-pipes-'));
   const pidFile = path.join(root,'pid');
-  const source = `const d=require('node:child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit']});
-    require('node:fs').writeFileSync(process.argv[1],String(d.pid));
-    const rl=require('node:readline').createInterface({input:process.stdin});
-    rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'pipe-contract'}})+'\\n');});
-    rl.on('close',()=>d.unref());`;
-  let child, pid;
+  const markerFile = path.join(root,'heartbeat');
+  const source = inheritedPipeScript({pidFile,markerFile,stdinProtocol:true});
+  let child;
   const manager = await CodexProcessManager.create({executablePath:process.execPath,workspaceRoot:root,
     appServerArgs:['-e',source,pidFile],sourceEnv:process.env,initializeTimeoutMs:5000,
     spawn:(command,args,options)=>(child=spawn(command,args,options))});
   try {
     await manager.start();
-    pid=Number(fs.readFileSync(pidFile,'utf8'));
+    await waitForPipeHolder({pidFile,markerFile});
     const started=Date.now();
     await assert.rejects(manager.close(),/did not exit after stdin EOF/u);
     assert.ok(Date.now()-started<6500,'a parent exit must not disable the resource closure deadline');
     assert.equal(child.exitCode,0);
     assert.equal(manager.status,'STOPPED');
+    const heartbeat=await assertPipeHolderAlive(markerFile);
+    t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,parentExitCode:child.exitCode,heartbeat}));
   } finally {
-    if(pid)try{process.kill(pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
     if(child && child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');
+    await stopPipeHolder(pidFile);
     fs.rmSync(root,{recursive:true,force:true});
   }
 });

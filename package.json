@@ -12,7 +12,7 @@
     "dev": "node --experimental-sqlite --watch src/server.js",
     "demo": "DEMO_MODE=true node --experimental-sqlite src/server.js",
     "demo:win": "set DEMO_MODE=true&& node --experimental-sqlite src/server.js",
-    "test": "node --test --experimental-test-isolation=none",
+    "test": "node scripts/run-tests.mjs",
     "test:audit-reality": "node --test --experimental-test-isolation=none tests/audit-fixture-oracle.test.js tests/audit-fuzz.test.js tests/audit-known-regressions.test.js",
     "test:contract": "node --test tests/contract/dashboard-degraded-state.contract.test.js tests/contract/dashboard-data-knowledge.contract.test.js tests/contract/dashboard-action-capabilities.contract.test.js tests/contract/preparation-capabilities.contract.test.js tests/contract/web-dependency-state.contract.test.js",
     "test:fault": "node --test tests/fault/runtime-failure.test.js tests/fault/extension-failure.test.js tests/fault/reviewer-provider-failure.test.js tests/fault/state-projection-failure.test.js tests/fault/run-store-read-failure.test.js",
@@ -36,10 +36,11 @@
     "test:e2e": "node scripts/e2e/suite.mjs",
     "test:e2e:ci": "node scripts/e2e/with-browser.mjs scripts/e2e/suite.mjs",
     "test:e2e:shutdown": "node scripts/e2e/with-browser.mjs scripts/e2e/suite.mjs --flow=UF-04",
-    "test:platform": "node --test --experimental-test-isolation=none tests/e2e/graceful-shutdown.test.js tests/e2e/portability.test.js tests/e2e/active-worker-cleanup.test.js tests/e2e/preflight-readiness.test.js tests/e2e/execution-summary.test.js tests/platform/lifecycle.test.js tests/platform/persistence.test.js tests/platform/sqlite-database.test.js tests/platform/sqlite-startup.test.js tests/platform/code-change-history.test.js tests/platform/code-history-boundary.test.js tests/platform/code-history-worker-cleanup.test.js tests/platform/code-history-error-contract.test.js tests/platform/code-history-remaining.test.js tests/platform/code-history-owner.test.js tests/platform/code-history-http.test.js tests/platform/code-history-http-closure.test.js tests/platform/runner.test.js tests/contract/network-lifecycle/http-headers.test.js tests/contract/network-lifecycle/socket-observation.test.js tests/contract/network-lifecycle/http-unrequested-shutdown.test.js tests/server-diagnostics.test.js",
-    "test:platform:browser": "node scripts/e2e/with-browser.mjs --test tests/platform/browser.contract.mjs",
-    "test:runtime-cleanup-contract": "node --test --test-reporter=tap tests/runtime-cleanup/contract.test.js tests/runtime-cleanup/representation.test.js",
-    "test:history:budget": "node --test tests/platform/history-budget.contract.mjs"
+    "test:platform": "node scripts/run-tests.mjs tests/e2e/graceful-shutdown.test.js tests/e2e/portability.test.js tests/e2e/active-worker-cleanup.test.js tests/e2e/preflight-readiness.test.js tests/e2e/execution-summary.test.js tests/platform/lifecycle.test.js tests/platform/persistence.test.js tests/platform/sqlite-database.test.js tests/platform/sqlite-startup.test.js tests/platform/code-change-history.test.js tests/platform/code-history-boundary.test.js tests/platform/code-history-worker-cleanup.test.js tests/platform/code-history-error-contract.test.js tests/platform/code-history-remaining.test.js tests/platform/code-history-owner.test.js tests/platform/code-history-http.test.js tests/platform/code-history-http-closure.test.js tests/platform/runner.test.js tests/platform/inherited-pipes.test.js tests/contract/network-lifecycle/http-headers.test.js tests/contract/network-lifecycle/socket-observation.test.js tests/contract/network-lifecycle/http-unrequested-shutdown.test.js tests/server-diagnostics.test.js",
+    "test:platform:browser": "node scripts/e2e/with-browser.mjs scripts/run-tests.mjs tests/platform/browser.contract.mjs",
+    "test:runtime-cleanup-contract": "node scripts/run-tests.mjs tests/runtime-cleanup/contract.test.js tests/runtime-cleanup/representation.test.js",
+    "test:history:budget": "node --test tests/platform/history-budget.contract.mjs",
+    "verify:all": "node scripts/verify-all.mjs"
   },
   "dependencies": {
     "ajv": "^8.17.1",

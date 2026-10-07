@@ -13,6 +13,7 @@ import {loadConfig} from '../../src/config.js';
 import {SqliteStore} from '../../src/persistence/sqlite-store.js';
 import {observeChildClose, waitChildClose} from '../../src/runtime/child-close.js';
 import {seedHistory} from '../helpers/code-history-fixture.js';
+import {assertSourceCopies} from '../helpers/source-copy-identity.js';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const identity = {
@@ -163,13 +164,13 @@ const needsEmptyRowCompatibility`);
     for (const entry of fs.readdirSync(directory,{withFileTypes:true})) {
       const name = path.join(relative,entry.name);
       if (entry.isDirectory()) inspect(path.join(directory,entry.name),name);
-      else if (entry.isFile()) copies[name] = {production:hash(path.join(repository,name)), probe:hash(path.join(program,name))};
+      else if (entry.isFile()) copies[name.split(path.sep).join('/')] = {production:hash(path.join(repository,name)), probe:hash(path.join(program,name))};
     }
   }
   for (const dir of ['src','scripts']) inspect(path.join(program,dir),dir);
   const allowed = ['src/persistence/sqlite-database.js','src/persistence/code-change-history-job.js',
     ...(config.worker ? ['src/persistence/code-change-history-worker.js'] : [])];
-  for (const [name,values] of Object.entries(copies)) if (!allowed.includes(name)) assert.equal(values.probe,values.production,name+' source copy identity');
+  assertSourceCopies(copies,allowed);
   return {work, program, runtimeConfig, injectionFile, copies};
 }
 function readInjection(context) { return fs.existsSync(context.injectionFile) ? fs.readFileSync(context.injectionFile,'utf8').trim().split('\n').map(JSON.parse) : []; }

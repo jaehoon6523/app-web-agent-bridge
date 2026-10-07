@@ -14,6 +14,7 @@ import { seedHistory } from "../helpers/code-history-fixture.js";
 import { canonicalJson, sha256CanonicalJson } from "../../src/domain/canonical-json.js";
 
 async function serverFixture(t, {corrupt = false} = {}) {
+  const fixtureStarted=performance.now(), timing={phases:[]};
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-history-http-"));
   const probe = net.createServer();
   await new Promise(resolve => probe.listen(0, "127.0.0.1", resolve));
@@ -23,7 +24,9 @@ async function serverFixture(t, {corrupt = false} = {}) {
   const config = loadConfig({cwd:root, env:{WORKSPACE:root,CONTROLLER_DATA_DIR:root,PORT:String(port),DASHBOARD_TOKEN:token,
     WEB_EXTENSION_SHARED_SECRET:"history-extension-secret-0123456789abcdef", WEB_EXTENSION_EXPECTED_IDENTITY:"history-extension"}});
   new SqliteStore(config.persistence.databasePath).close();
+  const seedStarted=performance.now();
   const {record} = seedHistory(config.persistence.databasePath, corrupt ? {versions:8} : {versions:1000, eventBytes:1024});
+  timing.seedMs=performance.now()-seedStarted;
   if (corrupt) {
     const writer = new DatabaseSync(config.persistence.databasePath);
     try { writer.exec("UPDATE code_change_history SET record_json='{broken' WHERE version=1"); }
@@ -38,8 +41,16 @@ async function serverFixture(t, {corrupt = false} = {}) {
     if (child.connected) child.send({type:"bridge.shutdown"});
   }});
   t.after(async () => {
+    const closeStarted=performance.now();
     try { assert.deepEqual(await stop(), {code:0,signal:null}); }
-    finally { fs.rmSync(root, {recursive:true,force:true}); }
+    finally {
+      timing.closeMs=performance.now()-closeStarted;
+      timing.totalMs=performance.now()-fixtureStarted;
+      t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,timing,
+        lastCheckpoints:events.filter(event=>/history|runtime.initialization/u.test(event.type)).slice(-12)
+          .map(({type,elapsedMs,errorCode})=>({type,elapsedMs,errorCode}))}));
+      fs.rmSync(root, {recursive:true,force:true});
+    }
   });
   async function until(predicate, after = 0) {
     const found = events.slice(after).find(predicate);
@@ -55,14 +66,19 @@ async function serverFixture(t, {corrupt = false} = {}) {
     } finally { changed.off("event", listener); clearTimeout(timer); }
   }
   await until(event => event.type === "server.listening");
+  timing.fixtureMs=performance.now()-fixtureStarted;
   const read = () => fetch(config.baseUrl+"/api/state", {headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(5000)});
-  return {config, record, events, until, read, stop};
+  return {config, record, events, until, read, stop, timing};
 }
 
-test("cold and invalidated real history verification keep independent HTTP responsive and preserve the durable projection", {timeout:45000}, async t => {
+// Windows took 43.23s including the real cumulative-history fixture under a 45s
+// harness cap. Allow fixture cost without relaxing HTTP/checkpoint/product deadlines.
+test("cold and invalidated real history verification keep independent HTTP responsive and preserve the durable projection", {timeout:90000}, async t => {
   const server = await serverFixture(t), phases = [];
   let expected = server.record;
   for (const phase of ["cold", "external append"]) {
+    const phaseStarted=performance.now();
+    const phaseTiming={phase,stage:'starting'}; server.timing.phases.push(phaseTiming);
     const checkpoint = server.events.length;
     if (phase === "external append") {
       const writer = new DatabaseSync(server.config.persistence.databasePath);
@@ -79,7 +95,10 @@ test("cold and invalidated real history verification keep independent HTTP respo
       finally { writer.close(); }
     }
     const pending = server.read(); pending.catch(() => {});
+    phaseTiming.stage='waiting for progress';
     await server.until(event => event.type === "persistence.code-store.history-background.progress", checkpoint);
+    phaseTiming.progressMs=performance.now()-phaseStarted;
+    phaseTiming.stage='independent HTTP probes';
     const probes = await Promise.all(["/api/health", "/api/preflight"].map(async route => {
       const started = performance.now();
       const response = await fetch(server.config.baseUrl+route, {signal:AbortSignal.timeout(1000)});
@@ -89,12 +108,14 @@ test("cold and invalidated real history verification keep independent HTTP respo
     }));
     assert.equal(server.events.slice(checkpoint).some(event => event.type === "persistence.code-store.history-background.completed"), false,
       "Probes must actually overlap history verification.");
+    phaseTiming.stage='state response';
     const response = await pending; assert.equal(response.status, 200);
     const first = await response.json();
     if (!first.runtimeAvailability.ready) {
       assert.equal(first.dataKnowledge.runs.status, "UNAVAILABLE");
       assert.equal(first.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
     }
+    phaseTiming.stage='waiting for verification completion';
     const completed = await server.until(event => event.type === "persistence.code-store.history-background.completed", checkpoint);
     const ready = await server.read(); assert.equal(ready.status, 200);
     const state = await ready.json();
@@ -103,6 +124,7 @@ test("cold and invalidated real history verification keep independent HTTP respo
     assert.equal(state.run.version, expected.version);
     assert.equal(state.run.stage, expected.stage);
     assert.equal(server.events.slice(checkpoint).some(event => event.type === "watchdog.unresponsive"), false);
+    Object.assign(phaseTiming,{stage:'completed',elapsedMs:performance.now()-phaseStarted,verificationMs:completed.elapsedMs});
     phases.push({phase,probes,verificationMs:completed.elapsedMs,firstAvailability:first.runtimeAvailability});
   }
   assert.equal(server.events.filter(event => event.type === "persistence.code-store.history-background.completed").length, 2,
