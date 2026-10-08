@@ -20,7 +20,8 @@ test('completion gate rejects exit zero before or during registered tests', asyn
     const result = await runFile(fixture(t,source),quiet);
     assert.equal(result.closure.code,0);
     assert.equal(result.pass,false);
-    assert.equal(result.reason,'INCOMPLETE_TEST_RUN');
+    assert.equal(result.reason,'MISSING_RECEIPT');
+    assert.equal(result.summaryStatus,'MISSING');
   }
 });
 

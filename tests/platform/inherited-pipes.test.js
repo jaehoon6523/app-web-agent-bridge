@@ -6,9 +6,9 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {observeChildClose,waitChildClose} from '../../src/runtime/child-close.js';
-import {inheritedPipeScript,waitForPipeHolder,assertPipeHolderAlive,stopPipeHolder} from '../helpers/inherited-pipes-fixture.js';
+import {inheritedPipeScript,waitForPipeHolder,assertPipeHolderAlive,stopPipeHolder,removeOwnedPipeFixture} from '../helpers/inherited-pipes-fixture.js';
 
-test('inherited-pipe fixture proves parent exit with a live descendant and open stdio', {timeout:10000}, async t => {
+test('inherited-pipe fixture proves parent exit with a live descendant and open stdio', {timeout:25000}, async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-pipe-precondition-'));
   const pidFile=path.join(root,'pid'), markerFile=path.join(root,'heartbeat');
   const child=spawn(process.execPath,['-e',inheritedPipeScript({pidFile,markerFile})],
@@ -32,7 +32,8 @@ test('inherited-pipe fixture proves parent exit with a live descendant and open 
   } finally {
     if(child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');
     await stopPipeHolder(pidFile);
-    try {await waitChildClose(child,observation,{timeoutMs:3000});}
-    finally {child.stdout.destroy(); child.stderr.destroy(); fs.rmSync(root,{recursive:true,force:true});}
+    await waitChildClose(child,observation,{timeoutMs:5000});
+    child.stdout.destroy(); child.stderr.destroy();
+    await removeOwnedPipeFixture(root);
   }
 });

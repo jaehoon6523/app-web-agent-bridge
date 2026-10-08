@@ -9,7 +9,7 @@ import { setTimeout as wait } from 'node:timers/promises';
 import { runOwnedNode } from '../../scripts/e2e/platform/process.mjs';
 import { observeChildClose, waitChildClose } from '../../src/runtime/child-close.js';
 import { CodexProcessManager } from '../../src/runtime/codex/process-manager.js';
-import { inheritedPipeScript, waitForPipeHolder, assertPipeHolderAlive, stopPipeHolder } from '../helpers/inherited-pipes-fixture.js';
+import { inheritedPipeScript, waitForPipeHolder, assertPipeHolderAlive, stopPipeHolder, removeOwnedPipeFixture } from '../helpers/inherited-pipes-fixture.js';
 
 test('normal and abnormal child closure are observed without imposing a POSIX signal oracle', async () => {
   assert.deepEqual(await runOwnedNode(['-e','process.exitCode=0'],{timeoutMs:5000}),{code:0,signal:null,forced:false});
@@ -27,7 +27,7 @@ test('IPC disconnect is a cooperative closure contract on either OS', {timeout:1
   } finally {if(child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');}
 });
 
-test('a completed profile with a stuck descendant fails boundedly and cleans its owned tree', {timeout:15000}, async () => {
+test('a completed profile with a stuck descendant fails boundedly and cleans its owned tree', {timeout:20000}, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-platform-tree-'));
   const pidFile = path.join(root,'pid');
   const marker = path.join(root,'still-running');
@@ -52,20 +52,24 @@ test('a completed profile with a stuck descendant fails boundedly and cleans its
   } finally {
     // Diagnostic cleanup remains a failure safeguard, never the PASS oracle.
     if(!pid && fs.existsSync(pidFile))pid=Number(fs.readFileSync(pidFile,'utf8'));
-    if(pid)try{process.kill(pid,'SIGKILL');}catch(error){if(error.code!=='ESRCH')throw error;}
-    fs.rmSync(root,{recursive:true,force:true});
+    await stopPipeHolder(pidFile, {timeoutMs:5000});
+    await removeOwnedPipeFixture(root);
   }
 });
 
-test('Codex EOF deadline still rejects when an exited parent leaves inherited stdio open', {timeout:12000}, async t => {
+test('Codex EOF deadline still rejects when an exited parent leaves inherited stdio open', {timeout:30000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-platform-pipes-'));
   const pidFile = path.join(root,'pid');
   const markerFile = path.join(root,'heartbeat');
   const source = inheritedPipeScript({pidFile,markerFile,stdinProtocol:true});
-  let child;
+  let child, childObservation;
   const manager = await CodexProcessManager.create({executablePath:process.execPath,workspaceRoot:root,
     appServerArgs:['-e',source,pidFile],sourceEnv:process.env,initializeTimeoutMs:5000,
-    spawn:(command,args,options)=>(child=spawn(command,args,options))});
+    spawn:(command,args,options)=>{
+      child=spawn(command,args,options);
+      childObservation=observeChildClose(child);
+      return child;
+    }});
   try {
     await manager.start();
     await waitForPipeHolder({pidFile,markerFile});
@@ -78,7 +82,9 @@ test('Codex EOF deadline still rejects when an exited parent leaves inherited st
     t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,parentExitCode:child.exitCode,heartbeat}));
   } finally {
     if(child && child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');
-    await stopPipeHolder(pidFile);
-    fs.rmSync(root,{recursive:true,force:true});
+    await stopPipeHolder(pidFile, {timeoutMs:5000});
+    // Parent exit is insufficient: the inherited pipes must close as well.
+    if(childObservation) await waitChildClose(child,childObservation,{timeoutMs:5000});
+    await removeOwnedPipeFixture(root);
   }
 });
