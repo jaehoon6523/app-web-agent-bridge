@@ -630,11 +630,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       provider = adapter.provider;
       selectorVersion = adapter.evidence().selectorVersion ?? null;
       adapter.assertContract();
-      page = adapter.inspectPageState();
+      page = adapter.inspectPageState({ includeDiagnostics:message.includeDiagnostics === true });
       identity = adapter.readConversationIdentity();
       generating = adapter.detectGeneration();
     } catch (error) {
-      page = { status:error.code || "UI_CONTRACT_CHANGED", composerPresent:false };
+      page = { status:error.code || "UI_CONTRACT_CHANGED", composerPresent:null };
       inspectionError = { name:error.name ?? "Error", code:error.code ?? null,
         message:error.message ?? String(error), stack:error.stack ?? null,
         evidence:error.evidence ?? error.details ?? null };
@@ -648,6 +648,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       pageUrl: location.href,
       composerPresent: page.composerPresent,
       diagnostics: page.diagnostics ?? null,
+      pageState: page.pageState ?? { readyState:document.readyState ?? null,
+        visibilityState:document.visibilityState ?? null, hasFocus:document.hasFocus?.() ?? null },
       inspectionError,
       busy: currentJob !== null,
       activeRequestId: currentJob?.requestId ?? null,

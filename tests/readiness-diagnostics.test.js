@@ -10,6 +10,7 @@ import {createExtensionStateStore} from '../extension/runtime/storage.js';
 import * as providerTarget from '../extension/runtime/provider-target.js';
 import {errorPayload} from '../extension/runtime/document-binding.js';
 import {PreparationService} from '../src/orchestration/preparation-service.js';
+import {inspectChatGptTabs} from '../extension/runtime/tab-diagnostics.js';
 
 const manifest = JSON.parse(fs.readFileSync(new URL('../extension/manifest.json', import.meta.url)));
 const scripts = manifest.content_scripts[0].js.map(file => [file,
@@ -18,22 +19,78 @@ const background = fs.readFileSync(new URL('../extension/background.js', import.
 
 function contentFixture(mode) {
   const state = {mode}, listeners = [], window = {}; window.top = window;
-  class HTMLElement { getBoundingClientRect() { return {width:500, height:100}; } }
+  class HTMLElement { getBoundingClientRect() { return state.mode === 'zero-size'
+    ? {width:0, height:0} : {width:500, height:100}; } }
   class HTMLTextAreaElement extends HTMLElement { value = 'PRIVATE COMPOSER TEXT'; tagName = 'TEXTAREA'; }
   const composer = new HTMLTextAreaElement();
   const context = vm.createContext({URL, crypto:webcrypto, window, location:{href:'https://chatgpt.com/'},
     document:{title:'PRIVATE TITLE', body:{innerText:'PRIVATE CONVERSATION'},
-      querySelectorAll:selector => selector === '#prompt-textarea' && state.mode !== 'absent' ? [composer] : []},
+      readyState:'complete', visibilityState:'visible', hasFocus:() => true,
+      querySelectorAll:selector => selector === '#prompt-textarea' && state.mode !== 'absent' && state.mode !== 'unregistered'
+        || selector === "[role='textbox']" && state.mode === 'unregistered' ? [composer] : []},
     HTMLElement, HTMLTextAreaElement, HTMLInputElement:class extends HTMLElement {},
-    getComputedStyle:() => ({display:state.mode === 'hidden' ? 'none' : 'block', visibility:'visible'}),
+    getComputedStyle:() => ({display:state.mode === 'hidden' ? 'none' : 'block',
+      visibility:state.mode === 'visibility-hidden' ? 'hidden' : 'visible'}),
     AbortController, DOMException, setTimeout, clearTimeout, console:{info() {}},
     chrome:{runtime:{getManifest:() => manifest, onMessage:{addListener:fn => listeners.push(fn)}, sendMessage:async () => {}}}});
   for (const [file, source] of scripts) vm.runInContext(source, context, {filename:file});
   const resolver = context.ChatGptBridgeSelectors.resolveSendButtonState;
   if (mode === 'dependency-failure') context.ChatGptBridgeSelectors.resolveSendButtonState = undefined;
   return {state, restore:() => {context.ChatGptBridgeSelectors.resolveSendButtonState = resolver;},
-    ping:() => new Promise(resolve => listeners[0]({type:'agent.ping'}, {}, resolve))};
+    ping:(message = {type:'agent.ping'}) => new Promise(resolve => listeners[0](message, {}, resolve))};
 }
+
+test('tab inspection carries actual provider counts and page observations through ping without private text', async () => {
+  const f = contentFixture('hidden'), calls = [];
+  const [page] = await inspectChatGptTabs({query:async () => [{id:19, url:'https://chatgpt.com/'}],
+    sendMessage:async (_id, message) => {calls.push(message); return f.ping(message);}});
+  assert.equal(page.reachable, true); assert.equal(page.ready, false);
+  assert.equal(page.pageState.readyState, 'complete'); assert.equal(page.pageState.hasFocus, true);
+  assert.equal(page.frameId, 0); assert.equal(typeof page.documentId, 'string');
+  const counts = page.diagnostics.composerSelectors.find(item => item.selector === '#prompt-textarea');
+  assert.equal(counts.matched, 1); assert.equal(counts.visible, 0);
+  assert.equal(counts.samples[0].acceptedByVisibility, false);
+  assert.equal(page.diagnostics.editableCandidates.length, 3);
+  assert.equal(calls[0].includeDiagnostics, true);
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE/u);
+});
+
+test('diagnostic ping obtains visible selector counts without changing normal readiness', async () => {
+  const f = contentFixture('visible');
+  assert.equal((await f.ping()).diagnostics, null);
+  const [page] = await inspectChatGptTabs({query:async () => [{id:19, url:'https://chatgpt.com/'}],
+    sendMessage:async (_id, message) => f.ping(message)});
+  assert.equal(page.ready, true);
+  assert.equal(page.diagnostics.composerSelectors[0].visible, 1);
+  assert.doesNotMatch(JSON.stringify(page), /PRIVATE/u);
+});
+
+test('inspection exceptions report unknown composer presence instead of asserting absence', async () => {
+  const page = await contentFixture('dependency-failure').ping();
+  assert.equal(page.composerPresent, null); assert.equal(page.ready, false);
+  assert.equal(page.pageState.readyState, 'complete');
+  assert.equal(page.inspectionError.code, 'UI_CONTRACT_CHANGED');
+});
+
+for (const mode of ['visibility-hidden', 'zero-size']) {
+  test(mode + ' composer explains a visibility rejection using provider metadata', async () => {
+    const page = await contentFixture(mode).ping({type:'agent.ping', includeDiagnostics:true});
+    assert.equal(page.composerPresent, false);
+    const counts = page.diagnostics.composerSelectors[0];
+    assert.equal(counts.matched, 1); assert.equal(counts.visible, 0);
+    assert.equal(counts.samples[0].acceptedByVisibility, false);
+    if (mode === 'visibility-hidden') assert.equal(counts.samples[0].visibility, 'hidden');
+    else assert.equal(counts.samples[0].width, 0);
+    assert.doesNotMatch(JSON.stringify(page.diagnostics), /PRIVATE/u);
+  });
+}
+
+test('diagnostic-only textbox candidates never become a fallback composer', async () => {
+  const page = await contentFixture('unregistered').ping({type:'agent.ping', includeDiagnostics:true});
+  assert.equal(page.composerPresent, false); assert.equal(page.ready, false);
+  assert.ok(page.diagnostics.composerSelectors.every(item => item.matched === 0));
+  assert.equal(page.diagnostics.editableCandidates.find(item => item.selector === "[role='textbox']").visible, 1);
+});
 
 function browserFixture(content) {
   const root = {id:19, windowId:2, url:'https://chatgpt.com/', status:'complete'};

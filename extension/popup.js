@@ -82,6 +82,16 @@ function render(response) {
   }
 }
 
+function pageDiagnosticLines(page) {
+  const lines = [`페이지 상태: ${page.pageStatus ?? "확인 불가"}`,
+    `문서 ID(콘텐츠 토큰): ${page.documentId ?? "확인 불가"} · frame: ${page.frameId ?? "확인 불가"}`];
+  if (page.transport) lines.push(`수신: ${page.transport.status} · 탭 조회: ${page.transport.tabStatus ?? "확인 전"} · 로딩: ${page.transport.loadingStatus ?? "확인 불가"}`);
+  if (page.pageState) lines.push("페이지 관측: " + JSON.stringify(page.pageState));
+  if (page.diagnostics) lines.push("선택자 통계: " + JSON.stringify(page.diagnostics, null, 2));
+  if (page.inspectionError) lines.push(`현재 검사 오류: ${page.inspectionError.code ?? "ERROR"}: ${page.inspectionError.message ?? ""}`);
+  return lines;
+}
+
 function renderTabDiagnostic() {
   if (!diagnosticTab || !tabDiagnosticDetail || !openDiagnosticTab) return;
   const tab = tabDiagnostics.find(item => String(item.tabId) === diagnosticTab.value);
@@ -91,11 +101,13 @@ function renderTabDiagnostic() {
     `입력창: ${tab.composerPresent === true ? "있음" : tab.composerPresent === false ? "없음" : "확인 불가"}`,
     `상태: ${!tab.reachable ? "콘텐츠 응답 없음" : tab.busy || tab.generating ? "작업 또는 생성 중" : tab.ready ? "준비 확인됨" : "준비되지 않음"}`,
     `콘텐츠 ${tab.runtimeVersion ?? "확인되지 않음"} · 확장 ${currentExtensionVersion ?? "확인되지 않음"}`];
+  lines.push(...pageDiagnosticLines(tab));
+  if (tab.inspectedAt) lines.push("진단 시각: " + tab.inspectedAt);
   if (tab.runtimeVersion && currentExtensionVersion && tab.runtimeVersion !== currentExtensionVersion) {
     lines.push("콘텐츠 버전이 다릅니다. 전송·생성 상태를 확인한 뒤 해당 탭을 새로고침하고 다시 진단하세요.");
   }
-  if (tab.inspectionError) lines.push(`현재 진단: ${tab.inspectionError.code ?? "ERROR"}: ${tab.inspectionError.message ?? ""}`);
   if (tab.pageUrl && tab.pageUrl !== tab.url) lines.push("진단 중 문서 주소가 변경됐습니다. 상태를 다시 확인하세요.");
+  if (tab.observedTabUrl && tab.observedTabUrl !== tab.url) lines.push("탭 조회 중 주소가 변경됐습니다: " + tab.observedTabUrl);
   lines.push("이 결과는 진단 시점의 상태입니다. 탭 열기는 바인딩 변경·전송·폐기를 수행하지 않습니다.");
   tabDiagnosticDetail.textContent = lines.join("\n");
 }
@@ -161,7 +173,12 @@ inspectDelivery.addEventListener("click", async () => {
   inspection = response?.ok ? response.result : null;
   const phases = { ACK_PENDING: "응답 검증·저장 완료 · ACK 확인 대기", RESPONSE_OBSERVED: "응답 관측됨 · 서버 저장 여부 확인 필요", IN_FLIGHT: "활성 작업 있음", UNRESOLVED: "전송 결과 미확정", IDLE: "활성 전송 없음" };
   const servers = { MATCHED: "해당 전송 기록 있음 · 컨트롤러에서 복구 또는 폐기", MISSING: "대응 전송 기록 없음 · 확인 후 확장 기록 폐기 가능", MISMATCH: "전송 소유권 불일치 · 기록 보존", UNAVAILABLE: "서버 기록 확인 불가 · 기록 보존" };
-  recoveryDetail.textContent = inspection ? `${phases[inspection.phase]}\n서버: ${servers[inspection.server?.status] ?? "확인 필요"}\n${JSON.stringify(inspection.owner, null, 2)}` : response?.error || "상태를 확인하지 못했습니다.";
+  recoveryDetail.textContent = inspection ? [phases[inspection.phase],
+    `서버: ${servers[inspection.server?.status] ?? "확인 필요"}`, JSON.stringify(inspection.owner, null, 2),
+    ...(inspection.page ? [...pageDiagnosticLines(inspection.page),
+      `저장 문서 ID: ${inspection.page.expectedDocumentId ?? "확인 불가"}`,
+      `문서 일치: ${inspection.page.documentMatches === true ? "일치" : inspection.page.documentMatches === false ? "불일치" : "미확인"}`,
+      `소유 탭 콘텐츠: ${inspection.page.runtimeVersion ?? "확인 불가"}`] : [])].join("\n") : response?.error || "상태를 확인하지 못했습니다.";
   await refresh();
 });
 openDelivery.addEventListener("click", async () => {

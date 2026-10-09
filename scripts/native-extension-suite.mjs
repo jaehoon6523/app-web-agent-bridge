@@ -77,6 +77,30 @@ try {
     webProvider: 'CHATGPT_WEB', tabId: tab.id, windowId: tab.windowId, documentId: original, frameId: 0,
     conversationUrl: observed.url, conversationId: 'native-fixture', bindingStatus: 'BOUND' };
   await worker.evaluate(value => chrome.storage.local.set(value), state);
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+  for (const style of ['display:none', 'visibility:hidden', 'width:0;height:0;padding:0;border:0;min-width:0;min-height:0']) {
+    await page.locator('#prompt-textarea').evaluate((element, value) => element.setAttribute('style', value), style);
+    const inspected = await popup.evaluate(() => chrome.runtime.sendMessage({ type:'bridge.inspectTabs' }));
+    assert.equal(inspected.ok, true);
+    const snapshot = inspected.result.find(item => item.tabId === tab.id);
+    assert.equal(snapshot.composerPresent, false); assert.equal(snapshot.ready, false);
+    assert.equal(snapshot.documentId, original); assert.equal(snapshot.frameId, 0);
+    assert.equal(snapshot.transport.status, 'RESPONDED'); assert.equal(snapshot.transport.tabStatus, 'FOUND');
+    const counts = snapshot.diagnostics.composerSelectors.find(item => item.selector === '#prompt-textarea');
+    assert.equal(counts.matched, 1); assert.equal(counts.visible, 0);
+    assert.equal(counts.samples[0].acceptedByVisibility, false);
+    assert.equal(snapshot.pageState.readyState, 'complete');
+  }
+  await popup.locator('#inspectTabs').click();
+  await popup.locator('#tabDiagnosticDetail').filter({ hasText:'선택자 통계:' }).waitFor();
+  assert.match(await popup.locator('#tabDiagnosticDetail').textContent(), /문서 ID\(콘텐츠 토큰\)/u);
+  assert.equal(await worker.evaluate(() => chrome.storage.local.get('currentDeliveryId').then(value => value.currentDeliveryId)), 'native-delivery');
+  assert.equal(await page.evaluate(() => window.fixtureClicks ?? 0), 0);
+  await page.locator('#prompt-textarea').evaluate(element => element.removeAttribute('style'));
+  const inspectedVisible = await popup.evaluate(() => chrome.runtime.sendMessage({ type:'bridge.inspectTabs' }));
+  assert.equal(inspectedVisible.result.find(item => item.tabId === tab.id).diagnostics.composerSelectors[0].visible, 1);
+  result.steps.push({ name:'native composer visibility evidence reaches tab diagnosis and popup without dispatch or clearing ownership', pass:true }); save();
   const text = createControlledPrompt({ controllerMessageId: 'native-delivery', runId: 'native-run', text: 'Controlled fixture lifecycle test' });
   await worker.evaluate(({ id, text, documentId, url }) => {
     void chrome.tabs.sendMessage(id, { type: 'agent.prompt', requestId: 'native-delivery', payload: {
@@ -90,8 +114,6 @@ try {
     { tabId: tab.id, files, documentId: nativeDocumentId });
   assert.equal((await ping()).activeRequestId, 'native-delivery');
   result.steps.push({ name: 'native reinjection preserves the active job and document token', pass: true }); save();
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
   const cdp = await context.newCDPSession(page);
   let versions = [];
   cdp.on('ServiceWorker.workerVersionUpdated', event => { versions = event.versions; });

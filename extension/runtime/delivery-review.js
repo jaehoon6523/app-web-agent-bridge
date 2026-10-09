@@ -1,7 +1,7 @@
 import { ExtensionStateError } from "./storage.js";
 import { resolveStoredWebTargetProvider } from "./provider-target.js";
 import { hasExactDiscardReceipt } from "./delivery-discard.js";
-import { readDeliveryPage } from "./delivery-page.js";
+import { readDeliveryPage, inspectDeliveryPage, pageDiagnosticMetadata } from "./delivery-page.js";
 import { validateLocalControllerUrl } from "./conversation.js";
 
 export function deliveryOwner(state) {
@@ -50,7 +50,7 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
   async function inspect() {
     const state = await store.read(), owner = deliveryOwner(state);
     if (!owner.currentDeliveryId) return { owner, phase: "IDLE", server: null };
-    const page = await readDeliveryPage(tabs, state.tabId);
+    const { page, transport } = await inspectDeliveryPage(tabs, state.tabId);
     const server = await inspectServer(owner).catch(() => ({ status: "UNAVAILABLE", records: [] }));
     assertOwner(await store.read(), owner);
     const completed = state.completedDelivery?.turnId === owner.currentDeliveryId;
@@ -59,8 +59,13 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
     return { owner, phase: durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED"
       : page?.ok === true && page.activeRequestId === owner.currentDeliveryId && page.documentId === owner.documentId ? "IN_FLIGHT" : "UNRESOLVED",
       server, page: { reachable: page?.ok === true, busy: page?.busy ?? null,
-        generating: page?.generating ?? null, documentMatches: page?.documentId === state.documentId,
-        activeRequestId: page?.activeRequestId ?? null }, extensionBusy: turnGate.active };
+        generating: page?.generating ?? null,
+        documentMatches: page?.ok === true && typeof page.documentId === "string" && typeof state.documentId === "string"
+          ? page.documentId === state.documentId : null,
+        documentId:page?.documentId ?? null, expectedDocumentId:state.documentId,
+        frameId:page?.frameId ?? null, runtimeVersion:page?.runtimeVersion ?? null,
+        pageStatus:page?.pageStatus ?? null, composerPresent:page?.composerPresent ?? null,
+        transport, ...pageDiagnosticMetadata(page), activeRequestId: page?.activeRequestId ?? null }, extensionBusy: turnGate.active };
   }
   async function discardOrphan(expected) {
     if (expected?.unresolvedResultConfirmed !== true || expected?.noAutomaticResendConfirmed !== true

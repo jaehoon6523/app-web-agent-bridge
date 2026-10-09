@@ -176,22 +176,33 @@
         samples:matches.slice(0, 3).map((element) => {
           const style = getComputedStyle(element), rect = element.getBoundingClientRect();
           return { tagName:element.tagName, display:style.display, visibility:style.visibility,
-            width:rect.width, height:rect.height };
+            width:rect.width, height:rect.height, acceptedByVisibility:isVisible(element),
+            connected:element.isConnected, disabled:element.disabled === true,
+            readOnly:element.readOnly === true, editable:element.isContentEditable === true };
         }) };
+    }), editableCandidates:["textarea", "[contenteditable='true']", "[role='textbox']"].map(selector => {
+      // These counts diagnose selector coverage; they never select a composer.
+      const matches = [...document.querySelectorAll(selector)];
+      return { selector, matched:matches.length, visible:matches.filter(isVisible).length };
     }) };
   }
 
-  function inspectPageState() {
+  function inspectPageState({ includeDiagnostics = false } = {}) {
     assertContract();
     const composer = detectComposer();
     const generating = detectGeneration();
+    const authenticationSignal = composer.present || generating ? null : detectAuthentication();
+    const pageState = { readyState:document.readyState ?? null,
+      visibilityState:document.visibilityState ?? null, hasFocus:document.hasFocus?.() ?? null,
+      authenticationSignal };
     if (composer.present || generating) {
-      return { status:"READY", composerPresent:composer.present,
-        diagnostics:composer.present ? null : composerDiagnostics() };
+      return { status:"READY", composerPresent:composer.present, pageState,
+        diagnostics:composer.present && !includeDiagnostics ? null : composerDiagnostics() };
     }
     return {
-      status:detectAuthentication() ?? "UI_CONTRACT_CHANGED",
+      status:authenticationSignal ?? "UI_CONTRACT_CHANGED",
       composerPresent:false,
+      pageState,
       diagnostics:composerDiagnostics(),
     };
   }

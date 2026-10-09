@@ -135,7 +135,7 @@ export function createBrowserRuntime(chromeApi) {
         // Keep only readiness metadata; never retain prompt or response content.
         entry.lastReadiness = Object.fromEntries(["ok", "ready", "pageUrl", "url", "pageStatus", "composerPresent",
           "busy", "activeRequestId", "generating", "conversationId",
-          "provider", "selectorVersion", "runtimeVersion", "documentId", "frameId", "diagnostics", "inspectionError"]
+          "provider", "selectorVersion", "runtimeVersion", "documentId", "frameId", "diagnostics", "pageState", "inspectionError"]
           .filter(key => response[key] !== undefined).map(key => [key, response[key]]));
         if (response.inspectionError) entry.lastInspectionError = response.inspectionError;
         for (const waiter of [...entry.waiters]) {

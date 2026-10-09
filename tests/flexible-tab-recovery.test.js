@@ -87,7 +87,10 @@ function popupFixture() {
         owner: deliveryOwner(ownerState), phase: 'UNRESOLVED', server: { status: 'MISSING' },
         page: { reachable: true, busy: false, generating: false }, extensionBusy: false } };
       if (message.type === 'bridge.inspectTabs') return { ok: true, result: [
-        { tabId: 1, url: 'https://chatgpt.com/', reachable: true, ready: false, composerPresent: false, runtimeVersion: '0.2.1' },
+        { tabId: 1, url: 'https://chatgpt.com/', reachable: true, ready: false, composerPresent: false, runtimeVersion: '0.2.1',
+          documentId:'doc-old', frameId:0, pageStatus:'UI_CONTRACT_CHANGED',
+          transport:{status:'RESPONDED', tabStatus:'FOUND'}, pageState:{readyState:'complete'},
+          diagnostics:{composerSelectors:[{selector:'#prompt-textarea', matched:1, visible:0}]} },
         { tabId: 9, url: 'https://chatgpt.com/', reachable: true, ready: true, composerPresent: true, runtimeVersion: '0.2.4' }] };
       return { ok: true };
     } } } });
@@ -101,6 +104,11 @@ test('popup allows another tab to be diagnosed and opened while the original del
   assert.equal(f.nodes.diagnosticTab.options.length, 2);
   assert.match(f.nodes.tabDiagnosticDetail.textContent, /전송 소유 탭/);
   assert.match(f.nodes.tabDiagnosticDetail.textContent, /콘텐츠 버전이 다릅니다/);
+  assert.match(f.nodes.tabDiagnosticDetail.textContent, /doc-old/u);
+  assert.match(f.nodes.tabDiagnosticDetail.textContent, /RESPONDED/u);
+  assert.match(f.nodes.tabDiagnosticDetail.textContent, /UI_CONTRACT_CHANGED/u);
+  assert.match(f.nodes.tabDiagnosticDetail.textContent, /"matched": 1/u);
+  assert.match(f.nodes.tabDiagnosticDetail.textContent, /"visible": 0/u);
   f.nodes.diagnosticTab.value = '9'; f.nodes.diagnosticTab.handlers.change();
   assert.match(f.nodes.tabDiagnosticDetail.textContent, /별도 탭/);
   await f.nodes.openDiagnosticTab.handlers.click();
