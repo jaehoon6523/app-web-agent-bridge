@@ -436,7 +436,8 @@ test("composer failure stays visible across restart and requires local cancellat
   assert.equal(before.deliveries[0].state, "FAILED");
   assert.equal(before.deliveries[0].unsent, true);
   assert.deepEqual(before.error.details, details);
-  const [event, logged] = errors.find(([name]) => name === "[bridge:preparation:failed]");
+  const [event, output] = errors.find(([name]) => name === "[bridge:preparation:failed]");
+  const logged = JSON.parse(output);
   assert.equal(event, "[bridge:preparation:failed]");
   assert.equal(logged.code, "UI_CONTRACT_CHANGED");
   assert.equal(logged.stage, "LOAD");

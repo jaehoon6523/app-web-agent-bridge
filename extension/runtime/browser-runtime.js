@@ -34,6 +34,13 @@ export function createBrowserRuntime(chromeApi) {
   const changed = () => new BrowserRuntimeError("WEB_DOCUMENT_CHANGED",
     "The Web document changed during content preparation; prepare it again.");
 
+  const readinessDetails = entry => ({ tabId:entry.tabId, tabUrl:entry.url ?? null,
+    chromeDocumentId:entry.chromeDocumentId ?? null, contentDocumentId:entry.contentDocumentId ?? null,
+    responded:entry.responded ?? false, pingAttempts:entry.pingAttempts ?? 0,
+    injectionAttempted:entry.injectionAttempted, missingReceiver:entry.missingReceiver,
+    lastReadiness:entry.lastReadiness ?? null,
+    lastInspectionError:entry.lastInspectionError ?? null });
+
   function finish(waiter, error, response) {
     clearTimeout(waiter.timer);
     waiter.entry.waiters.delete(waiter);
@@ -103,6 +110,7 @@ export function createBrowserRuntime(chromeApi) {
       const tab = await readTab(entry);
       let response;
       try {
+        entry.pingAttempts = (entry.pingAttempts ?? 0) + 1;
         response = await bounded(() => chromeApi.tabs.sendMessage(entry.tabId,
           { type: "agent.ping" }, entry.chromeDocumentId ? { documentId: entry.chromeDocumentId } : { frameId: 0 }),
         2000, "CONTENT_SCRIPT_MESSAGE_TIMEOUT");
@@ -124,14 +132,22 @@ export function createBrowserRuntime(chromeApi) {
         if (entry.contentDocumentId && entry.contentDocumentId !== response.documentId) throw changed();
         entry.contentDocumentId = response.documentId;
         entry.responded = true;
+        // Keep only readiness metadata; never retain prompt or response content.
+        entry.lastReadiness = Object.fromEntries(["ok", "ready", "pageUrl", "url", "pageStatus", "composerPresent",
+          "busy", "activeRequestId", "generating", "conversationId",
+          "provider", "selectorVersion", "runtimeVersion", "documentId", "frameId", "diagnostics", "inspectionError"]
+          .filter(key => response[key] !== undefined).map(key => [key, response[key]]));
+        if (response.inspectionError) entry.lastInspectionError = response.inspectionError;
         for (const waiter of [...entry.waiters]) {
           if (!waiter.requireComposer || response.ready === true) finish(waiter, null, response);
           else if (response.pageStatus && !["READY", "UI_CONTRACT_CHANGED"].includes(response.pageStatus)) {
-            finish(waiter, new BrowserRuntimeError(response.pageStatus, response.message || response.pageStatus));
+            finish(waiter, new BrowserRuntimeError(response.pageStatus, response.message || response.pageStatus,
+              { readiness:readinessDetails(entry) }));
           }
         }
       }
     } catch (error) {
+      error.details = { ...(error.details ?? {}), readiness:readinessDetails(entry) };
       fail(entry, error);
       if (error.code === "WEB_DOCUMENT_CHANGED" && current(entry)) invalidate(entry.tabId);
     } finally {
@@ -157,12 +173,16 @@ export function createBrowserRuntime(chromeApi) {
       entry.contentDocumentId = null;
       entry.chromeDocumentId = null;
       entry.responded = false;
+      entry.pingAttempts = 0;
+      entry.lastReadiness = null;
+      entry.lastInspectionError = null;
     }
     return new Promise((resolve, reject) => {
       const waiter = { entry, requireComposer, resolve, reject, timer: null };
       waiter.timer = setTimeout(() => {
         finish(waiter, new BrowserRuntimeError(entry.responded && requireComposer ? "UI_CONTRACT_CHANGED" : "CONTENT_SCRIPT_UNAVAILABLE",
-          entry.responded && requireComposer ? "Web composer is unavailable." : "Web content script is unavailable."));
+          entry.responded && requireComposer ? "Web composer is unavailable." : "Web content script is unavailable.",
+          { timeoutMs, requireComposer, readiness:readinessDetails(entry) }));
         if (!entry.waiters.size) clearTimeout(entry.timer);
       }, timeoutMs);
       entry.waiters.add(waiter);

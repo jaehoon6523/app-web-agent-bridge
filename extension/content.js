@@ -624,15 +624,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     let provider = null;
     let generating = false;
     let selectorVersion = null;
+    let inspectionError = null;
     try {
-      const adapter = requirePageContract();
+      const adapter = requirePageProvider();
+      provider = adapter.provider;
+      selectorVersion = adapter.evidence().selectorVersion ?? null;
+      adapter.assertContract();
       page = adapter.inspectPageState();
       identity = adapter.readConversationIdentity();
-      provider = adapter.provider;
       generating = adapter.detectGeneration();
-      selectorVersion = adapter.evidence().selectorVersion ?? null;
     } catch (error) {
       page = { status:error.code || "UI_CONTRACT_CHANGED", composerPresent:false };
+      inspectionError = { name:error.name ?? "Error", code:error.code ?? null,
+        message:error.message ?? String(error), stack:error.stack ?? null,
+        evidence:error.evidence ?? error.details ?? null };
     }
     sendResponse({
       ok: true,
@@ -640,6 +645,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       conversationId: identity.conversationId,
       title: identity.title ?? document.title,
       ready: page.status === "READY" && page.composerPresent,
+      pageUrl: location.href,
+      composerPresent: page.composerPresent,
+      diagnostics: page.diagnostics ?? null,
+      inspectionError,
       busy: currentJob !== null,
       activeRequestId: currentJob?.requestId ?? null,
       generating,

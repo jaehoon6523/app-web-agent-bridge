@@ -169,16 +169,30 @@
     return Boolean(firstVisible("stopButton"));
   }
 
+  function composerDiagnostics() {
+    return { selectorVersion:selectorRegistry.version, composerSelectors:selectorRegistry.groups.composer.map((selector) => {
+      const matches = [...document.querySelectorAll(selector)];
+      return { selector, matched:matches.length, visible:matches.filter(isVisible).length,
+        samples:matches.slice(0, 3).map((element) => {
+          const style = getComputedStyle(element), rect = element.getBoundingClientRect();
+          return { tagName:element.tagName, display:style.display, visibility:style.visibility,
+            width:rect.width, height:rect.height };
+        }) };
+    }) };
+  }
+
   function inspectPageState() {
     assertContract();
     const composer = detectComposer();
     const generating = detectGeneration();
     if (composer.present || generating) {
-      return { status:"READY", composerPresent:composer.present };
+      return { status:"READY", composerPresent:composer.present,
+        diagnostics:composer.present ? null : composerDiagnostics() };
     }
     return {
       status:detectAuthentication() ?? "UI_CONTRACT_CHANGED",
       composerPresent:false,
+      diagnostics:composerDiagnostics(),
     };
   }
 

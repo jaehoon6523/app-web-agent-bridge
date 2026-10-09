@@ -31,7 +31,7 @@ function isUnsentFailure(delivery, error) {
 }
 
 function logPreparationFailure(context, deliveryId, error, unsent) {
-  console.error("[bridge:preparation:failed]", {
+  console.error("[bridge:preparation:failed]", JSON.stringify({
     preparationId: context.preparationId, sessionId: context.webSession.sessionId, deliveryId,
     code: error.code ?? "WEB_FAILED", unsent, state: context.state, lifecycle: context.lifecycle,
     stage: error.details?.stage ?? (unsent ? "BEFORE_DISPATCH" : "DELIVERY"),
@@ -39,7 +39,7 @@ function logPreparationFailure(context, deliveryId, error, unsent) {
     message: error.message, details: error.details ?? null, stack: error.stack ?? null,
     blockingDeliveryId: error.details?.currentDeliveryId ?? null,
     blockingSessionId: error.details?.sessionId ?? null, blockingRunId: error.details?.runId ?? null,
-  });
+  }, null, 2));
 }
 
 function followUpHandoffNotes(prior) {

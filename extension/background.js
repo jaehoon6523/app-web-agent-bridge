@@ -451,7 +451,7 @@ async function selectRootBootstrapTab(payload, requested) {
   if (create) {
     let tab;
     try { tab = await createConversationBootstrapTab(chrome, waitForContentScript, provider); }
-    catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_CREATE_FAILED", error.message, "CREATE", { rootCount: roots.length }); }
+    catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_CREATE_FAILED", error.message, "CREATE", { rootCount: roots.length, causeDetails:error.details ?? null }); }
     if (!tab) throw rootBootstrapError("ROOT_TAB_CREATE_FAILED", "Web provider 시작 탭을 만들지 못했습니다.", "CREATE", { rootCount: roots.length });
     return tab;
   }
@@ -501,7 +501,7 @@ async function prepareBoundSession(payload) {
     catch (error) { if (sameSession) await store.update({ bindingStatus: error.code === "AMBIGUOUS" ? "AMBIGUOUS" : "NEEDS_REBIND" }); throw error; }
     let page;
     try { if (payload.focus) await focusTab(root); page = await waitForContentScript(root.id, 30_000, true); }
-    catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_LOAD_FAILED", error.message, "LOAD", { tabId: root.id }); }
+    catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_LOAD_FAILED", error.message, "LOAD", { tabId: root.id, causeDetails:error.details ?? null }); }
     if (!page?.ready || page.busy || page.generating || provider.canonicalize(page.url) !== provider.rootUrl) {
       throw rootBootstrapError("ROOT_NOT_READY", "Web provider 새 대화 입력창을 사용할 수 없습니다.", "READY", { tabId: root.id, page });
     }
