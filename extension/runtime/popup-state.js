@@ -27,12 +27,15 @@ export async function projectPopupConnectionState({ store, chromeApi, turnGate, 
   }
   const scopedDeliveries = Object.entries(state.deliveryScopes ?? {}).map(([sessionId, slot]) =>
     ({ sessionId, deliveryId: slot.currentDeliveryId }));
-  const boundPage = state.tabId === roots[0]?.id ? rootPage : await readDeliveryPage(chromeApi.tabs, state.tabId);
+  const boundPage = roots.length === 1 && state.tabId === roots[0]?.id ? rootPage : await readDeliveryPage(chromeApi.tabs, state.tabId);
   return {
     startTab: rootPage?.ready && !rootPage.busy && !rootPage.generating ? { tabId: roots[0].id, ready: true } : null,
     connected: authenticated && socket?.readyState === 1, transportConnected: socket?.readyState === 1,
     connecting: socket?.readyState === 0, authenticated, busy: turnGate.active,
     tabId: state.tabId, conversationUrl: state.conversationUrl, bindingStatus: state.bindingStatus,
+    deliveryOwner: { currentDeliveryId: state.currentDeliveryId, sessionId: state.lastBoundSessionId,
+      runId: state.lastBoundRunId, conversationUrl: state.conversationUrl,
+      documentId: state.documentId, frameId: state.frameId, tabId: state.tabId },
     bindingError: state.bindingError, currentDeliveryId: state.currentDeliveryId,
     deliveryPhase: state.currentDeliveryId ? state.completedDelivery?.turnId === state.currentDeliveryId
       ? "RESPONSE_OBSERVED" : turnGate.active || (boundPage?.activeRequestId === state.currentDeliveryId && boundPage.documentId === state.documentId)

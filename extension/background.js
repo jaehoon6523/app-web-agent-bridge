@@ -18,6 +18,7 @@ import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./r
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
 import { matchExactWebConversationTabs, resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
+import { inspectChatGptTabs, openInspectedChatGptTab } from "./runtime/tab-diagnostics.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -964,8 +965,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void connect().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-  if (["bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController"].includes(message?.type)) {
+  if (["bridge.inspectTabs", "bridge.openInspectedTab", "bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController"].includes(message?.type)) {
     void (async () => {
+      if (message.type === "bridge.inspectTabs") return inspectChatGptTabs(chrome.tabs);
+      if (message.type === "bridge.openInspectedTab") return openInspectedChatGptTab(chrome.tabs, message.payload);
       if (message.type === "bridge.inspectDelivery") return deliveryReview.inspect();
       if (message.type === "bridge.discardOrphanDelivery") return deliveryReview.discardOrphan(message.payload);
       if (message.type === "bridge.openDelivery") return deliveryReview.openConversation(message.payload);

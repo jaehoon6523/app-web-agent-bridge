@@ -15,7 +15,7 @@ header { display: flex; justify-content: space-between; align-items: center; mar
 .badge.ok { border-color: #3b8d67; color: #7fe1ad; }
 .badge.bad { border-color: #9c4c55; color: #ff9aa7; }
 label { display: block; font-size: 12px; color: #aab2c0; margin-top: 12px; }
-input {
+input, select {
   box-sizing: border-box;
   width: 100%;
   margin-top: 5px;

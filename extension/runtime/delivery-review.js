@@ -57,7 +57,7 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
     const durableAck = server.status === "MATCHED" && server.records[0]?.processingState === "ACK_PENDING"
       && server.records[0]?.responseStored === true;
     return { owner, phase: durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED"
-      : page?.activeRequestId === owner.currentDeliveryId ? "IN_FLIGHT" : "UNRESOLVED",
+      : page?.ok === true && page.activeRequestId === owner.currentDeliveryId && page.documentId === owner.documentId ? "IN_FLIGHT" : "UNRESOLVED",
       server, page: { reachable: page?.ok === true, busy: page?.busy ?? null,
         generating: page?.generating ?? null, documentMatches: page?.documentId === state.documentId,
         activeRequestId: page?.activeRequestId ?? null }, extensionBusy: turnGate.active };
