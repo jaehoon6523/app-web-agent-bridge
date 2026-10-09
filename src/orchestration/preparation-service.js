@@ -25,6 +25,23 @@ const USER_TAB_SELECTION_ERRORS = new Set(["AMBIGUOUS", "STORED_AMBIGUOUS_REBIND
 const MAX_FOLLOW_UP_HANDOFF_NOTES = 20;
 const MAX_FOLLOW_UP_HANDOFF_CHARS = 12_000;
 
+function isUnsentFailure(delivery, error) {
+  return delivery?.state === "FAILED"
+    && (delivery.unsent === true || error?.details?.browserDispatchStarted === false);
+}
+
+function logPreparationFailure(context, deliveryId, error, unsent) {
+  console.error("[bridge:preparation:failed]", {
+    preparationId: context.preparationId, sessionId: context.webSession.sessionId, deliveryId,
+    code: error.code ?? "WEB_FAILED", unsent, state: context.state, lifecycle: context.lifecycle,
+    stage: error.details?.stage ?? (unsent ? "BEFORE_DISPATCH" : "DELIVERY"),
+    browserDispatchStarted: unsent ? false : error.details?.browserDispatchStarted ?? null,
+    message: error.message, details: error.details ?? null, stack: error.stack ?? null,
+    blockingDeliveryId: error.details?.currentDeliveryId ?? null,
+    blockingSessionId: error.details?.sessionId ?? null, blockingRunId: error.details?.runId ?? null,
+  });
+}
+
 function followUpHandoffNotes(prior) {
   const valid = (Array.isArray(prior?.operatorNotes) ? prior.operatorNotes : [])
     .filter((note) => ["NOTE","DECISION"].includes(note?.kind)
@@ -186,6 +203,8 @@ export class PreparationService {
       for (const context of Object.values(this.data.contexts)) {
         if (context.lifecycle !== "ACTIVE") continue;
         if (context.resultingRunId) continue;
+        const delivery = context.deliveries.find((item) => item.deliveryId === context.webSession.activeDeliveryId);
+        if (isUnsentFailure(delivery, context.error)) continue;
         if (context.webSession.activeDeliveryId || context.state === "APPROVING") {
           context.state = "RECOVERY_REQUIRED"; context.webSession.bindingState = "RECOVERY_REQUIRED";
           context.version++; context.updatedAt = stamp();
@@ -289,6 +308,9 @@ export class PreparationService {
   }
   async dispatch(type, input) {
     if (type === "preparation.start") {
+      const current = this.current;
+      const active = current?.deliveries.find((delivery) => delivery.deliveryId === current.webSession.activeDeliveryId);
+      if (current?.lifecycle === "ACTIVE" && isUnsentFailure(active, current.error)) fail("Cancel the failed unsent preparation before starting another.");
       await this.assertStart();
       if (!this.available()) fail("Connect the browser extension.", "WEB_BLOCKED");
       const conversationUrl = typeof input.conversationUrl === "string" ? input.conversationUrl.trim() : "";
@@ -395,14 +417,12 @@ export class PreparationService {
     if (type === "preparation.cancel") {
       if (!this.capabilities().includes(type)) fail("Inspect and stop the active delivery before cancellation.");
       const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
-      if (context.error?.code === "WEB_TAB_SELECTION_REQUIRED") {
-        if (!delivery || delivery.state !== "FAILED" || context.error?.details?.browserDispatchStarted !== false) {
-          fail("The unsent binding failure changed; refresh before cancelling.", "DELIVERY_RECOVERY_MISMATCH");
-        }
+      if (isUnsentFailure(delivery, context.error)) {
         delivery.cancelled = true; delivery.cancelledAt = stamp();
         context.webSession.activeDeliveryId = null;
         context.lifecycle = "ABANDONED";
-        context.error = { code: "UNSENT_BINDING_CANCELLED", message: "The unsent ChatGPT binding request was cancelled." };
+        context.error = { code: "UNSENT_BINDING_CANCELLED", message: "The unsent ChatGPT binding request was cancelled.",
+          details: { originalError: context.error } };
         await this.touch(context); return this.snapshot();
       }
       if (delivery) {
@@ -465,6 +485,7 @@ export class PreparationService {
         });
         const delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
         const unsent = delivery.state === "RESERVED" || error.details?.browserDispatchStarted === false;
+        delivery.unsent = unsent;
         const candidates = unsent ? selectableTabsFor(error, session) : [];
         const selectionRequired = candidates.length > 0;
         if (selectionRequired) {
@@ -479,25 +500,17 @@ export class PreparationService {
             details: { ...(error.details ?? {}), originalCode: error.code ?? "AMBIGUOUS",
               browserDispatchStarted: false, candidates },
           };
+          logPreparationFailure(context, deliveryId, error, unsent);
           await this.touch(context);
           return;
         }
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
-        if (unsent) context.webSession.activeDeliveryId = null;
         context.state = unsent ? "WEB_BLOCKED" : "RECOVERY_REQUIRED";
         if (unsent && !context.deliveries.some((item) => item.state === "ACKNOWLEDGED")) {
-          context.lifecycle = "ABANDONED";
           session.bindingState = "UNBOUND";
         }
         context.error = { code: error.code ?? "WEB_FAILED", message: error.message, details: error.details ?? null };
-        console.warn("[bridge:preparation:failed]", {
-          preparationId: context.preparationId, sessionId: session.sessionId, deliveryId,
-          code: error.code ?? "WEB_FAILED", unsent, state: context.state,
-          message: error.message, details: error.details ?? null,
-          blockingDeliveryId: error.details?.currentDeliveryId ?? null,
-          blockingSessionId: error.details?.sessionId ?? null,
-          blockingRunId: error.details?.runId ?? null,
-        });
+        logPreparationFailure(context, deliveryId, error, unsent);
         await this.touch(context);
       }).catch((error) => {
         if (this.closed) return;
@@ -505,6 +518,10 @@ export class PreparationService {
         // expose it in memory, and never restart the Web operation.
         context.state = "RECOVERY_REQUIRED";
         session.bindingState = "RECOVERY_REQUIRED";
+        console.error("[bridge:preparation:persistence-failed]", {
+          preparationId: context.preparationId, sessionId: session.sessionId, deliveryId,
+          code: error.code ?? "PREPARATION_PERSISTENCE_FAILED", message: error.message, stack: error.stack ?? null,
+        });
         context.error = {code:error.code ?? "PREPARATION_PERSISTENCE_FAILED",message:error.message};
       }).finally(() => this.jobs.delete(context.preparationId));
     this.jobs.set(context.preparationId, job);
@@ -856,10 +873,11 @@ export class PreparationService {
     const active = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
     const tabSelection = context.error?.code === "WEB_TAB_SELECTION_REQUIRED"
       && active?.state === "FAILED" && context.error?.details?.browserDispatchStarted === false;
-    if (this.available() && active && !tabSelection && !this.jobs.has(context.preparationId) && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
+    const unsentFailure = isUnsentFailure(active, context.error);
+    if (this.available() && active && !unsentFailure && !this.jobs.has(context.preparationId) && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
       || context.error?.code === "DELIVERY_RECOVERY_UNCONFIRMED"
       || context.error?.code === "REBIND_DURING_ACTIVE_DELIVERY")) caps.push("preparation.discard");
-    if (tabSelection && !this.jobs.has(context.preparationId)) caps.push("preparation.cancel");
+    if (unsentFailure && !this.jobs.has(context.preparationId)) caps.push("preparation.cancel");
     if (this.available() && context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
       && context.diagnostics?.canRecover && active?.validation?.format === "CONFIRMED"
       && active?.processingState === "ACK_PENDING") caps.push("preparation.cancel");

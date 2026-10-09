@@ -507,7 +507,9 @@ function render() {
     if (workflow.state === "CONNECTING_WEB") {
       text("startReason", "ChatGPT 대화 탭에 연결 중입니다. 아직 메시지를 전송하지 않았습니다.");
     } else if (preparation?.state === "WEB_BLOCKED" && preparation?.error) {
-      text("startReason", `이전 준비 ${preparation.preparationId}의 전송 실패 기록입니다. 메시지는 전송되지 않았습니다. 새 작업의 연결 상태와는 별개입니다. `
+      const heldFailure = preparation.lifecycle === "ACTIVE";
+      text("startReason", (heldFailure ? "현재 준비 요청이 실패했습니다. 오류를 확인하거나 ‘요청 취소’를 선택하세요. "
+        : `이전 준비 ${preparation.preparationId}의 전송 실패 기록입니다. `)
         + preparation.error.code + ": " + preparation.error.message
         + (preparation.error.details ? "\n실패 진단: " + JSON.stringify(preparation.error.details) : ""));
     }

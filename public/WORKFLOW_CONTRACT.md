@@ -448,6 +448,13 @@ ACTIVE | ABANDONED | FAILED | COMPLETED
 
 `PREPARE/FAILED`는 retry 가능한 context일 수 있다.
 
+초기 바인딩의 미전송 실패는 `START/WEB_BLOCKED`, `lifecycle=ACTIVE`로 유지한다.
+오류 코드와 원인을 화면 및 서버 error 로그에 출력하고 실패한 Delivery record와
+active pointer를 보존한다. 새 준비 시작·답변 전송·승인을 자동 허용하지 않는다.
+미전송이 확인된 실패는 사용자의 `preparation.cancel`로 로컬에서 종료한다.
+이 취소는 Web ACK·폐기·재전송을 수행하지 않는다. 서버 재시작도 해당 실패를
+정상 시작 상태나 전송 후 복구 상태로 바꾸지 않는다.
+
 ### Delivery record와 active pointer 분리
 
 ACK 이후에도 Delivery record는 보존한다. `IDLE`은 Delivery.state가 아니라

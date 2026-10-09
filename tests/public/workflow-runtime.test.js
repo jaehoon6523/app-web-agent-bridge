@@ -56,7 +56,11 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
         add: (...names) => { for (const name of names) this.className = `${this.className ?? ""} ${name}`.trim(); },
         remove: (...names) => { this.className = String(this.className ?? "").split(/\s+/u).filter((name) => !names.includes(name)).join(" "); },
         contains: (name) => String(this.className ?? "").split(/\s+/u).includes(name),
-        toggle: () => {},
+        toggle: (name, force) => {
+          const included = force === undefined ? !this.classList.contains(name) : Boolean(force);
+          this.classList[included ? "add" : "remove"](name);
+          return included;
+        },
       };
       all.push(this);
     }
@@ -318,6 +322,33 @@ test("ambiguous preparation renders eligible ChatGPT tabs and sends the selected
   assert.equal(call.body.selectedTabId, 12);
   assert.equal(call.body.sessionId, "s1");
   assert.equal(call.body.deliveryId, "d1");
+});
+
+test("an initial binding failure displays the original error and holds the request until explicit cancellation", async () => {
+  const state = prepared();
+  state.workflow = { stage: "START", state: "WEB_BLOCKED", preparationId: "p1", preparationVersion: 3 };
+  Object.assign(state.preparation, { state: "WEB_BLOCKED", lifecycle: "ACTIVE", error: {
+    code: "UI_CONTRACT_CHANGED", message: "ChatGPT composer is unavailable in the bound conversation.",
+    details: { flow: "ROOT_BOOTSTRAP_V2", stage: "LOAD", extensionVersion: "0.2.2", tabId: 19 },
+  } });
+  state.commandCapabilities = ["preparation.cancel", "web.inspect"];
+  const mutations = [];
+  const ui = await dashboard(state, async (url) => { mutations.push(url); return state; });
+  assert.equal(ui.elements.get("startProgress").hidden, false);
+  assert.equal(ui.elements.get("startProgress").attributes.role, "alert");
+  assert.equal(ui.elements.get("startProgress").classList.contains("error"), true);
+  assert.equal(ui.elements.get("startProgressTitle").textContent, "ChatGPT 요청에 실패했습니다");
+  assert.match(ui.elements.get("startProgressDetail").textContent, /UI_CONTRACT_CHANGED: ChatGPT composer is unavailable/u);
+  assert.match(ui.elements.get("startReason").textContent, /현재 준비 요청이 실패했습니다/u);
+  assert.match(ui.elements.get("startReason").textContent, /"stage":"LOAD"/u);
+  assert.equal(ui.elements.get("planRun").disabled, true);
+  assert.equal(ui.elements.get("newRun").disabled, true);
+  assert.equal(ui.elements.get("objective").readOnly, true);
+  assert.equal(ui.elements.get("cancelInitialPreparation").hidden, false);
+  assert.equal(ui.elements.get("cancelInitialPreparation").disabled, false);
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("startProgress").hidden, false);
+  assert.deepEqual(mutations, []);
 });
 test("approval is a single mutation carrying the canonical version", async () => {
   const state = prepared();

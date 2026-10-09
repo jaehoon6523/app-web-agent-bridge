@@ -376,8 +376,8 @@ test("cross-session active-delivery block is classified as stale extension runti
   await settled(f.service);
   const context = f.service.current;
   assert.equal(context.state, "WEB_BLOCKED");
-  assert.equal(context.lifecycle, "ABANDONED");
-  assert.equal(context.webSession.activeDeliveryId, null);
+  assert.equal(context.lifecycle, "ACTIVE");
+  assert.equal(context.webSession.activeDeliveryId, context.deliveries.at(-1).deliveryId);
   assert.equal(context.error.code, "EXTENSION_RUNTIME_STALE");
   assert.equal(context.error.details.originalCode, "REBIND_DURING_ACTIVE_DELIVERY");
   assert.equal(context.error.details.expectedSessionId, context.webSession.sessionId);
@@ -406,10 +406,69 @@ test("connection must succeed before entering preparation; absent tab never send
   await settled(f.service);
   const failed = await f.service.project(snapshot);
   assert.equal(failed.workflow.stage, "START");
+  assert.equal(failed.workflow.state, "WEB_BLOCKED");
   assert.equal(failed.preparation.state, "WEB_BLOCKED");
   assert.equal(sent, 0);
-  assert.ok(failed.commandCapabilities.includes("preparation.start"));
+  assert.ok(!failed.commandCapabilities.includes("preparation.start"));
+  assert.ok(failed.commandCapabilities.includes("preparation.cancel"));
   assert.ok(!failed.commandCapabilities.includes("preparation.approve"));
+});
+
+test("composer failure stays visible across restart and requires local cancellation before a new start", async (t) => {
+  const f = fixture(t), errors = [];
+  t.mock.method(console, "error", (...args) => errors.push(args));
+  let resumes = 0, inspections = 0, acks = 0, discards = 0;
+  const details = { flow: "ROOT_BOOTSTRAP_V2", stage: "LOAD", extensionVersion: "0.2.2", tabId: 19 };
+  f.web.resume = async () => {
+    resumes++;
+    throw Object.assign(new Error("ChatGPT composer is unavailable in the bound conversation."), {
+      code: "UI_CONTRACT_CHANGED", details,
+    });
+  };
+  f.web.inspectDelivery = async () => { inspections++; throw new Error("Unexpected inspection"); };
+  f.web.acknowledgeDelivery = async () => { acks++; throw new Error("Unexpected ACK"); };
+  f.web.discardDelivery = async () => { discards++; throw new Error("Unexpected discard"); };
+  await f.start(); await settled(f.service);
+  const before = f.service.snapshot(), deliveryId = before.deliveries[0].deliveryId;
+  assert.equal(before.lifecycle, "ACTIVE");
+  assert.equal(before.state, "WEB_BLOCKED");
+  assert.equal(before.webSession.activeDeliveryId, deliveryId);
+  assert.equal(before.deliveries[0].state, "FAILED");
+  assert.equal(before.deliveries[0].unsent, true);
+  assert.deepEqual(before.error.details, details);
+  const [event, logged] = errors.find(([name]) => name === "[bridge:preparation:failed]");
+  assert.equal(event, "[bridge:preparation:failed]");
+  assert.equal(logged.code, "UI_CONTRACT_CHANGED");
+  assert.equal(logged.stage, "LOAD");
+  assert.equal(logged.deliveryId, deliveryId);
+  assert.equal(logged.lifecycle, "ACTIVE");
+  assert.equal(logged.browserDispatchStarted, false);
+  assert.match(logged.stack, /composer is unavailable/u);
+  f.restart();
+  assert.equal(f.service.current.state, "WEB_BLOCKED");
+  assert.deepEqual(f.service.current.error, before.error);
+  assert.equal(f.service.current.webSession.activeDeliveryId, deliveryId);
+  const projected = await f.service.project({ runs: [], run: null, commandCapabilities: [] });
+  assert.deepEqual([projected.workflow.stage, projected.workflow.state], ["START", "WEB_BLOCKED"]);
+  for (const command of ["preparation.start", "preparation.reply", "preparation.approve", "preparation.discard"]) {
+    assert.ok(!projected.commandCapabilities.includes(command), command);
+  }
+  await assert.rejects(f.service.execute("preparation.start", {
+    requestId: "another-start", objective: "again", targetRoot: f.root, conversationUrl: "https://chatgpt.com/",
+  }), { code: "PREPARATION_CONFLICT" });
+  assert.equal(f.service.current.preparationId, before.preparationId);
+  f.service.available = () => false;
+  assert.ok(f.service.capabilities().includes("preparation.cancel"));
+  await f.command("preparation.cancel");
+  assert.equal(f.service.current.lifecycle, "ABANDONED");
+  assert.equal(f.service.current.webSession.activeDeliveryId, null);
+  assert.deepEqual(f.service.current.error.details.originalError, before.error);
+  assert.equal(f.service.current.deliveries[0].cancelled, true);
+  assert.deepEqual({ resumes, inspections, acks, discards, prompts: f.prompts.length }, {
+    resumes: 1, inspections: 0, acks: 0, discards: 0, prompts: 0,
+  });
+  f.service.available = () => true;
+  assert.ok(f.service.capabilities().includes("preparation.start"));
 });
 
 test("ambiguous unsent binding waits for an explicit eligible tab and then sends exactly once", async (t) => {
