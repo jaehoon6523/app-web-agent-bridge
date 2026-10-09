@@ -1,4 +1,5 @@
 (function exposeWebPageProviderRegistry(root) {
+  if (root.WebBridgePageProviders) return;
   const REQUIRED_METHODS = Object.freeze([
     "matches",
     "assertContract",

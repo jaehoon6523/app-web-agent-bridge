@@ -17,13 +17,14 @@ async function execute(t, mode) {
     console.log('peer '+stage);
     if (${JSON.stringify(mode)} === 'large') process.stdout.write('x'.repeat(500000)+'\\n');
     if (${JSON.stringify(mode)} !== 'missing') {
-      const uf=stage==='test:e2e:ci';
-      const target=path.join(root,uf?'ui-qa/e2e-summary.json':'latest-test-result.json');
+      const uf=stage==='test:e2e:ci',native=stage==='test:extension:native';
+      const target=path.join(root,uf?'ui-qa/e2e-summary.json':native?'latest-native-extension.json':'latest-test-result.json');
       fs.mkdirSync(path.dirname(target),{recursive:true});
-      fs.writeFileSync(target,JSON.stringify(uf?{scope:'FULL SUITE',failed:0,unexpectedSkips:0}:
+      fs.writeFileSync(target,JSON.stringify(native?{nativeExtension:true,completed:true,status:${JSON.stringify(mode)}==='native-unavailable'?'UNVERIFIED':'PASS',steps:Array.from({length:5},()=>({pass:true}))}:uf?{scope:'FULL SUITE',failed:0,unexpectedSkips:0}:
         {status:'PASS',scheduled:['peer'],results:[{pass:true,summary:{completed:true}}]}));
     }
     if (${JSON.stringify(mode)} === 'first-fails' && stage==='check') process.exitCode=7;
+    if (${JSON.stringify(mode)} === 'native-unavailable' && stage==='test:extension:native') process.exitCode=2;
   `);
   const child=spawn(process.execPath,[command],{env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},stdio:['ignore','pipe','pipe']});
   child.stdout.resume();child.stderr.resume();
@@ -33,8 +34,8 @@ async function execute(t, mode) {
   assert.equal(signal,null);
   assert.equal(result.logBytes,Buffer.byteLength(log));
   assert.equal(result.expectedLogBytes,result.logBytes);
-  assert.equal(result.stages.length,3);
-  assert.equal((log.match(/^STAGE_RESULT /gm)||[]).length,3);
+  assert.equal(result.stages.length,5);
+  assert.equal((log.match(/^STAGE_RESULT /gm)||[]).length,5);
   return {code,result,log};
 }
 
@@ -46,14 +47,20 @@ test('verification command rejects exit zero without fresh completion receipts',
 });
 test('verification command retains earlier failure after later successful stages', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'first-fails');
-  assert.equal(code,1);assert.deepEqual(result.stages.map(stage=>stage.status),['FAIL','PASS','PASS']);
+  assert.equal(code,1);assert.deepEqual(result.stages.map(stage=>stage.status),['FAIL','PASS','PASS','PASS','PASS']);
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
 
 test('verification command preserves the entire large output across all stages', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'large');
   assert.equal(code,0);assert.equal(result.status,'PASS');
-  assert.ok(log.length>1500000);
-  assert.equal((log.match(/x/g)||[]).length,1500000);
+  assert.ok(log.length>2500000);
+  const chunks = log.match(/^x+$/gm) ?? [];
+  assert.equal(chunks.length,5); assert.ok(chunks.every(chunk=>chunk.length===500000));
   assert.ok(log.endsWith('VERIFICATION PASS\n'));
+});
+test('an unavailable native extension loader cannot be reported as complete approval', {timeout:15000}, async t=>{
+  const {code,result,log}=await execute(t,'native-unavailable');
+  assert.equal(code,2); assert.equal(result.status,'PARTIAL');
+  assert.equal(result.stages[2].status,'UNVERIFIED'); assert.ok(log.endsWith('VERIFICATION PARTIAL\n'));
 });

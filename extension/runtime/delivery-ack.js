@@ -1,7 +1,9 @@
 import { errorPayload } from "./document-binding.js";
 
-export async function handleDeliveryAcknowledgement({ store, message, send, broadcastPopupState }) {
+export async function handleDeliveryAcknowledgement({ store, turnGate, message, send, broadcastPopupState }) {
+  let held;
   try {
+    held = turnGate?.reserve(message.requestId);
     console.info("[bridge:delivery:ack-received]", { deliveryId: message.requestId });
     const before = await store.read();
     await store.clearDelivery(message.requestId, message.payload?.sessionId ?? null);
@@ -21,5 +23,7 @@ export async function handleDeliveryAcknowledgement({ store, message, send, broa
     });
   } catch (error) {
     send({ type: "web.prompt.error", requestId: message.requestId, payload: errorPayload(error) });
+  } finally {
+    if (held) turnGate.release(held);
   }
 }

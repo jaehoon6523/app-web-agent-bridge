@@ -19,8 +19,16 @@ export function createSuccessTrace(requestId, session) {
   };
 }
 
+export function diagnosticMetadata(value) {
+  if (Array.isArray(value)) return value.map(diagnosticMetadata);
+  if (!value || typeof value !== "object") return value;
+  const privateKeys = new Set(["text", "body", "rawText", "packetText", "packet", "response", "sharedSecret", "secret", "hmacSha256", "nonce"]);
+  return Object.fromEntries(Object.entries(value).filter(([key]) => !privateKeys.has(key))
+    .map(([key, item]) => [key, diagnosticMetadata(item)]));
+}
+
 export function diagnosticError(error) {
-  const details = error?.details;
+  const details = diagnosticMetadata(error?.details);
   const suffix = details && typeof details === "object" ? ` · 진단: ${JSON.stringify(details)}` : "";
   return `${error?.code || "WEB_EXTENSION_ERROR"}: ${error?.message || "The ChatGPT Web extension operation failed."}${suffix}`;
 }

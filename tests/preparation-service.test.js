@@ -138,7 +138,7 @@ test("reviewer provider choices are validated and persist with the preparation",
 
 test("unresolved delivery can be explicitly discarded with confirmations and remains auditable", async (t) => {
   const f = fixture(t);
-  await f.start();
+  f.ackFailure(true); await f.start(); await settled(f.service);
   const before = f.service.current;
   const deliveryId = before.webSession.activeDeliveryId;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: deliveryId, sessionId: before.webSession.sessionId,
@@ -158,7 +158,7 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
 
 test("discard refuses a delivery owned by a different extension preparation", async (t) => {
   const f = fixture(t);
-  await f.start();
+  f.ackFailure(true); await f.start(); await settled(f.service);
   const before = f.service.current;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: "delivery-other", sessionId: "session-other", runId: "run-other" });
   await assert.rejects(
@@ -169,10 +169,67 @@ test("discard refuses a delivery owned by a different extension preparation", as
   assert.equal(f.service.current.webSession.activeDeliveryId, before.webSession.activeDeliveryId);
 });
 
+test("a missing extension record cannot be treated as an already confirmed preparation discard", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const context = f.service.current, deliveryId = context.webSession.activeDeliveryId;
+  f.web.inspectDelivery = async () => ({ currentDeliveryId: null, sessionId: context.webSession.sessionId,
+    runId: context.preparationId, conversationUrl: context.webSession.conversationUrl });
+  await assert.rejects(f.command("preparation.discard", { unresolvedResultConfirmed: true,
+    noAutomaticResendConfirmed: true, reason: "Checked the original conversation" }), { code: "DELIVERY_RECOVERY_MISMATCH" });
+  assert.equal(context.webSession.activeDeliveryId, deliveryId); assert.equal(f.discarded, null);
+});
+
+test("a missing extension pointer cannot finish a durable preparation without a confirmed ACK", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const context = f.service.current, session = context.webSession, deliveryId = session.activeDeliveryId;
+  f.observe({ currentDeliveryId: null });
+  let acks = 0;
+  f.web.acknowledgeDelivery = async () => { acks++; throw Object.assign(new Error("No exact ACK receipt"), { code:"DELIVERY_ACK_MISMATCH" }); };
+  await assert.rejects(f.command("web.reconcile", { sessionId: session.sessionId, conversationId: session.conversationId,
+    conversationUrl: session.conversationUrl, deliveryId }), { code: "DELIVERY_ACK_MISMATCH" });
+  assert.equal(acks, 1); assert.equal(context.webSession.activeDeliveryId, deliveryId);
+  assert.ok(context.deliveries.find(item => item.deliveryId === deliveryId).response);
+});
+
+test("a stalled exact content job can be explicitly stopped without a generating indicator or an ACK", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const context = f.service.current, session = context.webSession, deliveryId = session.activeDeliveryId;
+  const delivery = context.deliveries.find(item => item.deliveryId === deliveryId);
+  delivery.response = null; delivery.validation = {}; delivery.processingState = "RECOVERY_REQUIRED";
+  const input = { sessionId: session.sessionId, conversationId: session.conversationId,
+    conversationUrl: session.conversationUrl, deliveryId };
+  f.observe({ pageBusy: true, generating: false, activeRequestId: "another-job" });
+  await f.command("web.inspect", input); assert.equal(context.diagnostics.canStop, false);
+  f.observe({ pageBusy: true, generating: false, activeRequestId: deliveryId });
+  await f.command("web.inspect", input); assert.equal(context.diagnostics.canStop, true);
+  f.web.stopDelivery = async expected => {
+    assert.equal(expected.currentDeliveryId, deliveryId);
+    f.observe({ pageBusy: false, generating: false, activeRequestId: null });
+    return f.web.inspectDelivery();
+  };
+  await f.command("web.stop", input);
+  assert.equal(session.activeDeliveryId, deliveryId); assert.equal(context.diagnostics.canRecover, true);
+  assert.equal(delivery.stopped, true); assert.ok(!f.service.capabilities().includes("preparation.cancel"));
+  assert.equal(f.discarded, null);
+});
+
+test("stopping an unvalidated preparation delivery does not authorize a cancellation ACK", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const context = f.service.current, delivery = context.deliveries.find(item => item.deliveryId === context.webSession.activeDeliveryId);
+  delete delivery.response; delivery.validation = {}; delivery.stopped = true;
+  context.diagnostics = { canRecover: true };
+  let acks = 0; f.web.acknowledgeDelivery = async () => { acks++; };
+  assert.ok(!f.service.capabilities().includes("preparation.cancel"));
+  await assert.rejects(f.command("preparation.cancel"));
+  assert.equal(acks, 0); assert.equal(context.webSession.activeDeliveryId, delivery.deliveryId);
+});
+
 test("root bootstrap timeout discard uses the canonical preparation and session identity", async (t) => {
   const f = fixture(t);
+  f.ackFailure(true);
   await f.service.execute("preparation.start", { requestId: "start-root-discard",
     objective: "안녕", targetRoot: f.root, conversationUrl: "https://chatgpt.com/" });
+  await settled(f.service);
   const context = f.service.current;
   const delivery = context.deliveries.find((item) => item.deliveryId === context.webSession.activeDeliveryId);
   f.web.inspectDelivery = async () => ({ currentDeliveryId: delivery.deliveryId, sessionId: context.webSession.sessionId,

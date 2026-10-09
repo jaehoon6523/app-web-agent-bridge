@@ -150,7 +150,9 @@ export async function extensionBrowser(t, {
     await providerPage.addInitScript(({ id, production }) => {
       globalThis.fixtureConversationId = production && id !== 7 ? 'created-' + id : 'created';
       globalThis.chrome = { runtime: {
-        onMessage: { addListener(listener) { globalThis.fixtureContentListener = listener; } },
+        getManifest: () => ({ version: 'fixture-content-version' }),
+        onMessage: { addListener(listener) { globalThis.fixtureContentRegistrations = (globalThis.fixtureContentRegistrations || 0) + 1;
+          globalThis.fixtureContentListener = listener; } },
         sendMessage: message => fixtureProgress(message),
       } };
     }, { id, production:Boolean(production) });

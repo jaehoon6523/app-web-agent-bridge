@@ -1,4 +1,9 @@
-import { inspectBoundDocument, createSuccessTrace, diagnosticError, errorPayload } from "./runtime/document-binding.js";
+import { discardExactDelivery } from "./runtime/delivery-discard.js";
+import { readDeliveryPage } from "./runtime/delivery-page.js";
+import { createCoalescedTask } from "./runtime/coalesced-task.js";
+import { projectPopupConnectionState } from "./runtime/popup-state.js";
+import { createDeliveryReview, createServerDeliveryInspector } from "./runtime/delivery-review.js";
+import { inspectBoundDocument, createSuccessTrace, diagnosticError, diagnosticMetadata, errorPayload } from "./runtime/document-binding.js";
 import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import { canonicalChatGptUrl, conversationIdFromUrl, validateLocalControllerUrl } from "./runtime/conversation.js";
@@ -23,7 +28,7 @@ let handledChallengeIds = new Set();
 const turnGate = createActiveTurnGate();
 const browserRuntime = createBrowserRuntime(chrome);
 let lastError = null;
-function bridgeLog(event, details = {}) { console.info(`[bridge:trace:${event}]`, { at: new Date().toISOString(), ...details }); }
+function bridgeLog(event, details = {}) { console.info(`[bridge:trace:${event}]`, { at: new Date().toISOString(), ...diagnosticMetadata(details) }); }
 class ExtensionOperationError extends Error {
   constructor(code, message, details = null) {
     super(message);
@@ -33,48 +38,21 @@ class ExtensionOperationError extends Error {
 }
 function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 async function connectionState() {
-  let state = await store.read();
-  const roots = (await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS })).filter(tab => canonicalChatGptUrl(tab.url) === "https://chatgpt.com/");
-  const rootPage = roots.length === 1 ? await chrome.tabs.sendMessage(roots[0].id, { type: "agent.ping" }).catch(() => null) : null;
-  const bindingRecovery = classifyStoredAmbiguousRoot({ state, roots, rootPage, busy: turnGate.active });
-  if (bindingRecovery?.recovered) state = await store.update(bindingRecovery.patch);
-  if (state.bindingStatus === "AMBIGUOUS" && !state.bindingError) {
-    const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
-    const bindingError = diagnosticError(new ExtensionOperationError(bindingRecovery?.code ?? "STORED_AMBIGUOUS_REBIND_REQUIRED",
-      bindingRecovery?.message ?? "저장된 모호한 바인딩을 자동 복구할 수 없습니다.", {
-      mode: "STORED_AMBIGUOUS_RECOVERY", persistedTabId: state.tabId, persistedUrl: state.conversationUrl,
-      persistedConversationId: state.conversationId, candidates: tabs.map((tab) => ({
-        tabId: tab.id, windowId: tab.windowId, url: tab.url,
-        canonicalUrl: canonicalChatGptUrl(tab.url), conversationId: conversationIdFromUrl(tab.url),
-      })), }));
-    state = await store.update({ bindingError });
-  }
-  return {
-    startTab: rootPage?.ready && !rootPage.busy && !rootPage.generating ? { tabId: roots[0].id, ready: true } : null,
-    connected: authenticated && socket?.readyState === WebSocket.OPEN,
-    transportConnected: socket?.readyState === WebSocket.OPEN,
-    connecting: socket?.readyState === WebSocket.CONNECTING,
-    authenticated,
-    busy: turnGate.active,
-    tabId: state.tabId,
-    conversationUrl: state.conversationUrl,
-    bindingStatus: state.bindingStatus,
-    bindingError: state.bindingError, currentDeliveryId: state.currentDeliveryId, legacyTestDelivery: isLegacyBridgeTestDelivery(state),
-    extensionIdentity: state.extensionIdentity || null, bindingRecovery: bindingRecovery ? { code: bindingRecovery.code, message: bindingRecovery.message, recovered: bindingRecovery.recovered } : null,
-    lastError,
-  };
+  return projectPopupConnectionState({ store, chromeApi: chrome, turnGate, socket, authenticated, lastError });
 }
 function broadcastPopupState() {
-  void connectionState()
-    .then((payload) => chrome.runtime.sendMessage({ type: "bridge.state", payload }))
-    .catch(() => {});
+  void publishState().catch(() => {});
 }
+const publishState = createCoalescedTask(async () => chrome.runtime.sendMessage({ type: "bridge.state", payload: await connectionState() }));
 function send(message, { allowUnauthenticated = false } = {}) {
   if (socket?.readyState !== WebSocket.OPEN) return false;
   if (!allowUnauthenticated && !authenticated) return false;
   socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
   return true;
 }
+const serverDeliveryInspector = createServerDeliveryInspector({ send });
+const deliveryReview = createDeliveryReview({ store, turnGate, tabs: chrome.tabs,
+  inspectServer: expected => serverDeliveryInspector.inspect(expected), onChange: broadcastPopupState });
 const reconnect = createReconnectController({ connect, connected: () => Boolean(socket), onError(error) {
   lastError = error.message; broadcastPopupState();
 } });
@@ -192,6 +170,7 @@ async function handleControllerMessage(raw) {
     // All other controller commands are ignored until authentication completes.
     return;
   }
+  if (serverDeliveryInspector.accept(message)) return;
   switch (message.type) {
     case "web.session.prepare":
       await handlePrepare(message, false);
@@ -294,9 +273,10 @@ async function handleControllerMessage(raw) {
   }
 }
 async function handlePrepare(message, explicitRebind) {
+  let held;
   bridgeLog("prepare:start", { preparationId: message.payload?.preparationId ?? null, sessionId: message.payload?.sessionId ?? null, explicitRebind });
   try {
-    turnGate.assertIdle(explicitRebind ? "Session rebind" : "Session preparation");
+    held = turnGate.reserve(message.requestId);
     const session = explicitRebind
       ? await rebindSession(message.payload || {})
       : await prepareBoundSession(message.payload || {});
@@ -315,31 +295,26 @@ async function handlePrepare(message, explicitRebind) {
     }
     if (error?.code === "WEB_SESSION_BUSY") error.details = await deliveryDetails(await store.read());
     send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
-  }
+  } finally { if (held) turnGate.release(held); broadcastPopupState(); }
 }
 async function handleDeliveryAcknowledgement(message) {
   turnGate.assertIdle("Delivery acknowledgement");
-  return acknowledgeDeliveryMessage({ store, message, send, broadcastPopupState });
+  return acknowledgeDeliveryMessage({ store, turnGate, message, send, broadcastPopupState });
 }
 async function handleDeliveryDiscard(message) {
-  try { turnGate.assertIdle("Delivery discard"); const state = await store.read(), expected = message.payload || {};
-    if (expected.unresolvedResultConfirmed !== true || expected.noAutomaticResendConfirmed !== true || typeof expected.reason !== "string" || expected.reason.trim().length < 3) throw new ExtensionOperationError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과와 자동 재전송 금지를 확인하고 폐기 사유를 입력하세요.");
-    if (state.currentDeliveryId !== expected.currentDeliveryId || state.lastBoundSessionId !== expected.sessionId
-      || state.lastBoundRunId !== expected.runId || state.conversationUrl !== expected.conversationUrl) throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 identity가 현재 기록과 다릅니다.");
-    await store.update({ currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND", bindingError: `RECOVERY_DISCARDED: ${expected.reason.trim()}` });
-    send({ type: "web.delivery.discarded", requestId: message.requestId, payload: { ...expected, result: "discarded" } });
-  } catch (error) { send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) }); }
+  return discardExactDelivery({ store, turnGate, tabs: chrome.tabs, message, send, onChange: broadcastPopupState });
 }
 async function deliveryDetails(state) {
-  let page = null;
-  if (state.tabId !== null) {
-    page = await chrome.tabs.sendMessage(state.tabId, { type: "agent.ping" }).catch(() => null);
-  }
+  const page = await readDeliveryPage(chrome.tabs, state.tabId);
   return {
     currentDeliveryId: state.currentDeliveryId,
     sessionId: state.lastBoundSessionId, runId: state.lastBoundRunId,
     conversationUrl: state.conversationUrl, conversationId: state.conversationId, tabId: state.tabId,
     bindingStatus: state.bindingStatus, extensionBusy: turnGate.active,
+    documentId: state.documentId, frameId: state.frameId,
+    lastAcknowledgedDelivery: state.lastAcknowledgedDelivery,
+    lastDeliveryDiscard: state.lastDeliveryDiscard,
+    scopedDeliveries: Object.entries(state.deliveryScopes ?? {}).map(([sessionId, slot]) => ({ sessionId, deliveryId: slot.currentDeliveryId })),
     pageReachable: page?.ok === true, pageStatus: page?.pageStatus ?? null,
     pageBusy: typeof page?.busy === "boolean" ? page.busy : null,
     generating: typeof page?.generating === "boolean" ? page.generating : null,
@@ -411,8 +386,8 @@ async function handleDeliveryRecovery(message) {
       || details.pageStatus !== "READY" || details.observedConversationUrl !== state.conversationUrl) {
       throw new ExtensionOperationError("DELIVERY_RECOVERY_UNCONFIRMED", "이전 대화의 생성 종료를 확인하지 못했습니다. 해당 대화 탭을 확인하세요.", details);
     }
-    await store.clearDelivery(state.currentDeliveryId);
-    send({ type: "web.delivery.recovered", requestId: message.requestId, payload: { ...details, extensionBusy: false } });
+    throw new ExtensionOperationError("DELIVERY_RESPONSE_REQUIRED",
+      "페이지의 생성 종료만으로 전송을 정리할 수 없습니다. 저장된 응답을 검증해 ACK하거나 명시적으로 폐기하세요.", details);
   } catch (error) {
     send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
   } finally {
@@ -525,15 +500,14 @@ async function prepareBoundSession(payload) {
     try { root = await selectRootBootstrapTab(payload, requested); }
     catch (error) { if (sameSession) await store.update({ bindingStatus: error.code === "AMBIGUOUS" ? "AMBIGUOUS" : "NEEDS_REBIND" }); throw error; }
     let page;
-    try { if (payload.focus) await focusTab(root); await waitForContentScript(root.id, 30_000, true);
-      page = await chrome.tabs.sendMessage(root.id, { type: "agent.ping" }); }
+    try { if (payload.focus) await focusTab(root); page = await waitForContentScript(root.id, 30_000, true); }
     catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_LOAD_FAILED", error.message, "LOAD", { tabId: root.id }); }
     if (!page?.ready || page.busy || page.generating || provider.canonicalize(page.url) !== provider.rootUrl) {
       throw rootBootstrapError("ROOT_NOT_READY", "Web provider 새 대화 입력창을 사용할 수 없습니다.", "READY", { tabId: root.id, page });
     }
     let documentBinding;
     try {
-      documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: provider.rootUrl, conversationId: null });
+      documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: provider.rootUrl, conversationId: null, documentId: page.documentId });
       await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
         webProvider: requested.provider, tabId: root.id, windowId: root.windowId, conversationUrl: provider.rootUrl, conversationId: null,
         bindingStatus: "ROOT_READY", bindingError: null, lastActiveWebTarget: createStoredTarget({ provider:requested.provider, tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: provider.rootUrl, conversationId: null }) });
@@ -578,8 +552,8 @@ async function prepareBoundSession(payload) {
     });
   }
   if (payload.focus === true) await focusTab(matched.tab);
-  await waitForContentScript(matched.tab.id, 30_000, true);
-  await persistBoundTab(matched.tab, requested);
+  const ready = await waitForContentScript(matched.tab.id, 30_000, true);
+  await persistBoundTab(matched.tab, { ...requested, documentId: ready.documentId });
   return getSessionInfo();
 }
 async function rebindSession(payload) {
@@ -601,14 +575,14 @@ async function rebindSession(payload) {
       );
     }
     if (payload.focus === true) await focusTab(tab);
-    await waitForContentScript(tab.id, 30_000, true);
-    const page = await chrome.tabs.sendMessage(tab.id, { type: "agent.ping" });
+    const page = await waitForContentScript(tab.id, 30_000, true);
     if (!page?.ready || page.busy || page.generating || provider.canonicalize(page.url) !== provider.rootUrl || page.conversationId !== null) {
       throw new ExtensionOperationError("ROOT_NOT_READY", "The selected Web provider start tab is not ready.");
     }
     const documentBinding = await inspectBoundDocument(chrome.tabs, tab.id, {
       conversationUrl: provider.rootUrl,
       conversationId: null,
+      documentId: page.documentId,
     });
     await store.bindSession({
       ...documentBinding,
@@ -645,8 +619,8 @@ async function rebindSession(payload) {
     );
   }
   if (payload.focus === true) await focusTab(tab);
-  await waitForContentScript(tab.id, 30_000, true);
-  await persistBoundTab(tab, requested);
+  const ready = await waitForContentScript(tab.id, 30_000, true);
+  await persistBoundTab(tab, { ...requested, documentId: ready.documentId });
   return getSessionInfo();
 }
 async function persistBoundTab(tab, requested) {
@@ -942,11 +916,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return false;
   }
   if (message?.type === "agent.manualIntervention") {
-    void store.update({ bindingStatus: "AMBIGUOUS" }).then(() => {
-      if (authenticated) {
-        send({ type: "web.manual-intervention", requestId: message.requestId, payload: message.payload });
-      }
-    });
+    void store.read().then(async state => {
+      if (message.requestId !== state.currentDeliveryId || _sender.tab?.id !== state.tabId
+        || _sender.frameId !== 0 || message.payload?.documentId !== state.documentId) return;
+      await store.updateIf({ currentDeliveryId: state.currentDeliveryId, documentId: state.documentId, tabId: state.tabId },
+        { bindingStatus: "AMBIGUOUS", bindingError: `${message.payload.code}: ${message.payload.message}` });
+      if (authenticated) send({ type: "web.manual-intervention", requestId: message.requestId, payload: message.payload });
+      broadcastPopupState();
+    }).catch(() => {});
     sendResponse({ ok: true });
     return false;
   }
@@ -987,6 +964,16 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void connect().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
+  if (["bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController"].includes(message?.type)) {
+    void (async () => {
+      if (message.type === "bridge.inspectDelivery") return deliveryReview.inspect();
+      if (message.type === "bridge.discardOrphanDelivery") return deliveryReview.discardOrphan(message.payload);
+      if (message.type === "bridge.openDelivery") return deliveryReview.openConversation(message.payload);
+      if (message.type === "bridge.selectDelivery") return deliveryReview.selectScope(message.payload);
+      return deliveryReview.openController();
+    })().then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: error.message, code: error.code }));
+    return true;
+  }
   if (message?.type === "bridge.clearLegacyTestDelivery") {
     void clearLegacyTestDelivery({ store, turnGate, broadcastPopupState })
       .then(() => sendResponse({ ok: true }))
@@ -1003,7 +990,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     broadcastPopupState();
   });
 });
-async function inspectBoundTabTopology(triggerTabId = null) {
+async function inspectBoundTabTopology(triggerTabId = null, inspectDocument = false) {
   const state = await store.read(), provider = resolveStoredWebTargetProvider(state);
   if (!["BOUND", "ROOT_READY"].includes(state.bindingStatus)) return;
   let tab = null; try { tab = await chrome.tabs.get(state.tabId); } catch {}
@@ -1015,14 +1002,18 @@ async function inspectBoundTabTopology(triggerTabId = null) {
   const stillExact = tab && provider
     && provider.canonicalize(tab.url) === state.conversationUrl
     && provider.conversationIdFromUrl(tab.url) === state.conversationId;
-  if (stillExact) return;
-  await store.update({ bindingStatus: "AMBIGUOUS" });
-  lastError = diagnosticError(new ExtensionOperationError("AMBIGUOUS", "The persisted Web provider tab no longer matches the bound conversation.", {
+  if (stillExact && !inspectDocument) return;
+  const page = stillExact ? await readDeliveryPage(chrome.tabs, state.tabId) : null;
+  if (stillExact && page?.ok && page.documentId === state.documentId) return;
+  const error = diagnosticError(new ExtensionOperationError(stillExact ? "WEB_DOCUMENT_CHANGED" : "AMBIGUOUS", "The persisted Web tab no longer matches the bound conversation or document.", {
     mode: "BOUND_TAB_TOPOLOGY", persistedTabId: state.tabId, persistedUrl: state.conversationUrl,
     persistedConversationId: state.conversationId, observedTabId: tab?.id ?? null,
     observedUrl: tab?.url ?? null, observedConversationId: provider?.conversationIdFromUrl(tab?.url) ?? null,
   }));
-  await store.update({ bindingError: lastError });
+  try { await store.updateIf({ bindingStatus: state.bindingStatus, currentDeliveryId: state.currentDeliveryId,
+    lastBoundSessionId: state.lastBoundSessionId, lastBoundRunId: state.lastBoundRunId, tabId: state.tabId,
+    documentId: state.documentId }, { bindingStatus: "AMBIGUOUS", bindingError: error }); } catch { return; }
+  lastError = error;
   broadcastPopupState();
   if (state.currentDeliveryId && state.tabId !== null) {
     await chrome.tabs.sendMessage(state.tabId, { type: "agent.cancel", requestId: state.currentDeliveryId }).catch(() => {});
@@ -1042,16 +1033,10 @@ async function inspectBoundTabTopology(triggerTabId = null) {
   }
   broadcastPopupState();
 }
-chrome.tabs.onCreated.addListener((tab) => { if (resolveWebTargetProvider({ conversationUrl:tab.url })) void inspectBoundTabTopology(tab.id); });
+chrome.tabs.onCreated.addListener((tab) => { if (resolveWebTargetProvider({ conversationUrl:tab.url })) void inspectTopology({ tabId: tab.id }).catch(() => {}); });
+const inspectTopology = createCoalescedTask(value => inspectBoundTabTopology(value.tabId, value.completed));
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (typeof changeInfo.url === "string" && resolveWebTargetProvider({ conversationUrl:changeInfo.url })) {
-    void inspectBoundTabTopology(tabId);
-    return;
-  }
-  void store.read().then((state) => {
-    if (tabId === state.tabId && typeof changeInfo.url === "string") {
-      void inspectBoundTabTopology(tabId);
-    }
-  });
+  if (typeof changeInfo.url === "string" || changeInfo.status === "complete")
+    void inspectTopology({ tabId, completed: changeInfo.status === "complete" }).catch(() => {});
 });
 installCurrentTargetTracking({ tabs: chrome.tabs, windows: chrome.windows, store, waitForContentScript, onChange: broadcastPopupState }); setInterval(() => { if (authenticated) send({ type: "extension.heartbeat", payload: { at: Date.now(), busy: turnGate.active } }); }, 20_000); void store.read().then(() => connect());

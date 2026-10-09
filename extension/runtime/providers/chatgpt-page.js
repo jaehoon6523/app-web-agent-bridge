@@ -1,4 +1,5 @@
 (function registerChatGptPageProvider(root) {
+  if (root.WebBridgePageProviders?.provider("CHATGPT_WEB")) return;
   const selectorRegistry = root.ChatGptBridgeSelectors;
   const responseText = root.ChatGptBridgeResponseText;
   const pageProviders = root.WebBridgePageProviders;

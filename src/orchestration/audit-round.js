@@ -1,3 +1,4 @@
+import { persistWebDeliveryReceipt, markWebDeliveryAcknowledged } from "./web-delivery-receipts.js";
 import { randomUUID } from "node:crypto";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 import { evaluateCodeReview, validateAuditResponse } from "../domain/code-review.js";
@@ -162,6 +163,9 @@ function reviewerIndependenceSnapshot(run) {
 async function activateRole(service, runId, role) {
   let run = service.get(runId);
   const record = bindingForRole(run, role);
+  if (record.activeDeliveryId) throw Object.assign(new Error(`${role} has an unresolved delivery; inspect or discard it before another review.`), {
+    code:"WEB_DELIVERY_RECOVERY_REQUIRED", details:{ deliveryId:record.activeDeliveryId, sessionId:record.sessionId, runId },
+  });
   const web = service.reviewerWeb(role, record.provider ?? null);
   let returned;
   try {
@@ -173,7 +177,7 @@ async function activateRole(service, runId, role) {
     const typedError = coordinationError(error);
     if (!typedError.code || !BINDING_WAIT_CODES.has(typedError.code)) throw error;
     const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED","SESSION_AUTH_REQUIRED"].includes(typedError.code) ? (typedError.code === "SESSION_AUTH_REQUIRED" ? "AUTH_REQUIRED" : typedError.code) : "NEEDS_REBIND";
-    const failed = { ...record, bindingStatus, activeDeliveryId:null, updatedAt:new Date().toISOString() };
+    const failed = { ...record, bindingStatus, updatedAt:new Date().toISOString() };
     const bindingCandidates = selectableReviewTabs(typedError, record);
     run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, failed) });
     throw Object.assign(new Error(`${role} conversation requires rebind before review can continue.`), {
@@ -183,7 +187,7 @@ async function activateRole(service, runId, role) {
       bindingCandidates,
     });
   }
-  const next = recordFromReturned(record, returned, new Date().toISOString(), null);
+  const next = recordFromReturned(record, returned, new Date().toISOString(), record.activeDeliveryId);
   run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, next) });
   return bindingForRole(run, role);
 }
@@ -229,7 +233,7 @@ export async function rebindReviewRole(service, runId, { role, tabId }) {
       code:"DELIVERY_RECOVERY_MISMATCH",
     });
   }
-  const next = recordFromReturned(record, returned, new Date().toISOString(), null);
+  const next = recordFromReturned(record, returned, new Date().toISOString(), record.activeDeliveryId);
   const bindings = replaceBinding(run.conversationBindings, next);
   const other = bindings.find((item) => item.role !== role && REVIEW_ROLES.includes(item.role));
   if (sameReviewerConversation(other, next)) {
@@ -299,7 +303,7 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
       timeoutMs:run.policy.turnTimeoutMs, parseResponse });
   } catch (error) {
     run = service.get(runId); binding = bindingForRole(run, role);
-    if (binding.activeDeliveryId === requestId) {
+    if (binding.activeDeliveryId === requestId && error?.details?.browserDispatchStarted === false) {
       const reverted = { ...binding, activeDeliveryId:null, updatedAt:new Date().toISOString() };
       service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, reverted) });
     }
@@ -317,6 +321,7 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
     throw new Error("Judge and Critic resolved to the same reviewer conversation.");
   }
   service.update(runId, { conversationBindings:bindings });
+  persistWebDeliveryReceipt(service, runId, role, requestId, response);
   const acknowledgement = await service.wait(runId, web.acknowledgeDelivery({ turnId:requestId }));
   if (acknowledgement?.currentDeliveryId !== null
     || acknowledgement?.sessionId !== returned.sessionId
@@ -330,7 +335,8 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
   const settled = { ...binding, activeDeliveryId:null, updatedAt:new Date().toISOString(),
     historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,
       lastObservedAssistantMessageId:response.binding.lastObservedAssistantMessageId } };
-  service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, settled) });
+  service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, settled),
+    ...markWebDeliveryAcknowledged(service, runId, requestId) });
   return response;
 }
 
@@ -352,6 +358,7 @@ async function waitSettledReviewTurn(service, runId, promise) {
 async function activateSettledRole(service, runId, role) {
   let run = service.get(runId);
   const record = bindingForRole(run, role);
+  if (record.activeDeliveryId) throw Object.assign(new Error(`${role} has an unresolved delivery.`), { code:"REVIEW_DISCUSSION_RECOVERY_REQUIRED" });
   if (!record.conversationUrl || !record.conversationId) {
     throw Object.assign(new Error(`${role} does not have an exact existing conversation for free-form discussion.`), {
       code:"REVIEW_DISCUSSION_BINDING_REQUIRED",
@@ -367,14 +374,14 @@ async function activateSettledRole(service, runId, role) {
   } catch (error) {
     const typedError = coordinationError(error);
     const bindingStatus = ["AMBIGUOUS","AUTH_REQUIRED","SESSION_AUTH_REQUIRED"].includes(typedError.code) ? (typedError.code === "SESSION_AUTH_REQUIRED" ? "AUTH_REQUIRED" : typedError.code) : "NEEDS_REBIND";
-    const failed = { ...record, bindingStatus, activeDeliveryId:null, updatedAt:new Date().toISOString() };
+    const failed = { ...record, bindingStatus, updatedAt:new Date().toISOString() };
     run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, failed) });
     throw Object.assign(new Error(`${role} conversation could not be rebound for discussion: ${typedError.message}`), {
       code:typedError.code ?? "REVIEW_DISCUSSION_BINDING_REQUIRED",
       discussionDispatchStarted:false,
     });
   }
-  const next = recordFromReturned(record, returned, new Date().toISOString(), null);
+  const next = recordFromReturned(record, returned, new Date().toISOString(), record.activeDeliveryId);
   run = service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, next) });
   return bindingForRole(run, role);
 }
@@ -414,11 +421,11 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
     });
   } catch (error) {
     const latest = service.get(runId), record = bindingForRole(latest, role);
-    if (record.activeDeliveryId === discussionId) {
+    if (record.activeDeliveryId === discussionId && error?.details?.browserDispatchStarted === false) {
       service.update(runId, { conversationBindings:replaceBinding(latest.conversationBindings,
         { ...record, activeDeliveryId:null, updatedAt:new Date().toISOString() }) });
     }
-    throw Object.assign(new Error(error.message), { code:error.code ?? "REVIEW_DISCUSSION_FAILED", discussionDispatchStarted:false });
+    throw Object.assign(new Error(error.message), { code:error.code ?? "REVIEW_DISCUSSION_FAILED", discussionDispatchStarted:error?.details?.browserDispatchStarted !== false });
   }
   let response;
   try {
@@ -430,6 +437,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
     let latest = service.get(runId), record = bindingForRole(latest, role);
     const returned = recordFromReturned(record, response.binding, new Date().toISOString(), discussionId);
     service.update(runId, { conversationBindings:replaceBinding(latest.conversationBindings, returned) });
+    persistWebDeliveryReceipt(service, runId, role, discussionId, response);
     const acknowledgement = await waitSettledReviewTurn(service, runId, web.acknowledgeDelivery({ turnId:discussionId }));
     if (acknowledgement?.currentDeliveryId !== null
       || acknowledgement?.sessionId !== returned.sessionId
@@ -438,7 +446,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
       throw Object.assign(new Error("Reviewer discussion acknowledgement did not confirm the exact binding."), { code:"ACK_UNCONFIRMED" });
     }
     latest = service.get(runId); record = bindingForRole(latest, role);
-    service.update(runId, { conversationBindings:replaceBinding(latest.conversationBindings, {
+    service.update(runId, { ...markWebDeliveryAcknowledged(service, runId, discussionId), conversationBindings:replaceBinding(latest.conversationBindings, {
       ...record, activeDeliveryId:null, updatedAt:new Date().toISOString(),
       historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,
         lastObservedAssistantMessageId:response.binding.lastObservedAssistantMessageId },

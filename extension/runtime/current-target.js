@@ -73,14 +73,15 @@ export function pendingDeliveryTargetConflict(state, target, requestId) {
 }
 
 export async function observeActiveWebTarget({
-  tabs, store, tabId, waitForContentScript, registry = defaultWebTargetProviderRegistry,
+  tabs, store, tabId, waitForContentScript, registry = defaultWebTargetProviderRegistry, isCurrent = () => true,
 }) {
   const tab = await tabs.get(tabId).catch(() => null);
   const provider = registry.providerForUrl(tab?.url);
   if (!provider) return null;
-  await waitForContentScript(tab.id, 30_000, false);
-  const page = await tabs.sendMessage(tab.id, { type: "agent.ping" }).catch(() => null);
+  const prepared = await waitForContentScript(tab.id, 30_000, false);
+  const page = prepared ?? await tabs.sendMessage(tab.id, { type: "agent.ping" }).catch(() => null);
   const target = targetFromPage(tab, page, registry, provider.provider);
+  if (!isCurrent()) return null;
   if (target) await store.update({ lastActiveWebTarget: target });
   return target;
 }
@@ -90,18 +91,31 @@ export const observeActiveChatGptTarget = observeActiveWebTarget;
 export function installCurrentTargetTracking({
   tabs, windows, store, waitForContentScript, onChange, registry = defaultWebTargetProviderRegistry,
 }) {
-  const observe = (tabId) => void observeActiveWebTarget({ tabs, store, tabId, waitForContentScript, registry })
-    .then((target) => { if (target) onChange?.(); }).catch(() => {});
-  tabs.onActivated.addListener(({ tabId }) => observe(tabId));
+  const observations = new Map();
+  let selectedTabId = null, selection = 0;
+  const observe = (tabId) => {
+    selectedTabId = tabId;
+    if (observations.has(tabId)) return observations.get(tabId);
+    const pending = observeActiveWebTarget({ tabs, store, tabId, waitForContentScript, registry,
+      isCurrent: () => selectedTabId === tabId })
+      .then(target => { if (target) onChange?.(); }).catch(() => {})
+      .finally(() => observations.delete(tabId));
+    observations.set(tabId, pending);
+    return pending;
+  };
+  tabs.onActivated.addListener(({ tabId }) => { selection++; void observe(tabId); });
   windows?.onFocusChanged?.addListener((windowId) => {
     if (windowId === windows.WINDOW_ID_NONE) return;
-    void tabs.query({ active: true, windowId }).then((found) => { if (found.length === 1) observe(found[0].id); });
+    const expected = ++selection;
+    void tabs.query({ active: true, windowId }).then(found => {
+      if (selection === expected && found.length === 1) void observe(found[0].id);
+    }).catch(() => {});
   });
   tabs.onRemoved.addListener((tabId) => void store.read()
     .then((state) => state.lastActiveWebTarget?.tabId === tabId ? store.update({ lastActiveWebTarget:null }) : null)
     .then(() => onChange?.()).catch(() => {}));
   void tabs.query({ active:true, lastFocusedWindow:true })
-    .then((found) => { if (found.length === 1) observe(found[0].id); });
+    .then(found => { if (selection === 0 && found.length === 1) void observe(found[0].id); }).catch(() => {});
 }
 
 export async function resolveCurrentUserTarget({
@@ -134,8 +148,8 @@ export async function resolveCurrentUserTarget({
       activeTabCount:activeTabs.length, lastActiveTabId:candidate.tabId,
     });
   }
-  await waitForContentScript(tab.id, 30_000, true);
-  const page = await tabs.sendMessage(tab.id, { type:"agent.ping" });
+  const prepared = await waitForContentScript(tab.id, 30_000, true);
+  const page = prepared ?? await tabs.sendMessage(tab.id, { type:"agent.ping" });
   const target = targetFromPage(tab, page, registry, provider.provider);
   const root = target?.conversationUrl === provider.rootUrl && target.conversationId === null;
   if (!target || !page.ready || page.busy || page.generating || (!target.conversationId && !root)) {
@@ -160,8 +174,8 @@ export async function resolvePreparedSessionTarget({
     || provider.conversationIdFromUrl(tab.url) !== state.conversationId) {
     throw new CurrentWebTargetError("NEEDS_REBIND", "The prepared Web provider tab changed or closed.");
   }
-  await waitForContentScript(tab.id, 30_000, true);
-  const page = await tabs.sendMessage(tab.id, { type:"agent.ping" });
+  const prepared = await waitForContentScript(tab.id, 30_000, true);
+  const page = prepared ?? await tabs.sendMessage(tab.id, { type:"agent.ping" });
   const target = targetFromPage(tab, page, registry, provider.provider);
   if (!target || !page.ready || page.busy || page.generating
     || target.conversationUrl !== state.conversationUrl

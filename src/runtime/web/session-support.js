@@ -1,6 +1,13 @@
 import { webConversationProvider, webConversationProviderForUrl } from "./provider-registry.js";
 import { WebProtocolError } from "./protocol.js";
 
+export function assertDeliveryDiscardResponse(payload, expected) {
+  if (payload?.result !== "discarded" || ["currentDeliveryId", "sessionId", "runId", "conversationUrl"]
+    .some(key => payload[key] !== expected?.[key])) {
+    throw new WebProtocolError("Discard confirmation identifies a different delivery", "DELIVERY_RECOVERY_MISMATCH");
+  }
+}
+
 export function socketIsOpen(socket) {
   return socket?.readyState === 1;
 }

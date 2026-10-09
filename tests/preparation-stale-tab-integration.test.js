@@ -27,7 +27,7 @@ test("a saved exact conversation is reopened when its tab is missing", async () 
       assert.equal(binding.conversationId, "judge");
       return tab;
     },
-    waitForContentScript: async () => {},
+    waitForContentScript: async () => ({ documentId: "document-31", frameId: 0 }),
     inspectBoundDocument: async () => ({ documentId: "document-31", frameId: 0 }),
     focusTab: async () => {},
     getSessionInfo: async () => ({ ...requested, tabId: 31, bindingStatus: "BOUND" }),
@@ -160,7 +160,8 @@ test("preparation opens a ChatGPT root tab when none exists", async () => {
     chrome: { tabs: { query: async () => [], sendMessage: async () => ({ ok: true, ready: true,
       busy: false, generating: false, url: root.url, conversationId: null, documentId: "doc-19", frameId: 0 }) } },
     createConversationBootstrapTab: async () => { created++; return root; },
-    waitForContentScript: async () => {}, focusTab: async () => {},
+    waitForContentScript: async () => ({ ok: true, ready: true, busy: false, generating: false,
+      url: root.url, conversationId: null, documentId: "doc-19", frameId: 0 }), focusTab: async () => {},
     getSessionInfo: async () => { throw new Error("not used"); },
     ExtensionOperationError: class extends Error {
       constructor(code, message, details) { super(message); this.code = code; this.details = details; }
@@ -191,7 +192,7 @@ test("explicit rebind can select one ChatGPT start tab when several roots are op
       get:async (id) => { assert.equal(id, 22); return selected; },
       sendMessage:async () => page,
     } },
-    waitForContentScript:async () => {},
+    waitForContentScript:async () => page,
     inspectBoundDocument:async () => ({ documentId:"document-22", frameId:0 }),
     focusTab:async () => {},
     getSessionInfo:async () => { throw new Error("root rebind returns directly"); },

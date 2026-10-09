@@ -39,3 +39,8 @@ button {
   cursor: pointer;
 }
 button.secondary { background: #2c313c; color: #e9ecf2; }
+button:disabled { opacity: .5; cursor: default; }
+input[type="checkbox"] { width: auto; margin-right: 6px; }
+section { border-top: 1px solid #343945; margin-top: 14px; padding-top: 8px; }
+h2 { font-size: 14px; }
+#openController, #discardOrphan { width: 100%; margin-top: 10px; }

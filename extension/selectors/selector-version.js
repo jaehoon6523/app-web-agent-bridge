@@ -1,4 +1,5 @@
 (() => {
+  if (globalThis.ChatGptBridgeSelectors) return;
   globalThis.ChatGptBridgeSelectors = {
     version: "2026-09-12.1",
     groups: Object.create(null),

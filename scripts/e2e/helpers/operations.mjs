@@ -204,13 +204,38 @@ export async function discard(t,f) {
   await f.page.locator('#newRun').click();await f.page.locator('#objective').fill('Uncertain controlled delivery');await f.page.locator('#startRoot').fill(f.server.workspace);
   const pending=state(f,b=>b.preparation?.preparationId!==setup.context.preparationId && b.preparation?.webSession.activeDeliveryId);
   await f.page.locator('#planRun').click();const current=(await pending).preparation;
+  // A reserved ID is not dispatch evidence. Restart only after the actual
+  // provider click and exact extension ownership have both been observed.
+  await setup.extension.page.waitForFunction(() => Number(sessionStorage.getItem('clicks')) === 2);
+  const owner = setup.extension.readStorage();
+  assert.equal(owner.currentDeliveryId, current.webSession.activeDeliveryId);
+  assert.equal(owner.lastBoundSessionId, current.webSession.sessionId);
+  assert.equal(owner.lastBoundRunId, current.preparationId);
   await f.server.restart();const recovery=state(f,b=>b.preparation?.state==='RECOVERY_REQUIRED');await f.page.reload();await recovery;
   // Reconnect the real background to the restarted server; no provider resend.
   await setup.extension.connect();
+  // An old content job can still await a response after the worker reconnects.
+  // Explicitly inspect and stop that exact job before authorizing its discard.
+  await f.page.locator('#startRecovery .session-recovery > summary').click();
+  const inspected = state(f, b => b.preparation?.diagnostics?.exactConversation === true
+    && b.preparation.diagnostics.currentDeliveryId === current.webSession.activeDeliveryId);
+  await f.page.locator('#startRecovery [data-web-command="web.inspect"]').click();
+  const observation = (await inspected).preparation;
+  if (observation.diagnostics.pageBusy || observation.diagnostics.generating) {
+    const recoveryPanel = f.page.locator('#startRecovery .session-recovery');
+    if (!await recoveryPanel.evaluate(element => element.open)) await recoveryPanel.locator(':scope > summary').click();
+    const stopped = state(f, b => b.preparation?.diagnostics?.canRecover === true);
+    await f.page.locator('#startRecovery [data-web-command="web.stop"]').click();
+    assert.equal((await stopped).preparation.webSession.activeDeliveryId, current.webSession.activeDeliveryId);
+  }
   const visible=f.page.locator('#discardPanel');await visible.waitFor({state:'visible'});
   await f.page.locator('#discardUnresolved').check();await f.page.locator('#discardNoResend').check();await f.page.locator('#discardReason').fill('Original response could not be observed');
   const done=state(f,b=>b.preparation?.lifecycle==='ABANDONED' && b.preparation.deliveries.at(-1)?.state==='RECOVERY_DISCARDED');
-  await f.page.locator('#discardDeliveryButton').click();const final=(await done).preparation;
+  const discarded = f.page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith('/discard'));
+  await f.page.locator('#discardDeliveryButton').click();
+  const response = await discarded;
+  assert.equal(response.status(), 200, JSON.stringify(await response.json()));
+  const final=(await done).preparation;
   assert.equal(final.deliveries.at(-1).deliveryId,current.deliveries.at(-1).deliveryId);assert.match(final.deliveries.at(-1).discardReason,/Original response/u);
   assert.equal(final.webSession.activeDeliveryId,null);assert.ok(final.recovery.evidence);
   const db=new DatabaseSync(path.join(f.server.workspace,'.agent-controller/preparations.sqlite'),{readOnly:true});

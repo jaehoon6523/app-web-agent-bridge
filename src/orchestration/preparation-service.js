@@ -349,6 +349,7 @@ export class PreparationService {
       await this.reserve(context, input.content, input.requestId); return this.snapshot();
     }
     if (type === "preparation.discard") {
+      if (this.jobs.has(context.preparationId)) fail("A preparation operation is active.", "WEB_SESSION_BUSY");
       const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
       if (!delivery) fail("No unresolved delivery is available for discard.", "RECOVERY_REQUIRED");
       if (input.unresolvedResultConfirmed !== true || input.noAutomaticResendConfirmed !== true) {
@@ -356,7 +357,16 @@ export class PreparationService {
       }
       if (typeof input.reason !== "string" || input.reason.trim().length < 3) fail("Enter a discard reason.", "INVALID_INPUT");
       const observed = await this.web.inspectDelivery();
-      if (observed.currentDeliveryId !== null && observed.currentDeliveryId !== delivery.deliveryId) {
+      const expected = { currentDeliveryId: delivery.deliveryId, sessionId: context.webSession.sessionId,
+        runId: context.preparationId, conversationUrl: context.webSession.conversationUrl,
+        conversationId: context.webSession.conversationId };
+      const receipt = observed.lastDeliveryDiscard;
+      const alreadyDiscarded = observed.currentDeliveryId === null && receipt?.deliveryId === delivery.deliveryId
+        && receipt.sessionId === expected.sessionId && receipt.runId === expected.runId
+        && receipt.conversationUrl === expected.conversationUrl;
+      if ((!alreadyDiscarded && observed.currentDeliveryId !== delivery.deliveryId)
+        || observed.sessionId !== expected.sessionId || observed.runId !== expected.runId
+        || observed.conversationUrl !== expected.conversationUrl) {
         fail("The extension delivery belongs to a different preparation.", "DELIVERY_RECOVERY_MISMATCH", {
           expectedDeliveryId: delivery.deliveryId,
           observedDeliveryId: observed.currentDeliveryId,
@@ -364,13 +374,13 @@ export class PreparationService {
           observedRunId: observed.runId ?? null,
         });
       }
+      if (observed.extensionBusy || observed.pageBusy || observed.generating) fail("Stop the active generation before discard.", "WEB_SESSION_BUSY");
       if (typeof this.web?.discardDelivery !== "function") {
         fail("The browser extension cannot confirm delivery discard.", "RECOVERY_REQUIRED", observed);
       }
-      if (observed.currentDeliveryId !== null) {
-        await this.web.discardDelivery({ ...observed, unresolvedResultConfirmed: true,
-          noAutomaticResendConfirmed: true, reason: input.reason.trim() });
-      }
+      delivery.discardIntent = { ...expected, reason: input.reason.trim(), at: stamp() }; await this.touch(context);
+      await this.web.discardDelivery({ ...expected, unresolvedResultConfirmed: true,
+        noAutomaticResendConfirmed: true, reason: input.reason.trim() });
       delivery.state = "RECOVERY_DISCARDED";
       delivery.discardedAt = stamp(); delivery.discardReason = input.reason.trim();
       delivery.discardEvidence = { sessionId: delivery.sessionId, conversationId: delivery.conversationId,
@@ -398,6 +408,8 @@ export class PreparationService {
       if (delivery) {
         const observed = await this.web.inspectDelivery(); this.setDiagnostics(context, observed);
         if (!context.diagnostics.canRecover) fail("Delivery termination is not confirmed.");
+        if (!delivery.response || delivery.validation?.format !== "CONFIRMED"
+          || delivery.processingState !== "ACK_PENDING") fail("An unvalidated response requires explicit discard, not cancellation ACK.", "DELIVERY_RESPONSE_REQUIRED");
         await this.web.acknowledgeDelivery({ turnId: delivery.deliveryId });
         const ack = await this.web.inspectDelivery();
         if (ack.currentDeliveryId !== null || ack.sessionId !== context.webSession.sessionId
@@ -648,7 +660,9 @@ export class PreparationService {
     delivery.validation.format = "CONFIRMED";
     delete delivery.validation.formatError;
     delivery.processingState = "ACK_PENDING"; await this.touch(context);
-    if (pointerMatches) {
+    // A missing extension pointer is not proof of ACK. Reconfirm the exact
+    // acknowledgement, including an idempotent retry after a lost reply.
+    {
       await this.web.acknowledgeDelivery({ turnId: delivery.deliveryId });
       const ack = await this.web.inspectDelivery();
       this.setDiagnostics(context, ack);
@@ -691,7 +705,8 @@ export class PreparationService {
       session.bindingState = "BOUND";
     }
     context.diagnostics = { ...observed, exactConversation,
-      canFocus: exactConversation, canStop: exactDelivery && observed.generating === true && observed.activeRequestId === session.activeDeliveryId,
+      canFocus: exactConversation, canStop: exactDelivery && (observed.generating === true || observed.pageBusy === true)
+        && observed.activeRequestId === session.activeDeliveryId,
       canRecover: exactDelivery && observed.generating === false && observed.pageBusy === false && observed.extensionBusy === false };
     console.info("[bridge:preparation:diagnostics]", {
       preparationId: context.preparationId, sessionId: session.sessionId,
@@ -841,12 +856,13 @@ export class PreparationService {
     const active = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
     const tabSelection = context.error?.code === "WEB_TAB_SELECTION_REQUIRED"
       && active?.state === "FAILED" && context.error?.details?.browserDispatchStarted === false;
-    if (this.available() && active && !tabSelection && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
+    if (this.available() && active && !tabSelection && !this.jobs.has(context.preparationId) && (["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(context.state)
       || context.error?.code === "DELIVERY_RECOVERY_UNCONFIRMED"
       || context.error?.code === "REBIND_DURING_ACTIVE_DELIVERY")) caps.push("preparation.discard");
     if (tabSelection && !this.jobs.has(context.preparationId)) caps.push("preparation.cancel");
     if (this.available() && context.agreement.status !== "APPROVED" && !this.jobs.has(context.preparationId)
-      && context.diagnostics?.canRecover && (active?.response || active?.stopped)) caps.push("preparation.cancel");
+      && context.diagnostics?.canRecover && active?.validation?.format === "CONFIRMED"
+      && active?.processingState === "ACK_PENDING") caps.push("preparation.cancel");
     if (!context.webSession.activeDeliveryId && !this.jobs.has(context.preparationId)) {
       if (context.agreement.status !== "APPROVED") {
         caps.push("preparation.cancel");

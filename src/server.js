@@ -1,5 +1,7 @@
 import { ResourceClosureError, isResourceClosureFailure } from "./persistence/resource-closure.js";
 import { PreparationService } from "./orchestration/preparation-service.js";
+import { installDeliveryOwnershipInspection } from "./orchestration/delivery-ownership.js";
+import { createDeliveryRecoveryActions } from "./orchestration/delivery-recovery-actions.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
@@ -316,6 +318,15 @@ export function createBridgeServer({
   }
 
 
+  const deliverySources = async () => {
+    const contexts = Object.values(preparations().data.contexts);
+    const live = await getLiveRuntime();
+    return { contexts, runs: live.codeChanges?.list() ?? [], discussionStore: live.store };
+  };
+  installDeliveryOwnershipInspection({ transport: extensionTransport, getSources: deliverySources });
+  const deliveryRecovery = createDeliveryRecoveryActions({ getSources: deliverySources, web: webSession,
+    getServices: async () => ({ preparationService: preparations(), codeChanges: (await getLiveRuntime()).codeChanges }) });
+
   function requireDashboardRead(req, res, next) {
     try {
       verifyDashboardAuthorization(req.get("authorization"));
@@ -335,6 +346,19 @@ export function createBridgeServer({
     } catch (error) {
       sendDashboardAuthFailure(res, error, 403);
     }
+  });
+
+  app.get("/api/delivery-review", requireDashboardRead, async (req, res) => {
+    try { res.json(await deliveryRecovery.inspect(req.query)); }
+    catch { res.status(503).json({ code: "DELIVERY_INSPECTION_UNAVAILABLE", error: "전송 기록을 확인할 수 없습니다. 기록을 보존했습니다." }); }
+  });
+  app.post("/api/delivery-review/discard", requireDashboardMutation, async (req, res) => {
+    try { res.json(await deliveryRecovery.discard(req.body)); }
+    catch (error) { res.status(409).json({ code: error.code ?? "DELIVERY_RECOVERY_FAILED", error: redactForEvidence(error.message) }); }
+  });
+  app.post("/api/delivery-review/ack", requireDashboardMutation, async (req, res) => {
+    try { res.json(await deliveryRecovery.acknowledge(req.body)); }
+    catch (error) { res.status(409).json({ code: error.code ?? "ACK_UNCONFIRMED", error: redactForEvidence(error.message) }); }
   });
 
   app.post("/api/project/folder", requireDashboardMutation, async (_req, res) => {

@@ -123,7 +123,9 @@ test("background integration reserves a prompt before its first await and guards
   const promptBody = source.slice(promptStart, promptEnd);
   assert.ok(promptBody.indexOf("turnGate.reserve(message.requestId)") >= 0);
   assert.ok(promptBody.indexOf("turnGate.reserve(message.requestId)") < promptBody.indexOf("await "));
-  assert.match(source, /turnGate\.assertIdle\(explicitRebind \? "Session rebind" : "Session preparation"\)/u);
+  const prepareBody = source.slice(source.indexOf("async function handlePrepare("), source.indexOf("async function handleDeliveryAcknowledgement("));
+  assert.ok(prepareBody.indexOf("turnGate.reserve(message.requestId)") < prepareBody.indexOf("await "));
+  assert.match(prepareBody, /finally.*turnGate\.release\(held\)/u);
   assert.match(source, /turnGate\.assertIdle\("Delivery acknowledgement"\)/u);
   assert.match(source, /turnGate\.assertIdle\("Session focus"\)/u);
 });

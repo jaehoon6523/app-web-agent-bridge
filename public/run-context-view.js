@@ -45,11 +45,14 @@ export function reviewerRoleSummary(run, reviewerRuntimes, role) {
     return Object.freeze({ role, provider, status:"서비스 연결 불일치 · 확인 필요", tone:"warn" });
   }
   const active = run?.coordination?.activeRole === role;
+  if (binding?.activeDeliveryId) {
+    const receipt = run.webDeliveryReceipts?.find(item => item.deliveryId === binding.activeDeliveryId);
+    if (receipt?.state === "ACK_PENDING") return Object.freeze({ role, provider, status:"응답 저장됨 · ACK 확인 대기", tone:"warn" });
+    if (["HOLD", "RECOVERY_REQUIRED"].includes(run.phase)) return Object.freeze({ role, provider, status:"전송 결과 확인 필요", tone:"warn" });
+    return Object.freeze({ role, provider, status:"응답 대기", tone:"ok running" });
+  }
   if (run?.phase === "HOLD" && run?.terminationReason === "WEB_BINDING_REQUIRED" && active) {
     return Object.freeze({ role, provider, status:"연결 확인 필요", tone:"warn" });
-  }
-  if (binding?.activeDeliveryId) {
-    return Object.freeze({ role, provider, status:"응답 대기", tone:"ok running" });
   }
   if (["REVIEW_RUNNING", "REPORT_REPAIR"].includes(run?.phase)) {
     if (active) {
@@ -103,11 +106,18 @@ export function reviewerRuntimeTechnicalSummary(reviewerRuntimes, legacyReviewer
 }
 
 export function createRunContextView({ $, text, labels, terminal, folderName, workerIdentity }) {
-  function renderRole(id, label, summary) {
+  function renderRole(id, label, summary, run) {
     const element = $(id);
     if (!element) return;
     text(id, `${label} · ${summary.provider} · ${summary.status}`);
     element.className = `run-role health${summary.tone ? ` ${summary.tone}` : ""}`;
+    const binding = reviewerBinding(run, summary.role);
+    if (binding?.activeDeliveryId && element.ownerDocument?.createElement) {
+      const link = element.ownerDocument.createElement("a"); link.textContent = " · 전송 상태 확인";
+      link.href = "/delivery-recovery.html?" + new URLSearchParams({ currentDeliveryId: binding.activeDeliveryId,
+        sessionId: binding.sessionId, runId: run.runId, conversationUrl: binding.conversationUrl });
+      element.append(link);
+    }
   }
 
   return function renderRunContextView(run, snapshot) {
@@ -118,7 +128,7 @@ export function createRunContextView({ $, text, labels, terminal, folderName, wo
     const reviewerRuntimes = snapshot?.reviewerRuntimes
       ?? (snapshot?.reviewerRuntime ? { JUDGE:snapshot.reviewerRuntime } : {});
     renderRole("runWorkerRole", "Worker", workerRoleSummary(run, workerIdentity(run)));
-    renderRole("runJudgeRole", "Judge", reviewerRoleSummary(run, reviewerRuntimes, "JUDGE"));
-    renderRole("runCriticRole", "Critic", reviewerRoleSummary(run, reviewerRuntimes, "CRITIC"));
+    renderRole("runJudgeRole", "Judge", reviewerRoleSummary(run, reviewerRuntimes, "JUDGE"), run);
+    renderRole("runCriticRole", "Critic", reviewerRoleSummary(run, reviewerRuntimes, "CRITIC"), run);
   };
 }

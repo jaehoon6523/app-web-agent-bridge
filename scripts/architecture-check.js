@@ -79,6 +79,7 @@ const npmCommandScripts = Object.values(packageScripts)
     .map(([filename]) => path.join(root, filename)));
 const entryPoints = new Set([
   ...htmlScripts(path.join(root, "public"), "index.html"),
+  ...htmlScripts(path.join(root, "public"), "delivery-recovery.html"),
   path.join(root, "extension", manifest.background.service_worker),
   ...htmlScripts(path.join(root, "extension"), manifest.action.default_popup),
   ...operationalCommands,

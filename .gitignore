@@ -16,3 +16,6 @@ db_temp/
 .verified-*.log
 .*-test.log
 *.canonical-runtime.bak
+/.runtime-cleanup-contract-*/
+/evidence/runtime-cleanup/
+/test-latest.log

@@ -6,6 +6,14 @@ export function renderInitialRequest(workflow, preparation, $, text, document, c
   if (recovery) {
     const recoveryHost = initial ? $("startRecovery") : ($("preparationDiagnosticsBody") ?? $("proposalSummary"));
     recoveryHost.append(recovery);
+    const session = preparation?.webSession;
+    let link = recovery.querySelector("a[data-delivery-recovery]");
+    if (session?.activeDeliveryId && session.conversationUrl) {
+      if (!link) { link = document.createElement("a"); link.dataset.deliveryRecovery = "";
+        link.textContent = "전송 기록 대조·폐기 화면"; recovery.append(link); }
+      link.href = "/delivery-recovery.html?" + new URLSearchParams({ currentDeliveryId: session.activeDeliveryId,
+        sessionId: session.sessionId, runId: preparation.preparationId, conversationUrl: session.conversationUrl });
+    } else link?.remove();
   }
   $("startRecovery").hidden = !initial || pending;
   $("startProgress").hidden = !initial;

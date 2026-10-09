@@ -1,4 +1,5 @@
 (function registerClaudePageProvider(root) {
+  if (root.WebBridgePageProviders?.provider("CLAUDE_WEB")) return;
   const pageProviders = root.WebBridgePageProviders;
   const SELECTOR_VERSION = "claude-dom-2026-09";
   const SELECTORS = Object.freeze({

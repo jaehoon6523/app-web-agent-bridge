@@ -181,7 +181,8 @@ async function inspectTopology({ activeRequestId = "t1", observedUrl = "https://
     ExtensionOperationError: class extends Error {
       constructor(code, message, details) { super(message); this.code = code; this.details = details; }
     },
-    store: { read: async () => ({ ...state }), update: async patch => Object.assign(state, patch) },
+    store: { read: async () => ({ ...state }), updateIf: async (expected, patch) => {
+      for (const [key, value] of Object.entries(expected)) assert.equal(state[key], value); return Object.assign(state, patch); } },
     chrome: { tabs: { get: async () => ({ id: 7, url: observedUrl }),
       sendMessage: async (_tabId, message) => { cancellations.push(message); } } },
     send: message => messages.push(message),

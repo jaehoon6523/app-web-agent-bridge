@@ -4,7 +4,7 @@ import { validateRuntimeEventType } from "../runtime-events.js";
 import { WebExtensionAuthenticator } from "./auth.js";
 import { createWebSessionBinding, validateWebSessionBinding } from "./binding.js";
 import { parseFinalControllerPacket } from "./controller-packet.js";
-import { assertWebSessionProviderBinding, resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
+import { assertDeliveryDiscardResponse, assertWebSessionProviderBinding, resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
 import {
   WEB_BRIDGE_PROTOCOL_VERSION,
   WebAuthenticationState,
@@ -13,7 +13,6 @@ import {
   WebProtocolError,
   assertProtocolEnvelope,
 } from "./protocol.js";
-
 /**
  * @typedef {object} WebSessionBindingValue
  * @property {string} sessionId
@@ -697,7 +696,9 @@ export class WebSessionAdapter {
     const message = await this.#request({ type: "web.delivery.discard", payload: expected },
       new Set(["web.delivery.discarded", "web.session.error"]), 10_000);
     if (message.type === "web.session.error") throw this.#messageError(message);
+    assertDeliveryDiscardResponse(message.payload, expected);
     if (this.#ambiguousTurnId === expected?.currentDeliveryId) this.#ambiguousTurnId = null;
+    this.#ready = false;
     return message.payload;
   }
 

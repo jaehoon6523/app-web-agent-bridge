@@ -1,3 +1,6 @@
+(function initializeContentRuntime(root) {
+// Reinjection shares the listener, document token and active job in this world.
+if (root.ChatGptBridgeContentRuntime) return;
 const manualFollowup = globalThis.ChatGptBridgeManualFollowup;
 const pageProviders = globalThis.WebBridgePageProviders;
 
@@ -7,6 +10,7 @@ function contentTrace(event, details = {}) {
 }
 // A content-script document token, not a Chrome navigation documentId.
 const DOCUMENT_ID = crypto.randomUUID();
+const RUNTIME_VERSION = chrome.runtime.getManifest?.().version ?? null;
 const FRAME_ID = window === window.top ? 0 : null;
 
 function assertExpectedDocument(payload) {
@@ -101,11 +105,14 @@ function sleep(ms, signal) {
       reject(new DOMException("Aborted", "AbortError"));
       return;
     }
-    const timer = setTimeout(resolve, ms);
-    signal?.addEventListener("abort", () => {
+    const finish = () => { signal?.removeEventListener("abort", abort); resolve(); };
+    const timer = setTimeout(finish, ms);
+    const abort = () => {
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
       reject(new DOMException("Aborted", "AbortError"));
-    }, { once: true });
+    };
+    signal?.addEventListener("abort", abort, { once: true });
   });
 }
 
@@ -470,6 +477,8 @@ async function executePrompt(requestId, payload) {
         type: "agent.manualIntervention",
         requestId,
         payload: {
+          documentId: DOCUMENT_ID,
+          frameId: FRAME_ID,
           code: error.code,
           message: error.message,
           evidence: error.evidence,
@@ -639,6 +648,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       selectorVersion,
       documentId: DOCUMENT_ID,
       frameId: FRAME_ID,
+      runtimeVersion: RUNTIME_VERSION,
     });
     return false;
   }
@@ -714,3 +724,5 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
   return false;
 });
+root.ChatGptBridgeContentRuntime = Object.freeze({ documentId: DOCUMENT_ID });
+})(globalThis);

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import { readFileSync } from 'node:fs';
 import { createActiveTurnGate } from '../extension/runtime/turn-guard.js';
+import { readDeliveryPage } from '../extension/runtime/delivery-page.js';
 import { matchExactWebConversationTabs, resolveStoredWebTargetProvider } from '../extension/runtime/provider-target.js';
 
 const source = readFileSync(new URL('../extension/background.js', import.meta.url), 'utf8');
@@ -11,14 +12,12 @@ function harness(overrides = {}, pageOverrides = {}, tabOverrides = {}) {
   const state = { currentDeliveryId: 'delivery-old', lastBoundSessionId: 'session-old', lastBoundRunId: 'run-old',
     webProvider: 'CHATGPT_WEB', conversationUrl: 'https://chatgpt.com/c/old', conversationId: 'old', tabId: 7, bindingStatus: 'BOUND', ...overrides };
   const page = { ok: true, pageStatus: 'READY', busy: false, generating: false, url: state.conversationUrl, ...pageOverrides };
-  // handleDeliveryRecovery re-confirms the exact provider conversation before clearing a delivery.
-  // before clearing a delivery (see extension/background.js:391). By default this mock returns the same tab
-  // the state already believes is bound, so recovery proceeds exactly as it used to before that check existed.
+  // Recovery re-confirms the exact conversation and preserves unknown delivery outcomes.
   const tab = tabOverrides === null ? null : { id: state.tabId, windowId: 1, url: state.conversationUrl, ...tabOverrides };
   const cleared = [], sent = [], gate = createActiveTurnGate();
   const context = vm.createContext({ turnGate: gate, store: { read: async () => state, clearDelivery: async (id) => cleared.push(id),
       update: async (patch) => Object.assign(state, patch) },
-    matchExactWebConversationTabs, resolveStoredWebTargetProvider,
+    matchExactWebConversationTabs, resolveStoredWebTargetProvider, readDeliveryPage,
     chrome: { tabs: { sendMessage: async (_tab, message) => {
       if (message.type === 'agent.cancel') { page.busy = false; page.generating = false; return { ok: true, cancelled: true }; }
       return page;
@@ -35,12 +34,13 @@ function harness(overrides = {}, pageOverrides = {}, tabOverrides = {}) {
     conversationUrl: state.conversationUrl, ...patch,
   } }) };
 }
-test('recovery clears only the exact idle delivery and returns identifying evidence', async () => {
+test('idle page evidence cannot clear an unresolved delivery', async () => {
   const h = harness(); await h.recover();
-  assert.deepEqual(h.cleared, ['delivery-old']);
-  assert.equal(h.sent[0].type, 'web.delivery.recovered');
-  assert.equal(h.sent[0].payload.runId, 'run-old');
-  assert.equal(h.sent[0].payload.generating, false);
+  assert.deepEqual(h.cleared, []);
+  assert.equal(h.sent[0].type, 'web.session.error');
+  assert.equal(h.sent[0].payload.code, 'DELIVERY_RESPONSE_REQUIRED');
+  assert.equal(h.sent[0].payload.details.runId, 'run-old');
+  assert.equal(h.sent[0].payload.details.generating, false);
   assert.equal(h.gate.active, false);
 });
 for (const [label, page] of Object.entries({ generating: { generating: true }, active: { busy: true },
@@ -79,16 +79,17 @@ test('recovery rejects changed delivery identity and concurrent work', async () 
   assert.equal(h.cleared.length, 0); h.gate.release(held);
 });
 
-test('recovery resolves the exact Claude conversation with the stored provider', async () => {
+test('an idle Claude conversation also preserves unresolved ownership', async () => {
   const h = harness({
     webProvider:'CLAUDE_WEB',
     conversationUrl:'https://claude.ai/chat/old',
     conversationId:'old',
   });
   await h.recover();
-  assert.deepEqual(h.cleared, ['delivery-old']);
-  assert.equal(h.sent[0].type, 'web.delivery.recovered');
-  assert.equal(h.sent[0].payload.conversationUrl, 'https://claude.ai/chat/old');
+  assert.deepEqual(h.cleared, []);
+  assert.equal(h.sent[0].type, 'web.session.error');
+  assert.equal(h.sent[0].payload.code, 'DELIVERY_RESPONSE_REQUIRED');
+  assert.equal(h.sent[0].payload.details.conversationUrl, 'https://claude.ai/chat/old');
 });
 
 test('stop targets the exact tracked generation and confirms idle without clearing delivery', async () => {

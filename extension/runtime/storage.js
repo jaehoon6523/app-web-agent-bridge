@@ -15,6 +15,8 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   frameId: null,
   currentDeliveryId: null,
   completedDelivery: null,
+  lastAcknowledgedDelivery: null,
+  lastDeliveryDiscard: null,
   deliveryScopes: {},
   lastActiveWebTarget: null,
   lastObservedUserMessageId: null,
@@ -49,6 +51,11 @@ function nullableString(value) {
 function nullableInteger(value) {
   return Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
+const SCOPE_BINDING_KEYS = ["lastBoundRunId", "webProvider", "conversationUrl", "conversationId", "tabId", "windowId", "documentId", "frameId"];
+function deliveryScope(state) {
+  return Object.fromEntries([...SCOPE_BINDING_KEYS, "currentDeliveryId", "completedDelivery",
+    "lastObservedUserMessageId", "lastObservedAssistantMessageId"].map(key => [key, structuredClone(state[key])]));
+}
 
 function normalizeDeliveryScopes(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
@@ -58,6 +65,8 @@ function normalizeDeliveryScopes(value) {
     const currentDeliveryId = nullableString(slot.currentDeliveryId);
     if (currentDeliveryId === null) continue;
     scopes[sessionId] = {
+      ...Object.fromEntries(SCOPE_BINDING_KEYS.map(key => [key, ["tabId", "windowId", "frameId"].includes(key)
+        ? nullableInteger(slot[key]) : nullableString(slot[key])])),
       currentDeliveryId,
       completedDelivery: slot.completedDelivery && typeof slot.completedDelivery === "object"
         ? structuredClone(slot.completedDelivery) : null,
@@ -110,6 +119,10 @@ export function normalizeExtensionState(value = {}) {
     currentDeliveryId: nullableString(value.currentDeliveryId),
     completedDelivery: value.completedDelivery && typeof value.completedDelivery === "object"
       ? structuredClone(value.completedDelivery) : null,
+    lastAcknowledgedDelivery: value.lastAcknowledgedDelivery && typeof value.lastAcknowledgedDelivery === "object"
+      ? structuredClone(value.lastAcknowledgedDelivery) : null,
+    lastDeliveryDiscard: value.lastDeliveryDiscard && typeof value.lastDeliveryDiscard === "object"
+      ? structuredClone(value.lastDeliveryDiscard) : null,
     deliveryScopes: normalizeDeliveryScopes(value.deliveryScopes),
     lastActiveWebTarget: normalizeActiveTarget(
       value.lastActiveWebTarget !== undefined ? value.lastActiveWebTarget : value.lastActiveChatGptTarget,
@@ -185,6 +198,11 @@ export function createExtensionStateStore(storageArea) {
       }
       return mutate(async () => {
         const current = await readStoredState();
+        if (Object.values(current.deliveryScopes).some(slot => slot.currentDeliveryId
+          && ((slot.tabId !== null && slot.tabId === current.tabId)
+            || (slot.conversationUrl !== null && slot.conversationUrl === current.conversationUrl)))) {
+          throw new ExtensionStateError("RECOVERY_REQUIRED", "Another session owns an unresolved delivery on this target.");
+        }
         if (current.currentDeliveryId !== null) {
           throw new ExtensionStateError(
             "DELIVERY_ALREADY_RESERVED",
@@ -193,6 +211,20 @@ export function createExtensionStateStore(storageArea) {
           );
         }
         const next = normalizeExtensionState({ ...current, currentDeliveryId: deliveryId, completedDelivery: null });
+        await storageArea.set(next);
+        return next;
+      });
+    },
+    async updateIf(expected, patch) {
+      for (const key of [...Object.keys(expected), ...Object.keys(patch)]) {
+        if (!STORED_KEYS.includes(key)) throw new TypeError(`Unsupported extension state key: ${key}`);
+      }
+      return mutate(async () => {
+        const current = await readStoredState();
+        if (Object.entries(expected).some(([key, value]) => current[key] !== value)) {
+          throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The persisted owner changed; inspect it again.");
+        }
+        const next = normalizeExtensionState({ ...current, ...structuredClone(patch) });
         await storageArea.set(next);
         return next;
       });
@@ -210,15 +242,17 @@ export function createExtensionStateStore(storageArea) {
         const current = await readStoredState();
         const deliveryScopes = structuredClone(current.deliveryScopes);
         const changingSession = current.lastBoundSessionId !== patch.lastBoundSessionId;
+        if (!changingSession && current.currentDeliveryId && current.lastBoundRunId !== patch.lastBoundRunId) {
+          throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "An unresolved delivery cannot be reassigned to another run.");
+        }
         if (changingSession && current.lastBoundSessionId && current.currentDeliveryId) {
-          deliveryScopes[current.lastBoundSessionId] = {
-            currentDeliveryId: current.currentDeliveryId,
-            completedDelivery: current.completedDelivery,
-            lastObservedUserMessageId: current.lastObservedUserMessageId,
-            lastObservedAssistantMessageId: current.lastObservedAssistantMessageId,
-          };
+          deliveryScopes[current.lastBoundSessionId] = deliveryScope(current);
         }
         const nextSlot = changingSession ? deliveryScopes[patch.lastBoundSessionId] ?? null : null;
+        if (nextSlot?.lastBoundRunId && (nextSlot.lastBoundRunId !== patch.lastBoundRunId
+          || nextSlot.conversationUrl !== patch.conversationUrl)) {
+          throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The parked delivery belongs to a different run or conversation.");
+        }
         if (changingSession) delete deliveryScopes[patch.lastBoundSessionId];
         const next = normalizeExtensionState({
           ...current,
@@ -235,12 +269,30 @@ export function createExtensionStateStore(storageArea) {
         return next;
       });
     },
+    async selectDeliveryScope({ sessionId, deliveryId }) {
+      return mutate(async () => {
+        const current = await readStoredState(), slot = current.deliveryScopes[sessionId];
+        if (!slot || slot.currentDeliveryId !== deliveryId) throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The parked delivery changed.");
+        if (!slot.lastBoundRunId || !slot.conversationUrl) throw new ExtensionStateError("DELIVERY_SCOPE_OWNER_UNCONFIRMED", "This older scope lacks binding metadata. Recover its exact session from the controller first.");
+        const deliveryScopes = structuredClone(current.deliveryScopes);
+        if (current.currentDeliveryId && current.lastBoundSessionId) deliveryScopes[current.lastBoundSessionId] = deliveryScope(current);
+        delete deliveryScopes[sessionId];
+        const next = normalizeExtensionState({ ...current, ...slot, deliveryScopes, lastBoundSessionId: sessionId,
+          bindingStatus: "AMBIGUOUS", bindingError: "PENDING_DELIVERY_SELECTED: Inspect the selected delivery before recovery." });
+        await storageArea.set(next); return next;
+      });
+    },
     async clearDelivery(deliveryId, sessionId = null) {
       if (typeof deliveryId !== "string" || deliveryId.trim().length === 0) {
         throw new ExtensionStateError("INVALID_DELIVERY_ID", "Delivery ID must be a non-empty string.");
       }
       return mutate(async () => {
         const current = await readStoredState();
+        const previous = current.lastAcknowledgedDelivery;
+        if (current.currentDeliveryId === null && previous?.deliveryId === deliveryId
+          && previous.sessionId === current.lastBoundSessionId && previous.runId === current.lastBoundRunId
+          && previous.conversationUrl === current.conversationUrl
+          && (sessionId === null || previous.sessionId === sessionId)) return current;
         if (current.currentDeliveryId !== deliveryId
           || (sessionId !== null && current.lastBoundSessionId !== sessionId)) {
           throw new ExtensionStateError(
@@ -249,7 +301,9 @@ export function createExtensionStateStore(storageArea) {
             { expectedDeliveryId: current.currentDeliveryId, expectedSessionId: current.lastBoundSessionId },
           );
         }
-        const next = normalizeExtensionState({ ...current, currentDeliveryId: null });
+        const next = normalizeExtensionState({ ...current, currentDeliveryId: null,
+          lastAcknowledgedDelivery: { deliveryId, sessionId: current.lastBoundSessionId,
+            runId: current.lastBoundRunId, conversationUrl: current.conversationUrl, at: new Date().toISOString() } });
         await storageArea.set(next);
         return next;
       });

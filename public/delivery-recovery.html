@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ko">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>전송 상태 확인</title><link rel="stylesheet" href="delivery-recovery.css"></head>
+<body><main><a href="/">컨트롤러로 이동</a><h1>전송 상태 확인</h1>
+<p>연결·바인딩·전송 기록을 대조합니다. 상태 확인은 요청을 다시 전송하지 않습니다.</p>
+<pre id="owner"></pre><a id="conversation" hidden target="_blank" rel="noopener">대화 확인</a><button id="inspect">상태 다시 확인</button><p id="status" role="status">확인 중</p><pre id="details"></pre>
+<button id="ack" hidden>저장된 응답의 ACK 확인</button><p id="preparationRecovery" hidden>준비 응답 복구는 컨트롤러의 해당 준비 작업에서 ‘대화 확인·복구’를 실행하세요.</p>
+<section id="discardPanel" hidden><h2>대상 전송 폐기</h2>
+<p>서버와 확장의 소유권이 같은 전송만 폐기할 수 있습니다. 활성 생성 작업은 대화 탭에서 먼저 종료하세요.</p>
+<label><input id="unresolved" type="checkbox"> 결과가 미확정이거나 처리되지 않았음을 확인했습니다.</label>
+<label><input id="noResend" type="checkbox"> 원래 요청을 자동 재전송하지 않습니다.</label>
+<label><input id="pageUnknown" type="checkbox"> 페이지에 접근할 수 없으면 생성 종료도 확인할 수 없음을 이해했습니다.</label>
+<label id="extensionMissingLabel" hidden><input id="extensionMissing" type="checkbox"> 확장에 대응 전송 기록이 없고, 서버의 이 전송만 폐기함을 확인했습니다.</label>
+<label>폐기 사유<input id="reason" type="text"></label><button id="discard" disabled>이 전송 폐기</button></section>
+</main><script type="module" src="delivery-recovery.js"></script></body></html>

@@ -87,6 +87,15 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       visit(this);
       return descendants;
     }
+    querySelector(selector) {
+      if (selector === "a[data-delivery-recovery]") return this.querySelectorAll("a")
+        .find(element => Object.hasOwn(element.dataset, "deliveryRecovery")) ?? null;
+      return this.querySelectorAll(selector)[0] ?? null;
+    }
+    remove() {
+      if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
+      this.parentElement = null;
+    }
     focus() {}
     replaceChildren(...children) { this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = value; }
@@ -101,7 +110,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     ...dashboardRunListKnowledge,
     ...dashboardStartActions,
     ...runContextView,
-    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, Blob,
+    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},

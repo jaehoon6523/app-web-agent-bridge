@@ -106,6 +106,10 @@ test("contract: preparation cancel advertises only executable local or Web recov
     diagnostics:{ canRecover:true },
     error:null,
   };
+  assert.ok(!service.capabilities().includes("preparation.cancel"), "an unvalidated partial response must not authorize cancellation ACK");
+  Object.assign(service.data.contexts["prep-cancel-capability"].deliveries[0], {
+    processingState:"ACK_PENDING", validation:{ format:"CONFIRMED" },
+  });
   assert.ok(service.capabilities().includes("preparation.cancel"));
   available = false;
   assert.ok(!service.capabilities().includes("preparation.cancel"));

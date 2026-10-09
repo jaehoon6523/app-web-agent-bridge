@@ -8,6 +8,7 @@ import {
   classifyStoredAmbiguousRoot,
 } from "../extension/runtime/binding-recovery.js";
 import { canonicalChatGptUrl, conversationIdFromUrl } from "../extension/runtime/conversation.js";
+import { projectPopupConnectionState } from "../extension/runtime/popup-state.js";
 import { diagnosticError } from "../extension/runtime/document-binding.js";
 import { isLegacyBridgeTestDelivery } from "../extension/runtime/storage.js";
 
@@ -101,6 +102,7 @@ async function backgroundConnectionState({ currentDeliveryId = null, bindingErro
     extensionIdentity: "extension-1",
   });
   const context = vm.createContext({
+    projectPopupConnectionState,
     canonicalChatGptUrl,
     conversationIdFromUrl,
     classifyStoredAmbiguousRoot,
@@ -118,6 +120,7 @@ async function backgroundConnectionState({ currentDeliveryId = null, bindingErro
     store: {
       read: async () => ({ ...stored }),
       update: async patch => { Object.assign(stored, patch); return { ...stored }; },
+      updateIf: async (expected, patch) => { assert.ok(Object.entries(expected).every(([key, value]) => stored[key] === value)); Object.assign(stored, patch); return { ...stored }; },
     },
     chrome: { tabs: {
       query: async () => [root],
@@ -156,6 +159,8 @@ test("background maps unresolved delivery to a stable blocked code and text", as
 function renderPopupState(state) {
   const elements = Object.fromEntries([
     "status", "detail", "controllerUrl", "sharedSecret", "save", "reconnect", "legacyRecovery", "clearLegacy",
+    "deliveryRecovery", "recoveryDetail", "inspectDelivery", "openDelivery", "openController", "discardOrphan", "discardReason",
+    "unresolvedConfirmed", "noResendConfirmed", "serverMissingConfirmed", "pageUnconfirmed",
   ].map(id => [id, { textContent: "", className: "", hidden: false, value: "", placeholder: "" }]));
   const context = vm.createContext({
     document: { querySelector: selector => elements[selector.slice(1)] },
@@ -167,7 +172,7 @@ function renderPopupState(state) {
   return elements;
 }
 
-test("popup renders the mapped recovery text instead of a stale generic error", () => {
+test("popup retains the original cause alongside actionable recovery guidance", () => {
   const message = bindingRecoveryMessage(BindingRecoveryCode.DELIVERY_REVIEW_REQUIRED);
   const elements = renderPopupState({
     connected: true,
@@ -182,7 +187,7 @@ test("popup renders the mapped recovery text instead of a stale generic error", 
   });
 
   assert.match(elements.detail.textContent, new RegExp(message, "u"));
-  assert.doesNotMatch(elements.detail.textContent, /previous generic error/u);
+  assert.match(elements.detail.textContent, /previous generic error/u);
 });
 
 test("popup renders the successful root recovery text", () => {
