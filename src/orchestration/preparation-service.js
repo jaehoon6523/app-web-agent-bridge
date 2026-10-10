@@ -7,6 +7,7 @@ import { canonicalJson } from "../domain/canonical-json.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 import { validateReviewerConfiguration } from "./reviewer-settings.js";
+import { projectedError, bestEffortFailureLog } from "./preparation-diagnostics.js";
 
 function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
 const stamp = () => new Date().toISOString();
@@ -31,7 +32,7 @@ function isUnsentFailure(delivery, error) {
 }
 
 function logPreparationFailure(context, deliveryId, error, unsent) {
-  console.error("[bridge:preparation:failed]", JSON.stringify({
+  bestEffortFailureLog("[bridge:preparation:failed]", {
     preparationId: context.preparationId, sessionId: context.webSession.sessionId, deliveryId,
     code: error.code ?? "WEB_FAILED", unsent, state: context.state, lifecycle: context.lifecycle,
     stage: error.details?.stage ?? (unsent ? "BEFORE_DISPATCH" : "DELIVERY"),
@@ -39,7 +40,7 @@ function logPreparationFailure(context, deliveryId, error, unsent) {
     message: error.message, details: error.details ?? null, stack: error.stack ?? null,
     blockingDeliveryId: error.details?.currentDeliveryId ?? null,
     blockingSessionId: error.details?.sessionId ?? null, blockingRunId: error.details?.runId ?? null,
-  }, null, 2));
+  });
 }
 
 function followUpHandoffNotes(prior) {
@@ -479,10 +480,10 @@ export class PreparationService {
     const job = new Promise((resolve) => setImmediate(resolve)).then(() => this.generate(context, deliveryId, preparedBinding))
       .catch(async (rawError) => {
         if (this.closed) return;
-        const error = normalizePreparationWebFailure(rawError, {
+        const error = projectedError(normalizePreparationWebFailure(projectedError(rawError), {
           sessionId: session.sessionId,
           runId: context.preparationId,
-        });
+        }));
         const delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
         const unsent = delivery.state === "RESERVED" || error.details?.browserDispatchStarted === false;
         delivery.unsent = unsent;
@@ -500,8 +501,8 @@ export class PreparationService {
             details: { ...(error.details ?? {}), originalCode: error.code ?? "AMBIGUOUS",
               browserDispatchStarted: false, candidates },
           };
-          logPreparationFailure(context, deliveryId, error, unsent);
           await this.touch(context);
+          logPreparationFailure(context, deliveryId, error, unsent);
           return;
         }
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
@@ -510,19 +511,20 @@ export class PreparationService {
           session.bindingState = "UNBOUND";
         }
         context.error = { code: error.code ?? "WEB_FAILED", message: error.message, details: error.details ?? null };
-        logPreparationFailure(context, deliveryId, error, unsent);
         await this.touch(context);
+        logPreparationFailure(context, deliveryId, error, unsent);
       }).catch((error) => {
         if (this.closed) return;
+        const safe = projectedError(error, "PREPARATION_PERSISTENCE_FAILED");
         // A recovery write can fail too. Keep the uncertain delivery blocked,
         // expose it in memory, and never restart the Web operation.
         context.state = "RECOVERY_REQUIRED";
         session.bindingState = "RECOVERY_REQUIRED";
-        console.error("[bridge:preparation:persistence-failed]", {
+        bestEffortFailureLog("[bridge:preparation:persistence-failed]", {
           preparationId: context.preparationId, sessionId: session.sessionId, deliveryId,
-          code: error.code ?? "PREPARATION_PERSISTENCE_FAILED", message: error.message, stack: error.stack ?? null,
+          code: safe.code, message: safe.message,
         });
-        context.error = {code:error.code ?? "PREPARATION_PERSISTENCE_FAILED",message:error.message};
+        context.error = {code:safe.code,message:safe.message};
       }).finally(() => this.jobs.delete(context.preparationId));
     this.jobs.set(context.preparationId, job);
   }

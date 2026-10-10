@@ -1,3 +1,4 @@
+import { diagnosticSummary } from "../src/orchestration/preparation-diagnostics.js";
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -128,13 +129,13 @@ for (const mode of ['absent', 'hidden']) {
   });
 }
 
-test('an inspection exception preserves its message and stack and is cleared on fresh preparation', async () => {
+test('an inspection exception retains its code and safe summary and is cleared on fresh preparation', async () => {
   const content = contentFixture('dependency-failure'), f = browserFixture(content);
   await assert.rejects(f.runtime.waitForContentScript(19, 100, true), error => {
     const original = error.details.readiness.lastInspectionError;
     assert.equal(original.code, 'UI_CONTRACT_CHANGED');
-    assert.equal(original.message, 'Send-control state resolver is unavailable.');
-    assert.match(original.stack, /assertContract/u);
+    assert.equal(original.message, diagnosticSummary('UI_CONTRACT_CHANGED'));
+    assert.equal(original.stack, undefined);
     assert.equal(error.details.readiness.lastReadiness.inspectionError.message, original.message);
     return true;
   });
@@ -183,8 +184,8 @@ for (const stage of ['LOAD', 'CREATE']) {
     assert.equal(logged.details.extensionVersion, manifest.version);
     assert.equal(logged.details.causeDetails.readiness.tabUrl, 'https://chatgpt.com/');
     assert.equal(logged.details.causeDetails.readiness.lastInspectionError.message,
-      'Send-control state resolver is unavailable.');
-    assert.match(output, /assertContract/u);
+      diagnosticSummary('UI_CONTRACT_CHANGED'));
+    assert.doesNotMatch(output, /assertContract|Send-control state resolver/u);
     assert.doesNotMatch(output, /\[Object\]|PRIVATE/u);
     assert.equal(service.current.error.details.causeDetails.readiness.lastReadiness.pageStatus, 'UI_CONTRACT_CHANGED');
     assert.equal(service.current.state, 'WEB_BLOCKED');

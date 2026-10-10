@@ -1,3 +1,5 @@
+import { diagnosticMetadata } from "./document-binding.js";
+
 function receiverFailure(error) {
   const message = String(error?.message ?? "");
   if (/No tab with id/iu.test(message)) return "TAB_NOT_FOUND";
@@ -55,10 +57,13 @@ export function pageDiagnosticMetadata(page) {
     .map(key => [key, source[key]]));
   const counts = items => Array.isArray(items) ? items.map(item => ({ ...fields(item, ["selector", "matched", "visible"]),
     ...(Array.isArray(item.samples) ? { samples:item.samples.map(sample => fields(sample,
-      ["tagName", "display", "visibility", "width", "height", "acceptedByVisibility", "connected", "disabled", "readOnly", "editable"])) } : {}) })) : [];
-  return { pageState:page?.pageState ? fields(page.pageState,
+      ["tagName", "display", "visibility", "width", "height", "acceptedByVisibility", "connected", "disabled", "readOnly", "editable",
+        "role", "contentEditable", "inForm", "inMain", "fallbackReason"])) } : {}) })) : [];
+  return diagnosticMetadata({ pageState:page?.pageState ? fields(page.pageState,
     ["readyState", "visibilityState", "hasFocus", "authenticationSignal"]) : null,
   diagnostics:page?.diagnostics ? { selectorVersion:page.diagnostics.selectorVersion ?? null,
-    composerSelectors:counts(page.diagnostics.composerSelectors), editableCandidates:counts(page.diagnostics.editableCandidates) } : null,
-  inspectionError:page?.inspectionError ? fields(page.inspectionError, ["code", "message"]) : null };
+    composerSelectors:counts(page.diagnostics.composerSelectors), editableCandidates:counts(page.diagnostics.editableCandidates),
+    composerFallback:page.diagnostics.composerFallback ? fields(page.diagnostics.composerFallback,
+      ["selector", "eligible", "selected"]) : null } : null,
+  inspectionError:page?.inspectionError ? fields(page.inspectionError, ["code", "message"]) : null });
 }

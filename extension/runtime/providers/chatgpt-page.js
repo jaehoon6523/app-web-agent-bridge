@@ -83,6 +83,15 @@
 
   function firstVisible(group) {
     assertContract();
+    if (group === "composer") {
+      const match = resolveComposer();
+      if (match) selectorTelemetry.set(group, match.selector);
+      return match;
+    }
+    if (group === "sendButton") {
+      const composer = resolveComposer();
+      if (composer?.fallbackContainer) return fallbackSend(composer.fallbackContainer);
+    }
     const match = selectorRegistry.resolveFirst(
       group,
       (selector) => document.querySelectorAll(selector),
@@ -90,6 +99,49 @@
     );
     if (match) selectorTelemetry.set(group, match.selector);
     return match;
+  }
+
+  const FALLBACK_COMPOSER = "[contenteditable='true'][role='textbox']";
+  const FALLBACK_SEND_SELECTORS = Object.freeze([
+    "button[data-testid='send-button']", "button[aria-label='Send prompt']",
+    "button[aria-label='Send message']", "button[aria-label='보내기']",
+  ]);
+
+  function fallbackSend(container) {
+    const elements = new Map();
+    for (const selector of FALLBACK_SEND_SELECTORS) {
+      for (const element of container.querySelectorAll(selector)) {
+        if (isVisible(element)) elements.set(element, { element, selector });
+      }
+    }
+    // A generic submit button and multiple distinct send controls stay blocked.
+    const match = elements.size === 1 ? [...elements.values()][0] : null;
+    if (match) selectorTelemetry.set("sendButton", match.selector);
+    return match;
+  }
+
+  function fallbackCandidate(element) {
+    if (element.closest?.("[role='dialog'], [role='navigation'], nav, [data-message-author-role]")
+      || !isVisible(element) || ["aria-readonly", "aria-disabled", "aria-hidden"].some(name => element.getAttribute?.(name) === "true")) return null;
+    const composer = element.closest?.("[data-testid='composer'], #composer, #composer-container");
+    if (composer) return { element, fallbackContainer:composer, reason:"KNOWN_COMPOSER_CONTAINER" };
+    const form = element.closest?.("form");
+    if (!form || !element.closest?.("main, [role='main']")) return null;
+    const controls = [...FALLBACK_SEND_SELECTORS, ...(selectorRegistry.groups.dictationButton ?? []),
+      ...selectorRegistry.groups.stopButton].filter(selector => !selector.includes("aria-label*="));
+    if (!controls.some(selector => [...form.querySelectorAll(selector)].some(isVisible))) return null;
+    return { element, fallbackContainer:form, reason:"PROMPT_CONTROL_FORM" };
+  }
+
+  function fallbackCandidates() {
+    return [...document.querySelectorAll(FALLBACK_COMPOSER)].map(fallbackCandidate).filter(Boolean);
+  }
+
+  function resolveComposer() {
+    const registered = selectorRegistry.resolveFirst("composer", selector => document.querySelectorAll(selector), isVisible);
+    if (registered) return registered;
+    const candidates = fallbackCandidates();
+    return candidates.length === 1 ? { ...candidates[0], selector:FALLBACK_COMPOSER } : null;
   }
 
   function evidence() {
@@ -183,8 +235,13 @@
     }), editableCandidates:["textarea", "[contenteditable='true']", "[role='textbox']"].map(selector => {
       // These counts diagnose selector coverage; they never select a composer.
       const matches = [...document.querySelectorAll(selector)];
-      return { selector, matched:matches.length, visible:matches.filter(isVisible).length };
-    }) };
+      return { selector, matched:matches.length, visible:matches.filter(isVisible).length,
+        samples:matches.slice(0, 3).map(element => ({ tagName:element.tagName,
+          role:element.getAttribute?.("role") ?? null, contentEditable:element.getAttribute?.("contenteditable") ?? null,
+          inForm:Boolean(element.closest?.("form")), inMain:Boolean(element.closest?.("main, [role='main']")),
+          fallbackReason:element.matches?.(FALLBACK_COMPOSER) ? fallbackCandidate(element)?.reason ?? null : null })) };
+    }), composerFallback:{ selector:FALLBACK_COMPOSER, eligible:fallbackCandidates().length,
+      selected:Boolean(resolveComposer()?.fallbackContainer) } };
   }
 
   function inspectPageState({ includeDiagnostics = false } = {}) {
@@ -305,6 +362,13 @@
 
   function findSendControl() {
     assertContract();
+    const composer = resolveComposer();
+    if (composer?.fallbackContainer) {
+      const match = fallbackSend(composer.fallbackContainer);
+      if (!match) return { state:composerText(composer.element).trim() ? "UNKNOWN" : "CONFIRMED_EMPTY_COMPOSER" };
+      return { state:match.element.disabled || match.element.getAttribute("aria-disabled") === "true"
+        ? "DISABLED" : "ENABLED", selector:match.selector };
+    }
     const result = selectorRegistry.resolveSendButtonState({
       isComposerEmpty:() => {
         const composer = detectComposer();
@@ -338,6 +402,13 @@
     await sleep(250, signal);
     const sendButton = await waitForEnabledSend(signal);
     assertCanMutate?.();
+    const currentComposer = firstVisible("composer");
+    if (currentComposer?.element !== composer.element
+      || (composer.fallbackContainer && (currentComposer.fallbackContainer !== composer.fallbackContainer
+        || fallbackSend(composer.fallbackContainer)?.element !== sendButton.element
+        || sendButton.element.disabled || sendButton.element.getAttribute("aria-disabled") === "true"))) {
+      throw new PageProviderError("UI_CONTRACT_CHANGED", "Composer or send control changed before prompt dispatch.", evidence());
+    }
     sendButton.element.click();
   }
 

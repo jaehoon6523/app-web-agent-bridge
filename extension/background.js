@@ -57,7 +57,8 @@ const deliveryReview = createDeliveryReview({ store, turnGate, tabs: chrome.tabs
 const reconnect = createReconnectController({ connect, connected: () => Boolean(socket), onError(error) {
   lastError = error.message; broadcastPopupState();
 } });
-async function connect() {
+async function connect({ explicit = false } = {}) {
+  if (explicit) reconnect.requested();
   reconnect.cancel();
   const state = await store.read();
   let controllerUrl;
@@ -105,7 +106,9 @@ async function connect() {
     socket = null;
     authenticated = false;
     pendingChallengeId = null;
-    lastError = event.code === 4403 && lastError
+    lastError = event.code === 4409
+      ? "컨트롤러에 이미 인증된 확장이 연결되어 있습니다 (4409). 다른 Chrome 프로필·브라우저·중복 설치를 확인한 후 Reconnect를 누르세요. 자동 재접속을 중단했습니다."
+      : event.code === 4403 && lastError
       ? lastError
       : event.code === 1000
       ? null
@@ -956,13 +959,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         );
       }
       await store.update({ controllerUrl, sharedSecret });
-      await connect();
+      await connect({ explicit:true });
       sendResponse({ ok: true });
     })().catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   if (message?.type === "bridge.reconnect") {
-    void connect().then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
+    void connect({ explicit:true }).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
   if (["bridge.inspectTabs", "bridge.openInspectedTab", "bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController"].includes(message?.type)) {

@@ -444,7 +444,9 @@ test("composer failure stays visible across restart and requires local cancellat
   assert.equal(logged.deliveryId, deliveryId);
   assert.equal(logged.lifecycle, "ACTIVE");
   assert.equal(logged.browserDispatchStarted, false);
-  assert.match(logged.stack, /composer is unavailable/u);
+  assert.equal(logged.stack, undefined);
+  assert.equal(logged.message, "Web page controls are unavailable or changed. Inspect structured page diagnostics.");
+  assert.doesNotMatch(output, /composer is unavailable/u);
   f.restart();
   assert.equal(f.service.current.state, "WEB_BLOCKED");
   assert.deepEqual(f.service.current.error, before.error);

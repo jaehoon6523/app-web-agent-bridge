@@ -16,6 +16,7 @@ test("extension reconnect retries with a cap and stops after authentication", as
   });
   reconnect.schedule(4403);
   assert.equal(timers.size, 0);
+  reconnect.requested();
   reconnect.schedule(4001);
   reconnect.schedule(4001);
   assert.deepEqual(delays, [2_000]);

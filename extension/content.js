@@ -473,15 +473,16 @@ async function executePrompt(requestId, payload) {
     });
   } catch (error) {
     if (error?.code === "MANUAL_INTERVENTION_DETECTED") {
+      const safe = root.WebBridgeDiagnosticProjection.projectedError(error);
       void chrome.runtime.sendMessage({
         type: "agent.manualIntervention",
         requestId,
         payload: {
           documentId: DOCUMENT_ID,
           frameId: FRAME_ID,
-          code: error.code,
-          message: error.message,
-          evidence: error.evidence,
+          code: safe.code,
+          message: safe.message,
+          evidence: safe.details,
         },
       }).catch(() => {});
     }
@@ -634,10 +635,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       identity = adapter.readConversationIdentity();
       generating = adapter.detectGeneration();
     } catch (error) {
-      page = { status:error.code || "UI_CONTRACT_CHANGED", composerPresent:null };
-      inspectionError = { name:error.name ?? "Error", code:error.code ?? null,
-        message:error.message ?? String(error), stack:error.stack ?? null,
-        evidence:error.evidence ?? error.details ?? null };
+      const safe = root.WebBridgeDiagnosticProjection.projectedError(error, "UI_CONTRACT_CHANGED");
+      page = { status:safe.code, composerPresent:null };
+      inspectionError = { code:safe.code, message:safe.message, stack:safe.stack ?? null, evidence:safe.details };
     }
     sendResponse({
       ok: true,
@@ -703,12 +703,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (error?.name === "AbortError") {
           sendResponse({ ok: false, code: "TURN_INTERRUPTED", error: "Prompt cancelled." });
         } else {
+          const safe = root.WebBridgeDiagnosticProjection.projectedError(error, "CONTENT_SCRIPT_FAILURE");
           sendResponse({
             ok: false,
-            code: error?.code || "CONTENT_SCRIPT_FAILURE",
-            error: error?.message || String(error),
-            evidence: error?.evidence ?? selectedSelectorEvidence(),
-            confidence: error?.code === "AMBIGUOUS_COMPLETION" ? "AMBIGUOUS" : null,
+            code: safe.code,
+            error: safe.message,
+            evidence: safe.details ?? selectedSelectorEvidence(),
+            confidence: safe.code === "AMBIGUOUS_COMPLETION" ? "AMBIGUOUS" : null,
           });
         }
       });
@@ -721,12 +722,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         if (error?.name === "AbortError") {
           sendResponse({ ok: false, code: "TURN_INTERRUPTED", error: "Prompt observation cancelled." });
         } else {
+          const safe = root.WebBridgeDiagnosticProjection.projectedError(error, "CONTENT_SCRIPT_FAILURE");
           sendResponse({
             ok: false,
-            code: error?.code || "CONTENT_SCRIPT_FAILURE",
-            error: error?.message || String(error),
-            evidence: error?.evidence ?? selectedSelectorEvidence(),
-            confidence: error?.code === "AMBIGUOUS_COMPLETION" ? "AMBIGUOUS" : null,
+            code: safe.code,
+            error: safe.message,
+            evidence: safe.details ?? selectedSelectorEvidence(),
+            confidence: safe.code === "AMBIGUOUS_COMPLETION" ? "AMBIGUOUS" : null,
           });
         }
       });

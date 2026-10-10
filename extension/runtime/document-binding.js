@@ -1,3 +1,5 @@
+import "./diagnostic-projection.js";
+const { projectDiagnostics, projectedError } = globalThis.WebBridgeDiagnosticProjection;
 // documentId is the content-script lifetime token, not a Chrome navigation ID.
 export async function inspectBoundDocument(tabs, tabId, expected) {
   const page = await tabs.sendMessage(tabId, { type: "agent.ping" }).catch(() => null);
@@ -20,24 +22,18 @@ export function createSuccessTrace(requestId, session) {
 }
 
 export function diagnosticMetadata(value) {
-  if (Array.isArray(value)) return value.map(diagnosticMetadata);
-  if (!value || typeof value !== "object") return value;
-  const privateKeys = new Set(["text", "body", "rawText", "packetText", "packet", "response", "sharedSecret", "secret", "hmacSha256", "nonce"]);
-  return Object.fromEntries(Object.entries(value).filter(([key]) => !privateKeys.has(key))
-    .map(([key, item]) => [key, diagnosticMetadata(item)]));
+  return projectDiagnostics(value);
 }
 
 export function diagnosticError(error) {
-  const details = diagnosticMetadata(error?.details);
+  const safe = projectedError(error, "WEB_EXTENSION_ERROR");
+  const details = safe.details;
   const suffix = details && typeof details === "object" ? ` · 진단: ${JSON.stringify(details)}` : "";
-  return `${error?.code || "WEB_EXTENSION_ERROR"}: ${error?.message || "The ChatGPT Web extension operation failed."}${suffix}`;
+  return `${safe.code}: ${safe.message}${suffix}`;
 }
 
 export function errorPayload(error) {
-  return {
-    code: typeof error?.code === "string" ? error.code : "WEB_EXTENSION_ERROR",
-    message: error?.message || "The ChatGPT Web extension operation failed.",
-    details: error?.details ?? null,
-  };
+  const { code, message, details } = projectedError(error, "WEB_EXTENSION_ERROR");
+  return { code, message, details };
 }
 

@@ -1,4 +1,5 @@
 import { defaultWebTargetProviderRegistry } from "./provider-target.js";
+import { diagnosticMetadata } from "./document-binding.js";
 
 export class BrowserRuntimeError extends Error {
   constructor(code, message, details = null, cause = undefined) {
@@ -133,11 +134,11 @@ export function createBrowserRuntime(chromeApi) {
         entry.contentDocumentId = response.documentId;
         entry.responded = true;
         // Keep only readiness metadata; never retain prompt or response content.
-        entry.lastReadiness = Object.fromEntries(["ok", "ready", "pageUrl", "url", "pageStatus", "composerPresent",
+        entry.lastReadiness = diagnosticMetadata(Object.fromEntries(["ok", "ready", "pageUrl", "url", "pageStatus", "composerPresent",
           "busy", "activeRequestId", "generating", "conversationId",
           "provider", "selectorVersion", "runtimeVersion", "documentId", "frameId", "diagnostics", "pageState", "inspectionError"]
-          .filter(key => response[key] !== undefined).map(key => [key, response[key]]));
-        if (response.inspectionError) entry.lastInspectionError = response.inspectionError;
+          .filter(key => response[key] !== undefined).map(key => [key, response[key]])));
+        if (entry.lastReadiness.inspectionError) entry.lastInspectionError = entry.lastReadiness.inspectionError;
         for (const waiter of [...entry.waiters]) {
           if (!waiter.requireComposer || response.ready === true) finish(waiter, null, response);
           else if (response.pageStatus && !["READY", "UI_CONTRACT_CHANGED"].includes(response.pageStatus)) {
