@@ -5,7 +5,7 @@ import vm from 'node:vm';
 import { createReconnectController } from '../extension/runtime/reconnect.js';
 
 function fixture({ generic = false, voice = false, send = true, duplicate = false,
-  editors = 1, known = false, excluded = false } = {}) {
+  editors = 1, known = false, excluded = false, koreanVoice = false } = {}) {
   let provider; const controls = [], fields = [];
   class HTMLElement {
     disabled = false; hidden = false; removed = false; textContent = ''; tagName = 'DIV';
@@ -28,6 +28,10 @@ function fixture({ generic = false, voice = false, send = true, duplicate = fals
   }
   if (generic) control(["form button[type='submit']"]);
   if (voice) control(["button[aria-label='Start voice input']"]);
+  if (koreanVoice) {
+    for (const label of ["파일 등 추가", "ChatGPT 모델 선택", "음성 입력", "음성 대화 시작", "프로젝트 선택", "파일", "플러그인"])
+      control([`button[aria-label='${label}']`]);
+  }
   if (send) control(["button[data-testid='send-button']", "button[aria-label='Send prompt']"]);
   if (duplicate) control(["button[aria-label='Send message']"]);
   for (let i = 0; i < editors; i++) {
@@ -81,6 +85,28 @@ test('generic submit alone and multiple editors do not identify a fallback compo
   assert.equal(fixture({ generic:true, send:false }).provider.detectComposer().present, false);
   assert.equal(fixture({ editors:2 }).provider.detectComposer().present, false);
   assert.equal(fixture({ excluded:true }).provider.detectComposer().present, false);
+});
+
+test('observed Korean dictation form identifies an editor without authorizing dispatch', async () => {
+  const f = fixture({ koreanVoice:true, send:false });
+  assert.equal(f.provider.detectComposer().present, true);
+  assert.equal(f.provider.inspectPageState({ includeDiagnostics:true }).diagnostics.composerFallback.eligible, 1);
+  assert.equal(f.provider.findSendControl().state, 'CONFIRMED_EMPTY_COMPOSER');
+  f.fields[0].textContent = 'Fixture prompt';
+  assert.equal(f.provider.findSendControl().state, 'UNKNOWN');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60);
+  try { await assert.rejects(f.provider.submitPrompt('Fixture prompt', controller.signal), { name:'AbortError' }); }
+  finally { clearTimeout(timeout); }
+  assert.ok(f.controls.every(control => control.clicks === 0));
+});
+
+test('Korean dictation still requires visible controls and one nonexcluded editor', () => {
+  const f = fixture({ koreanVoice:true, send:false });
+  f.controls.find(control => control.selectors.includes("button[aria-label='음성 입력']")).hidden = true;
+  assert.equal(f.provider.detectComposer().present, false);
+  assert.equal(fixture({ koreanVoice:true, send:false, excluded:true }).provider.detectComposer().present, false);
+  assert.equal(fixture({ koreanVoice:true, send:false, editors:2 }).provider.detectComposer().present, false);
 });
 
 test('two distinct explicit send controls remain unknown instead of selecting the first', () => {

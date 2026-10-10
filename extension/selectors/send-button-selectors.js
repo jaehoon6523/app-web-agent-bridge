@@ -9,10 +9,9 @@
     "form button[type='submit']",
   ]);
 
-  // Not consumed by resolveSendButtonState() below yet — reserved so a future
-  // change can distinguish "empty composer, dictation UI showing" from
-  // "empty composer, no controls rendered at all" if that ever matters.
+  // Dictation controls identify a composer form; they never authorize sending.
   registry.groups.dictationButton = Object.freeze([
+    "button[aria-label='음성 입력']",
     "button[aria-label='받아쓰기 시작']",
     "button[aria-label='Voice 시작']",
     "button[aria-label='Start voice input']",

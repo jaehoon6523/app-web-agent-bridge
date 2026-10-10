@@ -67,3 +67,36 @@ test('real DOM fixture: controller exposes only owner-matched ACK and explicit d
   assert.equal(await dashboard.locator('#discardPanel').isHidden(), true); assert.equal(await dashboard.locator('#ack').isHidden(), true);
   assert.deepEqual(f.errors, []);
 });
+
+test('real DOM fixture: observed Korean dictation identifies a composer but never a send control', { timeout:20_000 }, async t => {
+  const labels = ['파일 등 추가', 'ChatGPT 모델 선택', '음성 입력', '음성 대화 시작', '프로젝트 선택', '파일', '플러그인'];
+  const f = await extensionBrowser(t, { providerHtml:`<!doctype html><html><body><main><form>
+    <div role="presentation"><div contenteditable="true" role="textbox" style="min-height:40px"> </div></div>
+    ${labels.map(label => `<button type="button" aria-label="${label}"></button>`).join('')}
+    <button type="button"></button></form></main>
+    <script>window.fixtureClicks=0; document.addEventListener('click', () => window.fixtureClicks++);</script>
+    </body></html>` });
+  const ping = await f.sendContent({ type:'agent.ping', includeDiagnostics:true });
+  assert.equal(ping.composerPresent, true);
+  const result = await f.page.evaluate(async () => {
+    const p = globalThis.WebBridgePageProviders.provider('CHATGPT_WEB');
+    const state = p.inspectPageState({ includeDiagnostics:true });
+    const empty = p.findSendControl().state;
+    document.querySelector('[contenteditable]').textContent = 'Fixture prompt';
+    const nonempty = p.findSendControl().state;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 100);
+    let failure;
+    try { await p.submitPrompt('Fixture prompt', controller.signal); }
+    catch (error) { failure = error.name; }
+    finally { clearTimeout(timer); }
+    return { state, empty, nonempty, failure, clicks:window.fixtureClicks };
+  });
+  assert.equal(result.state.status, 'READY');
+  assert.equal(result.state.diagnostics.composerFallback.eligible, 1);
+  assert.equal(result.empty, 'CONFIRMED_EMPTY_COMPOSER');
+  assert.equal(result.nonempty, 'UNKNOWN');
+  assert.equal(result.failure, 'AbortError');
+  assert.equal(result.clicks, 0);
+  assert.deepEqual(f.errors, []);
+});
