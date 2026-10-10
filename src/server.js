@@ -1,3 +1,6 @@
+import { readPersistedDelivery } from "./diagnostics/persisted-delivery.js";
+import { enqueueAgentReport } from "./diagnostics/report-store.js";
+import { diagnosticFailure } from "./diagnostics/diagnostic-schema.js";
 import { createAutomaticAgentReport } from "./diagnostics/agent-report.js";
 import { ResourceClosureError, isResourceClosureFailure } from "./persistence/resource-closure.js";
 import { PreparationService } from "./orchestration/preparation-service.js";
@@ -61,7 +64,15 @@ export function createBridgeServer({
   if (!runtimeConfig || typeof runtimeConfig !== "object") {
     throw new TypeError("createBridgeServer requires runtimeConfig.");
   }
-  const diagnostics = createServerObserver(onDiagnostic);
+  let agentReport;
+  const diagnostics = createServerObserver(event => {
+    try {onDiagnostic?.(event);} catch { /* Diagnostic callbacks cannot alter operation results. */ }
+    if (["runtime.initialization.failed","preparation.initialization.failed","preparation.mutation.failed"].includes(event.type))
+      void agentReport?.incident({code:event.code ?? "SERVER_STAGE_FAILED",details:{stage:event.type === "runtime.initialization.failed"
+        ? "RUNTIME_INITIALIZATION" : event.type === "preparation.initialization.failed" ? "PREPARATION_INITIALIZATION" : "PREPARATION_MUTATION"}},"CONTROLLER");
+    if (event.type === "request.completed" && event.status >= 400) void agentReport?.incident({code:"HTTP_REQUEST_FAILED",httpStatus:event.status,route:event.route,at:event.at,
+      details:{stage:"HTTP"}},"CONTROLLER_HTTP","HTTP");
+  });
   const projectSettings = new AuditProjectSettings({
     filename: path.join(runtimeConfig.persistence?.databasePath
       ? path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")) : path.join(runtimeConfig.workspace || process.cwd(), ".agent-controller"), "audit-project.json"),
@@ -165,7 +176,7 @@ export function createBridgeServer({
         });
       } catch (error) {
         retainRuntimeClosureFailure(error);
-        diagnostics.emit("runtime.initialization.failed");
+        diagnostics.emit("runtime.initialization.failed",{code:diagnosticErrorCode(error)});
         throw error;
       }
       liveRuntimePromise = initialization
@@ -177,7 +188,7 @@ export function createBridgeServer({
         .catch((error) => {
           // Operation rejection alone does not prove failed resource closure.
           retainRuntimeClosureFailure(error);
-          diagnostics.emit("runtime.initialization.failed");
+          diagnostics.emit("runtime.initialization.failed",{code:diagnosticErrorCode(error)});
           throw error;
         })
         .finally(() => {
@@ -278,6 +289,7 @@ export function createBridgeServer({
     try {
       preparationService = new PreparationService({
         filename: path.join(path.dirname(projectSettings.filename), "preparations.sqlite"),
+        onFailure:event => {void agentReport.incident(event,"PREPARATION_SERVICE","PREPARE");},
         web: webSession,
         available: () => Boolean(extensionTransport?.authenticated),
         assertStart: async () => {
@@ -313,7 +325,7 @@ export function createBridgeServer({
       });
       diagnostics.emit("preparation.initialization.completed");
     } catch (error) {
-      diagnostics.emit("preparation.initialization.failed");
+      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error)});
       throw error;
     }
     return preparationService;
@@ -350,19 +362,26 @@ export function createBridgeServer({
     }
   });
 
-  const agentReport = createAutomaticAgentReport({ transport:extensionTransport,
+  agentReport = createAutomaticAgentReport({ transport:extensionTransport,
+    collectDelivery:observed => readPersistedDelivery({databasePath:runtimeConfig.persistence.databasePath,
+      preparationPath:path.join(path.dirname(projectSettings.filename),"preparations.sqlite")},observed),
     directory:path.join(path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")), "diagnostics"),
     root:runtimeConfig.workspace ?? process.cwd(), onFailure:event => diagnostics.emit("agent.report.failed", event) });
 
+  app.get("/api/agent-diagnostics",requireDashboardRead,async (_req,res) => {
+    try {await agentReport.refresh("EXPORT");res.json(await agentReport.export());}
+    catch {res.status(503).json({code:"DIAGNOSTIC_EXPORT_UNAVAILABLE"});}
+  });
+
   app.get("/api/selector-diagnostics", requireDashboardRead, async (_req, res) => {
     try { const snapshot = await collectSelectorDiagnostics(extensionTransport);
-      agentReport.observe(snapshot); res.json(snapshot); }
-    catch (error) { agentReport.failure(error); res.status(503).json({ code:error.code ?? "TAB_INSPECTION_FAILED", error:"탭 진단을 수집하지 못했습니다." }); }
+      await agentReport.observe(snapshot); res.json(snapshot); }
+    catch (error) { await agentReport.failure(error); res.status(503).json({ code:error.code ?? "TAB_INSPECTION_FAILED", error:"탭 진단을 수집하지 못했습니다." }); }
   });
 
   app.get("/api/delivery-review", requireDashboardRead, async (req, res) => {
-    try { const result = await deliveryRecovery.inspect(req.query); agentReport.observeDelivery(result); res.json(result); }
-    catch { res.status(503).json({ code: "DELIVERY_INSPECTION_UNAVAILABLE", error: "전송 기록을 확인할 수 없습니다. 기록을 보존했습니다." }); }
+    try { const result = await deliveryRecovery.inspect(req.query); await agentReport.observeDelivery(result); res.json(result); }
+    catch (error) { await agentReport.deliveryFailure(error); res.status(503).json({ code: "DELIVERY_INSPECTION_UNAVAILABLE", error: "전송 기록을 확인할 수 없습니다. 기록을 보존했습니다." }); }
   });
   app.post("/api/delivery-review/discard", requireDashboardMutation, async (req, res) => {
     try { res.json(await deliveryRecovery.discard(req.body)); }
@@ -394,7 +413,7 @@ export function createBridgeServer({
       diagnostics.stage(req, "preparation.mutation.completed");
       res.status(type === "preparation.start" || type === "preparation.reply" ? 202 : 200).json(result);
     } catch (error) {
-      diagnostics.stage(req, "preparation.mutation.failed");
+      diagnostics.stage(req, "preparation.mutation.failed",{code:diagnosticErrorCode(error)});
       res.status(error.code === "INVALID_INPUT" || error.code === "INVALID_COMMAND" ? 400 : 409).json({
         code: error.code ?? "PREPARATION_FAILED", message: redactForEvidence(error.message),
         retryable: false, workflowStage: preparationService?.current?.stage ?? "START",
@@ -514,7 +533,7 @@ export function createBridgeServer({
           }
         }
       }
-      agentReport.observe(snapshot); res.json(snapshot);
+      await agentReport.observe(snapshot); res.json(snapshot);
     } catch (error) {
       diagnostics.emit("state.read.failed");
       res.status(503).json({ error: redactForEvidence(error.message) });
@@ -619,10 +638,11 @@ export function createBridgeServer({
   async function close() {
     if (closePromise) return closePromise;
     closing = true;
-    agentReport.close();
+    const diagnosticClose = agentReport.close();
     runtimeInitialization.abort(Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"}));
     diagnostics.beginShutdown();
     closePromise = closeSteps([
+      ["agentReport.close", () => diagnosticClose],
       ["dashboard.close", () => dashboard.close()],
       ["preparationService.close", () => preparationService?.close()],
       ["extension websocket terminate", () => { for (const ws of extensionWss.clients) {
@@ -705,7 +725,16 @@ export function createBridgeServer({
 }
 
 /** @param {RuntimeConfig} [runtimeConfig] @param {{onDiagnostic?: (event:any) => void}} [options] */
-export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) {
+export async function main(runtimeConfig = undefined, { onDiagnostic } = {}) {
+  if (!runtimeConfig) {
+    try {runtimeConfig = loadConfig();}
+    catch (error) {
+      try {await enqueueAgentReport(path.join(process.cwd(),".agent-controller","diagnostics"),"startup",
+        {source:"CONTROLLER_BOOTSTRAP",stage:"CONFIG",status:"UNAVAILABLE",failure:diagnosticFailure(error,"CONFIG_FAILED")});}
+      catch (loggingError) {console.error(JSON.stringify({loggingFailure:diagnosticFailure(loggingError,"DIAGNOSTIC_LOG_WRITE_FAILED")}));}
+      throw error;
+    }
+  }
   const pendingStages = new Set(), failedStages = new Set();
   const report = event => {
     if (event.type.startsWith("shutdown.")) {
@@ -717,7 +746,17 @@ export async function main(runtimeConfig = loadConfig(), { onDiagnostic } = {}) 
     try { onDiagnostic?.(event); } catch { /* Diagnostics are observational. */ }
   };
   const bridge = createBridgeServer({ runtimeConfig, onDiagnostic:report });
-  await bridge.listen();
+  const diagnosticDirectory = path.join(path.dirname(runtimeConfig.persistence.databasePath),"diagnostics");
+  try {
+    await bridge.listen();
+    try {await enqueueAgentReport(diagnosticDirectory,"startup",{source:"CONTROLLER_BOOTSTRAP",stage:"LISTENING",status:"OBSERVED"});}
+    catch (loggingError) {report({type:"agent.report.failed",...diagnosticFailure(loggingError,"DIAGNOSTIC_LOG_WRITE_FAILED")});}
+  } catch (error) {
+    try {await enqueueAgentReport(diagnosticDirectory,"startup",{source:"CONTROLLER_BOOTSTRAP",stage:"HTTP_LISTEN",status:"UNAVAILABLE",
+      failure:diagnosticFailure(error,"SERVER_LISTEN_FAILED")});}
+    catch (loggingError) {report({type:"agent.report.failed",...diagnosticFailure(loggingError,"DIAGNOSTIC_LOG_WRITE_FAILED")});}
+    throw error;
+  }
 
   console.log(`\nHTTP server listening at ${runtimeConfig.baseUrl}`);
   console.log("Dashboard API responsiveness: not yet verified");

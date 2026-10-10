@@ -39,3 +39,73 @@ npm run check
 ```
 
 The delivered verification log is overwritten per invocation. The new regressions cover secret/body omission, single latest file replacement, event storms/coalescing, close during pending RPC, bounded ownership projection, configuration failure, HTTP 404/non-JSON diagnostics, and READY without launching a worker. Existing selector repair generation/approval/apply and real HTTP/WebSocket fixture tests are also run. Linux fixtures do not certify native Windows, installed Chrome or the user's ChatGPT delivery recovery.
+
+## Integrated diagnostics (extension 0.2.12)
+
+Baseline: remote `a01154601ef883909e111dff74f81f7528976412`. This revision
+extends the existing latest report; it does not resend, ACK, discard, rebind,
+inject content or launch a repair worker while collecting diagnostics.
+
+The report now records original Web error codes/stages, bounded incidents with
+repeat counts, transport rejection codes (including 4409), selector registry
+versions and inspection error codes. An inspection error cannot be classified
+as a selector mismatch. Failed delivery-review reads replace the current review
+section with UNAVAILABLE instead of retaining a previous successful observation.
+
+Automatic delivery evidence comes from separate read-only SQLite connections.
+No runtime or persistence constructor is initialized, no store is created and
+no migration is performed. Existing stored metadata records are not authority
+to ACK: history and response/packet artifacts are explicitly NOT_VERIFIED. An
+ACK_PENDING receipt means recorded persistence metadata; it is not proof of a
+successful ACK. Records are bounded; missing identity, invalid schema, corrupt
+or locked storage and truncation are explicit unavailable results. Preparation
+and controller stores are separately timed reads, not one cross-store atomic
+snapshot. Recheck identity/state before any operational action.
+
+The standalone latest JSON also includes repair job stage, diagnostic/candidate
+hashes, the four verifier results, approval and application state. Only a full
+set of successful verifier records is PASSED. Live provider validation remains
+NOT_CHECKED. This revision keeps the existing explicit repair CLI and exact
+patch-hash application approval; it does not enable automatic candidate creation.
+
+Latest-file writes hold a process lock over read/merge/rename and retry without
+blocking the event loop. Confirmed dead writer PIDs can be reclaimed. Live,
+malformed or otherwise unverifiable locks fail closed with a logging failure;
+they are never silently stolen. This prevents concurrent CLI/server updates
+from silently losing another successfully written section. No periodic log
+files are added. Existing repair action journals remain durable audit records.
+
+### Export without console commands
+
+Reload the unpacked extension, restart the controller and open the extension
+popup. Select **최신 로그 저장**. The extension reads current tabs without
+changing ownership. If authenticated, it requests the controller's latest
+report over the existing authenticated WebSocket and embeds the offline
+extension observation. If disconnected, it exports its own persisted errors,
+current local observations and explicit UNAVAILABLE server state. The separate
+extension storage key survives service-worker recreation and never touches
+session/delivery ownership keys. Chrome may suffix repeated downloaded copies;
+the controller's operational `runtime-latest.json` is still one overwritten file.
+
+Authenticated dashboard clients may also GET `/api/agent-diagnostics`. Its read
+authorization is identical to the existing selector diagnostics API. Read-only
+collection failure is represented in the report, rather than implying no tabs
+or no delivery. Before configuration loads, server CONFIG failures use the
+checkout's `.agent-controller/diagnostics` fallback; success and listen failure
+are recorded in the startup section. Process crashes before JavaScript imports
+or diagnostics initialization cannot be captured by this application code.
+
+Page text, editable values, response bytes, arbitrary exception messages/stacks,
+URLs, labels and credentials are excluded. Conversation identity in the report
+is a hash, while internal exact comparisons retain the existing canonical
+identity. Metadata remains untrusted observation data.
+
+### Verification
+
+Run `npm run check`. New tests cover original error preservation/repeat counts,
+inspection failure classification, read-only preparation/review metadata,
+server-only ownership, corrupt storage, exact ACK receipt identity, concurrent
+process writes, live/dead writer locks, repair verifier summaries, offline
+service-worker recreation, authenticated HTTP/WebSocket export without runtime
+initialization, and server configuration failure. Local Linux fixtures do not
+certify native Windows or a live ChatGPT page.

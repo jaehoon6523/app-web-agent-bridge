@@ -31,7 +31,10 @@ function isUnsentFailure(delivery, error) {
     && (delivery.unsent === true || error?.details?.browserDispatchStarted === false);
 }
 
-function logPreparationFailure(context, deliveryId, error, unsent) {
+function logPreparationFailure(context, deliveryId, error, unsent, onFailure) {
+  try {onFailure?.({code:error.code,details:{...error.details,deliveryId,sessionId:context.webSession.sessionId,
+    runId:context.preparationId,stage:error.details?.stage ?? (unsent ? "BEFORE_DISPATCH" : "DELIVERY")}});}
+  catch { /* Diagnostic output cannot replace the preparation failure. */ }
   bestEffortFailureLog("[bridge:preparation:failed]", {
     preparationId: context.preparationId, sessionId: context.webSession.sessionId, deliveryId,
     code: error.code ?? "WEB_FAILED", unsent, state: context.state, lifecycle: context.lifecycle,
@@ -187,9 +190,9 @@ export function filterPreparationCapabilitiesForRuntimeContext({
  * @param is intentionally kept in the injected boundaries for testability.
  */
 export class PreparationService {
-  /** @param {{filename:string, web:any, available:Function, assertStart:Function, approve:Function, findRun:Function}} options */
-  constructor({ filename, web, available, assertStart, approve, findRun }) {
-    this.web = web; this.available = available; this.assertStart = assertStart;
+  /** @param {{filename:string, web:any, available:Function, assertStart:Function, approve:Function, findRun:Function, onFailure?:Function}} options */
+  constructor({ filename, web, available, assertStart, approve, findRun, onFailure = null }) {
+    this.onFailure = onFailure; this.web = web; this.available = available; this.assertStart = assertStart;
     this.approveRun = approve; this.findRun = findRun; this.jobs = new Map(); this.closed = false;
     fs.mkdirSync(path.dirname(filename), { recursive: true });
     this.db = new DatabaseSync(filename);
@@ -502,7 +505,7 @@ export class PreparationService {
               browserDispatchStarted: false, candidates },
           };
           await this.touch(context);
-          logPreparationFailure(context, deliveryId, error, unsent);
+          logPreparationFailure(context, deliveryId, error, unsent, this.onFailure);
           return;
         }
         delivery.state = unsent ? "FAILED" : delivery.response ? "RESPONSE_COMPLETED" : "RECOVERY_REQUIRED";
@@ -512,7 +515,7 @@ export class PreparationService {
         }
         context.error = { code: error.code ?? "WEB_FAILED", message: error.message, details: error.details ?? null };
         await this.touch(context);
-        logPreparationFailure(context, deliveryId, error, unsent);
+        logPreparationFailure(context, deliveryId, error, unsent, this.onFailure);
       }).catch((error) => {
         if (this.closed) return;
         const safe = projectedError(error, "PREPARATION_PERSISTENCE_FAILED");

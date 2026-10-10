@@ -109,7 +109,7 @@ async function verify({ workspace, capture, artifactStore, targetRoot, signal, o
 /** @param {any} options */
 export async function generateSelectorRepair(options) {
   const { targetRoot, snapshot, tabId, workerConfig, codex, signal,
-    createWorker = createRegisteredCodeWorker, verifyCandidate = verify, timeoutMs = 600000 } = options;
+    createWorker = createRegisteredCodeWorker, verifyCandidate = verify, onDiagnostic = () => {}, timeoutMs = 600000 } = options;
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) throw fail("INVALID_REPAIR_TIMEOUT");
   if (GitChangeWorkspace.inspectTarget(targetRoot).status) throw fail("REPAIR_TARGET_NOT_CLEAN");
   const target = GitChangeWorkspace.preflight(targetRoot);
@@ -129,9 +129,13 @@ export async function generateSelectorRepair(options) {
   const state = { jobId, targetRoot:target.targetRoot, baseCommit:target.baseCommit,
     diagnosticHash:hash(diagnostic), stage:"CREATED", capture:null, workspaceRoot:null };
   save(directory, state);
+  const notify = (phase,metadata = {}) => {
+    try {Promise.resolve(onDiagnostic({phase,jobId,...metadata})).catch(() => {});}
+    catch { /* Latest-report failures do not alter the durable repair journal. */ }
+  };
   const move = (phase, metadata = {}) => {
     journal.append(phase, { jobId, baseCommit:state.baseCommit, diagnosticHash:state.diagnosticHash, ...metadata });
-    state.stage = phase; save(directory, state);
+    state.stage = phase; save(directory, state);notify(phase,metadata);
   };
   let worker, unsubscribe, workspace;
   const control = new AbortController();
@@ -185,7 +189,8 @@ export async function generateSelectorRepair(options) {
     move("VERIFICATION_STARTED", { patchHash:capture.artifact.sha256 });
     // Drain the owned verifier after cancellation before releasing the repair lease.
     await verifyCandidate({ workspace, capture, artifactStore, targetRoot:target.targetRoot, signal:control.signal,
-      onCheck:result => journal.append("VERIFICATION_RESULT", { jobId, patchHash:capture.artifact.sha256, ...result }) });
+      onCheck:result => {journal.append("VERIFICATION_RESULT", { jobId, patchHash:capture.artifact.sha256, ...result });
+        notify("VERIFICATION_RESULT");} });
     if (control.signal.aborted) throw fail("REPAIR_INTERRUPTED");
     workspace.assertCandidate(capture);
     if (GitChangeWorkspace.preflight(target.targetRoot).baseCommit !== target.baseCommit) throw fail("REPAIR_TARGET_CHANGED");

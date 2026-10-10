@@ -211,3 +211,19 @@ chrome.runtime.onMessage.addListener(message => {
   if (message?.type === "bridge.state") render({ ok: true, state: message.payload });
 });
 void refresh();
+
+const exportAgentDiagnostics = document.querySelector("#exportAgentDiagnostics");
+const agentDiagnosticStatus = document.querySelector("#agentDiagnosticStatus");
+exportAgentDiagnostics?.addEventListener("click",async () => {
+  exportAgentDiagnostics.disabled = true;agentDiagnosticStatus.textContent = "현재 상태를 읽는 중입니다.";
+  try {
+    const result = await send({type:"bridge.exportDiagnostics"});
+    if (!result?.ok) throw new Error(result?.code ?? "DIAGNOSTIC_EXPORT_FAILED");
+    const blob = new Blob([JSON.stringify(result.report,null,2)],{type:"application/json"});
+    const url = URL.createObjectURL(blob), link = document.createElement("a");
+    link.href = url;link.download = "runtime-latest.json";link.click();setTimeout(() => URL.revokeObjectURL(url),10000);
+    agentDiagnosticStatus.textContent = `진단 ID: ${result.report.diagnosticId ?? "확인 불가"}\n관측: ${result.report.updatedAt ?? result.report.observedAt ?? "확인 불가"}\n${result.report.logFile ?? "서버 상태를 포함하지 못한 확장 진단입니다."}`;
+    if (result.report.loggingFailure) agentDiagnosticStatus.textContent += "\n진단 저장 실패: " + result.report.loggingFailure.code;
+  } catch (error) {agentDiagnosticStatus.textContent = "로그 내보내기 실패: " + error.message;}
+  finally {exportAgentDiagnostics.disabled = false;}
+});

@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
+import { diagnosticId } from "../diagnostics/diagnostic-schema.js";
 import { projectDiagnostics } from "./preparation-diagnostics.js";
 
 const identifier = value => typeof value === "string" && /^(?:delivery_)?[a-f0-9-]{36}$/u.test(value) ? value : null;
+const conversation = value => typeof value === "string" && /^https:\/\/chatgpt\.com\/(?:c\/[a-f0-9-]{36})?$/u.test(value) ? value : null;
+function receipt(value) {return value ? {deliveryId:identifier(value.deliveryId),sessionId:diagnosticId(value.sessionId),
+  runId:diagnosticId(value.runId),conversationUrl:conversation(value.conversationUrl)} : null;}
 function deliveryObservation(value) {
   if (!value || typeof value !== "object") return null;
-  return {currentDeliveryId:identifier(value.currentDeliveryId),
+  return {currentDeliveryId:identifier(value.currentDeliveryId),sessionId:diagnosticId(value.sessionId),runId:diagnosticId(value.runId),
+    conversationUrl:conversation(value.conversationUrl),documentId:diagnosticId(value.documentId),frameId:value.frameId === 0 ? 0 : null,
+    lastAcknowledgedDelivery:receipt(value.lastAcknowledgedDelivery),lastDeliveryDiscard:receipt(value.lastDeliveryDiscard),
+    scopedDeliveries:(Array.isArray(value.scopedDeliveries) ? value.scopedDeliveries : []).slice(0,8).map(slot =>
+      ({sessionId:diagnosticId(slot?.sessionId),currentDeliveryId:identifier(slot?.currentDeliveryId),runId:diagnosticId(slot?.runId),
+        tabId:Number.isSafeInteger(slot?.tabId) && slot.tabId >= 0 ? slot.tabId : null})),
     tabId:Number.isSafeInteger(value.tabId) && value.tabId >= 0 ? value.tabId : null,
     bindingStatus:["BOUND", "AMBIGUOUS", "NEEDS_REBIND", "UNBOUND"].includes(value.bindingStatus) ? value.bindingStatus : null,
     responseObserved:typeof value.responseObserved === "boolean" ? value.responseObserved : null,

@@ -1,3 +1,4 @@
+import { createExtensionAgentDiagnostics } from "./runtime/agent-diagnostics.js";
 import { discardExactDelivery } from "./runtime/delivery-discard.js";
 import { readDeliveryPage } from "./runtime/delivery-page.js";
 import { createCoalescedTask } from "./runtime/coalesced-task.js";
@@ -29,7 +30,8 @@ let handledChallengeIds = new Set();
 const turnGate = createActiveTurnGate();
 const browserRuntime = createBrowserRuntime(chrome);
 let lastError = null;
-function bridgeLog(event, details = {}) { console.info(`[bridge:trace:${event}]`, { at: new Date().toISOString(), ...diagnosticMetadata(details) }); }
+const agentDiagnostics = createExtensionAgentDiagnostics({chromeApi:chrome,store,inspect:() => inspectChatGptTabs(chrome.tabs,{limit:8}),getConnection:() => ({authenticated,connected:socket?.readyState === 1}),send});
+function bridgeLog(event, details = {}) { try {agentDiagnostics.recordTransition(event,details);} catch { /* Diagnostic failures cannot change dispatch. */ }console.info(`[bridge:trace:${event}]`, { at: new Date().toISOString(), ...diagnosticMetadata(details) }); }
 class ExtensionOperationError extends Error {
   constructor(code, message, details = null) {
     super(message);
@@ -46,6 +48,7 @@ function broadcastPopupState() {
 }
 const publishState = createCoalescedTask(async () => chrome.runtime.sendMessage({ type: "bridge.state", payload: await connectionState() }));
 function send(message, { allowUnauthenticated = false } = {}) {
+  try {agentDiagnostics.recordMessage(message);} catch { /* Keep diagnostic recording observational. */ }
   if (socket?.readyState !== WebSocket.OPEN) return false;
   if (!allowUnauthenticated && !authenticated) return false;
   socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
@@ -74,7 +77,7 @@ async function connect({ explicit = false } = {}) {
     }
     await ensureExtensionIdentity(store);
   } catch (error) {
-    lastError = error.message;
+    lastError = error.message;agentDiagnostics.failure(error,"CONFIG");
     broadcastPopupState();
     return;
   }
@@ -106,7 +109,7 @@ async function connect({ explicit = false } = {}) {
     socket = null;
     authenticated = false;
     pendingChallengeId = null;
-    lastError = event.code === 4409
+    if (event.code !== 1000) agentDiagnostics.failure({code:event.code === 4409 ? "AUTHENTICATED_EXTENSION_ALREADY_CONNECTED" : "WEB_SOCKET_CLOSED"},"CONNECT",event.code);lastError = event.code === 4409
       ? "컨트롤러에 이미 인증된 확장이 연결되어 있습니다 (4409). 다른 Chrome 프로필·브라우저·중복 설치를 확인한 후 Reconnect를 누르세요. 자동 재접속을 중단했습니다."
       : event.code === 4403 && lastError
       ? lastError
@@ -118,7 +121,7 @@ async function connect({ explicit = false } = {}) {
   });
   nextSocket.addEventListener("error", () => {
     if (socket !== nextSocket) return;
-    lastError = "Could not connect to the local controller.";
+    lastError = "Could not connect to the local controller.";agentDiagnostics.failure({code:"WEB_SOCKET_ERROR"},"CONNECT");
     broadcastPopupState();
   });
 }
@@ -150,7 +153,7 @@ async function handleControllerMessage(raw) {
       && message.challengeId === pendingChallengeId
     ) {
       authenticated = true;
-      reconnect.accepted();
+      reconnect.accepted();void agentDiagnostics.publish().catch(() => {});
       pendingChallengeId = null;
       lastError = null;
       const state = await store.read();
@@ -168,13 +171,13 @@ async function handleControllerMessage(raw) {
       return;
     }
     if (message.type === "controller.auth.rejected") {
-      lastError = `Controller rejected extension authentication (${message.code || "AUTHENTICATION_FAILED"}).`;
+      agentDiagnostics.failure({code:message.code ?? "AUTHENTICATION_FAILED"},"AUTH");lastError = `Controller rejected extension authentication (${message.code || "AUTHENTICATION_FAILED"}).`;
       socket?.close(4403, "Authentication rejected");
     }
     // All other controller commands are ignored until authentication completes.
     return;
   }
-  if (serverDeliveryInspector.accept(message)) return;
+  if (agentDiagnostics.accept(message) || serverDeliveryInspector.accept(message)) return;
   switch (message.type) {
     case "controller.diagnostics.inspect":
       await replyToSelectorDiagnostics(chrome.tabs, send, message.requestId, chrome.runtime.getManifest().version, await store.read());
@@ -964,7 +967,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       await store.update({ controllerUrl, sharedSecret });
       await connect({ explicit:true });
       sendResponse({ ok: true });
-    })().catch((error) => sendResponse({ ok: false, error: error.message }));
+    })().catch((error) => {agentDiagnostics.failure(error,"CONFIG");sendResponse({ ok: false, error: error.message });});
     return true;
   }
   if (message?.type === "bridge.reconnect") {

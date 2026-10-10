@@ -40,7 +40,11 @@ export async function replyToSelectorDiagnostics(tabs, send, requestId, extensio
     send({ type:"extension.diagnostics.inspected", requestId,
       payload:{ tabs:results.map(tab => diagnosticMetadata({ ...tab, extensionVersion })),
         delivery:state ? { currentDeliveryId:state.currentDeliveryId, tabId:state.tabId,
-          bindingStatus:state.bindingStatus,
+          bindingStatus:state.bindingStatus,sessionId:state.lastBoundSessionId,runId:state.lastBoundRunId,
+          conversationUrl:canonicalChatGptUrl(state.conversationUrl),documentId:state.documentId,frameId:state.frameId,
+          lastAcknowledgedDelivery:state.lastAcknowledgedDelivery,lastDeliveryDiscard:state.lastDeliveryDiscard,
+          scopedDeliveries:Object.entries(state.deliveryScopes ?? {}).slice(0,8).map(([sessionId,slot]) =>
+            ({sessionId,currentDeliveryId:slot.currentDeliveryId,runId:slot.lastBoundRunId,tabId:slot.tabId})),
           responseObserved:Boolean(state.currentDeliveryId && state.completedDelivery?.turnId === state.currentDeliveryId),
           acknowledgedDeliveryId:state.lastAcknowledgedDelivery?.deliveryId ?? null } : null } });
   } catch {
