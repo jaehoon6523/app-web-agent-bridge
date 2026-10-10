@@ -177,7 +177,7 @@ async function handleControllerMessage(raw) {
   if (serverDeliveryInspector.accept(message)) return;
   switch (message.type) {
     case "controller.diagnostics.inspect":
-      await replyToSelectorDiagnostics(chrome.tabs, send, message.requestId, chrome.runtime.getManifest().version);
+      await replyToSelectorDiagnostics(chrome.tabs, send, message.requestId, chrome.runtime.getManifest().version, await store.read());
       break;
     case "web.session.prepare":
       await handlePrepare(message, false);

@@ -34,11 +34,15 @@ export async function openInspectedChatGptTab(tabs, expected) {
   return { opened: true, tabId: tab.id };
 }
 
-export async function replyToSelectorDiagnostics(tabs, send, requestId, extensionVersion) {
+export async function replyToSelectorDiagnostics(tabs, send, requestId, extensionVersion, state = null) {
   try {
     const results = await inspectChatGptTabs(tabs, { limit:8 });
     send({ type:"extension.diagnostics.inspected", requestId,
-      payload:{ tabs:results.map(tab => diagnosticMetadata({ ...tab, extensionVersion })) } });
+      payload:{ tabs:results.map(tab => diagnosticMetadata({ ...tab, extensionVersion })),
+        delivery:state ? { currentDeliveryId:state.currentDeliveryId, tabId:state.tabId,
+          bindingStatus:state.bindingStatus,
+          responseObserved:Boolean(state.currentDeliveryId && state.completedDelivery?.turnId === state.currentDeliveryId),
+          acknowledgedDeliveryId:state.lastAcknowledgedDelivery?.deliveryId ?? null } : null } });
   } catch {
     send({ type:"extension.diagnostics.inspected", requestId, payload:{ errorCode:"TAB_INSPECTION_FAILED" } });
   }

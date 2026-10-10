@@ -1,3 +1,4 @@
+import { createAutomaticAgentReport } from "./diagnostics/agent-report.js";
 import { ResourceClosureError, isResourceClosureFailure } from "./persistence/resource-closure.js";
 import { PreparationService } from "./orchestration/preparation-service.js";
 import { installDeliveryOwnershipInspection } from "./orchestration/delivery-ownership.js";
@@ -63,7 +64,7 @@ export function createBridgeServer({
   const diagnostics = createServerObserver(onDiagnostic);
   const projectSettings = new AuditProjectSettings({
     filename: path.join(runtimeConfig.persistence?.databasePath
-      ? path.dirname(runtimeConfig.persistence.databasePath) : path.join(runtimeConfig.workspace || process.cwd(), ".agent-controller"), "audit-project.json"),
+      ? path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")) : path.join(runtimeConfig.workspace || process.cwd(), ".agent-controller"), "audit-project.json"),
     fallbackFile: runtimeConfig.auditProjectFile,
   });
   let auditSettings = projectSettings.snapshot();
@@ -349,13 +350,18 @@ export function createBridgeServer({
     }
   });
 
+  const agentReport = createAutomaticAgentReport({ transport:extensionTransport,
+    directory:path.join(path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")), "diagnostics"),
+    root:runtimeConfig.workspace ?? process.cwd(), onFailure:event => diagnostics.emit("agent.report.failed", event) });
+
   app.get("/api/selector-diagnostics", requireDashboardRead, async (_req, res) => {
-    try { res.json(await collectSelectorDiagnostics(extensionTransport)); }
-    catch (error) { res.status(503).json({ code:error.code ?? "TAB_INSPECTION_FAILED", error:"탭 진단을 수집하지 못했습니다." }); }
+    try { const snapshot = await collectSelectorDiagnostics(extensionTransport);
+      agentReport.observe(snapshot); res.json(snapshot); }
+    catch (error) { agentReport.failure(error); res.status(503).json({ code:error.code ?? "TAB_INSPECTION_FAILED", error:"탭 진단을 수집하지 못했습니다." }); }
   });
 
   app.get("/api/delivery-review", requireDashboardRead, async (req, res) => {
-    try { res.json(await deliveryRecovery.inspect(req.query)); }
+    try { const result = await deliveryRecovery.inspect(req.query); agentReport.observeDelivery(result); res.json(result); }
     catch { res.status(503).json({ code: "DELIVERY_INSPECTION_UNAVAILABLE", error: "전송 기록을 확인할 수 없습니다. 기록을 보존했습니다." }); }
   });
   app.post("/api/delivery-review/discard", requireDashboardMutation, async (req, res) => {
@@ -508,7 +514,7 @@ export function createBridgeServer({
           }
         }
       }
-      res.json(snapshot);
+      agentReport.observe(snapshot); res.json(snapshot);
     } catch (error) {
       diagnostics.emit("state.read.failed");
       res.status(503).json({ error: redactForEvidence(error.message) });
@@ -613,6 +619,7 @@ export function createBridgeServer({
   async function close() {
     if (closePromise) return closePromise;
     closing = true;
+    agentReport.close();
     runtimeInitialization.abort(Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"}));
     diagnostics.beginShutdown();
     closePromise = closeSteps([
