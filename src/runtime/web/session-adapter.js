@@ -671,7 +671,6 @@ export class WebSessionAdapter {
     }
     return promise;
   }
-
   /** @param {{turnId?: string}} [input] */
   async acknowledgeDelivery({ turnId } = {}) {
     if (typeof turnId !== "string" || !turnId) {
@@ -691,17 +690,19 @@ export class WebSessionAdapter {
     }
     return message.payload;
   }
-
   async discardDelivery(expected) {
-    const message = await this.#request({ type: "web.delivery.discard", payload: expected },
-      new Set(["web.delivery.discarded", "web.session.error"]), 10_000);
-    if (message.type === "web.session.error") throw this.#messageError(message);
-    assertDeliveryDiscardResponse(message.payload, expected);
-    if (this.#ambiguousTurnId === expected?.currentDeliveryId) this.#ambiguousTurnId = null;
-    this.#ready = false;
-    return message.payload;
+    if (this.#activeTurnId !== null || this.#sessionOperation !== null || this.#pending.size > 0)
+      throw new WebProtocolError("A Web session operation is already active", "WEB_SESSION_BUSY");
+    if (this.#ambiguousTurnId !== null && this.#ambiguousTurnId !== expected?.currentDeliveryId) this.#assertNoAmbiguousTurn();
+    this.#sessionOperation = "DISCARD"; try {
+      const message = await this.#request({ type: "web.delivery.discard", payload: expected },
+        new Set(["web.delivery.discarded", "web.session.error"]), 10_000);
+      if (message.type === "web.session.error") throw this.#messageError(message);
+      assertDeliveryDiscardResponse(message.payload, expected);
+      if (this.#ambiguousTurnId === expected?.currentDeliveryId) this.#ambiguousTurnId = null;
+      this.#ready = false; return message.payload;
+    } finally { this.#sessionOperation = null; }
   }
-
   async recoverDelivery(expected) {
     if (this.#activeTurnId !== null || this.#sessionOperation !== null || this.#pending.size > 0) {
       throw new WebProtocolError("A Web session operation is already active", "WEB_SESSION_BUSY");
@@ -722,7 +723,6 @@ export class WebSessionAdapter {
       return message.payload;
     } finally { this.#sessionOperation = null; }
   }
-
   async inspectDelivery({ refreshCompleted = false, adoptManualFollowup = false } = {}) {
     const payload = refreshCompleted
       ? { refreshCompleted: true, ...(adoptManualFollowup ? { adoptManualFollowup: true } : {}) }

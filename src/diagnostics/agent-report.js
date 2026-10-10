@@ -133,6 +133,7 @@ export function createAutomaticAgentReport({ transport, directory, root, collect
     records:array(value?.server?.records).slice(0,8).map(item => ({deliveryId:deliveryId(item?.deliveryId),
       active:flag(item?.active),state:token(item?.state),processingState:token(item?.processingState),responseStored:flag(item?.responseStored)}))});
   return {refresh,observeDelivery,incident,
+    observeRecovery(record) {return write("deliveryRecovery",record);},
     observe(snapshot) {lastSnapshot = snapshot;return persist(snapshot,null,"DIAGNOSTIC_API");},
     failure(error) {return persist(null,error,"DIAGNOSTIC_API");},
     deliveryFailure(error) {return write("deliveryReview",{source:"DELIVERY_REVIEW_API",status:"UNAVAILABLE",

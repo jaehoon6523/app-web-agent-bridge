@@ -1,3 +1,4 @@
+import { isTerminalDiscard, reconcileTerminalDiscard } from "./terminal-delivery-reconciliation.js";
 import { inspectDeliveryOwnership } from "./delivery-ownership.js";
 
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
@@ -11,7 +12,7 @@ function receiptMatches(observed, name, expected) {
     && exact({ ...receipt, currentDeliveryId: receipt?.deliveryId }, expected);
 }
 
-export function createDeliveryRecoveryActions({ getSources, getServices, web }) {
+export function createDeliveryRecoveryActions({ getSources, getServices, web, audit = async () => {} }) {
   let mutation = false;
   async function inspect(expected) {
     const server = await inspectDeliveryOwnership(expected, getSources);
@@ -22,15 +23,22 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web }) 
     const settled = server.status === "MATCHED" && !server.records[0]?.active;
     return { server, extension: { currentDeliveryId: observed.currentDeliveryId,
       sessionId: observed.sessionId, runId: observed.runId, conversationUrl: observed.conversationUrl,
-      pageReachable: observed.pageReachable, pageBusy: observed.pageBusy, generating: observed.generating,
+      terminalDiscardProtocol: observed.terminalDiscardProtocol,
+      tabId: observed.tabId, documentId: observed.documentId, frameId: observed.frameId,
+      pageReachable: observed.pageReachable,
+      pageIdentityConfirmed: observed.pageReachable === true && observed.observedConversationUrl === expected.conversationUrl
+        && observed.observedDocumentId === observed.documentId && typeof observed.documentId === "string", pageBusy: observed.pageBusy, generating: observed.generating,
+      otherActive: (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId),
+      resultStatus: server.records[0]?.responseStored ? "RESPONSE_STORED" : "UNKNOWN",
       extensionBusy: observed.extensionBusy, exact: exact(observed, expected),
       discardConfirmed: receiptMatches(observed, "lastDeliveryDiscard", expected),
       ackConfirmed: receiptMatches(observed, "lastAcknowledgedDelivery", expected),
       recordMissing: observed.currentDeliveryId === null && exact({ ...observed, currentDeliveryId: expected.currentDeliveryId }, expected)
         && !(observed.scopedDeliveries ?? []).some(slot => slot.deliveryId === expected.currentDeliveryId || slot.sessionId === expected.sessionId)
         && !receiptMatches(observed, "lastDeliveryDiscard", expected) && !receiptMatches(observed, "lastAcknowledgedDelivery", expected),
-      phase: settled && receiptMatches(observed, "lastDeliveryDiscard", expected) ? "DISCARDED"
-        : settled && receiptMatches(observed, "lastAcknowledgedDelivery", expected) ? "ACKNOWLEDGED"
+      phase: settled && isTerminalDiscard(server.records[0])
+        && !["ACK_PENDING", "ACKNOWLEDGED"].includes(server.records[0]?.processingState) && receiptMatches(observed, "lastDeliveryDiscard", expected) ? "DISCARDED"
+        : settled && server.records[0]?.state === "ACKNOWLEDGED" && receiptMatches(observed, "lastAcknowledgedDelivery", expected) ? "ACKNOWLEDGED"
           : durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED" : "UNRESOLVED" } };
   }
   async function discard(input) {
@@ -42,8 +50,13 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web }) 
     mutation = true;
     try {
       const inspected = await inspect(input), record = inspected.server.records[0];
-      if (inspected.server.status === "MATCHED" && !record?.active && inspected.extension.discardConfirmed
-        && ["DISCARDED", "RECOVERY_DISCARDED"].includes(record.state)) return { discarded: true, deliveryId: input.currentDeliveryId };
+      if (input.terminalDiscardConfirmed !== true && inspected.server.status === "MATCHED"
+        && isTerminalDiscard(record) && inspected.extension.discardConfirmed) {
+        return { discarded: true, deliveryId: input.currentDeliveryId };
+      }
+      if (inspected.server.status === "MATCHED" && isTerminalDiscard(record)) {
+        return await reconcileTerminalDiscard({ input, inspect, getServices, web, audit });
+      }
       if (inspected.server.status !== "MATCHED" || !record?.active
         || (!inspected.extension.exact && !inspected.extension.discardConfirmed
           && !(inspected.extension.recordMissing && input.extensionRecordMissingConfirmed === true))) {

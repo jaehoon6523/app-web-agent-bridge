@@ -1,3 +1,4 @@
+import { createDeliveryRecoveryAudit } from "./diagnostics/delivery-recovery-audit.js";
 import { readPersistedDelivery } from "./diagnostics/persisted-delivery.js";
 import { enqueueAgentReport } from "./diagnostics/report-store.js";
 import { diagnosticFailure } from "./diagnostics/diagnostic-schema.js";
@@ -339,6 +340,10 @@ export function createBridgeServer({
   };
   installDeliveryOwnershipInspection({ transport: extensionTransport, getSources: deliverySources });
   const deliveryRecovery = createDeliveryRecoveryActions({ getSources: deliverySources, web: webSession,
+    audit: createDeliveryRecoveryAudit({
+      directory: path.join(path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")), "delivery-recovery"),
+      observe: record => agentReport?.observeRecovery(record),
+    }),
     getServices: async () => ({ preparationService: preparations(), codeChanges: (await getLiveRuntime()).codeChanges }) });
 
   function requireDashboardRead(req, res, next) {

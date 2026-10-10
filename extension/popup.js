@@ -113,6 +113,8 @@ function renderTabDiagnostic() {
 }
 
 function updateDiscard() {
+  const panel = document.querySelector("#orphanDiscardPanel");
+  if (panel) panel.hidden = inspection?.server?.status !== "MISSING";
   const page = inspection?.page;
   const unknownPage = !page?.reachable || page.busy !== false || page.generating !== false;
   discardOrphan.disabled = !(inspection?.server?.status === "MISSING" && !inspection.extensionBusy

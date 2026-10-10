@@ -75,11 +75,12 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
     const held = turnGate.reserve("discard_" + crypto.randomUUID());
     try {
       const state = await store.read();
-      if (hasExactDiscardReceipt(state, expected)) return { discarded: true, owner: expected };
-      assertOwner(state, expected);
-      const owner = deliveryOwner(state), server = await inspectServer(owner);
+      const replay = hasExactDiscardReceipt(state, expected);
+      if (!replay) assertOwner(state, expected);
+      const owner = replay ? expected : deliveryOwner(state), server = await inspectServer(owner);
       if (server.status !== "MISSING") throw new ExtensionStateError("SERVER_DELIVERY_NOT_MISSING",
         "서버 기록이 없다고 확정하지 못했습니다. 컨트롤러에서 해당 작업을 확인하세요.");
+      if (replay) return { discarded: true, owner };
       const page = await readDeliveryPage(tabs, state.tabId);
       if (page?.busy || page?.generating) throw new ExtensionStateError("WEB_SESSION_BUSY", "대화 탭의 생성 작업을 먼저 종료하세요.");
       if ((!page?.ok || page.busy !== false || page.generating !== false)

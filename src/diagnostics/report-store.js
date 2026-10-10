@@ -3,7 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as wait } from 'node:timers/promises';
 import { mergeDiagnosticIncident } from './diagnostic-schema.js';
-const sections = new Set(['server','repair','deliveryReview','extension','startup']);
+const sections = new Set(['server','repair','deliveryReview','extension','startup','deliveryRecovery']);
 const queues = new Map();
 export function readAgentReport(directory) {
   const filename = path.join(directory,'runtime-latest.json');
@@ -46,7 +46,7 @@ export function writeAgentReport(directory, section, record) {
     const previous = readAgentReport(directory), diagnosticId = randomUUID();
     const result = {schemaVersion:1,updatedAt:new Date().toISOString(),diagnosticId,
       server:previous.server ?? null,repair:previous.repair ?? null,deliveryReview:previous.deliveryReview ?? null,
-      extension:previous.extension ?? null,startup:previous.startup ?? null,incidents:previous.incidents ?? []};
+      extension:previous.extension ?? null,startup:previous.startup ?? null,deliveryRecovery:previous.deliveryRecovery ?? null,incidents:previous.incidents ?? []};
     if (section === 'incident') result.incidents = mergeDiagnosticIncident(result.incidents,record);
     else result[section] = {...record,diagnosticId,observedAt:record.observedAt ?? result.updatedAt};
     const json = JSON.stringify(result,null,2);

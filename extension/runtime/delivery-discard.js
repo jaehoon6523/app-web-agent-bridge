@@ -22,9 +22,16 @@ export async function discardExactDelivery({ store, turnGate, tabs, message, sen
     if (typeof expected.currentDeliveryId !== "string" || !expected.currentDeliveryId.trim()) {
       throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 식별자가 없습니다.");
     }
+    if (expected.terminalDiscardConfirmed === true && Object.values(state.deliveryScopes).some(slot => slot.currentDeliveryId)) {
+      throw new ExtensionStateError("WEB_SESSION_BUSY", "다른 세션에 남은 전송을 먼저 확인하세요.");
+    }
     if (hasExactDiscardReceipt(state, expected)) {
       send({ type: "web.delivery.discarded", requestId: message.requestId, payload: { ...expected, result: "discarded" } });
       return;
+    }
+    if (expected.terminalDiscardConfirmed === true && (!expected.ownerSnapshot
+      || ["tabId", "documentId", "frameId"].some(key => expected.ownerSnapshot[key] !== state[key]))) {
+      throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상의 저장 탭·문서 소유권이 변경됐습니다.");
     }
     const missingConfirmed = state.currentDeliveryId === null && expected.extensionRecordMissingConfirmed === true
       && !Object.values(state.deliveryScopes).some(slot => slot.currentDeliveryId === expected.currentDeliveryId);
@@ -35,6 +42,10 @@ export async function discardExactDelivery({ store, turnGate, tabs, message, sen
     }
     const page = tabs ? await readDeliveryPage(tabs, state.tabId) : null;
     if (page?.busy || page?.generating) throw new ExtensionStateError("WEB_SESSION_BUSY", "대화 탭의 생성 작업을 먼저 종료하세요.");
+    if (expected.terminalDiscardConfirmed === true && (!page?.ok || page.documentId !== state.documentId || page.url !== state.conversationUrl || page.busy !== false || page.generating !== false)
+      && expected.pageStateUnconfirmedConfirmed !== true) {
+      throw new ExtensionStateError("PAGE_STATE_CONFIRMATION_REQUIRED", "원래 페이지 상태를 확인할 수 없음을 명시적으로 확인하세요.");
+    }
     await store.updateIf({ currentDeliveryId: state.currentDeliveryId, lastBoundSessionId: state.lastBoundSessionId,
       lastBoundRunId: state.lastBoundRunId, conversationUrl: state.conversationUrl, documentId: state.documentId,
       tabId: state.tabId, frameId: state.frameId },

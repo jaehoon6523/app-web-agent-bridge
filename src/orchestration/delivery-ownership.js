@@ -43,7 +43,13 @@ export async function inspectDeliveryOwnership(expected, getSources) {
       active: session?.activeTurnId === discussion.deliveryId, state: discussion.status ?? discussion.state,
       processingState: null, responseStored: false });
   }
-  return { ...classifyDeliveryOwnership(expected, records), expected };
+  const otherActive = contexts.some(context => context.webSession?.activeDeliveryId
+    && context.webSession.activeDeliveryId !== expected.currentDeliveryId)
+    || runs.some(run => (run.conversationBindings ?? []).some(binding => binding.activeDeliveryId
+      && binding.activeDeliveryId !== expected.currentDeliveryId))
+    || (discussionStore?.listRuns?.() ?? []).some(run => discussionStore.listAgentSessions(run.runId)
+      .some(session => session.activeTurnId && session.activeTurnId !== expected.currentDeliveryId));
+  return { ...classifyDeliveryOwnership(expected, records), expected, otherActive };
 }
 
 export function installDeliveryOwnershipInspection({ transport, getSources }) {

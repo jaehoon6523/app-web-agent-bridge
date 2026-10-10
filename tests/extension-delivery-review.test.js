@@ -353,3 +353,11 @@ test('production HTTP recovery routes enforce read credentials, mutation origin 
   assert.equal(missing.status, 409); assert.equal((await missing.json()).code, 'DISCARD_CONFIRMATION_REQUIRED');
   assert.equal(f.run().conversationBindings[0].activeDeliveryId, 'd'); assert.equal(f.calls().discardCalls, 0);
 });
+
+test('orphan replay still checks server absence and cannot bypass a newly present server record',async()=>{
+  const f=await harness();await f.discard();
+  const review=createDeliveryReview({store:f.store,turnGate:f.turnGate,tabs:f.tabs,inspectServer:async()=>({status:'MATCHED',records:[{state:'RECOVERY_DISCARDED'}]})});
+  await assert.rejects(review.discardOrphan({...f.owner,reason:'Reviewed',unresolvedResultConfirmed:true,noAutomaticResendConfirmed:true,
+    serverMissingConfirmed:true}),{code:'SERVER_DELIVERY_NOT_MISSING'});
+  assert.equal((await f.store.read()).lastDeliveryDiscard.deliveryId,'d');
+});

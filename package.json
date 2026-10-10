@@ -17,7 +17,7 @@
     "test:contract": "node --test tests/contract/dashboard-degraded-state.contract.test.js tests/contract/dashboard-data-knowledge.contract.test.js tests/contract/dashboard-action-capabilities.contract.test.js tests/contract/preparation-capabilities.contract.test.js tests/contract/web-dependency-state.contract.test.js",
     "test:fault": "node --test tests/fault/runtime-failure.test.js tests/fault/extension-failure.test.js tests/fault/reviewer-provider-failure.test.js tests/fault/state-projection-failure.test.js tests/fault/run-store-read-failure.test.js",
     "test:ui": "node scripts/ui-scenarios.mjs",
-    "test:browser": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/preparation-critical-suite.mjs",
+    "test:browser": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs",
     "test:extension:native": "node scripts/native-extension-suite.mjs",
     "test:critical": "node scripts/preparation-critical-suite.mjs",
     "test:sabotage": "node scripts/sabotage-critical-preparation.mjs",
@@ -42,6 +42,7 @@
     "test:platform:browser": "node scripts/e2e/with-browser.mjs scripts/run-tests.mjs tests/platform/browser.contract.mjs",
     "test:runtime-cleanup-contract": "node scripts/run-tests.mjs tests/runtime-cleanup/contract.test.js tests/runtime-cleanup/representation.test.js",
     "test:history:budget": "node --test tests/platform/history-budget.contract.mjs",
+    "verify:delivery-recovery": "node scripts/verify-delivery-recovery.mjs",
     "verify:all": "node scripts/verify-all.mjs"
   },
   "dependencies": {
