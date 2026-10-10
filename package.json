@@ -31,6 +31,7 @@
     "check:critical": "npm run check && npm run test:critical && npm run test:sabotage",
     "projection:rebuild": "node scripts/projection-rebuild.js",
     "schema:generate": "codex app-server generate-ts --out ./schemas && codex app-server generate-json-schema --out ./schemas",
+    "repair:selectors": "node scripts/repair-selectors.mjs",
     "diagnose:server": "node --experimental-sqlite scripts/diagnose-server.mjs",
     "test:e2e:startup": "node scripts/e2e/startup.mjs",
     "test:e2e:wave": "node scripts/e2e/suite.mjs --wave-only",

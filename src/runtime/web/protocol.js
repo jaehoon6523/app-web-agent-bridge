@@ -44,6 +44,8 @@ export const WebProtocolMessageType = enumObject([
   "extension.hello",
   "extension.state",
   "extension.heartbeat",
+  "controller.diagnostics.inspect",
+  "extension.diagnostics.inspected",
   "extension.delivery.inspect",
   "controller.delivery.inspected",
   "controller.ping",

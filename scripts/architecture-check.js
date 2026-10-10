@@ -71,7 +71,7 @@ const htmlScripts = (directory, filename) => [...fs.readFileSync(path.join(direc
   .map(([, source]) => path.join(directory, source));
 const packageScripts = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).scripts;
 const operationalCommands = Object.entries(packageScripts)
-  .filter(([name]) => ["start", "dev", "demo", "demo:win", "doctor", "certify", "projection:rebuild"].includes(name))
+  .filter(([name]) => ["start", "dev", "demo", "demo:win", "doctor", "certify", "projection:rebuild", "repair:selectors"].includes(name))
   .flatMap(([, command]) => [...command.matchAll(/\b(?:src|scripts)\/[\w./-]+\.(?:mjs|js)\b/gu)]
     .map(([filename]) => path.join(root, filename)));
 const npmCommandScripts = Object.values(packageScripts)

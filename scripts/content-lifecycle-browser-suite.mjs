@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { collectSelectorDiagnostics } from '../src/orchestration/selector-diagnostics.js';
 import { extensionBrowser } from '../tests/helpers/extension-browser.mjs';
 
 async function reinject(page) {
@@ -70,7 +71,7 @@ test('real DOM fixture: controller exposes only owner-matched ACK and explicit d
 
 test('real DOM fixture: observed Korean dictation identifies a composer but never a send control', { timeout:20_000 }, async t => {
   const labels = ['파일 등 추가', 'ChatGPT 모델 선택', '음성 입력', '음성 대화 시작', '프로젝트 선택', '파일', '플러그인'];
-  const f = await extensionBrowser(t, { providerHtml:`<!doctype html><html><body><main><form>
+  const f = await extensionBrowser(t, { providerHtml:`<!doctype html><html><head><meta charset="utf-8"></head><body><main><form>
     <div role="presentation"><div contenteditable="true" role="textbox" style="min-height:40px"> </div></div>
     ${labels.map(label => `<button type="button" aria-label="${label}"></button>`).join('')}
     <button type="button"></button></form></main>
@@ -98,5 +99,24 @@ test('real DOM fixture: observed Korean dictation identifies a composer but neve
   assert.equal(result.nonempty, 'UNKNOWN');
   assert.equal(result.failure, 'AbortError');
   assert.equal(result.clicks, 0);
+  assert.deepEqual(f.errors, []);
+});
+
+
+test('real DOM fixture: controller collects bounded repair metadata without changing a delivery owner', { timeout:20000 }, async t => {
+  const f = await extensionBrowser(t, { providerHtml:`<!doctype html><html><head><meta charset="utf-8"></head><body><main><form>
+    <div role="presentation"><div contenteditable="true" role="textbox" style="min-height:40px"></div></div>
+    <button type="button" aria-label="새로운 음성 입력"></button></form></main></body></html>` });
+  await f.background.evaluate(() => chrome.storage.local.set({currentDeliveryId:'preserved-owner'}));
+  const before = f.readStorage();
+  const snapshot = await collectSelectorDiagnostics(f.transport);
+  assert.equal(snapshot.tabs.length, 1);
+  assert.equal(snapshot.tabs[0].composerPresent, false);
+  assert.equal(snapshot.tabs[0].pageStatus, 'UI_CONTRACT_CHANGED');
+  const samples = snapshot.tabs[0].diagnostics.editableCandidates.flatMap(item => item.samples ?? []);
+  assert.ok(samples.some(sample => sample.controls?.some(control => control.controlLabel === '새로운 음성 입력')));
+  assert.ok(samples.some(sample => sample.ancestors?.some(ancestor => ancestor.tagName === 'FORM')));
+  assert.equal(f.readStorage().currentDeliveryId, before.currentDeliveryId);
+  assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), null);
   assert.deepEqual(f.errors, []);
 });

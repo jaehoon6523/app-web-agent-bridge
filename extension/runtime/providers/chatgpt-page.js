@@ -239,6 +239,22 @@
         samples:matches.slice(0, 3).map(element => ({ tagName:element.tagName,
           role:element.getAttribute?.("role") ?? null, contentEditable:element.getAttribute?.("contenteditable") ?? null,
           inForm:Boolean(element.closest?.("form")), inMain:Boolean(element.closest?.("main, [role='main']")),
+          excludedAncestor:Boolean(element.closest?.("[role='dialog'], [role='navigation'], nav, [data-message-author-role]")),
+          readOnly:element.getAttribute?.("aria-readonly") === "true",
+          disabled:element.getAttribute?.("aria-disabled") === "true",
+          ancestors:(() => {
+            const result = [];
+            for (let parent = element; parent && result.length < 8; parent = parent.parentElement) {
+              result.push({ tagName:parent.tagName, role:parent.getAttribute?.("role") ?? null,
+                elementId:String(parent.id ?? "").slice(0, 80), testId:parent.getAttribute?.("data-testid")?.slice(0, 80) ?? null });
+            }
+            return result;
+          })(),
+          controls:[...(element.closest?.("form")?.querySelectorAll("button") ?? [])].slice(0, 16).map(button => ({
+            tagName:button.tagName, controlLabel:button.getAttribute?.("aria-label")?.slice(0, 160) ?? null,
+            testId:button.getAttribute?.("data-testid")?.slice(0, 80) ?? null,
+            disabled:button.disabled === true, acceptedByVisibility:isVisible(button),
+          })),
           fallbackReason:element.matches?.(FALLBACK_COMPOSER) ? fallbackCandidate(element)?.reason ?? null : null })) };
     }), composerFallback:{ selector:FALLBACK_COMPOSER, eligible:fallbackCandidates().length,
       selected:Boolean(resolveComposer()?.fallbackContainer) } };

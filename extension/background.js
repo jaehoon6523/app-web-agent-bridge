@@ -18,7 +18,7 @@ import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./r
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
 import { matchExactWebConversationTabs, resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
-import { inspectChatGptTabs, openInspectedChatGptTab } from "./runtime/tab-diagnostics.js";
+import { inspectChatGptTabs, openInspectedChatGptTab, replyToSelectorDiagnostics } from "./runtime/tab-diagnostics.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -176,6 +176,9 @@ async function handleControllerMessage(raw) {
   }
   if (serverDeliveryInspector.accept(message)) return;
   switch (message.type) {
+    case "controller.diagnostics.inspect":
+      await replyToSelectorDiagnostics(chrome.tabs, send, message.requestId, chrome.runtime.getManifest().version);
+      break;
     case "web.session.prepare":
       await handlePrepare(message, false);
       break;

@@ -1,10 +1,11 @@
+import { diagnosticMetadata } from "./document-binding.js";
 import { canonicalChatGptUrl } from "./conversation.js";
 import { inspectDeliveryPage, pageDiagnosticMetadata } from "./delivery-page.js";
 
 // Inspection never injects content, changes ownership, or sends a prompt.
-export async function inspectChatGptTabs(tabs) {
+export async function inspectChatGptTabs(tabs, { limit = Infinity } = {}) {
   const candidates = (await tabs.query({ url: ["https://chatgpt.com/*"] }))
-    .filter(tab => canonicalChatGptUrl(tab.url));
+    .filter(tab => canonicalChatGptUrl(tab.url)).slice(0, limit);
   return Promise.all(candidates.map(async tab => {
     const { page, transport, tab:observedTab } = await inspectDeliveryPage(tabs, tab.id);
     const pageUrl = canonicalChatGptUrl(page?.pageUrl ?? page?.url);
@@ -31,4 +32,14 @@ export async function openInspectedChatGptTab(tabs, expected) {
   }
   await tabs.update(tab.id, { active: true });
   return { opened: true, tabId: tab.id };
+}
+
+export async function replyToSelectorDiagnostics(tabs, send, requestId, extensionVersion) {
+  try {
+    const results = await inspectChatGptTabs(tabs, { limit:8 });
+    send({ type:"extension.diagnostics.inspected", requestId,
+      payload:{ tabs:results.map(tab => diagnosticMetadata({ ...tab, extensionVersion })) } });
+  } catch {
+    send({ type:"extension.diagnostics.inspected", requestId, payload:{ errorCode:"TAB_INSPECTION_FAILED" } });
+  }
 }

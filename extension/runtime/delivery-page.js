@@ -58,7 +58,7 @@ export function pageDiagnosticMetadata(page) {
   const counts = items => Array.isArray(items) ? items.map(item => ({ ...fields(item, ["selector", "matched", "visible"]),
     ...(Array.isArray(item.samples) ? { samples:item.samples.map(sample => fields(sample,
       ["tagName", "display", "visibility", "width", "height", "acceptedByVisibility", "connected", "disabled", "readOnly", "editable",
-        "role", "contentEditable", "inForm", "inMain", "fallbackReason"])) } : {}) })) : [];
+        "role", "contentEditable", "inForm", "inMain", "fallbackReason", "excludedAncestor", "controls", "ancestors"])) } : {}) })) : [];
   return diagnosticMetadata({ pageState:page?.pageState ? fields(page.pageState,
     ["readyState", "visibilityState", "hasFocus", "authenticationSignal"]) : null,
   diagnostics:page?.diagnostics ? { selectorVersion:page.diagnostics.selectorVersion ?? null,

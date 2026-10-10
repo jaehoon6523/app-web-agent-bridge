@@ -6,17 +6,17 @@ const TEXT = new Set(("name code flow stage provider selectorVersion runtimeVers
 + "userMessageId assistantMessageId originalAssistantMessageId observedAssistantMessageId expectedUrl observedUrl expectedId observedId "
 + "conversationId conversationUrl observedConversationUrl canonicalUrl pageUrl tabUrl url bindingStatus observedBindingStatus "
 + "state lifecycle processingState status pageStatus originalCode selector tagName display visibility role contentEditable "
-+ "fallbackReason authenticationSignal readyState visibilityState causeCode causeName operation result actionId requestId bindingId mode matchStatus persistedUrl persistedConversationId").split(" "));
++ "fallbackReason authenticationSignal readyState visibilityState causeCode causeName operation result actionId requestId bindingId mode matchStatus persistedUrl persistedConversationId controlLabel testId elementId").split(" "));
 const SELECTORS = new Set("composer sendButton stopButton message messageContainer messageContent".split(" "));
 const BINDING = new Set("sessionId runId conversationUrl conversationId tabId windowId bindingStatus documentId frameId".split(" "));
 const FLAGS = new Set(("ok ready busy generating composerPresent responded injectionAttempted missingReceiver requireComposer "
 + "browserDispatchStarted unsent deliveryReserved contentDispatchStarted extensionBusy pageBusy pageReachable reloadRequired "
-+ "acceptedByVisibility connected disabled readOnly editable inForm inMain selected hasFocus documentMatches").split(" "));
++ "acceptedByVisibility connected disabled readOnly editable inForm inMain selected hasFocus documentMatches excludedAncestor").split(" "));
 const NUMBERS = new Set(("tabId windowId frameId persistedTabId storedTabId expectedTabId expectedFrameId observedTabId "
 + "timeoutMs pingAttempts rootCount count matched visible width height eligible").split(" "));
 const OBJECTS = new Set(("details evidence cause causeDetails readiness lastReadiness inspectionError lastInspectionError "
 + "diagnostics pageState composerFallback selectorsUsed originalError expected observed requested persisted page binding transport").split(" "));
-const ARRAYS = new Set(("composerSelectors editableCandidates samples rootTabs candidates").split(" "));
+const ARRAYS = new Set(("composerSelectors editableCandidates samples rootTabs candidates controls ancestors").split(" "));
 
 function own(value, key) {
   try {

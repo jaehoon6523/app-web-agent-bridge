@@ -2,6 +2,7 @@ import { ResourceClosureError, isResourceClosureFailure } from "./persistence/re
 import { PreparationService } from "./orchestration/preparation-service.js";
 import { installDeliveryOwnershipInspection } from "./orchestration/delivery-ownership.js";
 import { createDeliveryRecoveryActions } from "./orchestration/delivery-recovery-actions.js";
+import { collectSelectorDiagnostics } from "./orchestration/selector-diagnostics.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
@@ -346,6 +347,11 @@ export function createBridgeServer({
     } catch (error) {
       sendDashboardAuthFailure(res, error, 403);
     }
+  });
+
+  app.get("/api/selector-diagnostics", requireDashboardRead, async (_req, res) => {
+    try { res.json(await collectSelectorDiagnostics(extensionTransport)); }
+    catch (error) { res.status(503).json({ code:error.code ?? "TAB_INSPECTION_FAILED", error:"탭 진단을 수집하지 못했습니다." }); }
   });
 
   app.get("/api/delivery-review", requireDashboardRead, async (req, res) => {
