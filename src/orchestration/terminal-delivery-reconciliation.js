@@ -13,6 +13,8 @@ export async function reconcileTerminalDiscard({ input, inspect, getServices, we
       fail("DELIVERY_RECOVERY_MISMATCH", "The exact discarded server record and extension ownership must still match; response evidence requires separate review.");
     }
     if (ext.terminalDiscardProtocol !== 1) fail("EXTENSION_UPDATE_REQUIRED", "Reload the updated extension before reconciling this terminal delivery.");
+    if (ext.hasCompletedDelivery !== false) fail(ext.hasCompletedDelivery === true ? "DELIVERY_RESPONSE_REQUIRED" : "EXTENSION_UPDATE_REQUIRED",
+      "The extension must confirm that no completed response is held before disposal.");
     const { preparationService, codeChanges } = await getServices();
     if (seen.server.otherActive || ext.otherActive || ext.extensionBusy || ext.pageBusy || ext.generating
       || preparationService?.jobs.size || codeChanges?.jobs.size || codeChanges?.workers.size || codeChanges?.reviewerWebBusy()) {

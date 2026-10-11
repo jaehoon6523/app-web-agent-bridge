@@ -22,7 +22,10 @@ export async function discardExactDelivery({ store, turnGate, tabs, message, sen
     if (typeof expected.currentDeliveryId !== "string" || !expected.currentDeliveryId.trim()) {
       throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "폐기 대상 전송 식별자가 없습니다.");
     }
-    if (expected.terminalDiscardConfirmed === true && Object.values(state.deliveryScopes).some(slot => slot.currentDeliveryId)) {
+    if (state.completedDelivery !== null) {
+      throw new ExtensionStateError("DELIVERY_RESPONSE_REQUIRED", "확장에 완료 응답이 남아 있습니다. 응답 복구 경로를 확인하세요.");
+    }
+    if (Object.values(state.deliveryScopes).some(slot => slot.currentDeliveryId)) {
       throw new ExtensionStateError("WEB_SESSION_BUSY", "다른 세션에 남은 전송을 먼저 확인하세요.");
     }
     if (hasExactDiscardReceipt(state, expected)) {
@@ -48,7 +51,7 @@ export async function discardExactDelivery({ store, turnGate, tabs, message, sen
     }
     await store.updateIf({ currentDeliveryId: state.currentDeliveryId, lastBoundSessionId: state.lastBoundSessionId,
       lastBoundRunId: state.lastBoundRunId, conversationUrl: state.conversationUrl, documentId: state.documentId,
-      tabId: state.tabId, frameId: state.frameId },
+      tabId: state.tabId, frameId: state.frameId, completedDelivery: null, deliveryScopes: state.deliveryScopes },
     { currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND",
       bindingError: "RECOVERY_DISCARDED: " + expected.reason.trim(),
       lastDeliveryDiscard: { deliveryId: expected.currentDeliveryId, sessionId: state.lastBoundSessionId,

@@ -58,7 +58,9 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
       && server.records[0]?.responseStored === true;
     return { owner, phase: durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED"
       : page?.ok === true && page.activeRequestId === owner.currentDeliveryId && page.documentId === owner.documentId ? "IN_FLIGHT" : "UNRESOLVED",
-      server, page: { reachable: page?.ok === true, busy: page?.busy ?? null,
+      server, hasCompletedDelivery: state.completedDelivery !== null,
+      otherActive: Object.values(state.deliveryScopes ?? {}).some(slot => slot.currentDeliveryId),
+      page: { reachable: page?.ok === true, busy: page?.busy ?? null,
         generating: page?.generating ?? null,
         documentMatches: page?.ok === true && typeof page.documentId === "string" && typeof state.documentId === "string"
           ? page.documentId === state.documentId : null,
@@ -69,8 +71,8 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
   }
   async function discardOrphan(expected) {
     if (expected?.unresolvedResultConfirmed !== true || expected?.noAutomaticResendConfirmed !== true
-      || expected?.serverMissingConfirmed !== true || typeof expected?.reason !== "string" || expected.reason.trim().length < 3) {
-      throw new ExtensionStateError("DISCARD_CONFIRMATION_REQUIRED", "서버 기록 없음·미확정 결과·자동 재전송 금지를 확인하고 사유를 입력하세요.");
+      || expected?.orphanOwnershipCleanupConfirmed !== true || typeof expected?.reason !== "string" || expected.reason.trim().length < 3) {
+      throw new ExtensionStateError("DISCARD_CONFIRMATION_REQUIRED", "미확정 결과에서 이 전송의 확장 소유권 정리를 확인하고 사유를 입력하세요.");
     }
     const held = turnGate.reserve("discard_" + crypto.randomUUID());
     try {
@@ -80,7 +82,12 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
       const owner = replay ? expected : deliveryOwner(state), server = await inspectServer(owner);
       if (server.status !== "MISSING") throw new ExtensionStateError("SERVER_DELIVERY_NOT_MISSING",
         "서버 기록이 없다고 확정하지 못했습니다. 컨트롤러에서 해당 작업을 확인하세요.");
-      if (replay) return { discarded: true, owner };
+      if (replay) return { discarded: true, owner, receiptVerified: true };
+      if (state.completedDelivery !== null) throw new ExtensionStateError("DELIVERY_RESPONSE_REQUIRED",
+        "확장에 완료 응답이 남아 있습니다. 기록을 보존하고 컨트롤러에서 해당 작업의 저장 상태를 확인하세요.");
+      if (server.otherActive === true || Object.values(state.deliveryScopes).some(slot => slot.currentDeliveryId)) {
+        throw new ExtensionStateError("WEB_SESSION_BUSY", "다른 전송 소유권이 활성 상태입니다.");
+      }
       const page = await readDeliveryPage(tabs, state.tabId);
       if (page?.busy || page?.generating) throw new ExtensionStateError("WEB_SESSION_BUSY", "대화 탭의 생성 작업을 먼저 종료하세요.");
       if ((!page?.ok || page.busy !== false || page.generating !== false)
@@ -89,15 +96,19 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
       }
       await store.updateIf({ currentDeliveryId: owner.currentDeliveryId, lastBoundSessionId: owner.sessionId,
         lastBoundRunId: owner.runId, conversationUrl: owner.conversationUrl, documentId: owner.documentId,
-        frameId: owner.frameId, tabId: owner.tabId },
+        frameId: owner.frameId, tabId: owner.tabId, completedDelivery: null, deliveryScopes: state.deliveryScopes },
       { currentDeliveryId: null, completedDelivery: null, bindingStatus: "NEEDS_REBIND",
         bindingError: "RECOVERY_DISCARDED: 확장에만 남은 전송을 사용자가 폐기했습니다.",
         lastDeliveryDiscard: { deliveryId: owner.currentDeliveryId, sessionId: owner.sessionId,
           runId: owner.runId, conversationUrl: owner.conversationUrl, documentId: owner.documentId,
           frameId: owner.frameId, tabId: owner.tabId, reason: expected.reason.trim(),
           serverStatus: "MISSING", at: new Date().toISOString() } });
+      const persisted = await store.read();
+      if (!hasExactDiscardReceipt(persisted, owner)) {
+        throw new ExtensionStateError("DISCARD_UNCONFIRMED", "확장의 최종 폐기 영수증을 확인하지 못했습니다. 상태를 다시 조회하세요.");
+      }
       onChange?.();
-      return { discarded: true, owner };
+      return { discarded: true, owner, receiptVerified: true };
     } finally { turnGate.release(held); }
   }
   async function openConversation(expected) {
@@ -115,8 +126,10 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
     try { await store.selectDeliveryScope(expected); onChange?.(); return { selected: true }; }
     finally { turnGate.release(held); }
   }
-  async function openController() {
-    const state = await store.read(), url = new URL(validateLocalControllerUrl(state.controllerUrl));
+  async function openController(expected = null) {
+    const state = await store.read();
+    if (expected !== null) assertOwner(state, expected);
+    const url = new URL(validateLocalControllerUrl(state.controllerUrl));
     url.protocol = "http:"; url.pathname = state.currentDeliveryId ? "/delivery-recovery.html" : "/"; url.search = "";
     if (state.currentDeliveryId) for (const [key, value] of Object.entries({ currentDeliveryId: state.currentDeliveryId,
       sessionId: state.lastBoundSessionId, runId: state.lastBoundRunId, conversationUrl: state.conversationUrl })) url.searchParams.set(key, value);

@@ -33,13 +33,13 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
   const owner = deliveryOwner(await store.read());
   return { store, turnGate, review, owner, opened, tabs, inspected: () => inspected,
     discard: (patch = {}) => review.discardOrphan({ ...owner, unresolvedResultConfirmed: true,
-      noAutomaticResendConfirmed: true, serverMissingConfirmed: true, reason: 'Operator reviewed the original conversation', ...patch }) };
+      noAutomaticResendConfirmed: true, orphanOwnershipCleanupConfirmed: true, reason: 'Operator reviewed the original conversation', ...patch }) };
 }
 
 test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as success', () => {
   const ids = ['status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
     'deliveryRecovery','recoveryDetail','inspectDelivery','openDelivery','openController','discardOrphan','discardReason',
-    'unresolvedConfirmed','noResendConfirmed','serverMissingConfirmed','pageUnconfirmed'];
+    'unresolvedConfirmed','noResendConfirmed','orphanOwnershipCleanupConfirmed','pageUnconfirmed'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', textContent: '', checked: false }]));
   const context = vm.createContext({ document: { querySelector: selector => nodes[selector.slice(1)] }, chrome: { runtime: {} } });
   const source = fs.readFileSync(new URL('../extension/popup.js', import.meta.url), 'utf8');
@@ -69,13 +69,71 @@ for (const [label, stored, server, phase] of [
 test('orphan discard requires all explicit confirmations and an exact ownership snapshot', async () => {
   const f = await harness();
   await assert.rejects(f.discard({ unresolvedResultConfirmed: false }), { code: 'DISCARD_CONFIRMATION_REQUIRED' });
-  await assert.rejects(f.discard({ serverMissingConfirmed: false }), { code: 'DISCARD_CONFIRMATION_REQUIRED' });
+  await assert.rejects(f.discard({ orphanOwnershipCleanupConfirmed: false }), { code: 'DISCARD_CONFIRMATION_REQUIRED' });
   await assert.rejects(f.discard({ documentId: 'different' }), { code: 'DELIVERY_RECOVERY_MISMATCH' });
   assert.equal((await f.store.read()).currentDeliveryId, 'd');
   assert.equal(f.turnGate.active, false);
   const result = await f.discard(); assert.equal(result.discarded, true);
   const after = await f.store.read(); assert.equal(after.currentDeliveryId, null);
   assert.equal(after.bindingStatus, 'NEEDS_REBIND'); assert.equal(after.lastDeliveryDiscard.runId, 'r');
+});
+
+test('orphan discard preserves a locally completed response missing from the server', async () => {
+  const completedDelivery = { turnId:'d', text:'Must not leak' };
+  const f = await harness({stored:{completedDelivery}});
+  const before = await f.store.read();
+  await assert.rejects(f.discard(), {code:'DELIVERY_RESPONSE_REQUIRED'});
+  const after = await f.store.read();
+  assert.deepEqual(after.completedDelivery,before.completedDelivery);
+  assert.equal(after.currentDeliveryId,'d');
+  assert.equal(after.lastDeliveryDiscard,null);
+});
+test('orphan inspection reports an unrelated response without exposing its bytes', async () => {
+  const f = await harness({stored:{completedDelivery:{turnId:'different',text:'PRIVATE'}}});
+  const seen = await f.review.inspect();
+  assert.equal(seen.phase,'UNRESOLVED');
+  assert.equal(seen.hasCompletedDelivery,true);
+  assert.doesNotMatch(JSON.stringify(seen),/PRIVATE/u);
+  await assert.rejects(f.discard(),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal((await f.store.read()).completedDelivery.text,'PRIVATE');
+});
+
+test('orphan discard rejects a response saved after its first read', async () => {
+  const f = await harness();
+  f.tabs.sendMessage = async () => {
+    await f.store.update({completedDelivery:{turnId:'d',text:'Must not leak'}});
+    return {ok:true,busy:false,generating:false,documentId:'doc'};
+  };
+  await assert.rejects(f.discard(), {code:'DELIVERY_RECOVERY_MISMATCH'});
+  const state = await f.store.read();
+  assert.equal(state.completedDelivery.text,'Must not leak');
+  assert.equal(state.currentDeliveryId,'d');
+  assert.equal(state.lastDeliveryDiscard,null);
+});
+
+test('orphan discard protects other active server and parked extension owners', async () => {
+  const server = await harness();
+  const review = createDeliveryReview({store:server.store,turnGate:server.turnGate,tabs:server.tabs,
+    inspectServer:async()=>({status:'MISSING',otherActive:true,records:[]})});
+  await assert.rejects(review.discardOrphan({...server.owner,unresolvedResultConfirmed:true,
+    noAutomaticResendConfirmed:true,orphanOwnershipCleanupConfirmed:true,reason:'Operator reviewed'}),{code:'WEB_SESSION_BUSY'});
+  const scoped = await harness({stored:{deliveryScopes:{other:{currentDeliveryId:'other',
+    lastBoundRunId:'other-run',conversationUrl:'https://chatgpt.com/c/other'}}}});
+  await assert.rejects(scoped.discard(),{code:'WEB_SESSION_BUSY'});
+  assert.equal((await scoped.store.read()).currentDeliveryId,'d');
+});
+
+test('orphan discard cannot clear an owner when another scope arrives during page inspection', async () => {
+  const f = await harness();
+  f.tabs.sendMessage = async () => {
+    await f.store.update({deliveryScopes:{other:{currentDeliveryId:'other',lastBoundRunId:'other-run',
+      conversationUrl:'https://chatgpt.com/c/other'}}});
+    return {ok:true,busy:false,generating:false,documentId:'doc'};
+  };
+  await assert.rejects(f.discard(),{code:'DELIVERY_RECOVERY_MISMATCH'});
+  const state = await f.store.read();
+  assert.equal(state.currentDeliveryId,'d');
+  assert.equal(state.deliveryScopes.other.currentDeliveryId,'other');
 });
 
 for (const status of ['MATCHED', 'MISMATCH', 'UNAVAILABLE']) {
@@ -100,7 +158,7 @@ test('ownership drift during server inspection cannot clear a different delivery
   const review = createDeliveryReview({ store: f.store, turnGate: f.turnGate, tabs: f.tabs,
     inspectServer: async () => { await f.store.update({ currentDeliveryId: 'new-owner' }); return { status: 'MISSING' }; } });
   await assert.rejects(review.discardOrphan({ ...f.owner, unresolvedResultConfirmed: true,
-    noAutomaticResendConfirmed: true, serverMissingConfirmed: true, reason: 'Inspected' }), { code: 'DELIVERY_RECOVERY_MISMATCH' });
+    noAutomaticResendConfirmed: true, orphanOwnershipCleanupConfirmed: true, reason: 'Inspected' }), { code: 'DELIVERY_RECOVERY_MISMATCH' });
   assert.equal((await f.store.read()).currentDeliveryId, 'new-owner');
 });
 
@@ -135,6 +193,26 @@ test('server-initiated discard preserves an exact receipt and rejects a differen
   await f.store.reserveDelivery('new'); await command();
   assert.equal(messages[3].payload.code, 'DELIVERY_RECOVERY_MISMATCH');
   assert.equal((await f.store.read()).currentDeliveryId, 'new');
+});
+
+test('server-initiated discard cannot erase a local response or one arriving during page inspection', async () => {
+  const f = await harness({stored:{completedDelivery:{turnId:'d',text:'PRIVATE'}}}), messages = [];
+  const command = () => discardExactDelivery({store:f.store,turnGate:f.turnGate,tabs:f.tabs,
+    send:message => messages.push(message),message:{requestId:'discard-response',payload:{...f.owner,
+      reason:'Operator decision',unresolvedResultConfirmed:true,noAutomaticResendConfirmed:true}}});
+  await command();
+  assert.equal(messages.at(-1).payload.code,'DELIVERY_RESPONSE_REQUIRED');
+  assert.equal((await f.store.read()).completedDelivery.text,'PRIVATE');
+  await f.store.update({completedDelivery:null});
+  f.tabs.sendMessage = async () => {
+    await f.store.update({completedDelivery:{turnId:'d',text:'LATE'}});
+    return {ok:true,busy:false,generating:false,documentId:'doc'};
+  };
+  await command();
+  assert.equal(messages.at(-1).payload.code,'DELIVERY_RECOVERY_MISMATCH');
+  const after = await f.store.read();
+  assert.equal(after.currentDeliveryId,'d');
+  assert.equal(after.completedDelivery.text,'LATE');
 });
 
 test('authenticated inspection correlates the exact reply and rejects an altered owner', async () => {
@@ -205,12 +283,12 @@ test('receipt persistence rejects different bytes under the same delivery identi
   assert.throws(() => persistWebDeliveryReceipt(service, 'r', 'JUDGE', 'd', { ...response, body: 'Different' }), { code: 'DELIVERY_RECEIPT_MISMATCH' });
 });
 
-function recoveryHarness() {
+function recoveryHarness({responseStored = true} = {}) {
   const owner = { currentDeliveryId: 'd', sessionId: 's', runId: 'r', conversationUrl: 'https://chatgpt.com/c/test' };
   let run = { runId: 'r', conversationBindings: [{ role: 'JUDGE', sessionId: 's', conversationUrl: owner.conversationUrl, activeDeliveryId: 'd' }],
-    webDeliveryReceipts: [{ deliveryId: 'd', sessionId: 's', conversationUrl: owner.conversationUrl, state: 'ACK_PENDING',
-      responseRef: { sha256: 'response' }, packetRef: { sha256: 'packet' } }] };
-  let observed = { ...owner, pageReachable: true, pageBusy: false, generating: false, extensionBusy: false };
+    webDeliveryReceipts: responseStored ? [{ deliveryId: 'd', sessionId: 's', conversationUrl: owner.conversationUrl, state: 'ACK_PENDING',
+      responseRef: { sha256: 'response' }, packetRef: { sha256: 'packet' } }] : [] };
+  let observed = { ...owner, hasCompletedDelivery: false, pageReachable: true, pageBusy: false, generating: false, extensionBusy: false };
   let dropDiscardReply = false, dropAckReply = false, validEvidence = true, discardCalls = 0, ackCalls = 0;
   const codeChanges = { jobs: new Map(), workers: new Map(), reviewerWebBusy: () => false,
     get: () => run, update: (_id, patch) => { run = { ...run, ...patch }; }, artifactStore: { verify: () => validEvidence } };
@@ -235,17 +313,31 @@ function recoveryHarness() {
 }
 
 test('server discard retains its owner after a lost reply and finalizes only the exact extension receipt', async () => {
-  const f = recoveryHarness(); f.dropDiscard();
+  const f = recoveryHarness({responseStored:false}); f.dropDiscard();
   await assert.rejects(f.discard(), { code: 'EXTENSION_DISCONNECTED' });
   assert.equal(f.run().conversationBindings[0].activeDeliveryId, 'd');
+  assert.equal(f.run().webDeliveryDiscardIntent.status,'VERIFY_REQUIRED');
+  assert.equal(f.run().webDeliveryDiscardIntent.lastErrorCode,'EXTENSION_DISCONNECTED');
   const seen = await f.actions.inspect(f.owner); assert.equal(seen.extension.discardConfirmed, true);
   await f.discard(); await f.discard();
   assert.equal(f.run().conversationBindings[0].activeDeliveryId, null); assert.equal(f.run().stage, 'HOLD');
-  assert.equal(f.run().webDeliveryReceipts[0].state, 'DISCARDED'); assert.equal(f.calls().discardCalls, 2);
+  assert.equal(f.run().webDeliveryReceipts.length,0);
+  assert.equal(f.run().webDeliveryDiscardIntent.confirmed,true);
+  const terminal = (await f.actions.inspect(f.owner)).server.records[0];
+  assert.equal(terminal.state,'RECOVERY_DISCARDED');
+  assert.equal(terminal.responseStored,false);
+  assert.equal(f.calls().discardCalls, 2);
+});
+test('an unrelated extension response blocks REVIEW discard before a durable intent', async () => {
+  const f = recoveryHarness({responseStored:false});
+  f.observe({hasCompletedDelivery:true});
+  await assert.rejects(f.discard(),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.run().webDeliveryDiscardIntent,undefined);
+  assert.equal(f.calls().discardCalls,0);
 });
 
 test('server discard cannot convert a missing extension record or a new owner into success', async () => {
-  const f = recoveryHarness(); f.observe({ currentDeliveryId: null });
+  const f = recoveryHarness({responseStored:false}); f.observe({ currentDeliveryId: null });
   await assert.rejects(f.discard(), { code: 'DELIVERY_RECOVERY_MISMATCH' });
   f.observe({ currentDeliveryId: 'new-owner' });
   await assert.rejects(f.discard(), { code: 'DELIVERY_RECOVERY_MISMATCH' });
@@ -253,13 +345,14 @@ test('server discard cannot convert a missing extension record or a new owner in
 });
 
 test('a server-only owner needs an additional explicit missing-extension confirmation', async () => {
-  const f = recoveryHarness(); f.observe({ currentDeliveryId: null });
+  const f = recoveryHarness({responseStored:false}); f.observe({ currentDeliveryId: null });
   await f.actions.discard({ ...f.owner, reason: 'Reviewed server-only ownership', unresolvedResultConfirmed: true,
     noAutomaticResendConfirmed: true, extensionRecordMissingConfirmed: true });
-  assert.equal(f.run().conversationBindings[0].activeDeliveryId, null); assert.equal(f.run().webDeliveryReceipts[0].state, 'DISCARDED');
-  const parked = recoveryHarness(); parked.observe({ currentDeliveryId: null, scopedDeliveries: [{ sessionId: 's', deliveryId: 'd' }] });
+  assert.equal(f.run().conversationBindings[0].activeDeliveryId, null);
+  assert.equal(f.run().webDeliveryDiscardIntent.confirmed,true);
+  const parked = recoveryHarness({responseStored:false}); parked.observe({ currentDeliveryId: null, scopedDeliveries: [{ sessionId: 's', deliveryId: 'd' }] });
   await assert.rejects(parked.actions.discard({ ...parked.owner, reason: 'Reviewed', unresolvedResultConfirmed: true,
-    noAutomaticResendConfirmed: true, extensionRecordMissingConfirmed: true }), { code: 'DELIVERY_RECOVERY_MISMATCH' });
+    noAutomaticResendConfirmed: true, extensionRecordMissingConfirmed: true }), { code: 'WEB_SESSION_BUSY' });
 });
 
 test('extension confirms a server-only discard without clearing a new or parked delivery', async () => {
@@ -275,7 +368,7 @@ test('extension confirms a server-only discard without clearing a new or parked 
 });
 
 test('server discard rejects active generation and missing explicit confirmation', async () => {
-  const f = recoveryHarness(); f.observe({ generating: true });
+  const f = recoveryHarness({responseStored:false}); f.observe({ generating: true });
   await assert.rejects(f.discard(), { code: 'WEB_SESSION_BUSY' });
   await assert.rejects(f.actions.discard({ ...f.owner, reason: 'Reviewed' }), { code: 'DISCARD_CONFIRMATION_REQUIRED' });
   assert.equal(f.calls().discardCalls, 0);
@@ -331,7 +424,7 @@ test('dashboard distinguishes a durable ACK wait from an unresolved held reviewe
 
 test('production HTTP recovery routes enforce read credentials, mutation origin and explicit confirmations', async t => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'delivery-review-http-'));
-  const f = recoveryHarness(), token = 'delivery-test-dashboard-token-0123456789';
+  const f = recoveryHarness({responseStored:false}), token = 'delivery-test-dashboard-token-0123456789';
   const config = { host: '127.0.0.1', port: 0, baseUrl: 'http://127.0.0.1:0', workspace: scratch, demoMode: false,
     persistence: { databasePath: path.join(scratch, 'controller.sqlite') }, dashboard: { token },
     webExtension: { enabled: true, expectedExtensionIdentity: 'delivery-test-extension', sharedSecret: 'delivery-test-extension-secret-0123456789' }, relay: { webResponseTimeoutMs: 1000 } };
@@ -358,6 +451,6 @@ test('orphan replay still checks server absence and cannot bypass a newly presen
   const f=await harness();await f.discard();
   const review=createDeliveryReview({store:f.store,turnGate:f.turnGate,tabs:f.tabs,inspectServer:async()=>({status:'MATCHED',records:[{state:'RECOVERY_DISCARDED'}]})});
   await assert.rejects(review.discardOrphan({...f.owner,reason:'Reviewed',unresolvedResultConfirmed:true,noAutomaticResendConfirmed:true,
-    serverMissingConfirmed:true}),{code:'SERVER_DELIVERY_NOT_MISSING'});
+    orphanOwnershipCleanupConfirmed:true}),{code:'SERVER_DELIVERY_NOT_MISSING'});
   assert.equal((await f.store.read()).lastDeliveryDiscard.deliveryId,'d');
 });

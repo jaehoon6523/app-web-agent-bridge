@@ -123,7 +123,7 @@ test('popup allows another tab to be diagnosed and opened while the original del
 test('popup invalidates server inspection when ownership changes with the same delivery ID', async () => {
   const f = popupFixture(); await vm.runInContext('refresh()', f.context);
   await f.nodes.inspectDelivery.handlers.click();
-  const confirmations = ['unresolvedConfirmed', 'noResendConfirmed', 'serverMissingConfirmed'];
+  const confirmations = ['ownershipConfirmed'];
   confirmations.forEach(id => { f.nodes[id].checked = true; }); f.nodes.discardReason.value = 'Reviewed';
   f.nodes.discardReason.handlers.input(); assert.equal(f.nodes.discardOrphan.disabled, false);
   f.state.deliveryOwner = { ...f.state.deliveryOwner, documentId: 'different-document' };

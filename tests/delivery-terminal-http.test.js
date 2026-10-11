@@ -22,7 +22,7 @@ test('production HTTP reads terminal preparation from SQLite and records verifie
   const codeChanges={list:()=>[],jobs:new Map(),workers:new Map(),reviewerWebBusy:()=>false};
   const bridge=createBridgeServer({runtimeConfig:config,createLiveRuntime:async()=>({codeChanges,store:{getDelivery:()=>null},close:async()=>{}})});
   t.after(async()=>{await bridge.close();fs.rmSync(root,{recursive:true,force:true});});
-  let state={...owner,terminalDiscardProtocol:1,pageReachable:false,pageBusy:null,generating:null,extensionBusy:false,tabId:7,documentId:'doc',frameId:0};
+  let state={...owner,terminalDiscardProtocol:1,hasCompletedDelivery:false,pageReachable:false,pageBusy:null,generating:null,extensionBusy:false,tabId:7,documentId:'doc',frameId:0};
   let calls=0;
   bridge.webSession.inspectDelivery=async()=>structuredClone(state);
   bridge.webSession.discardDelivery=async input=>{calls++;assert.equal(input.ownerSnapshot.documentId,'doc');

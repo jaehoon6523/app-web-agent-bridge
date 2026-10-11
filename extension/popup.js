@@ -8,6 +8,11 @@ const legacyRecovery = document.querySelector("#legacyRecovery");
 const clearLegacy = document.querySelector("#clearLegacy");
 const deliveryRecovery = document.querySelector("#deliveryRecovery");
 const recoveryDetail = document.querySelector("#recoveryDetail");
+const recoveryOutcome = document.querySelector("#recoveryOutcome");
+const recoveryActionState = document.querySelector("#recoveryActionState");
+const recoveryRaw = document.querySelector("#recoveryRaw");
+const openRecovery = document.querySelector("#openRecovery");
+const pageUnconfirmedLabel = document.querySelector("#pageUnconfirmedLabel");
 const inspectDelivery = document.querySelector("#inspectDelivery");
 const openDelivery = document.querySelector("#openDelivery");
 const openController = document.querySelector("#openController");
@@ -17,8 +22,10 @@ const scopeSelect = document.querySelector("#deliveryScope"), scopedRecovery = d
 const selectDelivery = document.querySelector("#selectDelivery");
 const inspectTabs = document.querySelector("#inspectTabs"), diagnosticTab = document.querySelector("#diagnosticTab");
 const openDiagnosticTab = document.querySelector("#openDiagnosticTab"), tabDiagnosticDetail = document.querySelector("#tabDiagnosticDetail");
-const confirmations = ["unresolvedConfirmed", "noResendConfirmed", "serverMissingConfirmed", "pageUnconfirmed"].map(id => document.querySelector("#" + id));
+const confirmations = ["ownershipConfirmed", "pageUnconfirmed"].map(id => document.querySelector("#" + id));
 let inspection = null, refreshing = null;
+let outcomeDeliveryId = null;
+let displayedDeliveryId = null;
 let tabDiagnostics = [], currentTabId = null, currentExtensionVersion = null;
 function send(message) { return chrome.runtime.sendMessage(message); }
 
@@ -29,6 +36,11 @@ function render(response) {
     return;
   }
   const state = response.state || {};
+  displayedDeliveryId = state.currentDeliveryId ?? null;
+  if (outcomeDeliveryId && state.currentDeliveryId && state.currentDeliveryId !== outcomeDeliveryId) {
+    recoveryOutcome.textContent = "";
+    outcomeDeliveryId = null;
+  }
   currentTabId = state.tabId; currentExtensionVersion = state.extensionVersion;
   legacyRecovery.hidden = state.legacyTestDelivery !== true;
   const pending = Boolean(state.currentDeliveryId || state.pendingDeliveryCount > 0);
@@ -115,11 +127,24 @@ function renderTabDiagnostic() {
 function updateDiscard() {
   const panel = document.querySelector("#orphanDiscardPanel");
   if (panel) panel.hidden = inspection?.server?.status !== "MISSING";
+  if (openRecovery) openRecovery.hidden = inspection?.server?.status !== "MATCHED";
+  if (recoveryActionState) recoveryActionState.textContent = "조치 상태: " + (
+    !inspection ? "확인 전"
+      : inspection.extensionBusy || inspection.page?.generating || inspection.page?.busy
+        || inspection.otherActive || inspection.server?.otherActive ? "다른 작업 또는 생성 중 · 정리 불가"
+        : inspection.hasCompletedDelivery || inspection.phase === "RESPONSE_OBSERVED" ? "확장에 완료 응답 있음 · 기록 보존 및 서버 저장 확인 필요"
+          : inspection.phase === "ACK_PENDING" ? "저장된 응답 ACK 확인 필요"
+          : inspection.server?.status === "MISSING" ? "확장 소유권 정리 가능 · 명시적 확인 필요"
+            : inspection.server?.status === "MATCHED" ? "컨트롤러에서 이 전송 확인"
+              : "정리 불가 · 서버 기록 확인 필요");
   const page = inspection?.page;
   const unknownPage = !page?.reachable || page.busy !== false || page.generating !== false;
+  if (pageUnconfirmedLabel) pageUnconfirmedLabel.hidden = inspection?.server?.status !== "MISSING" || !unknownPage;
   discardOrphan.disabled = !(inspection?.server?.status === "MISSING" && !inspection.extensionBusy
-    && !page?.busy && !page?.generating && confirmations.slice(0, 3).every(item => item.checked)
-    && (!unknownPage || confirmations[3].checked) && reason.value.trim().length >= 3);
+    && !inspection.server?.otherActive && !inspection.otherActive
+    && !inspection.hasCompletedDelivery && !["RESPONSE_OBSERVED", "ACK_PENDING"].includes(inspection.phase)
+    && !page?.busy && !page?.generating && confirmations[0].checked
+    && (!unknownPage || confirmations[1].checked) && reason.value.trim().length >= 3);
 }
 
 async function refresh() {
@@ -171,16 +196,32 @@ openDiagnosticTab?.addEventListener("click", async () => {
 });
 inspectDelivery.addEventListener("click", async () => {
   inspectDelivery.disabled = true;
+  recoveryOutcome.textContent = "";
+  outcomeDeliveryId = null;
   const response = await send({ type: "bridge.inspectDelivery" });
   inspection = response?.ok ? response.result : null;
-  const phases = { ACK_PENDING: "응답 검증·저장 완료 · ACK 확인 대기", RESPONSE_OBSERVED: "응답 관측됨 · 서버 저장 여부 확인 필요", IN_FLIGHT: "활성 작업 있음", UNRESOLVED: "전송 결과 미확정", IDLE: "활성 전송 없음" };
-  const servers = { MATCHED: "해당 전송 기록 있음 · 컨트롤러에서 복구 또는 폐기", MISSING: "대응 전송 기록 없음 · 확인 후 확장 기록 폐기 가능", MISMATCH: "전송 소유권 불일치 · 기록 보존", UNAVAILABLE: "서버 기록 확인 불가 · 기록 보존" };
-  recoveryDetail.textContent = inspection ? [phases[inspection.phase],
-    `서버: ${servers[inspection.server?.status] ?? "확인 필요"}`, JSON.stringify(inspection.owner, null, 2),
-    ...(inspection.page ? [...pageDiagnosticLines(inspection.page),
-      `저장 문서 ID: ${inspection.page.expectedDocumentId ?? "확인 불가"}`,
-      `문서 일치: ${inspection.page.documentMatches === true ? "일치" : inspection.page.documentMatches === false ? "불일치" : "미확인"}`,
-      `소유 탭 콘텐츠: ${inspection.page.runtimeVersion ?? "확인 불가"}`] : [])].join("\n") : response?.error || "상태를 확인하지 못했습니다.";
+  confirmations.forEach(item => { item.checked = false; });
+  const server = inspection?.server, page = inspection?.page;
+  const record = server?.records?.[0];
+  const summary = !server || server.status === "UNAVAILABLE" ? "확인 불가"
+    : server.status === "MATCHED" && record?.active ? "일치" : "기록 불일치";
+  recoveryDetail.textContent = inspection ? [
+    `브리지 기록: ${summary}`,
+    `대상 전송: ${inspection.owner?.currentDeliveryId ?? "확인 불가"}`,
+    `서버 기록: ${server?.status === "MISSING" ? "대응 기록 없음" : server?.status === "MATCHED"
+      ? record?.active ? "전송 소유권 활성" : "해당 전송 기록 종료됨" : "확인 불가 또는 식별자 불일치"}`,
+    `확장 기록: 이 전송의 소유권 기록이 남아 있습니다.`,
+    `ChatGPT 처리 결과: ${inspection.phase === "ACK_PENDING" ? "응답 저장 근거 있음 · 원래 페이지는 별도 확인"
+      : inspection.phase === "RESPONSE_OBSERVED" ? "확장에 완료 응답이 남아 있음 · 서버 저장 상태 확인 필요"
+        : "미확정 · 실제 생성 종료 확인 불가"}`,
+    server?.status === "MATCHED" ? "컨트롤러에서 이 전송의 기록 정리 경로를 확인하세요."
+      : server?.status === "MISSING" && inspection.phase === "RESPONSE_OBSERVED"
+        ? "확장 응답 기록을 보존합니다. 컨트롤러에서 해당 작업의 저장 상태를 확인하세요."
+        : server?.status === "MISSING" ? "확장 소유권만 정리할 수 있습니다. 원래 요청은 재전송하지 않습니다."
+      : "대상 상태를 확정할 수 없어 기록을 변경하지 않습니다."
+  ].join("\n") : response?.error || "상태를 확인하지 못했습니다.";
+  if (recoveryRaw) recoveryRaw.textContent = inspection ? JSON.stringify(inspection, null, 2) : "확인된 진단 없음";
+  updateDiscard();
   await refresh();
 });
 openDelivery.addEventListener("click", async () => {
@@ -190,6 +231,12 @@ openDelivery.addEventListener("click", async () => {
 openController.addEventListener("click", async () => {
   const result = await send({ type: "bridge.openController" });
   if (!result?.ok) detail.textContent += "\n" + result.error;
+});
+openRecovery?.addEventListener("click", async () => {
+  if (inspection?.server?.status !== "MATCHED") return;
+  const selectedOwner = inspection.owner;
+  const result = await send({ type: "bridge.openController", payload: selectedOwner });
+  if (!result?.ok) recoveryDetail.textContent = result?.error || "전송 대상이 바뀌었습니다. 상태를 다시 확인하세요.";
 });
 selectDelivery?.addEventListener("click", async () => {
   if (!scopeSelect.value) return;
@@ -201,13 +248,22 @@ reason.addEventListener("input", updateDiscard);
 discardOrphan.addEventListener("click", async () => {
   if (discardOrphan.disabled || !inspection) return;
   discardOrphan.disabled = true;
-  const result = await send({ type: "bridge.discardOrphanDelivery", payload: { ...inspection.owner,
-    unresolvedResultConfirmed: confirmations[0].checked, noAutomaticResendConfirmed: confirmations[1].checked,
-    serverMissingConfirmed: confirmations[2].checked, pageStateUnconfirmedConfirmed: confirmations[3].checked,
-    reason: reason.value.trim() } });
-  if (result?.ok) inspection = null;
+  outcomeDeliveryId = inspection.owner.currentDeliveryId;
+  let result;
+  try {
+    result = await send({ type: "bridge.discardOrphanDelivery", payload: { ...inspection.owner,
+      unresolvedResultConfirmed: confirmations[0].checked, noAutomaticResendConfirmed: confirmations[0].checked,
+      orphanOwnershipCleanupConfirmed: confirmations[0].checked, pageStateUnconfirmedConfirmed: confirmations[1].checked,
+      reason: reason.value.trim() } });
+  } catch (error) { result = { ok: false, uncertain: true, error: error.message }; }
+  if (result?.ok && result.result?.discarded === true && result.result?.receiptVerified === true) inspection = null;
   await refresh();
-  recoveryDetail.textContent = result?.ok ? "확장에만 남은 전송을 폐기했습니다. 대상을 다시 준비하세요." : result?.error;
+  if (displayedDeliveryId && displayedDeliveryId !== outcomeDeliveryId) return;
+  recoveryOutcome.textContent = result?.ok && result.result?.discarded === true && result.result?.receiptVerified === true
+    ? "확장 소유권 기록 정리 완료 · 저장된 영수증 확인됨. ChatGPT 처리 결과는 미확정입니다."
+    : result?.ok ? "정리 응답은 수신했지만 최종 영수증을 확인하지 못했습니다. 상태를 다시 확인하세요."
+    : result?.uncertain ? "정리 요청 결과를 확인할 수 없습니다. 상태를 다시 확인하세요."
+    : "기록 정리 실행 거절 또는 실패: " + (result?.error ?? "확인 불가");
 });
 chrome.runtime.onMessage.addListener(message => {
   if (message?.type === "bridge.state") render({ ok: true, state: message.payload });

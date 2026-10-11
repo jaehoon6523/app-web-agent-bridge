@@ -33,6 +33,16 @@ export async function inspectDeliveryOwnership(expected, getSources) {
         sessionId: receipt.sessionId, runId: run.runId, conversationUrl: receipt.conversationUrl,
         active: binding.activeDeliveryId === receipt.deliveryId, state: receipt.state,
         processingState: receipt.state, responseStored: true, role: binding.role });
+      const discard = run.webDeliveryDiscardIntent;
+      if (discard?.confirmed === true && binding.activeDeliveryId !== discard.currentDeliveryId
+        && discard.sessionId === binding.sessionId
+        && discard.runId === run.runId && discard.currentDeliveryId
+        && !receipts.some(item => item.deliveryId === discard.currentDeliveryId)) {
+        records.push({ kind: "REVIEW", deliveryId: discard.currentDeliveryId,
+          sessionId: discard.sessionId, runId: run.runId, conversationUrl: discard.conversationUrl,
+          active: false, state: "RECOVERY_DISCARDED",
+          processingState: null, responseStored: false, role: binding.role });
+      }
     }
   }
   const discussion = discussionStore?.getDelivery(expected.currentDeliveryId);

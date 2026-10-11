@@ -325,6 +325,7 @@ async function deliveryDetails(state) {
     lastAcknowledgedDelivery: state.lastAcknowledgedDelivery,
     lastDeliveryDiscard: state.lastDeliveryDiscard,
     scopedDeliveries: Object.entries(state.deliveryScopes ?? {}).map(([sessionId, slot]) => ({ sessionId, deliveryId: slot.currentDeliveryId })),
+    hasCompletedDelivery: state.completedDelivery !== null,
     pageReachable: page?.ok === true, pageStatus: page?.pageStatus ?? null,
     pageBusy: typeof page?.busy === "boolean" ? page.busy : null,
     generating: typeof page?.generating === "boolean" ? page.generating : null,
@@ -982,7 +983,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.type === "bridge.discardOrphanDelivery") return deliveryReview.discardOrphan(message.payload);
       if (message.type === "bridge.openDelivery") return deliveryReview.openConversation(message.payload);
       if (message.type === "bridge.selectDelivery") return deliveryReview.selectScope(message.payload);
-      return deliveryReview.openController();
+      return deliveryReview.openController(message.payload ?? null);
     })().then(result => sendResponse({ ok: true, result })).catch(error => sendResponse({ ok: false, error: error.message, code: error.code }));
     return true;
   }

@@ -16,7 +16,7 @@ async function fixture() {
   const context = {preparationId:'r',webSession:{sessionId:'s',conversationUrl:owner.conversationUrl,activeDeliveryId:null},
     lifecycle:'ABANDONED', deliveries:[{deliveryId:'d',sessionId:'s',state:'RECOVERY_DISCARDED'}]};
   const sources = {contexts:[context],runs:[]};
-  const preparationService = {jobs:new Map(),data:{contexts:{r:context}}};
+  const preparationService = {jobs:new Map(),data:{contexts:{r:context}},touch:async()=>{}};
   const codeChanges = {jobs:new Map(),workers:new Map(),reviewerWebBusy:() => false};
   let page = null, discardCalls = 0, dropReply = false, failInspect = false;
   const tabs = {sendMessage:async () => page};
@@ -25,6 +25,8 @@ async function fixture() {
     const state = await store.read();
     return {currentDeliveryId:state.currentDeliveryId,sessionId:state.lastBoundSessionId,runId:state.lastBoundRunId,
       conversationUrl:state.conversationUrl,tabId:state.tabId,documentId:state.documentId,frameId:state.frameId,lastDeliveryDiscard:state.lastDeliveryDiscard,lastAcknowledgedDelivery:state.lastAcknowledgedDelivery,
+      completedDelivery:state.completedDelivery,
+      hasCompletedDelivery:state.completedDelivery !== null,
       scopedDeliveries:Object.values(state.deliveryScopes).map(s => ({deliveryId:s.currentDeliveryId,sessionId:s.lastBoundSessionId})),
       terminalDiscardProtocol:1,extensionBusy:gate.active,pageReachable:page?.ok === true,pageBusy:page?.busy ?? null,generating:page?.generating ?? null};
   },discardDelivery:async input => {
@@ -63,6 +65,112 @@ test('terminal server discard plus unreachable exact extension owner is reconcil
   assert.equal(seen.extension.resultStatus,'UNKNOWN');
   assert.deepEqual(f.events.map(e => e.phase),['STARTED','COMPLETED']);
   f.restart();await f.discard();assert.equal(f.calls(),1);
+});
+
+test('an active reviewer response awaiting ACK cannot enter the discard protocol', async () => {
+  const owner = {currentDeliveryId:'review-d',sessionId:'review-s',runId:'review-r',conversationUrl:'https://chatgpt.com/'};
+  const run = {runId:owner.runId,conversationBindings:[{sessionId:owner.sessionId,
+    conversationUrl:owner.conversationUrl,activeDeliveryId:owner.currentDeliveryId}],
+    webDeliveryReceipts:[{deliveryId:owner.currentDeliveryId,sessionId:owner.sessionId,
+      conversationUrl:owner.conversationUrl,state:'ACK_PENDING',responseRef:{sha256:'stored'}}]};
+  let dispatches = 0, updates = 0;
+  const codeChanges = {jobs:new Map(),workers:new Map(),reviewerWebBusy:()=>false,
+    get:()=>run,update:()=>{updates++;}};
+  const actions = createDeliveryRecoveryActions({getSources:async()=>({contexts:[],runs:[run]}),
+    getServices:async()=>({codeChanges}),web:{inspectDelivery:async()=>({
+      currentDeliveryId:owner.currentDeliveryId,sessionId:owner.sessionId,runId:owner.runId,
+      conversationUrl:owner.conversationUrl,pageReachable:false,pageBusy:null,generating:null,
+      scopedDeliveries:[],hasCompletedDelivery:false,extensionBusy:false}),discardDelivery:async()=>{dispatches++;}}});
+  const before = await actions.inspect(owner);
+  assert.equal(before.server.records[0].responseStored,true);
+  assert.equal(before.server.records[0].processingState,'ACK_PENDING');
+  await assert.rejects(actions.discard({...owner,reason:'Operator decision',unresolvedResultConfirmed:true,
+    noAutomaticResendConfirmed:true,pageStateUnconfirmedConfirmed:true}),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(dispatches,0);
+  assert.equal(updates,0);
+  assert.equal(run.webDeliveryReceipts[0].state,'ACK_PENDING');
+  assert.equal(run.conversationBindings[0].activeDeliveryId,owner.currentDeliveryId);
+});
+
+test('an active preparation with a stored response cannot be discarded before ACK metadata appears', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'RESPONSE_RECEIVED';
+  f.context.deliveries[0].response = {rawText:'PRIVATE'};
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}), {code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.calls(),0);
+  assert.equal(f.context.webSession.activeDeliveryId,f.owner.currentDeliveryId);
+  assert.equal(f.context.deliveries[0].state,'RESPONSE_RECEIVED');
+  assert.equal((await f.read()).currentDeliveryId,f.owner.currentDeliveryId);
+});
+
+test('a locally completed response is preserved even when the server has no stored response', async () => {
+  const f = await fixture();
+  await f.update({completedDelivery:{turnId:'d',text:'PRIVATE'}});
+  await assert.rejects(f.discard(),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.calls(),0);
+  assert.equal((await f.read()).completedDelivery.text,'PRIVATE');
+  assert.equal((await f.read()).currentDeliveryId,'d');
+});
+
+test('an active preparation cannot be discarded with another active server owner', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'UNRESOLVED';
+  f.sources.contexts.push({preparationId:'other',webSession:{sessionId:'other',
+    conversationUrl:'https://chatgpt.com/c/other',activeDeliveryId:'other'},deliveries:[{deliveryId:'other'}]});
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}),{code:'WEB_SESSION_BUSY'});
+  assert.equal(f.calls(),0);
+  assert.equal(f.context.webSession.activeDeliveryId,f.owner.currentDeliveryId);
+});
+test('real ownership inspection carries a different active REVIEW binding into the discard guard', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'UNRESOLVED';
+  f.sources.runs.push({runId:'other-run',conversationBindings:[{sessionId:'other-session',
+    conversationUrl:'https://chatgpt.com/c/other',activeDeliveryId:'other-delivery'}],webDeliveryReceipts:[]});
+  assert.equal((await f.inspect()).server.otherActive,true);
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}),{code:'WEB_SESSION_BUSY'});
+  assert.equal(f.context.deliveries[0].discardIntent,undefined);
+  assert.equal(f.calls(),0);
+});
+test('a different local completed response stops the server before a PREPARATION discard intent', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'UNRESOLVED';
+  await f.update({completedDelivery:{turnId:'other-delivery',text:'PRIVATE'}});
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.context.deliveries[0].discardIntent,undefined);
+  assert.equal(f.calls(),0);
+  assert.equal((await f.read()).completedDelivery.text,'PRIVATE');
+});
+test('a response arriving after server intent leaves an explicit uncertain intent and the response intact', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'UNRESOLVED';
+  const dispatch = f.web.discardDelivery;
+  f.web.discardDelivery = async input => {
+    await f.update({completedDelivery:{turnId:'other-delivery',text:'PRIVATE'}});
+    return dispatch(input);
+  };
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.context.deliveries[0].discardIntent.status,'VERIFY_REQUIRED');
+  assert.equal(f.context.deliveries[0].discardIntent.lastErrorCode,'DELIVERY_RESPONSE_REQUIRED');
+  assert.equal(f.context.deliveries[0].state,'UNRESOLVED');
+  assert.equal(f.context.webSession.activeDeliveryId,f.owner.currentDeliveryId);
+  assert.equal((await f.read()).completedDelivery.text,'PRIVATE');
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}),{code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.calls(),1);
+});
+test('missing extension response-presence metadata blocks a server intent', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'UNRESOLVED';
+  const inspect = f.web.inspectDelivery;
+  f.web.inspectDelivery = async () => {const state = await inspect();delete state.hasCompletedDelivery;return state;};
+  await assert.rejects(f.discard({terminalDiscardConfirmed:false}),{code:'EXTENSION_UPDATE_REQUIRED'});
+  assert.equal(f.context.deliveries[0].discardIntent,undefined);
+  assert.equal(f.calls(),0);
 });
 for (const [label,patch,code] of [
   ['terminal confirmation',{terminalDiscardConfirmed:false},'DISCARD_CONFIRMATION_REQUIRED'],

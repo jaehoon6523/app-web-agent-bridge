@@ -2,15 +2,25 @@
 <html lang="ko">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>전송 상태 확인</title><link rel="stylesheet" href="delivery-recovery.css"></head>
 <body><main><a href="/">컨트롤러로 이동</a><h1>전송 상태 확인</h1>
-<p>연결·바인딩·전송 기록을 대조합니다. 상태 확인은 요청을 다시 전송하지 않습니다.</p>
-<pre id="owner"></pre><a id="conversation" hidden target="_blank" rel="noopener">대화 확인</a><button id="inspect">상태 다시 확인</button><p id="status" role="status">확인 중</p><pre id="details"></pre>
+<p>브리지의 전송 소유권 기록을 대조합니다. 상태 확인이나 기록 정리는 원래 요청을 재전송하지 않습니다.</p>
+<section aria-label="전송 상태 요약">
+<p id="recordStatus">상태: 확인 중</p>
+<p id="target">대상 전송: 확인 중</p>
+<p id="serverState">서버 기록: 확인 중</p>
+<p id="extensionState">확장 기록: 확인 중</p>
+<p id="chatgptState">ChatGPT 처리 결과: 확인 불가</p>
+<p id="actionState">조치 상태: 확인 중</p>
+<a id="conversation" hidden target="_blank" rel="noopener">원래 대화 확인</a>
+<button id="inspect">상태 다시 확인</button>
+<p id="status" role="status">확인 중</p>
+<details><summary>대상 식별자와 원시 진단 상세 보기</summary><pre id="owner"></pre><pre id="details"></pre></details>
+</section>
 <button id="ack" hidden>저장된 응답의 ACK 확인</button><p id="preparationRecovery" hidden>준비 응답 복구는 컨트롤러의 해당 준비 작업에서 ‘대화 확인·복구’를 실행하세요.</p>
-<section id="discardPanel" hidden><h2>대상 전송 폐기</h2>
-<p>서버와 확장의 소유권이 같은 전송만 폐기할 수 있습니다. 활성 생성 작업은 대화 탭에서 먼저 종료하세요.</p>
-<label id="terminalLabel" hidden><input id="terminal" type="checkbox"> 위 대상 식별자의 서버 폐기 기록을 확인했고, 동일 전송의 확장 잔존 소유권만 폐기합니다.</label>
-<label><input id="unresolved" type="checkbox"> 결과가 미확정이거나 처리되지 않았음을 확인했습니다.</label>
-<label><input id="noResend" type="checkbox"> 원래 요청을 자동 재전송하지 않습니다.</label>
-<label><input id="pageUnknown" type="checkbox"> 페이지에 접근할 수 없으면 생성 종료도 확인할 수 없음을 이해했습니다.</label>
-<label id="extensionMissingLabel" hidden><input id="extensionMissing" type="checkbox"> 확장에 대응 전송 기록이 없고, 서버의 이 전송만 폐기함을 확인했습니다.</label>
-<label>폐기 사유<input id="reason" type="text"></label><button id="discard" disabled>이 전송 폐기</button></section>
+<section id="discardPanel" hidden><h2 id="discardTitle">확장에 남은 이 전송의 소유권 기록 정리</h2>
+<p>브리지의 해당 전송 소유권만 정리합니다. ChatGPT의 생성 작업을 중단하거나 실제 전송 결과를 확정하지 않습니다.</p>
+<p>생성이 진행 중이라면 먼저 원래 대화에서 확인하세요. 다른 활성 작업이나 변경된 소유권이 확인되면 정리를 거절합니다.</p>
+<p>이 조치는 원래 요청을 자동 재전송하지 않습니다.</p>
+<label><input id="ownership" type="checkbox"> <span id="ownershipText">이 전송의 소유권 기록 정리와 ChatGPT 처리 결과 미확정, 자동 재전송하지 않음을 확인했습니다.</span></label>
+<label id="pageUnknownLabel" hidden><input id="pageUnknown" type="checkbox"> 원래 페이지 또는 생성 종료 상태를 확정할 수 없음을 이해했습니다.</label>
+<label>정리 사유<input id="reason" type="text" minlength="3"></label><button id="discard" disabled>해당 기록 정리</button></section>
 </main><script type="module" src="delivery-recovery.js"></script></body></html>

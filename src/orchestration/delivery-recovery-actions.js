@@ -29,6 +29,7 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
       pageIdentityConfirmed: observed.pageReachable === true && observed.observedConversationUrl === expected.conversationUrl
         && observed.observedDocumentId === observed.documentId && typeof observed.documentId === "string", pageBusy: observed.pageBusy, generating: observed.generating,
       otherActive: (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId),
+      hasCompletedDelivery: observed.hasCompletedDelivery,
       resultStatus: server.records[0]?.responseStored ? "RESPONSE_STORED" : "UNKNOWN",
       extensionBusy: observed.extensionBusy, exact: exact(observed, expected),
       discardConfirmed: receiptMatches(observed, "lastDeliveryDiscard", expected),
@@ -50,6 +51,21 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
     mutation = true;
     try {
       const inspected = await inspect(input), record = inspected.server.records[0];
+      if (inspected.server.status === "MATCHED" && (record?.responseStored === true
+        || ["ACK_PENDING", "ACKNOWLEDGED"].includes(record?.processingState)
+        || ["ACK_PENDING", "ACKNOWLEDGED"].includes(record?.state))) {
+        fail("DELIVERY_RESPONSE_REQUIRED", "A stored response or ACK state requires response review, not delivery discard.");
+      }
+      if (inspected.extension.phase === "RESPONSE_OBSERVED") {
+        fail("DELIVERY_RESPONSE_REQUIRED", "A response remains in the extension. Review it before discarding ownership.");
+      }
+      if (inspected.extension.hasCompletedDelivery !== false) {
+        fail(inspected.extension.hasCompletedDelivery === true ? "DELIVERY_RESPONSE_REQUIRED" : "EXTENSION_UPDATE_REQUIRED",
+          "The extension must confirm that no completed response is held before a discard intent is recorded.");
+      }
+      if (inspected.server.otherActive === true || inspected.extension.otherActive === true) {
+        fail("WEB_SESSION_BUSY", "Another delivery owns an active server or extension session.");
+      }
       if (input.terminalDiscardConfirmed !== true && inspected.server.status === "MATCHED"
         && isTerminalDiscard(record) && inspected.extension.discardConfirmed) {
         return { discarded: true, deliveryId: input.currentDeliveryId };
@@ -74,11 +90,18 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         const context = preparationService.data.contexts[input.runId];
         const delivery = context?.deliveries.find(item => item.deliveryId === input.currentDeliveryId);
         if (!delivery || context.webSession.activeDeliveryId !== input.currentDeliveryId) fail("DELIVERY_RECOVERY_MISMATCH", "Preparation owner changed.");
-        delivery.discardIntent = { at, reason };
+        delivery.discardIntent = { at, reason, status: "PENDING_VERIFICATION" };
         await preparationService.touch(context);
-        await web.discardDelivery({ ...input, reason });
+        try { await web.discardDelivery({ ...input, reason }); }
+        catch (error) {
+          // The extension may have persisted the receipt despite a lost reply.
+          delivery.discardIntent = { ...delivery.discardIntent, status: "VERIFY_REQUIRED", lastErrorCode: error.code ?? "DISCARD_UNCONFIRMED" };
+          try { await preparationService.touch(context); } catch { /* Keep the durable pending intent and original failure. */ }
+          throw error;
+        }
         if (context.webSession.activeDeliveryId !== input.currentDeliveryId) fail("DELIVERY_RECOVERY_MISMATCH", "Preparation owner changed during discard.");
         delivery.state = "RECOVERY_DISCARDED"; delivery.discardedAt = at; delivery.discardReason = reason;
+        delivery.discardIntent = { ...delivery.discardIntent, status: "CONFIRMED" };
         context.webSession.activeDeliveryId = null; context.lifecycle = "ABANDONED";
         context.state = "RECOVERY_REQUIRED"; context.error = { code: "RECOVERY_DISCARDED", message: "The operator discarded this exact delivery." };
         await preparationService.touch(context);
@@ -89,8 +112,15 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         const run = codeChanges.get(input.runId);
         const binding = run?.conversationBindings.find(item => item.sessionId === input.sessionId);
         if (!binding || binding.activeDeliveryId !== input.currentDeliveryId) fail("DELIVERY_RECOVERY_MISMATCH", "Reviewer owner changed.");
-        codeChanges.update(input.runId, { webDeliveryDiscardIntent: { ...input, reason, at } });
-        await web.discardDelivery({ ...input, reason });
+        codeChanges.update(input.runId, { webDeliveryDiscardIntent: { ...input, reason, at, status: "PENDING_VERIFICATION" } });
+        try { await web.discardDelivery({ ...input, reason }); }
+        catch (error) {
+          // Preserve uncertainty: an extension write may have succeeded before the reply failed.
+          try { codeChanges.update(input.runId, { webDeliveryDiscardIntent: {
+            ...input, reason, at, status: "VERIFY_REQUIRED", lastErrorCode: error.code ?? "DISCARD_UNCONFIRMED" } }); }
+          catch { /* Keep the durable pending intent and original failure. */ }
+          throw error;
+        }
         const latest = codeChanges.get(input.runId);
         if (!latest.conversationBindings.some(item => item.sessionId === input.sessionId && item.activeDeliveryId === input.currentDeliveryId)) {
           fail("DELIVERY_RECOVERY_MISMATCH", "Reviewer owner changed during discard.");
@@ -99,7 +129,7 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
           error: "The operator discarded an unresolved reviewer delivery. Inspect the run before continuing.",
           conversationBindings: latest.conversationBindings.map(item => item.sessionId === input.sessionId
             ? { ...item, activeDeliveryId: null, bindingStatus: "NEEDS_REBIND" } : item),
-          webDeliveryDiscardIntent: { ...input, reason, at, confirmed: true },
+          webDeliveryDiscardIntent: { ...input, reason, at, status: "CONFIRMED", confirmed: true },
           webDeliveryReceipts: (latest.webDeliveryReceipts ?? []).map(item => item.deliveryId === input.currentDeliveryId
             ? { ...item, state: "DISCARDED" } : item) });
       } else fail("DELIVERY_RECOVERY_UNAVAILABLE", "Use the existing discussion recovery controls for this delivery.");
