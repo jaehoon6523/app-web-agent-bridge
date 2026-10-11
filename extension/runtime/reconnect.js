@@ -2,6 +2,7 @@ export function createReconnectController({ connect, connected, onError, setTime
   let timer = null;
   let attempts = 0;
   let blocked = false;
+  let pairingAttempts = 0;
   const controller = {
     cancel() {
       if (timer !== null) clearTimer(timer);
@@ -13,7 +14,18 @@ export function createReconnectController({ connect, connected, onError, setTime
     requested() {
       blocked = false;
       attempts = 0;
+      pairingAttempts = 0;
       controller.cancel();
+    },
+    schedulePairing() {
+      if (timer !== null || connected() || pairingAttempts >= 10) return;
+      blocked = false;
+      pairingAttempts++;
+      timer = setTimer(async () => {
+        timer = null;
+        try { await connect(); }
+        catch (error) { onError(error); controller.schedulePairing(); }
+      }, 30_000);
     },
     schedule(closeCode) {
       // Authentication rejection and occupied controllers require user action.

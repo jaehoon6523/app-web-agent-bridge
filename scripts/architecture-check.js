@@ -80,6 +80,7 @@ const npmCommandScripts = Object.values(packageScripts)
 const entryPoints = new Set([
   ...htmlScripts(path.join(root, "public"), "index.html"),
   ...htmlScripts(path.join(root, "public"), "delivery-recovery.html"),
+  ...htmlScripts(path.join(root, "public"), "extension-pairing.html"),
   path.join(root, "extension", manifest.background.service_worker),
   ...htmlScripts(path.join(root, "extension"), manifest.action.default_popup),
   ...operationalCommands,

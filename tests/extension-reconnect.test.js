@@ -33,3 +33,18 @@ test("extension reconnect retries with a cap and stops after authentication", as
   assert.equal(delays.at(-1), 2_000);
   reconnect.cancel();
 });
+
+test("identity pairing retries are bounded and do not retry unrelated authentication failures", async () => {
+  const timers = new Map(); let nextId = 0, attempts = 0;
+  const reconnect = createReconnectController({connect:async()=>{attempts++;},connected:()=>false,onError:()=>{},
+    setTimer:(callback,delay)=>{assert.equal(delay,30_000);timers.set(++nextId,callback);return nextId;},
+    clearTimer:id=>timers.delete(id)});
+  reconnect.schedule(4403);assert.equal(timers.size,0);
+  for (let n=0;n<10;n++) {
+    reconnect.schedulePairing();
+    const [id,callback]=timers.entries().next().value;timers.delete(id);
+    await callback();
+  }
+  reconnect.schedulePairing();assert.equal(timers.size,0);assert.equal(attempts,10);
+  reconnect.accepted();reconnect.schedulePairing();assert.equal(timers.size,1);
+});

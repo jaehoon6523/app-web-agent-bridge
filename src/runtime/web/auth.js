@@ -47,6 +47,7 @@ export class WebExtensionAuthenticator {
   #randomBytes;
   #sharedSecret;
   #usedNonces = new Map();
+  #pendingPairing = null;
 
   /**
    * @param {{
@@ -150,18 +151,32 @@ export class WebExtensionAuthenticator {
     ) {
       throw new WebProtocolError("Authentication response protocol is invalid", "AUTH_RESPONSE_INVALID");
     }
-    if (response.extensionIdentity !== this.#expectedExtensionIdentity) {
-      throw new WebProtocolError("Extension identity does not match", "AUTH_IDENTITY_MISMATCH");
-    }
     const expected = computeWebChallengeHmac(challenge.nonce, this.#sharedSecret);
     if (!constantTimeHexEqual(response.hmacSha256, expected)) {
       throw new WebProtocolError("Extension authentication failed", "AUTH_HMAC_INVALID");
     }
+    if (response.extensionIdentity !== this.#expectedExtensionIdentity) {
+      if (typeof response.extensionIdentity === "string" && /^[\w-]{1,128}$/u.test(response.extensionIdentity))
+        this.#pendingPairing = { identity: response.extensionIdentity, expiresAtMs: this.#clock() + 5 * 60_000 };
+      throw new WebProtocolError("Extension identity does not match", "AUTH_IDENTITY_MISMATCH");
+    }
+    this.#pendingPairing = null;
     return Object.freeze({
       extensionIdentity: response.extensionIdentity,
       challengeId: challenge.challengeId,
       authenticatedAt: new Date(this.#clock()).toISOString(),
     });
+  }
+
+  setExpectedIdentity(value) {
+    this.#expectedExtensionIdentity = requireNonEmptyString(value, "expectedExtensionIdentity");
+    this.#pendingPairing = null;
+  }
+
+  get pendingPairing() {
+    if (this.#pendingPairing && this.#pendingPairing.expiresAtMs <= this.#clock()) this.#pendingPairing = null;
+    return this.#pendingPairing && { identity: this.#pendingPairing.identity,
+      expiresAt: new Date(this.#pendingPairing.expiresAtMs).toISOString() };
   }
 
   #pruneExpired() {

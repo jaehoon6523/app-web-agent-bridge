@@ -117,7 +117,7 @@ async function connect({ explicit = false } = {}) {
       ? null
       : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`;
     broadcastPopupState();
-    reconnect.schedule(event.code);
+    if (event.code === 4403 && lastError?.includes("AUTH_IDENTITY_MISMATCH")) reconnect.schedulePairing(); else reconnect.schedule(event.code);
   });
   nextSocket.addEventListener("error", () => {
     if (socket !== nextSocket) return;
@@ -975,8 +975,10 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void connect({ explicit:true }).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-  if (["bridge.inspectTabs", "bridge.openInspectedTab", "bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController"].includes(message?.type)) {
+  if (["bridge.inspectTabs", "bridge.openInspectedTab", "bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController", "bridge.openPairing"].includes(message?.type)) {
     void (async () => {
+      if (message.type === "bridge.openPairing") { const state = await store.read(), url = new URL(validateLocalControllerUrl(state.controllerUrl));
+        url.protocol = "http:"; url.pathname = "/extension-pairing.html"; url.search = ""; url.hash = ""; return chrome.tabs.create({ url: url.toString() }); }
       if (message.type === "bridge.inspectTabs") return inspectChatGptTabs(chrome.tabs);
       if (message.type === "bridge.openInspectedTab") return openInspectedChatGptTab(chrome.tabs, message.payload);
       if (message.type === "bridge.inspectDelivery") return deliveryReview.inspect();

@@ -56,7 +56,6 @@ export class WebExtensionTransport extends EventEmitter {
   #activityTimer = null;
   #now;
   #staleAfterMs;
-
   constructor(authenticationOptions = {}, { now = Date.now, staleAfterMs = 65_000 } = {}) {
     super();
     this.#authenticator = new WebExtensionAuthenticator(authenticationOptions);
@@ -84,7 +83,8 @@ export class WebExtensionTransport extends EventEmitter {
       connected: socketIsOpen(this.#socket),
     });
   }
-
+  get pendingPairing() { return this.#authenticator.pendingPairing; }
+  acceptPairedIdentity(value) { this.#authenticator.setExpectedIdentity(value); }
   attach(socket) {
     if (!socket || typeof socket.on !== "function" || typeof socket.send !== "function") {
       throw new WebProtocolError("A WebSocket-compatible peer is required", "INVALID_SOCKET");

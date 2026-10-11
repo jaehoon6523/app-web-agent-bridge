@@ -1,0 +1,11 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>확장 연결 승인</title><link rel="stylesheet" href="delivery-recovery.css"></head>
+<body><main><a href="/">컨트롤러로 이동</a><h1>확장 연결 승인</h1>
+<p>서버에 등록된 확장과 지금 접속한 확장의 식별자가 다릅니다. 서버가 공유 비밀키 증명을 검증한 확장만 후보로 표시합니다.</p>
+<section><p id="state" role="status">상태 확인 중</p>
+<p id="current">서버의 현재 연결 대상: 확인 중</p><p id="candidate">접속한 확장: 확인 중</p>
+<p>승인은 서버의 연결 대상 식별자만 변경합니다. 확장 저장소, 전송 소유권, ChatGPT 작업 결과는 변경하거나 확정하지 않습니다. 다른 활성 작업이 있으면 서버가 거절합니다.</p>
+<label><input id="confirm" type="checkbox"> 표시된 확장을 이 컨트롤러에 연결하기로 결정했습니다. 이전 전송의 처리 결과는 별도로 확인하겠습니다.</label>
+<button id="approve" disabled>이 확장 연결 승인</button><button id="refresh" type="button">상태 다시 확인</button>
+</section></main><script type="module" src="extension-pairing.js"></script></body></html>

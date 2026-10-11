@@ -7,6 +7,7 @@ import { ResourceClosureError, isResourceClosureFailure } from "./persistence/re
 import { PreparationService } from "./orchestration/preparation-service.js";
 import { installDeliveryOwnershipInspection } from "./orchestration/delivery-ownership.js";
 import { createDeliveryRecoveryActions } from "./orchestration/delivery-recovery-actions.js";
+import { createExtensionIdentityPairing } from "./runtime/web/extension-pairing.js";
 import { collectSelectorDiagnostics } from "./orchestration/selector-diagnostics.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
@@ -83,8 +84,14 @@ export function createBridgeServer({
 
   const extensionConfigured = runtimeConfig.demoMode === false
     && runtimeConfig.webExtension?.enabled === true;
+  const extensionPairing = extensionConfigured ? createExtensionIdentityPairing({
+    directory: path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")),
+    configuredIdentity: runtimeConfig.webExtension.expectedExtensionIdentity,
+    sharedSecret: runtimeConfig.webExtension.sharedSecret,
+  }) : null;
   const extensionTransport = extensionConfigured
-    ? new WebExtensionTransport(runtimeConfig.webExtension)
+    ? new WebExtensionTransport({ ...runtimeConfig.webExtension,
+        expectedExtensionIdentity: extensionPairing.identity })
     : null;
   const webSession = extensionTransport
     ? new ChatGptWebSessionAdapter({
@@ -338,6 +345,51 @@ export function createBridgeServer({
     const live = await getLiveRuntime();
     return { contexts, runs: live.codeChanges?.list() ?? [], discussionStore: live.store };
   };
+  let pairingMutation = false;
+  app.get("/api/extension-pairing", requireDashboardRead, (_req, res) => {
+    if (!extensionPairing || !extensionTransport) return res.status(503).json({ code: "PAIRING_UNAVAILABLE" });
+    res.json({ status: extensionTransport.authenticated ? "CONNECTED" : extensionTransport.pendingPairing ? "PENDING" : "NONE",
+      currentIdentity: extensionPairing.identity, candidate: extensionTransport.pendingPairing,
+      authenticated: extensionTransport.authenticated });
+  });
+  app.post("/api/extension-pairing", requireDashboardMutation, async (req, res) => {
+    if (!extensionPairing || !extensionTransport) return res.status(503).json({ code: "PAIRING_UNAVAILABLE" });
+    if (pairingMutation) return res.status(409).json({ code: "PAIRING_BUSY" });
+    pairingMutation = true;
+    try {
+      const candidate = extensionTransport.pendingPairing;
+      if (!candidate || req.body?.candidateIdentity !== candidate.identity
+        || req.body?.expectedCurrentIdentity !== extensionPairing.identity
+        || req.body?.unresolvedStateConfirmed !== true) {
+        throw Object.assign(new Error("The verified candidate or operator confirmation changed."), { code: "PAIRING_CHANGED" });
+      }
+      if (extensionTransport.authenticated || dashboard.isDispatching()) {
+        throw Object.assign(new Error("An extension or controller operation is active."), { code: "WEB_SESSION_BUSY" });
+      }
+      const { contexts, runs, discussionStore } = await deliverySources();
+      const live = await getLiveRuntime();
+      if (preparations().busy || contexts.some(context => context.webSession?.activeDeliveryId)
+        || contexts.some(context => (context.deliveries ?? []).some(delivery =>
+          delivery.processingState === "ACK_PENDING"))
+        || runs.some(run => (run.conversationBindings ?? []).some(binding => binding.activeDeliveryId))
+        || runs.some(run => (run.webDeliveryReceipts ?? []).some(receipt => receipt.state === "ACK_PENDING"))
+        || (discussionStore?.listRuns?.() ?? []).some(run => !isTerminalRunPhase(run.phase)
+          || discussionStore.listAgentSessions(run.runId).some(session => session.activeTurnId))
+        || preparations().jobs.size || live.codeChanges?.jobs.size || live.codeChanges?.workers.size
+        || live.codeChanges?.busy() || live.codeChanges?.reviewerWebBusy()) {
+        throw Object.assign(new Error("An active delivery or operation prevents extension pairing."), { code: "WEB_SESSION_BUSY" });
+      }
+      if (extensionTransport.pendingPairing?.identity !== candidate.identity) {
+        throw Object.assign(new Error("The verified candidate expired or changed."), { code: "PAIRING_CHANGED" });
+      }
+      const result = extensionPairing.approve(candidate.identity, req.body.expectedCurrentIdentity);
+      extensionTransport.acceptPairedIdentity(result.identity);
+      res.json({ status: result.auditConfirmed === false ? "APPROVED_AUDIT_UNCONFIRMED" : "APPROVED",
+        identity: result.identity, authenticated: extensionTransport.authenticated });
+    } catch (error) {
+      res.status(409).json({ code: error.code ?? "PAIRING_UNAVAILABLE", error: "연결 후보를 승인하지 못했습니다. 상태를 다시 확인하세요." });
+    } finally { pairingMutation = false; }
+  });
   installDeliveryOwnershipInspection({ transport: extensionTransport, getSources: deliverySources });
   const deliveryRecovery = createDeliveryRecoveryActions({ getSources: deliverySources, web: webSession,
     audit: createDeliveryRecoveryAudit({

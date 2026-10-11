@@ -16,6 +16,7 @@ const pageUnconfirmedLabel = document.querySelector("#pageUnconfirmedLabel");
 const inspectDelivery = document.querySelector("#inspectDelivery");
 const openDelivery = document.querySelector("#openDelivery");
 const openController = document.querySelector("#openController");
+const openPairing = document.querySelector("#openPairing");
 const discardOrphan = document.querySelector("#discardOrphan");
 const reason = document.querySelector("#discardReason");
 const scopeSelect = document.querySelector("#deliveryScope"), scopedRecovery = document.querySelector("#scopedRecovery");
@@ -36,6 +37,7 @@ function render(response) {
     return;
   }
   const state = response.state || {};
+  openPairing.hidden = !String(state.lastError ?? "").includes("AUTH_IDENTITY_MISMATCH");
   displayedDeliveryId = state.currentDeliveryId ?? null;
   if (outcomeDeliveryId && state.currentDeliveryId && state.currentDeliveryId !== outcomeDeliveryId) {
     recoveryOutcome.textContent = "";
@@ -231,6 +233,10 @@ openDelivery.addEventListener("click", async () => {
 openController.addEventListener("click", async () => {
   const result = await send({ type: "bridge.openController" });
   if (!result?.ok) detail.textContent += "\n" + result.error;
+});
+openPairing?.addEventListener("click", async () => {
+  const result = await send({ type: "bridge.openPairing" });
+  if (!result?.ok) detail.textContent += "\n" + (result?.error || "연결 승인 화면을 열지 못했습니다.");
 });
 openRecovery?.addEventListener("click", async () => {
   if (inspection?.server?.status !== "MATCHED") return;
