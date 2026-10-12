@@ -84,7 +84,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       const descendants = [];
       const visit = (element) => {
         for (const child of element.children) {
-          if (selector.toUpperCase() === child.tagName) descendants.push(child);
+          if (selector.split(",").map(item => item.toUpperCase()).includes(child.tagName)) descendants.push(child);
           visit(child);
         }
       };
@@ -108,7 +108,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     contains() { return false; }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
-  const context = vm.createContext({
+  const context = vm.createContext({ location:{search:""},
     ...dashboardActionCapabilities,
     ...dashboardConnectionState,
     ...dashboardRunListKnowledge,
@@ -132,7 +132,9 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       return { ok: true, json: async () => body };
     },
   });
+  const tabChoiceSource = await readFile(new URL("../../public/preparation-tab-choice.js", import.meta.url), "utf8");
   const executableSource = [
+    inlineModule(tabChoiceSource),
     inlineModule(conversationSource),
     inlineModule(preparationSource),
     inlineModule(healthPresentationSource),
@@ -253,9 +255,8 @@ test("refresh restores the completed root action trace without an active deliver
   for (let load = 0; load < 2; load++) {
     const ui = await dashboard(state);
     const output = renderedText(ui.elements.get("preparationDiagnosticsBody"));
-    assert.match(output, /command-start/);
-    assert.match(output, /document-root/);
-    assert.match(output, /"result": "success"/);
+    assert.doesNotMatch(output, /command-start|document-root/);
+    assert.equal(ui.run("preparation.deliveries[0].trace.result"), "success");
     assert.match(output, /응답 처리 완료/u);
   }
 });
@@ -272,8 +273,9 @@ test("a stored response stays visibly unfinished while acknowledgement is pendin
   assert.match(output, /응답 검증·저장 완료 · 전송 정리 확인 필요/u);
   assert.doesNotMatch(output, /응답 처리 완료 · 성공 trace 보존됨/u);
   assert.doesNotMatch(output, /응답 수신·전송 종료 확인됨/u);
-  assert.match(output, /raw 응답/u);
-  assert.match(output, /stored raw response/u);
+  assert.match(output, /진단 로그 내보내기/u);
+  assert.doesNotMatch(output, /stored raw response/u);
+  assert.equal(ui.run("preparation.deliveries[0].response.rawText"), "stored raw response");
 });
 test("reconcile sends exact identity and never follows with a proposal", async () => {
   const ui = await dashboard(prepared());
@@ -314,9 +316,13 @@ test("ambiguous preparation renders eligible ChatGPT tabs and sends the selected
   } };
   state.commandCapabilities = ["web.rebind", "web.inspect", "preparation.cancel"];
   const ui = await dashboard(state, async () => ({}));
-  const buttons = ui.run('document.querySelectorAll("[data-web-command]").filter((button) => button.dataset.webCommand === "web.rebind")');
-  assert.equal(buttons.length, 2);
-  await buttons[1].listeners.click();
+  const root = ui.elements.get("proposalSummary").children[0];
+  const radios = root.querySelectorAll("input");
+  assert.equal(radios.length, 2);
+  await radios[1].listeners.change();
+  assert.equal(ui.calls.some(item => item.url === "/api/preparations/web"), false);
+  const send = root.querySelectorAll("button").find(item => item.textContent === "이 탭에서 첫 요청 전송 계속");
+  await send.listeners.click();
   const call = ui.calls.find((item) => item.url === "/api/preparations/web");
   assert.equal(call.body.command, "web.rebind");
   assert.equal(call.body.selectedTabId, 12);
@@ -340,7 +346,8 @@ test("an initial binding failure displays the original error and holds the reque
   assert.equal(ui.elements.get("startProgressTitle").textContent, "ChatGPT 요청에 실패했습니다");
   assert.match(ui.elements.get("startProgressDetail").textContent, /UI_CONTRACT_CHANGED: ChatGPT composer is unavailable/u);
   assert.match(ui.elements.get("startReason").textContent, /현재 준비 요청이 실패했습니다/u);
-  assert.match(ui.elements.get("startReason").textContent, /"stage":"LOAD"/u);
+  assert.doesNotMatch(ui.elements.get("startReason").textContent, /"stage":"LOAD"/u);
+  assert.equal(ui.run("preparation.error.details.stage"), "LOAD");
   assert.equal(ui.elements.get("planRun").disabled, true);
   assert.equal(ui.elements.get("newRun").disabled, true);
   assert.equal(ui.elements.get("objective").readOnly, true);
@@ -509,7 +516,8 @@ test("recovery diagnosis uses run identity, shows observations, and cannot bypas
       payload: { runId: "r1", expectedVersion: 7 } },
   }]);
   assert.match(ui.elements.get("reconcileResult").textContent, /RECOVERY_REQUIRED/);
-  assert.match(ui.elements.get("reconcileResult").textContent, /controller/);
+  assert.match(ui.elements.get("reconcileResult").textContent, /진단 로그 내보내기/);
+  assert.match(ui.run("JSON.stringify(latestRunDiagnostic)"), /controller/);
   assert.equal(ui.elements.get("abandonRun").disabled, true);
   ui.elements.get("recoveryConfirm").checked = true;
   ui.elements.get("recoveryConfirm").listeners.input();

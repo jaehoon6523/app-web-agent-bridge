@@ -19,7 +19,7 @@ import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./r
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
 import { matchExactWebConversationTabs, resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
-import { inspectChatGptTabs, openInspectedChatGptTab, replyToSelectorDiagnostics } from "./runtime/tab-diagnostics.js";
+import { inspectChatGptTabs, openInspectedChatGptTab, replyToTabFocus, replyToSelectorDiagnostics } from "./runtime/tab-diagnostics.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -89,7 +89,6 @@ async function connect({ explicit = false } = {}) {
   try {
     previousSocket?.close(1000, "Reconnecting");
   } catch {
-    // A new authenticated connection is still attempted below.
   }
   const nextSocket = new WebSocket(controllerUrl);
   socket = nextSocket;
@@ -257,6 +256,7 @@ async function handleControllerMessage(raw) {
     case "web.delivery.stop":
       await handleDeliveryStop(message);
       break;
+    case "web.tab.focus": await replyToTabFocus(chrome, send, message); break;
     case "web.delivery.focus":
       try {
         const state = await store.read();
@@ -975,12 +975,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     void connect({ explicit:true }).then(() => sendResponse({ ok: true })).catch((error) => sendResponse({ ok: false, error: error.message }));
     return true;
   }
-  if (["bridge.inspectTabs", "bridge.openInspectedTab", "bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController", "bridge.openPairing"].includes(message?.type)) {
+  if (["bridge.inspectTabs", "bridge.openInspectedTab", "bridge.openPreparationTab", "bridge.inspectDelivery", "bridge.discardOrphanDelivery", "bridge.selectDelivery", "bridge.openDelivery", "bridge.openController", "bridge.openPairing"].includes(message?.type)) {
     void (async () => {
       if (message.type === "bridge.openPairing") { const state = await store.read(), url = new URL(validateLocalControllerUrl(state.controllerUrl));
         url.protocol = "http:"; url.pathname = "/extension-pairing.html"; url.search = ""; url.hash = ""; return chrome.tabs.create({ url: url.toString() }); }
-      if (message.type === "bridge.inspectTabs") return inspectChatGptTabs(chrome.tabs);
-      if (message.type === "bridge.openInspectedTab") return openInspectedChatGptTab(chrome.tabs, message.payload);
+      if (["bridge.openPreparationTab", "bridge.inspectTabs"].includes(message.type)) return message.type === "bridge.inspectTabs" ? inspectChatGptTabs(chrome.tabs) : deliveryReview.openPreparationTab(message.payload);
+      if (message.type === "bridge.openInspectedTab") return openInspectedChatGptTab(chrome.tabs, message.payload, chrome.windows);
       if (message.type === "bridge.inspectDelivery") return deliveryReview.inspect();
       if (message.type === "bridge.discardOrphanDelivery") return deliveryReview.discardOrphan(message.payload);
       if (message.type === "bridge.openDelivery") return deliveryReview.openConversation(message.payload);

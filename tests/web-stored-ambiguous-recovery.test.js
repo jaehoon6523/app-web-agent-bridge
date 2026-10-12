@@ -157,11 +157,11 @@ test("background maps unresolved delivery to a stable blocked code and text", as
 });
 
 function renderPopupState(state) {
-  const elements = Object.fromEntries([
-    "status", "detail", "controllerUrl", "sharedSecret", "save", "reconnect", "legacyRecovery", "clearLegacy",
-    "deliveryRecovery", "recoveryDetail", "inspectDelivery", "openDelivery", "openController", "discardOrphan", "discardReason",
-    "unresolvedConfirmed", "noResendConfirmed", "serverMissingConfirmed", "pageUnconfirmed",
-  ].map(id => [id, { textContent: "", className: "", hidden: false, value: "", placeholder: "" }]));
+  const html = readFileSync(new URL("../extension/popup.html", import.meta.url), "utf8");
+  const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map(match => [match[1], {
+    textContent:"", className:"", hidden:false, value:"", placeholder:"", options:[], checked:false,
+    replaceChildren(...children){this.options=children;}
+  }]));
   const context = vm.createContext({
     document: { querySelector: selector => elements[selector.slice(1)] },
     chrome: { runtime: { sendMessage() {} } },
@@ -169,6 +169,7 @@ function renderPopupState(state) {
   vm.runInContext(popup.slice(0, popup.indexOf("async function refresh(")), context);
   context.response = { ok: true, state };
   vm.runInContext("render(response)", context);
+  elements.exportedConnectionDetail = vm.runInContext("connectionDiagnosticText", context);
   return elements;
 }
 
@@ -187,7 +188,8 @@ test("popup retains the original cause alongside actionable recovery guidance", 
   });
 
   assert.match(elements.detail.textContent, new RegExp(message, "u"));
-  assert.match(elements.detail.textContent, /previous generic error/u);
+  assert.doesNotMatch(elements.detail.textContent, /previous generic error/u);
+  assert.match(elements.exportedConnectionDetail, /previous generic error/u);
 });
 
 test("popup renders the successful root recovery text", () => {

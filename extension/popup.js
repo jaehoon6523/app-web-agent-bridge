@@ -10,7 +10,6 @@ const deliveryRecovery = document.querySelector("#deliveryRecovery");
 const recoveryDetail = document.querySelector("#recoveryDetail");
 const recoveryOutcome = document.querySelector("#recoveryOutcome");
 const recoveryActionState = document.querySelector("#recoveryActionState");
-const recoveryRaw = document.querySelector("#recoveryRaw");
 const openRecovery = document.querySelector("#openRecovery");
 const pageUnconfirmedLabel = document.querySelector("#pageUnconfirmedLabel");
 const inspectDelivery = document.querySelector("#inspectDelivery");
@@ -22,9 +21,12 @@ const reason = document.querySelector("#discardReason");
 const scopeSelect = document.querySelector("#deliveryScope"), scopedRecovery = document.querySelector("#scopedRecovery");
 const selectDelivery = document.querySelector("#selectDelivery");
 const inspectTabs = document.querySelector("#inspectTabs"), diagnosticTab = document.querySelector("#diagnosticTab");
-const openDiagnosticTab = document.querySelector("#openDiagnosticTab"), tabDiagnosticDetail = document.querySelector("#tabDiagnosticDetail");
+const openDiagnosticTab = document.querySelector("#openDiagnosticTab");
+let tabDiagnosticText = "", connectionDiagnosticText = "";
 const confirmations = ["ownershipConfirmed", "pageUnconfirmed"].map(id => document.querySelector("#" + id));
 let inspection = null, refreshing = null;
+let authenticated = false;
+const choosePreparationTab = document.querySelector("#choosePreparationTab");
 let outcomeDeliveryId = null;
 let displayedDeliveryId = null;
 let tabDiagnostics = [], currentTabId = null, currentExtensionVersion = null;
@@ -32,11 +34,16 @@ function send(message) { return chrome.runtime.sendMessage(message); }
 
 function render(response) {
   if (!response?.ok) {
+    authenticated = false;
+    if (choosePreparationTab) choosePreparationTab.disabled = true;
     status.textContent = "error"; status.className = "badge bad";
     detail.textContent = response?.error || "Extension service worker is unavailable.";
     return;
   }
   const state = response.state || {};
+  authenticated = state.connected === true;
+  const connectionSummary = document.querySelector("#connectionSummary");
+  if (connectionSummary) connectionSummary.textContent = authenticated ? "컨트롤러 연결됨 · 탭 준비 상태는 별도로 확인합니다." : "컨트롤러 연결이 필요합니다. 연결 설정 또는 확장 연결 승인을 확인하세요.";
   openPairing.hidden = !String(state.lastError ?? "").includes("AUTH_IDENTITY_MISMATCH");
   displayedDeliveryId = state.currentDeliveryId ?? null;
   if (outcomeDeliveryId && state.currentDeliveryId && state.currentDeliveryId !== outcomeDeliveryId) {
@@ -78,7 +85,8 @@ function render(response) {
   if (state.bindingRecovery?.message) lines.push("복구 안내: " + state.bindingRecovery.message);
   if (state.lastError) lines.push("연결 진단: " + state.lastError);
   if (state.extensionVersion) lines.push(`확장 ${state.extensionVersion} · 콘텐츠 ${state.contentVersion ?? "확인되지 않음"}`);
-  detail.textContent = lines.join("\n");
+  connectionDiagnosticText = lines.join("\n");
+  detail.textContent = `${state.bindingRecovery?.message ? state.bindingRecovery.message + "\n" : ""}${state.connected ? "인증 완료" : "연결 확인 필요"} · 확장 ${state.extensionVersion ?? "확인 전"}. 상세 정보는 진단 로그로 내보내세요.`;
   deliveryRecovery.hidden = !pending;
   inspectDelivery.disabled = !state.currentDeliveryId;
   if (inspection && (inspection.owner?.currentDeliveryId !== state.currentDeliveryId
@@ -107,10 +115,18 @@ function pageDiagnosticLines(page) {
 }
 
 function renderTabDiagnostic() {
-  if (!diagnosticTab || !tabDiagnosticDetail || !openDiagnosticTab) return;
+  if (!diagnosticTab || !openDiagnosticTab) return;
   const tab = tabDiagnostics.find(item => String(item.tabId) === diagnosticTab.value);
   openDiagnosticTab.disabled = !tab;
-  if (!tab) return;
+  const ready = tab?.reachable === true && tab.ready === true && tab.composerPresent === true
+    && tab.busy === false && tab.generating === false && tab.runtimeVersion === currentExtensionVersion
+    && /^https:\/\/chatgpt\.com\/$/.test(tab.url ?? "")
+    && (!tab.pageUrl || tab.pageUrl === tab.url) && (!tab.observedTabUrl || tab.observedTabUrl === tab.url);
+  if (choosePreparationTab) choosePreparationTab.disabled = !ready || !authenticated;
+  const summary = document.querySelector("#tabSummary"), next = document.querySelector("#tabNextReason");
+  if (summary) summary.textContent = !tab ? "진단할 탭을 선택하세요." : `탭 ${tab.tabId} · ${ready ? "시작 화면 · 입력창 준비됨" : tab.busy || tab.generating ? "작업 또는 생성 중" : "준비 상태 재확인 필요"}${tab.inspectedAt ? "\n진단: " + tab.inspectedAt : ""}`;
+  if (next) next.textContent = !authenticated ? "컨트롤러 연결 후 사용할 수 있습니다." : !ready ? "사용 가능한 시작 화면인지 다시 진단하세요." : "이 버튼은 화면만 이동하며 전송하지 않습니다. 컨트롤러에 탭 선택 대기 작업이 있을 때 현재 후보를 직접 선택하세요.";
+  if (!tab) { tabDiagnosticText = "확인된 탭 진단 없음"; return; }
   const lines = [`tab ${tab.tabId}${tab.tabId === currentTabId ? " · 전송 소유 탭" : " · 별도 탭"}`, tab.url,
     `입력창: ${tab.composerPresent === true ? "있음" : tab.composerPresent === false ? "없음" : "확인 불가"}`,
     `상태: ${!tab.reachable ? "콘텐츠 응답 없음" : tab.busy || tab.generating ? "작업 또는 생성 중" : tab.ready ? "준비 확인됨" : "준비되지 않음"}`,
@@ -123,7 +139,8 @@ function renderTabDiagnostic() {
   if (tab.pageUrl && tab.pageUrl !== tab.url) lines.push("진단 중 문서 주소가 변경됐습니다. 상태를 다시 확인하세요.");
   if (tab.observedTabUrl && tab.observedTabUrl !== tab.url) lines.push("탭 조회 중 주소가 변경됐습니다: " + tab.observedTabUrl);
   lines.push("이 결과는 진단 시점의 상태입니다. 탭 열기는 바인딩 변경·전송·폐기를 수행하지 않습니다.");
-  tabDiagnosticDetail.textContent = lines.join("\n");
+  tabDiagnosticText = lines.join("\n");
+  if (tab.runtimeVersion && tab.runtimeVersion !== currentExtensionVersion && next) next.textContent = "콘텐츠 버전이 다릅니다. 진행 중 작업을 확인한 뒤 탭을 새로고침하세요.";
 }
 
 function updateDiscard() {
@@ -181,10 +198,10 @@ inspectTabs?.addEventListener("click", async () => {
     }));
     diagnosticTab.value = tabDiagnostics.some(tab => String(tab.tabId) === selected) ? selected
       : String(tabDiagnostics.find(tab => tab.tabId === currentTabId)?.tabId ?? tabDiagnostics[0]?.tabId ?? "");
-    tabDiagnosticDetail.textContent = response?.ok ? "열려 있는 ChatGPT 탭이 없습니다." : response?.error || "탭 진단에 실패했습니다.";
+    tabDiagnosticText = response?.ok ? "열려 있는 ChatGPT 탭이 없습니다." : response?.error || "탭 진단에 실패했습니다.";
     renderTabDiagnostic();
   } catch (error) {
-    tabDiagnostics = []; openDiagnosticTab.disabled = true; tabDiagnosticDetail.textContent = error.message;
+    tabDiagnostics = []; renderTabDiagnostic(); tabDiagnosticText = error.message; document.querySelector("#tabNextReason").textContent = "탭 확인에 실패했습니다. 다시 확인하거나 진단 로그를 내보내세요.";
   } finally { inspectTabs.disabled = false; }
 });
 diagnosticTab?.addEventListener("change", renderTabDiagnostic);
@@ -193,8 +210,8 @@ openDiagnosticTab?.addEventListener("click", async () => {
   if (!selected) return;
   try {
     const result = await send({ type: "bridge.openInspectedTab", payload: { tabId: selected.tabId, url: selected.url } });
-    if (!result?.ok) tabDiagnosticDetail.textContent = result?.error || "탭을 열지 못했습니다.";
-  } catch (error) { tabDiagnosticDetail.textContent = error.message; }
+    if (!result?.ok) { tabDiagnosticText = result?.error || "탭을 열지 못했습니다."; document.querySelector("#tabNextReason").textContent = "탭을 열지 못했습니다. 최신 탭 상태를 다시 확인하세요."; }
+  } catch (error) { tabDiagnosticText = error.message; document.querySelector("#tabNextReason").textContent = "탭 확인에 실패했습니다. 다시 확인하거나 진단 로그를 내보내세요."; }
 });
 inspectDelivery.addEventListener("click", async () => {
   inspectDelivery.disabled = true;
@@ -222,7 +239,6 @@ inspectDelivery.addEventListener("click", async () => {
         : server?.status === "MISSING" ? "확장 소유권만 정리할 수 있습니다. 원래 요청은 재전송하지 않습니다."
       : "대상 상태를 확정할 수 없어 기록을 변경하지 않습니다."
   ].join("\n") : response?.error || "상태를 확인하지 못했습니다.";
-  if (recoveryRaw) recoveryRaw.textContent = inspection ? JSON.stringify(inspection, null, 2) : "확인된 진단 없음";
   updateDiscard();
   await refresh();
 });
@@ -279,15 +295,35 @@ void refresh();
 const exportAgentDiagnostics = document.querySelector("#exportAgentDiagnostics");
 const agentDiagnosticStatus = document.querySelector("#agentDiagnosticStatus");
 exportAgentDiagnostics?.addEventListener("click",async () => {
+  if (!confirm("원시 진단에 민감정보가 남을 수 있습니다. 저장한 JSON을 텍스트 편집기에서 검토하고 필요한 값을 지운 뒤 공유하세요. 로컬 파일로 저장할까요?")) return;
+  const includeRaw = document.querySelector("#includeRawDiagnostic").checked;
   exportAgentDiagnostics.disabled = true;agentDiagnosticStatus.textContent = "현재 상태를 읽는 중입니다.";
   try {
-    const result = await send({type:"bridge.exportDiagnostics"});
-    if (!result?.ok) throw new Error(result?.code ?? "DIAGNOSTIC_EXPORT_FAILED");
-    const blob = new Blob([JSON.stringify(result.report,null,2)],{type:"application/json"});
+    let result;
+    try { result = await send({type:"bridge.exportDiagnostics"}); } catch { result = null; }
+    const incomplete = !result?.ok;
+    if (incomplete) result = { report:{ source:"POPUP_OBSERVATION_ONLY", server:{status:"UNAVAILABLE"},
+      collection:{status:"UNAVAILABLE",code:"DIAGNOSTIC_EXPORT_FAILED"} } };
+    const report = { ...result.report, popupObservation: { exportedAt:new Date().toISOString(),
+      selectedTabId:diagnosticTab.value, connectionDetail:connectionDiagnosticText, tabDetail:tabDiagnosticText,
+      tabs:tabDiagnostics, deliveryInspection:inspection, note:"팝업 관측값은 마지막 조회 시점의 값이며 최신 에이전트 보고서와 관측 시각이 다를 수 있습니다." } };
+    const { prepareDiagnosticLog } = await import("./runtime/diagnostic-redaction.js");
+    const blob = new Blob([JSON.stringify(prepareDiagnosticLog({ ...report, exportMode:includeRaw ? "WITH_RAW" : "DIAGNOSTIC_ONLY" }, {includeRaw}),null,2)],{type:"application/json"});
     const url = URL.createObjectURL(blob), link = document.createElement("a");
     link.href = url;link.download = "runtime-latest.json";link.click();setTimeout(() => URL.revokeObjectURL(url),10000);
-    agentDiagnosticStatus.textContent = `진단 ID: ${result.report.diagnosticId ?? "확인 불가"}\n관측: ${result.report.updatedAt ?? result.report.observedAt ?? "확인 불가"}\n${result.report.logFile ?? "서버 상태를 포함하지 못한 확장 진단입니다."}`;
-    if (result.report.loggingFailure) agentDiagnosticStatus.textContent += "\n진단 저장 실패: " + result.report.loggingFailure.code;
+    agentDiagnosticStatus.textContent = result.report.server?.status === "UNAVAILABLE"
+      ? "로그 다운로드를 요청했습니다. 서버 정보는 수집하지 못했습니다." : "진단 로그 다운로드를 요청했습니다.";
+    if (result.report.loggingFailure) agentDiagnosticStatus.textContent += " 서버 로그 저장에 실패해 다운로드한 파일을 보관하세요.";
   } catch (error) {agentDiagnosticStatus.textContent = "로그 내보내기 실패: " + error.message;}
   finally {exportAgentDiagnostics.disabled = false;}
+});
+
+choosePreparationTab?.addEventListener("click", async () => {
+  if (choosePreparationTab.disabled) return;
+  const tab = tabDiagnostics.find(item => String(item.tabId) === diagnosticTab.value);
+  choosePreparationTab.disabled = true;
+  try {
+    const response = await send({ type: "bridge.openPreparationTab", payload: { tabId: tab.tabId } });
+    if (!response?.ok) throw new Error(response?.error || "컨트롤러를 열지 못했습니다.");
+  } catch (error) { document.querySelector("#tabNextReason").textContent = error.message; }
 });

@@ -28,12 +28,10 @@ import {
  * @property {string | null} lastObservedAssistantMessageId
  * @property {string} bindingStatus
  */
-
 const AMBIGUOUS_WEB_TURN_CODES = new Set([
   "WEB_TURN_AMBIGUOUS",
   "MANUAL_INTERVENTION_DETECTED",
 ]);
-
 const SESSION_INVALIDATING_CODES = new Set([
   "MANUAL_INTERVENTION_DETECTED",
   "SESSION_AUTH_REQUIRED",
@@ -43,7 +41,6 @@ const SESSION_INVALIDATING_CODES = new Set([
   "WEB_DOCUMENT_CHANGED",
   "WEB_SUCCESS_TRACE_MISMATCH",
 ]);
-
 // Authenticated transport only. AgentSession lifecycle semantics are provided by
 // WebSessionAdapter below rather than being inferred from socket state.
 export class WebExtensionTransport extends EventEmitter {
@@ -62,17 +59,14 @@ export class WebExtensionTransport extends EventEmitter {
     this.#now = now;
     this.#staleAfterMs = staleAfterMs;
   }
-
   get authenticated() {
     return this.#authenticationState === WebAuthenticationState.AUTHENTICATED;
   }
-
   get responsive() {
     return this.authenticated && socketIsOpen(this.#socket)
       && this.#lastExtensionActivity !== null
       && this.#now() - this.#lastExtensionActivity <= this.#staleAfterMs;
   }
-
   get snapshot() {
     return Object.freeze({
       authenticationState: this.#authenticationState,
@@ -123,14 +117,12 @@ export class WebExtensionTransport extends EventEmitter {
     this.#sendRaw(this.#authenticator.issueChallenge());
     this.emit("state", this.snapshot);
   }
-
   setBinding(binding) {
     validateWebSessionBinding(binding);
     this.#binding = createWebSessionBinding(binding);
     this.emit("binding", this.#binding);
     return this.#binding;
   }
-
   send(message) {
     if (!this.authenticated) {
       throw new WebProtocolError(
@@ -147,7 +139,6 @@ export class WebExtensionTransport extends EventEmitter {
     }
     this.#sendRaw(envelope);
   }
-
   close() {
     this.#clearActivityTimer();
     if (this.#socket) this.#closeSocket(this.#socket, 1000, "Controller closed extension session");
@@ -157,12 +148,10 @@ export class WebExtensionTransport extends EventEmitter {
     this.#authenticationState = WebAuthenticationState.DISCONNECTED;
     this.emit("state", this.snapshot);
   }
-
   onEvent(listener) {
     this.on("runtimeEvent", listener);
     return () => this.off("runtimeEvent", listener);
   }
-
   #onMessage(socket, raw) {
     if (socket !== this.#socket) return;
     let message;
@@ -175,7 +164,6 @@ export class WebExtensionTransport extends EventEmitter {
       }));
       return;
     }
-
     if (!this.authenticated) {
       if (message.type !== "extension.auth.response") {
         this.emit("diagnostic", Object.freeze({
@@ -745,6 +733,11 @@ export class WebSessionAdapter {
     this.#ambiguousTurnId = null;
   }
 
+  async focusCandidateTab(expected) {
+    const message = await this.#request({ type: "web.tab.focus", payload: expected }, new Set(["web.tab.focused", "web.session.error"]), 10_000);
+    if (message.type === "web.session.error") throw this.#messageError(message);
+    return message.payload;
+  }
   async focusDelivery(expected) {
     const message = await this.#request({ type: "web.delivery.focus", payload: expected },
       new Set(["web.delivery.focused", "web.session.error"]), 10_000);

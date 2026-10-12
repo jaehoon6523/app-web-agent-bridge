@@ -135,5 +135,15 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
       sessionId: state.lastBoundSessionId, runId: state.lastBoundRunId, conversationUrl: state.conversationUrl })) url.searchParams.set(key, value);
     return tabs.create({ url: url.href, active: true });
   }
-  return { inspect, discardOrphan, openConversation, selectScope, openController };
+  async function openPreparationTab({ tabId } = {}) {
+    if (!Number.isSafeInteger(tabId) || tabId < 0) throw new ExtensionStateError("INVALID_TAB", "탭을 다시 선택하세요.");
+    const tab = await tabs.get(tabId);
+    if (tab.url !== "https://chatgpt.com/") throw new ExtensionStateError("TAB_CHANGED", "탭이 시작 화면을 벗어났습니다. 다시 진단하세요.");
+    const state = await store.read(), url = new URL(validateLocalControllerUrl(state.controllerUrl));
+    url.protocol = "http:"; url.pathname = "/"; url.search = ""; url.hash = "";
+    // This hint never binds a session or authorizes a transmission.
+    url.searchParams.set("prepareTab", String(tabId));
+    return tabs.create({ url: url.href, active: true });
+  }
+  return { inspect, discardOrphan, openConversation, selectScope, openController, openPreparationTab };
 }

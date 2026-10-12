@@ -55,6 +55,8 @@ export const WebProtocolMessageType = enumObject([
   "web.session.prepare",
   "web.session.rebind",
   "web.session.focus",
+  "web.tab.focus",
+  "web.tab.focused",
   "web.session.ready",
   "web.session.error",
   "web.prompt",

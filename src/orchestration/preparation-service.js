@@ -739,6 +739,16 @@ export class PreparationService {
       canRecover: context.diagnostics.canRecover,
     });
   }
+  async focusCandidateTab(input) {
+    const context = this.current;
+    const candidate = context?.error?.code === "WEB_TAB_SELECTION_REQUIRED"
+      ? context.error.details?.candidates?.find(tab => tab.tabId === input.tabId) : null;
+    if (!context || context.preparationId !== input.preparationId || !candidate
+      || context.webSession?.activeDeliveryId !== input.deliveryId || this.jobs.has(context.preparationId)) {
+      fail("후보가 바뀌었습니다. 최신 상태를 확인하세요.", "TAB_CHANGED");
+    }
+    return this.web.focusCandidateTab({ tabId: candidate.tabId, url: candidate.url });
+  }
   async webCommand(context, type, input) {
     const session = context.webSession;
     for (const [key, value] of Object.entries({ sessionId: session.sessionId, conversationId: session.conversationId,

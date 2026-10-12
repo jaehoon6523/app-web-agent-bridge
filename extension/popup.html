@@ -12,32 +12,32 @@
         <strong>ChatGPT Web Agent Bridge</strong>
         <span id="status" class="badge">checking</span>
       </header>
-      <label>
-        Controller WebSocket
-        <input id="controllerUrl" type="text" spellcheck="false" />
-      </label>
-      <label>
-        Shared secret
-        <input id="sharedSecret" type="password" spellcheck="false" autocomplete="off" />
-      </label>
-      <p id="detail"></p>
-      <div class="actions">
-        <button id="save" type="button">Save & reconnect</button>
-        <button id="reconnect" type="button" class="secondary">Reconnect</button>
-      </div>
-      <button id="openController" type="button" class="secondary">컨트롤러에서 해당 작업 확인</button>
+      <p id="connectionSummary" role="status">연결 상태 확인 중</p>
+      <ol class="step-rail"><li aria-current="step">1. 탭 확인</li><li>2. 탭 선택</li><li>3. 전송 확인</li></ol>
+      <section class="tab-card">
+        <div class="panel-head"><b>확장 팝업</b><span>읽기 전용</span></div>
+        <div class="panel-body">
+        <h1>탭 진단</h1>
+        <p>입력창을 확인한 뒤 컨트롤러에서 사용할 탭을 선택하세요.</p>
+        <button id="inspectTabs" type="button" class="secondary">열린 탭 다시 확인</button>
+        <label>확인할 ChatGPT 탭<select id="diagnosticTab"></select></label>
+        <p id="tabSummary" role="status">먼저 열린 탭을 확인하세요.</p>
+        <button id="openDiagnosticTab" type="button" class="secondary" disabled>탭 화면 보기</button>
+        <button id="choosePreparationTab" type="button" disabled aria-describedby="tabNextReason">컨트롤러에서 이 탭 선택</button>
+        <p id="tabNextReason">탭 진단 후 사용할 수 있습니다.</p>
+        <label><input id="includeRawDiagnostic" type="checkbox" /> 원시 응답·대화 내용 포함 (공유 전 검토 필요)</label>
+      <button id="exportAgentDiagnostics" type="button" class="secondary">진단 로그 내보내기</button>
+        <p id="agentDiagnosticStatus" role="status">선택자·문서 토큰·전송 상세를 저장합니다. 공유 전 민감정보를 확인하세요.</p>
+        </div>
+      </section>
+      <button id="openController" type="button" class="secondary">컨트롤러에서 현재 작업 확인</button>
       <button id="openPairing" type="button" class="secondary" hidden>확장 연결 승인</button>
-      <section>
-        <h2>에이전트 진단 로그</h2><button id="exportAgentDiagnostics" type="button" class="secondary">최신 로그 저장</button>
-        <p id="agentDiagnosticStatus">오류 원인·현재 상태·확인 불가 항목을 파일 하나로 내보냅니다.</p>
-      </section>
-      <section>
-        <h2>ChatGPT 탭 진단</h2>
-        <button id="inspectTabs" type="button" class="secondary">모든 탭 상태 다시 확인</button>
-        <label>확인할 탭<select id="diagnosticTab"></select></label>
-        <button id="openDiagnosticTab" type="button" class="secondary" disabled>선택한 탭 열기</button>
-        <p id="tabDiagnosticDetail">탭별 입력창과 콘텐츠 버전을 확인합니다. 탭을 열어도 전송 소유권은 바뀌지 않습니다.</p>
-      </section>
+      <details class="settings"><summary>연결 설정과 상세 상태</summary>
+        <label>Controller WebSocket<input id="controllerUrl" type="text" spellcheck="false" /></label>
+        <label>Shared secret<input id="sharedSecret" type="password" autocomplete="off" /></label>
+        <div class="actions"><button id="save" type="button">저장 후 연결</button><button id="reconnect" type="button" class="secondary">다시 연결</button></div>
+        <p id="detail"></p>
+      </details>
       <section id="deliveryRecovery" hidden>
         <h2>미확인 전송</h2>
         <label id="scopedRecovery" hidden>다른 세션의 전송<select id="deliveryScope"></select></label><button id="selectDelivery" type="button" hidden>이 전송 확인</button>
@@ -48,7 +48,7 @@
         <p id="recoveryDetail">상태 확인 후 해당 작업의 기록 정리 경로를 확인하세요.</p>
         <p id="recoveryActionState">조치 상태: 확인 전</p>
         <button id="openRecovery" type="button" class="secondary" hidden>컨트롤러에서 이 전송 확인</button>
-        <details><summary>대상 식별자와 기술 진단 상세 보기</summary><pre id="recoveryRaw"></pre></details>
+        <p class="muted">전송 상세는 위의 진단 로그 내보내기로 확인하세요.</p>
         <div id="orphanDiscardPanel" hidden>
         <p>확장에 남은 이 전송의 소유권 기록만 정리합니다. ChatGPT 처리를 중단하거나 원래 요청을 재전송하지 않습니다.</p>
         <label><input id="ownershipConfirmed" type="checkbox" /> ChatGPT 처리 결과가 미확정인 상태에서 이 전송의 확장 소유권 기록을 정리하기로 결정했습니다.</label>

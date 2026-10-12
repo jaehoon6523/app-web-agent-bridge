@@ -37,7 +37,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
 }
 
 test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as success', () => {
-  const ids = ['status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
+  const ids = ['openPairing','recoveryOutcome','ownershipConfirmed','status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
     'deliveryRecovery','recoveryDetail','inspectDelivery','openDelivery','openController','discardOrphan','discardReason',
     'unresolvedConfirmed','noResendConfirmed','orphanOwnershipCleanupConfirmed','pageUnconfirmed'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', textContent: '', checked: false }]));
@@ -49,8 +49,9 @@ test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as
     bindingRecovery: { message: 'Inspect this delivery' }, deliveryPhase: 'UNRESOLVED' };
   vm.runInContext('render({ok:true,state})', context);
   assert.equal(nodes.status.className, 'badge bad'); assert.equal(nodes.status.textContent, '전송 확인 필요');
-  assert.match(nodes.detail.textContent, /Original cause/u); assert.match(nodes.detail.textContent, /Inspect this delivery/u);
-  assert.match(nodes.detail.textContent, /tab 8/u); assert.equal(nodes.deliveryRecovery.hidden, false);
+  assert.match(vm.runInContext("connectionDiagnosticText", context), /Original cause/u); assert.match(vm.runInContext("connectionDiagnosticText", context), /Inspect this delivery/u);
+  assert.doesNotMatch(nodes.detail.textContent, /Original cause|identity:/u);
+  assert.match(vm.runInContext("connectionDiagnosticText", context), /tab 8/u); assert.equal(nodes.deliveryRecovery.hidden, false);
 });
 
 for (const [label, stored, server, phase] of [

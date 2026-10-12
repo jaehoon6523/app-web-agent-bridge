@@ -50,7 +50,13 @@ test("extension manifest targets registered Web providers and loads selectors be
   assert.ok(manifest.content_scripts[0].js.includes("runtime/providers/claude-page.js"));
   assert.equal(manifest.content_scripts[0].js.at(-1), "content.js");
   const background = await readFile(path.join(ROOT, "extension", "background.js"), "utf8");
-  assert.doesNotMatch(background, /chrome\.tabs\.create/);
+  // The pairing-page navigation is intentionally local, separate from Web provider bootstrap.
+  const localPairing = background.match(/if \(message.type === "bridge.openPairing"\) \{[\s\S]*?return chrome\.tabs\.create\(\{ url: url.toString\(\) \}\); \}/)?.[0];
+  assert.ok(localPairing, "local pairing navigation must be explicit");
+  assert.match(localPairing, /validateLocalControllerUrl/);
+  assert.match(localPairing, /url.pathname = "\/extension-pairing.html"/);
+  assert.match(localPairing, /url.search = ""; url.hash = ""/);
+  assert.doesNotMatch(background.replace(localPairing, ""), /chrome\.tabs\.create/);
   assert.doesNotMatch(background, /searchParams\.set/);
   assert.doesNotMatch(background, /controllerToken|selectedTabId/);
 });

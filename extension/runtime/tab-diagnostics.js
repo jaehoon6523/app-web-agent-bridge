@@ -22,7 +22,7 @@ export async function inspectChatGptTabs(tabs, { limit = Infinity } = {}) {
   }));
 }
 
-export async function openInspectedChatGptTab(tabs, expected) {
+export async function openInspectedChatGptTab(tabs, expected, windows = null) {
   if (!Number.isInteger(expected?.tabId) || !canonicalChatGptUrl(expected?.url)) {
     throw new Error("확인한 ChatGPT 탭을 선택하세요.");
   }
@@ -31,6 +31,7 @@ export async function openInspectedChatGptTab(tabs, expected) {
     throw new Error("탭이 닫혔거나 주소가 변경됐습니다. 탭 상태를 다시 확인하세요.");
   }
   await tabs.update(tab.id, { active: true });
+  if (windows && Number.isInteger(tab.windowId)) await windows.update(tab.windowId, { focused: true });
   return { opened: true, tabId: tab.id };
 }
 
@@ -49,5 +50,15 @@ export async function replyToSelectorDiagnostics(tabs, send, requestId, extensio
           acknowledgedDeliveryId:state.lastAcknowledgedDelivery?.deliveryId ?? null } : null } });
   } catch {
     send({ type:"extension.diagnostics.inspected", requestId, payload:{ errorCode:"TAB_INSPECTION_FAILED" } });
+  }
+}
+
+export async function replyToTabFocus(chromeApi, send, message) {
+  try {
+    const payload = await openInspectedChatGptTab(chromeApi.tabs, message.payload, chromeApi.windows);
+    send({ type:"web.tab.focused", requestId:message.requestId, payload });
+  } catch {
+    send({ type:"web.session.error", requestId:message.requestId,
+      payload:{ code:"TAB_CHANGED", message:"탭을 열지 못했습니다. 최신 후보를 확인하세요." } });
   }
 }

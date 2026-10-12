@@ -1,3 +1,5 @@
+import { exportDiagnosticLog } from "./diagnostic-export.js";
+import { renderPreparationTabChoice, renderPreparationTransmission } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
@@ -30,6 +32,8 @@ let reviewerSelectionRoot = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
 let historyScope = sessionStorage.getItem("bridge.history.scope") || "ALL";
+const tabChoiceFailures = new Map();
+let latestRunDiagnostic = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
 let requestedView = "";
@@ -72,7 +76,7 @@ const errorCopy = Object.freeze({
   WEB_SESSION_PROVIDER_MISMATCH:"설정한 감사 서비스와 실제 연결이 다릅니다. 감사자 대화 연결을 다시 확인하세요.",
   INVALID_INPUT:"입력 내용을 확인하세요.",
 });
-function userFacingError(error, fallback = "요청을 처리하지 못했습니다. 최신 상태와 기술 진단을 확인하세요.") {
+function userFacingError(error, fallback = "요청을 처리하지 못했습니다. 최신 상태를 확인하고 필요하면 진단 로그를 내보내세요.") {
   const code = typeof error?.code === "string" ? error.code : null;
   if (code && errorCopy[code]) return errorCopy[code];
   const message = typeof error?.message === "string" ? error.message.trim() : "";
@@ -323,6 +327,7 @@ function disabledWebReason(action) {
   return "";
 }
 function render() {
+  renderPreparation();
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
   if (!$("proposalWaiting")) {
     const waiting = node("p", "ChatGPT 응답을 기다리고 있습니다", "proposal-waiting");
@@ -510,8 +515,7 @@ function render() {
       const heldFailure = preparation.lifecycle === "ACTIVE";
       text("startReason", (heldFailure ? "현재 준비 요청이 실패했습니다. 오류를 확인하거나 ‘요청 취소’를 선택하세요. "
         : `이전 준비 ${preparation.preparationId}의 전송 실패 기록입니다. `)
-        + preparation.error.code + ": " + preparation.error.message
-        + (preparation.error.details ? "\n실패 진단: " + JSON.stringify(preparation.error.details) : ""));
+        + preparation.error.message + " 상세 원인은 진단 로그로 내보낼 수 있습니다.");
     }
   }
   $("chooseFolder").disabled = !currentPreparationActions().chooseFolder || operations.folderPicker !== "IDLE";
@@ -905,7 +909,7 @@ function proposalControls() {
 }
 function renderPreparation() {
   if (!preparation) { preparationSignature = ""; return; }
-  const signature = JSON.stringify(preparation);
+  const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
   $("planningObjective").value = preparation.objective;
@@ -945,39 +949,25 @@ function renderPreparation() {
     && typeof session?.documentId === "string" && session.documentId && session?.frameId === 0;
   const exactBound = session?.bindingState === "BOUND" && diagnostic.exactConversation === true;
   const bindingConfirmed = exactBound || rootReady;
-  const tabId = diagnostic.tabId ?? session?.tabId ?? "확인되지 않음";
-  const identity = diagnostic.extensionIdentity ?? session?.extensionIdentity ?? "확인되지 않음";
-  recovery.append(node("p",
-    bindingConfirmed
-      ? rootReady
-        ? `연결 성공: ChatGPT tab ${tabId} · ROOT_READY · 새 대화 입력 document 확인됨`
-        : `연결 성공: ChatGPT tab ${tabId} · BOUND · identity: ${identity} · 정확한 conversation 일치`
-      : `연결 비활성화: ChatGPT tab ${tabId} · ${session?.bindingState ?? "UNBOUND"} · identity: ${identity} · BOUND 및 정확한 conversation 일치가 확인되지 않음`,
+  recovery.append(node("p", bindingConfirmed ? "사용할 대화 탭이 확인됐습니다."
+    : "대화 탭 연결을 확인해야 합니다. 아래 상태 확인 또는 탭 선택을 이용하세요.",
     bindingConfirmed ? "recovery-guidance ok" : "recovery-guidance error"));
   const tabCandidates = preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED"
     && Array.isArray(preparation.error?.details?.candidates)
     ? preparation.error.details.candidates
     : [];
-  if (tabCandidates.length) {
-    const chooser = node("div", "", "flow-band");
-    chooser.append(
-      node("h2", "사용할 ChatGPT 탭 선택"),
-      node("p", "메시지는 아직 전송되지 않았습니다. 아래 후보 중 이 작업에 사용할 탭을 선택하면 정확한 탭으로 다시 연결한 뒤 최초 전송을 계속합니다."),
-    );
-    for (const candidate of tabCandidates) {
-      const row = node("div", "", "record");
-      row.append(node("p", `tab ${candidate.tabId}${candidate.windowId === null ? "" : ` · window ${candidate.windowId}`} · ${candidate.url}`));
-      const button = node("button", `tab ${candidate.tabId} 사용`);
-      button.type = "button"; button.dataset.webCommand = "web.rebind";
-      const disabled = !capabilities().has("web.rebind") || operations.webTurn !== "IDLE";
-      button.disabled = disabled; buttonReason(button, disabled ? disabledWebReason("web.rebind") : "");
-      button.addEventListener("click", () => webSessionCommand("web.rebind", { selectedTabId:candidate.tabId }));
-      row.append(button); chooser.append(row);
-    }
-    recovery.append(chooser);
-  }
+  if (tabCandidates.length) summary.prepend(renderPreparationTabChoice({
+    candidates: tabCandidates, operation: operations.webTurn, allowed: capabilities().has("web.rebind"),
+    hint: new URLSearchParams(location.search).get("prepareTab"),
+    rejection: tabChoiceFailures.get(session.activeDeliveryId) ?? "",
+    onSubmit: selectedTabId => webSessionCommand("web.rebind", { selectedTabId }),
+    onRefresh: async () => { tabChoiceFailures.delete(session.activeDeliveryId); preparationSignature = ""; await refresh(); },
+    onView: tabId => request("/api/preparations/tab-focus", { method:"POST", body:JSON.stringify({
+      preparationId:preparation.preparationId, deliveryId:session.activeDeliveryId, tabId }) }),
+  }));
   const deliveries = preparation.deliveries ?? [];
   const displayedDelivery = deliveries.find(item => item.deliveryId === session?.activeDeliveryId) ?? deliveries.at(-1);
+  if (displayedDelivery && !tabCandidates.length) summary.prepend(renderPreparationTransmission(displayedDelivery));
   if (displayedDelivery) {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
       RESPONSE_STARTED: "응답 생성 중", RESPONSE_COMPLETED: "응답 수신 · 검증 또는 수신 확인 필요",
@@ -1013,11 +1003,6 @@ function renderPreparation() {
         ? `packet 양식: ${formatError.code} · ${formatError.message}`
         : "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
     }
-    if (typeof displayedDelivery.response?.rawText === "string") {
-      const raw = node("details", "", "session-raw-response");
-      raw.append(node("summary", "raw 응답"), node("pre", displayedDelivery.response.rawText));
-      recovery.append(raw);
-    }
     if (displayedDelivery.response?.confidence === "HEURISTIC") {
       recovery.append(node("p", "응답 전달 검증: 확인 불가 · 이번 요청에 대한 응답인지 DOM 순서로 확정하지 못함", "recovery-guidance error"));
       recovery.append(node("p", confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
@@ -1030,47 +1015,9 @@ function renderPreparation() {
     if (displayedFailures.length) {
       const otherFailures = failures.filter(item => item !== confidenceFailure);
       if (otherFailures.length) recovery.append(node("p", "확인하지 못한 항목: " + otherFailures.map(item => item.name).join(", "), "recovery-guidance error"));
-      const detail = node("details", "");
-      detail.append(node("summary", "응답 확인 상세"), node("pre", JSON.stringify(displayedFailures, null, 2)));
-      recovery.append(detail);
     }
-    const trace = displayedDelivery.trace ?? displayedDelivery.response?.trace ?? null;
-    const traceDetails = {
-      commandRequestId: displayedDelivery.commandRequestId ?? null,
-      preparationId: displayedDelivery.preparationId ?? preparation.preparationId,
-      sessionId: displayedDelivery.sessionId ?? session?.sessionId ?? null,
-      deliveryId: displayedDelivery.deliveryId,
-      requestId: trace?.requestId ?? null,
-      bindingId: trace?.bindingId ?? null,
-      tabId: trace?.tabId ?? null,
-      documentId: trace?.documentId ?? null,
-      frameId: trace?.frameId ?? null,
-      actionId: trace?.actionId ?? null,
-      result: trace?.result ?? null,
-    };
-    const detail = node("details", "");
-    detail.append(node("summary", "요청→브라우저 성공 trace"), node("pre", JSON.stringify(traceDetails, null, 2)));
-    recovery.append(detail);
   }
-  recovery.append(node("h2", "대화 · 전송 상태"));
-  const bool = (value) => value === true ? "예" : value === false ? "아니오" : "확인되지 않음";
-  for (const [label, value] of [
-    ["작업", preparation.objective], ["준비 ID", preparation.preparationId],
-    ["대화", session?.conversationUrl], ["대화 ID", session?.conversationId],
-    ["sessionId", session?.sessionId], ["deliveryId", displayedDelivery?.deliveryId],
-    ["연결 상태", session?.bindingState], ["탭 도달 가능", bool(diagnostic.pageReachable)],
-    ["정확한 conversation", bool(diagnostic.exactConversation)],
-    ["pageBusy", bool(diagnostic.pageBusy)], ["generating", bool(diagnostic.generating)],
-    ["extensionBusy", bool(diagnostic.extensionBusy)], ["pageStatus", diagnostic.pageStatus],
-    ["canFocus", bool(diagnostic.canFocus)], ["canStop", bool(diagnostic.canStop)],
-    ["해당 전송 종료 확인", bool(diagnostic.canRecover)],
-  ]) recovery.append(node("p", label + ": " + (value ?? "확인되지 않음")));
-  for (const row of recovery.querySelectorAll("p")) {
-    const value = row.textContent.split(": ").at(-1);
-    if (value === "RECOVERY_REQUIRED") row.classList.add("health", "error", "diagnostic-row");
-    else if (["READY", "예", "아니오"].includes(value)) row.classList.add("health", "ok", "diagnostic-row");
-    else if (value === "확인되지 않음") row.classList.add("health", "warn", "diagnostic-row");
-  }
+  recovery.append(node("p", "선택자·문서 토큰·전송 상세·원시 응답은 진단 로그 내보내기에 포함됩니다."));
   const webActionReason = (action) => {
     if (!connected) return "최신 상태를 확인할 수 없습니다.";
     if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
@@ -1129,6 +1076,7 @@ async function preparationMutation(operation, capability, url, payload = {}) {
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations[operation] = "UNKNOWN_RESULT"; unknownRequests.set(operation, requestId); }
     const message = userFacingError(error);
+    if (capability === "web.rebind" && error.code !== "UNKNOWN_RESULT") tabChoiceFailures.set(payload.deliveryId, message);
     text("projectStatus", message); text("startReason", message);
     return false;
   } finally {
@@ -1139,7 +1087,7 @@ async function preparationMutation(operation, capability, url, payload = {}) {
 async function webSessionCommand(commandType, extras = {}) {
   const session = preparation?.webSession;
   if (!session) return;
-  await preparationMutation("webTurn", commandType, "/api/preparations/web", {
+  return preparationMutation("webTurn", commandType, "/api/preparations/web", {
     command: commandType, preparationId: workflow.preparationId,
     sessionId: session.sessionId, conversationId: session.conversationId,
     conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId,
@@ -1266,8 +1214,9 @@ $("reconcileRun").addEventListener("click", async () => {
   text("reconcileResult", "현재 상태를 확인 중입니다.");
   const result = await command("run.reconcile");
   if (snapshot?.run?.runId !== target) return;
+  latestRunDiagnostic = { runId:target, observedAt:new Date().toISOString(), result };
   text("reconcileResult", result
-    ? `진단: ${result.classification ?? "미확인"}\n관찰: ${JSON.stringify(result.observations ?? [], null, 2)}\n가능한 조치: ${(result.allowedActions ?? []).join(", ") || "없음"}\n이 진단은 외부 작업 종료를 확인하지 않습니다.`
+    ? `진단: ${result.classification ?? "미확인"}\n상세 관측값은 진단 로그 내보내기로 확인하세요.\n가능한 조치: ${(result.allowedActions ?? []).join(", ") || "없음"}\n이 진단은 외부 작업 종료를 확인하지 않습니다.`
     : "진단에 실패했습니다. 위 명령 결과와 연결 상태를 확인하세요.");
 });
 $("retryRun").addEventListener("click", () => {
@@ -1370,4 +1319,14 @@ async function poll() {
   catch (error) { connected = false; showDashboardPageError(error); }
   finally { if ($("dashboardPageError").hidden) setTimeout(poll, 2500); }
 }
+
+$("exportDiagnosticLog").addEventListener("click", async () => {
+  const button = $("exportDiagnosticLog"), status = $("diagnosticExportStatus");
+  button.disabled = true; status.textContent = "진단 로그를 수집하는 중입니다.";
+  try { const result = await exportDiagnosticLog({ request, preparation, connectionState, lastConfirmed, runDiagnostic:latestRunDiagnostic, includeRaw:$("includeRawDiagnostic").checked });
+    status.textContent = result.cancelled ? "로그 내보내기를 취소했습니다." : result.partial ? "일부 정보를 수집하지 못했습니다. 확보된 로그 다운로드를 요청했습니다." : "진단 로그 다운로드를 요청했습니다.";
+  } catch { status.textContent = "로그 내보내기에 실패했습니다. 다시 시도하세요."; }
+  finally { button.disabled = false; }
+});
+
 void poll();
