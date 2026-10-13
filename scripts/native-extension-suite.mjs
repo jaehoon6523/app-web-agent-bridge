@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { createControlledPrompt } from '../extension/runtime/markers.js';
-import { nativeExtensionComplete, sendNativePrompt } from './native-extension-contract.js';
+import { nativeExtensionComplete, sendNativePrompt, nativeFixtureHtml } from './native-extension-contract.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = path.resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? path.join(root, '.agent-controller'));
@@ -45,15 +45,7 @@ try {
   const page = await context.newPage();
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await context.route('https://chatgpt.com/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html>
-    <title>Native extension lifecycle fixture</title><main id="messages"></main>
-    <textarea id="prompt-textarea"></textarea><button data-testid="send-button">Send</button>
-    <script>document.querySelector('button').onclick = () => {
-      const article = document.createElement('article'); article.setAttribute('data-message-author-role', 'user'); article.id = 'u1';
-      const body = document.createElement('div'); body.setAttribute('data-message-content', ''); body.textContent = document.querySelector('textarea').value;
-      article.append(body); document.querySelector('main').append(article); document.querySelector('textarea').value = '';
-      window.fixtureClicks = (window.fixtureClicks || 0) + 1;
-    };</script>` }));
+  await context.route('https://chatgpt.com/**', route => route.fulfill({contentType:'text/html',body:nativeFixtureHtml}));
   await page.goto('https://chatgpt.com/c/native-fixture');
   const [tab] = await worker.evaluate(() => chrome.tabs.query({ url: 'https://chatgpt.com/c/native-fixture' }));
   const ping = async () => worker.evaluate(id => chrome.tabs.sendMessage(id, { type: 'agent.ping' }, { frameId: 0 }), tab.id);

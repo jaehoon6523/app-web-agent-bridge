@@ -3,6 +3,40 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { collectSelectorDiagnostics } from '../src/orchestration/selector-diagnostics.js';
 import { extensionBrowser } from '../tests/helpers/extension-browser.mjs';
+import { nativeFixtureHtml } from './native-extension-contract.js';
+import { createControlledPrompt } from '../extension/runtime/markers.js';
+
+test('native fixture preserves rendered delivery markers and still rejects a manual user turn', {timeout:20000}, async t => {
+  const text=createControlledPrompt({controllerMessageId:'native-delivery',runId:'native-run',text:'Controlled fixture lifecycle test'});
+  for (const preserve of [false,true]) {
+    const html=preserve ? nativeFixtureHtml : nativeFixtureHtml.replace("body.style.whiteSpace = 'pre-wrap';",'');
+    const f=await extensionBrowser(t,{initialUrl:'https://chatgpt.com/c/native-fixture',providerHtml:html,autoConnect:false});
+    const ping=await f.sendContent({type:'agent.ping'});
+    const completion=f.sendContent({type:'agent.prompt',requestId:'native-delivery',payload:{
+      text,controllerMessageId:'native-delivery',runId:'native-run',expectedDocumentId:ping.documentId,
+      expectedFrameId:0,expectedConversationUrl:ping.url,expectedConversationId:ping.conversationId,
+      timeoutMs:5000,stableMs:1000,
+    }});
+    await f.page.waitForFunction(() => window.fixtureClicks === 1);
+    const rendered=await f.page.locator('[data-message-content]').innerText();
+    if (!preserve) {
+      assert.notEqual(rendered,text,'default CSS collapses the controlled marker lines');
+      const rejected=await completion;
+      assert.equal(rejected.code,'MANUAL_INTERVENTION_DETECTED');
+    } else {
+      assert.equal(rendered,text);
+      assert.equal((await f.sendContent({type:'agent.ping'})).activeRequestId,'native-delivery');
+      await f.page.evaluate(() => {
+        const manual=document.createElement('article'); manual.id='manual-user';
+        manual.setAttribute('data-message-author-role','user'); manual.textContent='Manual fixture message';
+        document.querySelector('main').append(manual);
+      });
+      assert.equal((await completion).code,'MANUAL_INTERVENTION_DETECTED');
+    }
+    assert.equal(await f.page.evaluate(() => window.fixtureClicks),1);
+    t.diagnostic(JSON.stringify({preserve,rendered}));
+  }
+});
 
 async function reinject(page) {
   const manifest = JSON.parse(await fs.readFile(new URL('../extension/manifest.json', import.meta.url), 'utf8'));

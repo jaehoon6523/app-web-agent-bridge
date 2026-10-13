@@ -74,12 +74,16 @@ test('native worker prompt carries exact identity and exposes content rejection 
   const initial=await f.send({type:'agent.ping'});
   const binding={currentDeliveryId:'native-delivery',lastBoundRunId:'native-run',
     documentId:initial.documentId,frameId:0,conversationUrl:initial.url,conversationId:'test'};
+  let contentError;
   const dispatch=vm.runInNewContext(`(${sendNativePrompt.toString()})`,{
-    chrome:{tabs:{sendMessage:(_tabId,message)=>f.send(message)}},
+    chrome:{tabs:{sendMessage:async (_tabId,message)=>{
+      const reply=await f.send(message); contentError=reply.error; return reply;
+    }}},
   });
   const text='[controller_message_id:native-delivery]\n[run_id:native-run]\nControlled fixture';
   for (const missing of ['currentDeliveryId','lastBoundRunId','conversationId']) {
-    await assert.rejects(dispatch({tabId:1,binding:{...binding,[missing]:null},text}),/INVALID_DELIVERY/u);
+    await assert.rejects(dispatch({tabId:1,binding:{...binding,[missing]:null},text}),
+      error => contentError && error.message === `INVALID_DELIVERY: ${contentError}`);
     assert.equal((await f.send({type:'agent.ping'})).busy,false);
   }
   const completion=dispatch({tabId:1,binding,text});
