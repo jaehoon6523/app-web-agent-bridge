@@ -10,3 +10,17 @@ export function nativeExtensionComplete(receipt) {
     && new Set(receipt.steps.map(step => step.id)).size === nativeExtensionSteps.length
     && nativeExtensionSteps.every(id => receipt.steps.some(step => step.id === id && step.pass === true));
 }
+
+// Standalone callback for the real extension worker and the content-contract regression.
+export async function sendNativePrompt({tabId,binding,text}) {
+  const reply = await globalThis.chrome.tabs.sendMessage(tabId, {
+    type:'agent.prompt',requestId:binding.currentDeliveryId,payload:{
+      text,controllerMessageId:binding.currentDeliveryId,runId:binding.lastBoundRunId,
+      expectedDocumentId:binding.documentId,expectedFrameId:binding.frameId,
+      expectedConversationUrl:binding.conversationUrl,expectedConversationId:binding.conversationId,
+      timeoutMs:60_000,stableMs:1000,
+    },
+  });
+  if (!reply?.ok) throw new Error(`${reply?.code ?? 'NATIVE_PROMPT_REJECTED'}: ${reply?.message ?? 'Content script rejected the native prompt.'}`);
+  return reply;
+}

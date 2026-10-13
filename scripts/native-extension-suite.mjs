@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { createControlledPrompt } from '../extension/runtime/markers.js';
-import { nativeExtensionComplete } from './native-extension-contract.js';
+import { nativeExtensionComplete, sendNativePrompt } from './native-extension-contract.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = path.resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? path.join(root, '.agent-controller'));
@@ -140,13 +140,12 @@ try {
   await detached.close();
   result.steps.push({id:'window-resize',name:'native window creation and API resize preserve exact ownership and never dispatch',pass:true}); save();
   const text = createControlledPrompt({ controllerMessageId: 'native-delivery', runId: 'native-run', text: 'Controlled fixture lifecycle test' });
-  await worker.evaluate(({ id, text, documentId, url }) => {
-    void chrome.tabs.sendMessage(id, { type: 'agent.prompt', requestId: 'native-delivery', payload: {
-      text, expectedDocumentId: documentId, expectedFrameId: 0, expectedConversationUrl: url,
-      timeoutMs: 60_000, stableMs: 1000,
-    } }).catch(() => {});
-  }, { id: tab.id, text, documentId: original, url: observed.url });
-  await page.waitForFunction(() => window.fixtureClicks === 1, { timeout: 10_000 });
+  const prompt = worker.evaluate(sendNativePrompt, {tabId:tab.id,binding:state,text});
+  // Completion stays pending for the lifecycle checks; immediate rejection must fail at dispatch.
+  await Promise.race([
+    page.waitForFunction(() => window.fixtureClicks === 1, null, {timeout:10_000}),
+    prompt.then(() => {throw new Error('Native prompt completed before pending lifecycle observation.');}),
+  ]);
   assert.equal((await ping()).activeRequestId, 'native-delivery');
   await worker.evaluate(({ tabId, files, documentId }) => chrome.scripting.executeScript({ target: { tabId, documentIds: [documentId] }, files }),
     { tabId: tab.id, files, documentId: nativeDocumentId });

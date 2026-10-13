@@ -6,6 +6,7 @@ import { createBrowserRuntime } from '../extension/runtime/browser-runtime.js';
 import { installCurrentTargetTracking } from '../extension/runtime/current-target.js';
 import { createCoalescedTask } from '../extension/runtime/coalesced-task.js';
 import { createActiveTurnGate } from '../extension/runtime/turn-guard.js';
+import { sendNativePrompt } from '../scripts/native-extension-contract.js';
 
 const manifest = JSON.parse(fs.readFileSync(new URL('../extension/manifest.json', import.meta.url)));
 const scripts = manifest.content_scripts[0].js.map(file => [file, fs.readFileSync(new URL('../extension/' + file, import.meta.url), 'utf8')]);
@@ -66,6 +67,26 @@ test('reinjection preserves an active prompt and the cancellation owner', async 
   assert.equal((await f.send({ type: 'agent.cancel', requestId: 'delivery' })).cancelled, true);
   assert.equal((await completion).code, 'TURN_INTERRUPTED');
   assert.equal((await f.send({ type: 'agent.ping' })).busy, false);
+});
+
+test('native worker prompt carries exact identity and exposes content rejection before a click wait', async () => {
+  const f = contentWorld({active:true});
+  const initial=await f.send({type:'agent.ping'});
+  const binding={currentDeliveryId:'native-delivery',lastBoundRunId:'native-run',
+    documentId:initial.documentId,frameId:0,conversationUrl:initial.url,conversationId:'test'};
+  const dispatch=vm.runInNewContext(`(${sendNativePrompt.toString()})`,{
+    chrome:{tabs:{sendMessage:(_tabId,message)=>f.send(message)}},
+  });
+  const text='[controller_message_id:native-delivery]\n[run_id:native-run]\nControlled fixture';
+  for (const missing of ['currentDeliveryId','lastBoundRunId','conversationId']) {
+    await assert.rejects(dispatch({tabId:1,binding:{...binding,[missing]:null},text}),/INVALID_DELIVERY/u);
+    assert.equal((await f.send({type:'agent.ping'})).busy,false);
+  }
+  const completion=dispatch({tabId:1,binding,text});
+  const cancelled=assert.rejects(completion,/TURN_INTERRUPTED/u);
+  assert.equal((await f.send({type:'agent.ping'})).activeRequestId,'native-delivery');
+  assert.equal((await f.send({type:'agent.cancel',requestId:'native-delivery'})).cancelled,true);
+  await cancelled;
 });
 
 function browserHarness() {
