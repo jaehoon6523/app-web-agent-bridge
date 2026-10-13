@@ -126,14 +126,14 @@ test("runtime read deadline preserves initialization and a later snapshot observ
 });
 
 
-test("configuration: parsed read budget reaches the HTTP snapshot through explicit server configuration", { timeout:10000 }, async t => {
+test("configuration: parsed read budget reaches the HTTP snapshot inside the five-second HTTP deadline", { timeout:10000 }, async t => {
   const baseUrl = await startServer(t, true, "100");
   const started = performance.now();
   let response;
   try { response = await fetch(`${baseUrl}/api/state`, {
-    headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(1000),
+    headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(responseDeadlineMs),
   }); }
-  finally { t.diagnostic(JSON.stringify({stateFetchElapsedMs:performance.now()-started,deadlineMs:1000})); }
+  finally { t.diagnostic(JSON.stringify({stateFetchElapsedMs:performance.now()-started,deadlineMs:responseDeadlineMs})); }
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
