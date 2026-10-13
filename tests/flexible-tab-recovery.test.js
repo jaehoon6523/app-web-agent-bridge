@@ -79,7 +79,7 @@ function popupFixture() {
   const nodes = Object.fromEntries(ids.map(id => [id, node()])), sent = [];
   const state = { ...ownerState, connected: true, deliveryPhase: 'UNRESOLVED', extensionVersion: '0.2.4',
     deliveryOwner: deliveryOwner(ownerState) };
-  const context = vm.createContext({ document: { querySelector: selector => nodes[selector.slice(1)], createElement: node },
+  const context = vm.createContext({ URLSearchParams, document: { querySelector: selector => nodes[selector.slice(1)], createElement: node },
     chrome: { runtime: { onMessage: { addListener() {} }, sendMessage: async message => {
       sent.push(message);
       if (message.type === 'bridge.getState') return { ok: true, state };

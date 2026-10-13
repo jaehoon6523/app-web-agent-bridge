@@ -143,8 +143,23 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   const rendered = await dashboard.locator("body").innerText();
   assert.match(rendered, new RegExp(context.agreement.summary.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   for (const line of expectedUi) assert.ok(rendered.includes(line), `Dashboard did not render: ${line}`);
-  const rawBlocks = await dashboard.locator(".session-recovery pre").allTextContents();
-  assert.ok(rawBlocks.includes(rawText), "Dashboard did not preserve the exact raw response.");
+  assert.equal(await dashboard.locator(".session-recovery pre").count(), 0,
+    "raw response details belong in an explicit export, not the main recovery panel");
+  dashboard.on('dialog', dialog => dialog.accept());
+  await dashboard.locator('#includeRawDiagnostic').check();
+  const downloaded = dashboard.waitForEvent('download');
+  await dashboard.locator('#exportDiagnosticLog').click();
+  const file = await downloaded, stream = await file.createReadStream(), chunks = [];
+  for await (const chunk of stream) chunks.push(chunk);
+  const report = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+  assert.equal(report.exportMode, 'WITH_RAW');
+  const exported = report.displayed.preparation.deliveries.find(item => item.deliveryId === delivery.deliveryId);
+  assert.ok(exported, 'the export must identify this actual persisted delivery');
+  // These controlled responses contain no credentials; their exact bytes must survive export.
+  assert.equal(exported.response.rawText, rawText,
+    'the download must carry this actual credential-free response, not a canned export sample');
+  assert.equal(service.snapshot().deliveries.at(-1).response.rawText, rawText,
+    'export redaction must not mutate the durable original response');
   observed.add("UI");
 
   assert.deepEqual([...observed], CRITICAL_PIPELINE);

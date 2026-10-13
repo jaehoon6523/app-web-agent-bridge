@@ -6,6 +6,7 @@ import path from 'node:path';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
 import {fileURLToPath} from 'node:url';
+import {nativeExtensionSteps} from '../scripts/native-extension-contract.js';
 
 const command = fileURLToPath(new URL('../scripts/verify-all.mjs',import.meta.url));
 async function execute(t, mode) {
@@ -20,8 +21,12 @@ async function execute(t, mode) {
       const uf=stage==='test:e2e:ci',native=stage==='test:extension:native';
       const target=path.join(root,uf?'ui-qa/e2e-summary.json':native?'latest-native-extension.json':'latest-test-result.json');
       fs.mkdirSync(path.dirname(target),{recursive:true});
-      fs.writeFileSync(target,JSON.stringify(native?{nativeExtension:true,completed:true,status:${JSON.stringify(mode)}==='native-unavailable'?'UNVERIFIED':'PASS',steps:Array.from({length:5},()=>({pass:true}))}:uf?{scope:'FULL SUITE',failed:0,unexpectedSkips:0}:
+      const ids=${JSON.stringify(nativeExtensionSteps)};
+      fs.writeFileSync(target,JSON.stringify(native?{nativeExtension:true,completed:true,status:${JSON.stringify(mode)}==='native-unavailable'?'UNVERIFIED':'PASS',
+        steps:ids.filter(id=>${JSON.stringify(mode)}!=='missing-window-boundary'||id!=='window-resize').map(id=>({id,pass:true}))}:uf?{scope:'FULL SUITE',failed:0,unexpectedSkips:0}:
         {status:'PASS',scheduled:['peer'],results:[{pass:true,summary:{completed:true}}]}));
+      if(stage==='test:browser' && ${JSON.stringify(mode)}!=='missing-gui') fs.writeFileSync(path.join(root,'tab-ux-browser-latest.json'),
+        JSON.stringify({exitCode:0,browserVersion:'controlled-peer',assertions:[{status:'PASS'}]}));
     }
     if (${JSON.stringify(mode)} === 'first-fails' && stage==='check') process.exitCode=7;
     if (${JSON.stringify(mode)} === 'native-unavailable' && stage==='test:extension:native') process.exitCode=2;
@@ -64,3 +69,9 @@ test('an unavailable native extension loader cannot be reported as complete appr
   assert.equal(code,2); assert.equal(result.status,'PARTIAL');
   assert.equal(result.stages[2].status,'UNVERIFIED'); assert.ok(log.endsWith('VERIFICATION PARTIAL\n'));
 });
+for (const [mode,command] of [['missing-gui','test:browser'],['missing-window-boundary','test:extension:native']])
+  test(`verification command rejects exit zero with ${mode} evidence`, {timeout:15000}, async t=>{
+    const {code,result}=await execute(t,mode);
+    assert.equal(code,1); assert.equal(result.status,'FAIL');
+    assert.equal(result.stages.find(stage=>stage.command===command).status,'FAIL');
+  });

@@ -44,27 +44,40 @@ test('real DOM fixture: reinjection and background reconstruction preserve a pen
 test('real DOM fixture: controller exposes only owner-matched ACK and explicit discard actions', { timeout: 20_000 }, async t => {
   const f = await extensionBrowser(t);
   const owner = { currentDeliveryId: 'd', sessionId: 's', runId: 'r', conversationUrl: 'https://chatgpt.com/c/test' };
-  let observation = { server: { status: 'MATCHED', records: [{ kind: 'REVIEW', active: true }] },
-    extension: { exact: true, phase: 'ACK_PENDING', extensionBusy: false, pageReachable: true, pageBusy: false, generating: false } };
+  let observation = { server: { status: 'MATCHED', records: [{ kind: 'REVIEW', active: true,
+    state:'RESPONSE_COMPLETED', processingState:'ACK_PENDING', responseStored:true }] },
+    extension: { exact: true, phase: 'ACK_PENDING', extensionBusy: false, pageReachable: true,
+      pageIdentityConfirmed:true, pageBusy: false, generating: false, hasCompletedDelivery:false } };
   const actions = [];
   await f.page.context().route('**/api/delivery-review**', async route => {
-    if (route.request().method() === 'POST') { actions.push(route.request().postDataJSON()); return route.fulfill({ json: { discarded: true } }); }
+    if (route.request().method() === 'POST') {
+      actions.push(route.request().postDataJSON());
+      observation = {server:{status:'MATCHED', records:[{kind:'REVIEW',active:false,state:'RECOVERY_DISCARDED',responseStored:false}]},
+        extension:{...observation.extension, exact:false, discardConfirmed:true, terminalDiscardProtocol:1}};
+      return route.fulfill({ json: { discarded: true } });
+    }
     return route.fulfill({ json: observation });
   });
   const dashboard = await f.page.context().newPage();
   await dashboard.goto('https://dashboard.fixture/delivery-recovery.html?' + new URLSearchParams(owner));
   await dashboard.locator('#ack').waitFor({ state: 'visible' });
   assert.equal(await dashboard.locator('#discard').isDisabled(), true);
+  assert.equal(await dashboard.locator('#discardPanel').isHidden(), true,
+    'stored response evidence must block discard');
+  observation = {...observation, server:{status:'MATCHED', records:[{kind:'REVIEW',active:true,state:'RECOVERY_REQUIRED',responseStored:false}]},
+    extension:{...observation.extension,phase:'UNRESOLVED'}};
+  await dashboard.locator('#inspect').click();
+  await dashboard.locator('#discardPanel').waitFor({state:'visible'});
   await dashboard.locator('#reason').fill('Reviewed the conversation');
-  await dashboard.locator('#unresolved').check(); await dashboard.locator('#noResend').check();
+  await dashboard.locator('#ownership').check();
   assert.equal(await dashboard.locator('#discard').isDisabled(), false);
   await dashboard.locator('#discard').click();
-  await dashboard.waitForFunction(() => document.querySelector('#status').textContent.includes('대상 전송을 폐기했습니다'));
+  await dashboard.waitForFunction(() => document.querySelector('#status').textContent.includes('브리지 소유권 기록 정리 완료'));
   assert.equal(actions.length, 1); assert.equal(actions[0].currentDeliveryId, 'd');
   assert.equal(actions[0].unresolvedResultConfirmed, true); assert.equal(actions[0].noAutomaticResendConfirmed, true);
   observation = { ...observation, server: { status: 'MISMATCH', records: [] }, extension: { ...observation.extension, exact: false } };
   await dashboard.locator('#inspect').click();
-  await dashboard.waitForFunction(() => document.querySelector('#status').textContent.includes('서버 기록 불일치'));
+  await dashboard.waitForFunction(() => document.querySelector('#serverState').textContent.includes('전송 식별자가 다른 기록'));
   assert.equal(await dashboard.locator('#discardPanel').isHidden(), true); assert.equal(await dashboard.locator('#ack').isHidden(), true);
   assert.deepEqual(f.errors, []);
 });

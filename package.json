@@ -18,7 +18,7 @@
     "test:fault": "node --test tests/fault/runtime-failure.test.js tests/fault/extension-failure.test.js tests/fault/reviewer-provider-failure.test.js tests/fault/state-projection-failure.test.js tests/fault/run-store-read-failure.test.js",
     "test:tab-ux-browser": "node scripts/preparation-tab-ux-browser.mjs",
     "test:ui": "node scripts/ui-scenarios.mjs",
-    "test:browser": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs",
+    "test:browser": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs && npm run test:tab-ux-browser",
     "test:extension:native": "node scripts/native-extension-suite.mjs",
     "test:critical": "node scripts/preparation-critical-suite.mjs",
     "test:sabotage": "node scripts/sabotage-critical-preparation.mjs",

@@ -32,6 +32,9 @@ let displayedDeliveryId = null;
 let tabDiagnostics = [], currentTabId = null, currentExtensionVersion = null;
 function send(message) { return chrome.runtime.sendMessage(message); }
 
+const openResizableWindow = document.querySelector("#openResizableWindow");
+const popupWindowStatus = document.querySelector("#popupWindowStatus");
+
 function render(response) {
   if (!response?.ok) {
     authenticated = false;
@@ -286,6 +289,26 @@ discardOrphan.addEventListener("click", async () => {
     : result?.ok ? "정리 응답은 수신했지만 최종 영수증을 확인하지 못했습니다. 상태를 다시 확인하세요."
     : result?.uncertain ? "정리 요청 결과를 확인할 수 없습니다. 상태를 다시 확인하세요."
     : "기록 정리 실행 거절 또는 실패: " + (result?.error ?? "확인 불가");
+});
+if (new URLSearchParams(globalThis.location?.search ?? "").get("view") === "window") {
+  document.body?.classList?.add("window-view");
+  if (openResizableWindow) openResizableWindow.hidden = true;
+  if (popupWindowStatus) popupWindowStatus.textContent = "창 테두리를 끌어 가로·세로 크기를 조절하세요.";
+}
+openResizableWindow?.addEventListener("click", async () => {
+  if (openResizableWindow.disabled) return;
+  openResizableWindow.disabled = true;
+  try {
+    // This opens a view of the existing state; it does not dispatch a turn.
+    await chrome.windows.create({
+      url:chrome.runtime.getURL("popup.html?view=window"), type:"popup", focused:true,
+      width:Math.min(760, globalThis.screen?.availWidth || 760),
+      height:Math.min(860, globalThis.screen?.availHeight || 860),
+    });
+    if (popupWindowStatus) popupWindowStatus.textContent = "크기 조절 창을 열었습니다.";
+  } catch {
+    if (popupWindowStatus) popupWindowStatus.textContent = "별도 창을 열지 못했습니다. 다시 시도하세요.";
+  } finally { openResizableWindow.disabled = false; }
 });
 chrome.runtime.onMessage.addListener(message => {
   if (message?.type === "bridge.state") render({ ok: true, state: message.payload });

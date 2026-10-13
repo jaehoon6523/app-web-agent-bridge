@@ -81,17 +81,35 @@ try {
   if (process.env.GUI_SCREENSHOT_DIR) await page.screenshot({path:process.env.GUI_SCREENSHOT_DIR+'/success.png',fullPage:true});
   console.log('PASS view-only focus, back, rejection, progress rail, 360px light/dark states');
   await page.addInitScript(()=>{
-    window.messages=[];
+    window.messages=[]; window.createdWindows=[];
+    window.popupState={connected:true,bindingStatus:'NEEDS_REBIND',extensionVersion:'0.2.19'};
     const tab={tabId:7,url:'https://chatgpt.com/',reachable:true,ready:true,composerPresent:true,busy:false,generating:false,runtimeVersion:'0.2.19'};
-    window.chrome={runtime:{onMessage:{addListener(){}},sendMessage:async message=>{
+    window.chrome={windows:{create:async options=>{
+      if(window.rejectWindowOpen)throw new Error('injected window creation failure');
+      window.createdWindows.push(options);return {id:42};
+    }},runtime:{getURL:path=>'chrome-extension://fixture/'+path,onMessage:{addListener(){}},sendMessage:async message=>{
       window.messages.push(message);
-      if(message.type==='bridge.getState') return {ok:true,state:{connected:true,bindingStatus:'NEEDS_REBIND',extensionVersion:'0.2.19'}};
+      if(message.type==='bridge.getState') return {ok:true,state:window.popupState};
       if(message.type==='bridge.exportDiagnostics') return {ok:true,report:{server:{status:'AVAILABLE'},diagnosticId:'test-report',rawText:'raw fixture',message:'Cookie: session=VISIBLE_BROWSER'}};
       if(message.type==='bridge.inspectTabs') return {ok:true,result:[tab]};
       return {ok:true};
     }}};
   });
+  await page.setViewportSize({width:1000,height:1000});
   await page.goto(`http://127.0.0.1:${server.address().port}/extension/popup.html`);
+  await page.locator('#openResizableWindow').click();
+  const created=await page.evaluate(()=>window.createdWindows);
+  assert.equal(created.length,1);
+  assert.equal(created[0].url,'chrome-extension://fixture/popup.html?view=window');
+  assert.equal(created[0].type,'popup');
+  assert.equal(created[0].focused,true);
+  assert.ok(created[0].width>390 && created[0].height>600);
+  assert.equal((await page.evaluate(()=>window.messages)).every(message=>message.type==='bridge.getState'),true);
+  await page.evaluate(()=>{window.rejectWindowOpen=true;});
+  await page.locator('#openResizableWindow').click();
+  assert.match(await page.locator('#popupWindowStatus').textContent(),/다시 시도/u);
+  assert.equal(await page.locator('#openResizableWindow').isEnabled(),true);
+  await page.evaluate(()=>{window.rejectWindowOpen=false;});
   await page.getByRole('button',{name:'열린 탭 다시 확인'}).click();
   assert.equal(await page.locator('#choosePreparationTab').isEnabled(),true);
   assert.equal(await page.locator('#tabDiagnosticDetail,#recoveryRaw').count(),0);
@@ -140,13 +158,31 @@ try {
   assert.equal(controllerReport.displayed.preparation.deliveries[0].response.rawText,'raw-for-export');
   assert.equal(controllerFile.suggestedFilename(),'controller-diagnostics-latest.json');
   console.log('PASS controller download retains raw response when server is unavailable');
+  await page.goto(`http://127.0.0.1:${server.address().port}/extension/popup.html?source=fixture&view=window&extra=1`);
+  await page.evaluate(async()=>{
+    Object.assign(window.popupState,{connected:false,bindingStatus:'AMBIGUOUS',currentDeliveryId:'resize-preserved-owner',deliveryPhase:'UNRESOLVED'});
+    await refresh();
+  });
+  assert.equal(await page.locator('#openResizableWindow').isVisible(),false);
+  assert.equal(await page.locator('#deliveryRecovery').isVisible(),true);
+  await page.locator('.settings > summary').click();
+  for (const width of [360,520,900,1200]) {
+    for (const height of [480,900]) {
+      await page.setViewportSize({width,height});
+      assert.equal(await page.locator('body').evaluate(element=>Math.round(element.getBoundingClientRect().width)),width);
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
+      assert.equal(await page.locator('#inspectTabs').isVisible(),true);
+      if(height===480) assert.equal(await page.evaluate(()=>document.documentElement.scrollHeight>innerHeight),true);
+    }
+  }
+  console.log('PASS detached popup view follows width and height; native ownership is checked by the installed-extension suite');
   evidence.exitCode=0;
 } catch(error) { evidence.failure={name:error.name,message:error.message};process.exitCode=1;console.error(error); }
 finally {
   try { await browser?.close(); if(server.listening) await new Promise((resolve,reject)=>server.close(error=>error?reject(error):resolve())); }
   catch(error) {evidence.cleanupFailure=error.message;evidence.exitCode=1;process.exitCode=1;}
   evidence.finishedAt=new Date().toISOString();
-  const directory=resolve(root,'.agent-controller');await mkdir(directory,{recursive:true});
+  const directory=resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? resolve(root,'.agent-controller'));await mkdir(directory,{recursive:true});
   await writeFile(resolve(directory,'tab-ux-browser-latest.json'),JSON.stringify(evidence,null,2)+'\n');
   console.log('BROWSER_RESULT '+JSON.stringify({exitCode:evidence.exitCode,browserVersion:evidence.browserVersion,assertions:evidence.assertions.length}));
 }

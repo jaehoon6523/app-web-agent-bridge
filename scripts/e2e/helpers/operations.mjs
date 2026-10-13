@@ -157,8 +157,10 @@ export async function binding(t,f) {
   const stale=await setup.extension.sendContent({type:'agent.prompt',requestId:'controlled-stale',payload:{expectedDocumentId:old,expectedFrameId:0}});
   assert.equal(stale.ok,false);assert.equal(stale.code,'WEB_DOCUMENT_CHANGED');
   assert.equal(await setup.extension.page.evaluate(()=>Number(sessionStorage.getItem('clicks'))),clicks);
-  await setup.extension.createProviderTab(setup.context.conversationUrl);
-  await setup.extension.createProviderTab(setup.context.conversationUrl);
+  // An unrelated tab changes allocation order; candidate IDs must come from Chrome.
+  await setup.extension.createProviderTab('https://chatgpt.com/c/unrelated-candidate');
+  const chosenTab = await setup.extension.createProviderTab(setup.context.conversationUrl);
+  const otherTab = await setup.extension.createProviderTab(setup.context.conversationUrl);
   await setup.extension.page.goto('https://chatgpt.com/c/unrelated');
   const blocked=state(f,b=>b.preparation?.error?.code==='WEB_TAB_SELECTION_REQUIRED');
   await f.page.locator('#proposalFeedback').fill('Explicitly recover the reloaded conversation');await f.page.locator('#reviseRequirements').click();
@@ -167,13 +169,17 @@ export async function binding(t,f) {
   await f.page.locator('#preparationDiagnostics > summary').click();
   await f.page.locator('.session-recovery > summary').click();
   const ready=state(f,b=>b.preparation?.deliveries.at(-1)?.state==='ACKNOWLEDGED' && b.preparation.deliveries.length===3);
-  await f.page.locator('[data-web-command="web.rebind"]').first().click();
-  const recovered=(await ready).preparation;assert.equal(recovered.webSession.tabId,8);
-  const selected=setup.extension.providerPages().find(([id])=>id===8)[1];
+  const choice=f.page.locator('.preparation-tab-choice');
+  await choice.locator(`input[value="${chosenTab.id}"]`).check();
+  assert.equal(await setup.extension.page.evaluate(()=>Number(sessionStorage.getItem('clicks'))),clicks,
+    'selecting a candidate must not send a prompt');
+  await choice.locator('.tab-choice-send').click();
+  const recovered=(await ready).preparation;assert.equal(recovered.webSession.tabId,chosenTab.id);
+  const selected=setup.extension.providerPages().find(([id])=>id===chosenTab.id)[1];
   const selectedPing=await setup.extension.sendContent({type:'agent.ping'},selected);
   assert.equal(recovered.webSession.documentId,selectedPing.documentId);
   assert.equal(await selected.evaluate(()=>Number(sessionStorage.getItem('clicks'))),1);
-  const other=setup.extension.providerPages().find(([id])=>id===9)[1];assert.equal(await other.evaluate(()=>Number(sessionStorage.getItem('clicks')||0)),0);
+  const other=setup.extension.providerPages().find(([id])=>id===otherTab.id)[1];assert.equal(await other.evaluate(()=>Number(sessionStorage.getItem('clicks')||0)),0);
   saveEvidence(f,'binding-boundary',{old,newDocument:ping.documentId,stale,failed,recovered,oldDocumentSendZero:true,otherTabSendZero:true});
 }
 export async function restart(t,f) {

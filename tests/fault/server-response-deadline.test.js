@@ -11,7 +11,7 @@ const serverUrl = new URL("../../src/server.js", import.meta.url).href;
 const token = "response-deadline-dashboard-token-0123456789";
 const responseDeadlineMs = 5000;
 
-async function startServer(t, stalledRuntime = false, readTimeoutEnv = null) {
+async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, events = []) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-response-deadline-"));
   const probe = net.createServer();
   await new Promise((resolve, reject) => { probe.once("error", reject); probe.listen(0, "127.0.0.1", resolve); });
@@ -36,7 +36,7 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null) {
     }
     if (${stalledRuntime}) {
       const bridge = createBridgeServer({ runtimeConfig:config, createLiveRuntime:() => new Promise(() => {}),
-        onDiagnostic:event=>{if(/^(?:preparation|runtime)\\.initialization\\.|^state\\.|^request\\./u.test(event.type))
+        onDiagnostic:event=>{if(process.connected)process.send(event);if(/^(?:preparation|runtime)\\.initialization\\.|^state\\.|^request\\./u.test(event.type))
           console.error('FAULT_STAGE '+JSON.stringify({type:event.type,at:event.at,route:event.route,elapsedMs:event.elapsedMs,code:event.code}));} });
       await bridge.listen();
       console.log('DEADLINE_SERVER_LISTENING');
@@ -45,8 +45,9 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null) {
     }
   `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-    cwd:root, env:{ PATH:process.env.PATH, SystemRoot:process.env.SystemRoot }, stdio:["ignore", "pipe", "pipe"],
+    cwd:root, env:{ PATH:process.env.PATH, SystemRoot:process.env.SystemRoot }, stdio:["ignore", "pipe", "pipe", "ipc"],
   });
+  child.on('message', event => events.push(event));
   let output = "";
   const exited = new Promise(resolve => child.once("exit", resolve));
   t.after(async () => {
@@ -126,8 +127,9 @@ test("runtime read deadline preserves initialization and a later snapshot observ
 });
 
 
-test("configuration: parsed read budget reaches the HTTP snapshot inside the five-second HTTP deadline", { timeout:10000 }, async t => {
-  const baseUrl = await startServer(t, true, "100");
+for (const readBudgetMs of [100, 700]) test(`configuration: parsed ${readBudgetMs}ms read budget reaches the HTTP snapshot`, { timeout:10000 }, async t => {
+  const events = [];
+  const baseUrl = await startServer(t, true, String(readBudgetMs), events);
   const started = performance.now();
   let response;
   try { response = await fetch(`${baseUrl}/api/state`, {
@@ -139,6 +141,14 @@ test("configuration: parsed read budget reaches the HTTP snapshot inside the fiv
   assert.equal(body.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
   assert.equal(body.dataKnowledge.runs.status, "UNAVAILABLE");
   assert.equal(body.commandCapabilities.includes("preparation.start"), false);
+  const observationDeadline = performance.now() + 1000;
+  while (!events.some(event => event.type === 'state.snapshot.runtime.failed') && performance.now() < observationDeadline)
+    await new Promise(resolve => setTimeout(resolve, 10));
+  const timedRead = events.find(event => event.type === 'state.snapshot.runtime.failed');
+  assert.equal(timedRead?.errorCode, 'LIVE_RUNTIME_READ_TIMEOUT');
+  // Measure only the runtime read, excluding server startup and projection.
+  assert.ok(timedRead.elapsedMs >= readBudgetMs - 25, 'the configured read must not expire early');
+  assert.ok(timedRead.elapsedMs < readBudgetMs + 500, 'ignoring the configured read budget must fail');
 });
 
 test("configuration: maximum allowed read budget still returns degraded state inside the five-second HTTP deadline", { timeout:15000 }, async t => {

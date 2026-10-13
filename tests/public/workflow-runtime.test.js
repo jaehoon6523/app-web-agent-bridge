@@ -161,6 +161,30 @@ function prepared() {
 function renderedText(element) {
   return [element?.textContent ?? "", ...(element?.children ?? []).map(renderedText)].join("\n");
 }
+test("initial recovery stays open when extension capabilities change and closes for a different preparation", async () => {
+  const state = prepared();
+  Object.assign(state.workflow, {stage:"START", state:"RECOVERY_REQUIRED"});
+  Object.assign(state.preparation, {lifecycle:"ACTIVE", state:"RECOVERY_REQUIRED",
+    error:{code:"DELIVERY_RECOVERY_UNCONFIRMED", message:"Inspect the current delivery."},
+    deliveries:[{deliveryId:"d1", state:"SUBMITTED"}]});
+  state.preflight.checks.extensionAuthenticated = false;
+  state.commandCapabilities = [];
+  const ui = await dashboard(state);
+  const previous = ui.elements.get("startRecovery").children[0];
+  assert.equal(previous.className, "session-recovery");
+  previous.open = true;
+  state.preflight.checks.extensionAuthenticated = true;
+  state.commandCapabilities = ["web.inspect", "preparation.discard"];
+  await ui.run("refresh()");
+  const current = ui.elements.get("startRecovery").children[0];
+  assert.notEqual(current, previous);
+  assert.equal(current.open, true, "a capability refresh must not hide the newly enabled recovery action");
+  assert.equal(current.children.find(item => item.dataset.webCommand === "web.inspect").disabled, false);
+  state.preparation.preparationId = "p2";
+  state.workflow.preparationId = "p2";
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("startRecovery").children[0].open, false);
+});
 test("task conversation attributes each turn to its role and reviewed candidate after reopening", async () => {
   const run = { runId:"r1", version:3, phase:"AWAITING_APPLY", objective:"Greeting", candidate:{ candidateId:"candidate-2" },
     preparationSnapshot:{ preparationId:"prep-1", discussion:[

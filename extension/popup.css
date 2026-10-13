@@ -56,3 +56,7 @@ section { background:var(--paper); border-color:var(--edge); }
 @media(prefers-color-scheme:dark) { :root { color-scheme:dark; --paper:#1a212b; --sunk:#141a22; --ink:#e7ebf0; --mute:#a4b0bf; --edge:#374353; --accent:#8c91ff; background:#0f141a; } button { color:#0f141a; } .badge.ok { color:#6dd39a; background:#18301f; } .badge.bad { color:#f0b45e; background:#3a2d18; } }
 
 #exportAgentDiagnostics { width:100%; margin-top:14px; }
+#openResizableWindow { width:100%; }
+#popupWindowStatus:empty { display:none; }
+body.window-view { width:100%; max-width:none; min-height:100vh; }
+body.window-view main { width:100%; }

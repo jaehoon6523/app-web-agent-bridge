@@ -943,7 +943,10 @@ function renderPreparation() {
   text("reviewerProviderSummary", `감사 provider · Judge ${preparation.reviewers?.JUDGE?.provider ?? "CHATGPT_WEB"} · Critic ${preparation.reviewers?.CRITIC?.provider ?? "CHATGPT_WEB"} · 준비 대화는 ChatGPT`);
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
+  const priorRecovery = document.querySelector(".session-recovery");
   const recovery = node("details", "", "session-recovery");
+  recovery.dataset.preparationId = preparation.preparationId;
+  recovery.open = priorRecovery?.dataset.preparationId === preparation.preparationId && priorRecovery.open === true;
   recovery.append(node("summary", "응답·전송 상태"));
   const rootReady = session?.bindingState === "ROOT_READY" && Number.isSafeInteger(session?.tabId)
     && typeof session?.documentId === "string" && session.documentId && session?.frameId === 0;

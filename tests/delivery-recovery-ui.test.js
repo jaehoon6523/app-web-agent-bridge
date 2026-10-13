@@ -154,7 +154,7 @@ test('popup: MATCHED routes to controller and MISSING alone exposes orphan actio
   const script = await fs.readFile(path.join(root, 'extension/popup.js'), 'utf8');
   vm.runInNewContext(script, { document: ui.document, chrome: { runtime: { sendMessage,
     onMessage: { addListener(listener) { backgroundListener = listener; } } } },
-    URL, Blob, setTimeout }, { filename: 'popup.js' });
+    URL, URLSearchParams, Blob, setTimeout }, { filename: 'popup.js' });
   await tick();
   await ui.get('inspectDelivery').fire('click');
   assert.equal(ui.get('orphanDiscardPanel').hidden, true);

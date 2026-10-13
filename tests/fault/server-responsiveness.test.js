@@ -78,7 +78,8 @@ async function read(config,route,{authenticated=false,deadline=1000,session=fals
 }
 for(const fault of ["pending","reject","throw","corrupt-preparation","sqlite-lock"]) {
   test(`responsive contract: runtime ${fault} preserves preflight, health and local session responses`,{timeout:12000},async t=>{
-    const {config,events}=await start(t,fault);
+    const {config,events,wait}=await start(t,fault);
+    const incidentStart = events.length;
     const state=read(config,"/api/state",{authenticated:true,deadline:5000}).then(result=>({result}),error=>({error}));
     const [preflight,health,session,unauthenticated]=await Promise.all([
       read(config,"/api/preflight"),read(config,"/api/health"),read(config,"/api/dashboard/session",{session:true}),read(config,"/api/state"),
@@ -101,6 +102,11 @@ for(const fault of ["pending","reject","throw","corrupt-preparation","sqlite-loc
     // Independent endpoint deadlines establish the response contract above. A
     // missing heartbeat alone cannot distinguish an event-loop stall from an
     // IPC pause; the dedicated CPU incident test checks watchdog detection.
+    await wait('heartbeat',2000,event => events.indexOf(event) >= incidentStart);
+    const heartbeats = events.slice(incidentStart).filter(event => event.type === 'heartbeat');
+    assert.ok(heartbeats.length > 0, 'responsiveness needs an actual event-loop observation');
+    assert.ok(heartbeats.every(event => event.loopDelayMs < 1000),
+      'a measured event-loop delay must remain inside the independent endpoint budget');
     assert.equal(JSON.stringify(events).includes(token),false);
     assert.equal(JSON.stringify(events).includes(session.body.token),false);
   });
