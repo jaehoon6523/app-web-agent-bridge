@@ -1,5 +1,6 @@
 import { isTerminalDiscard, reconcileTerminalDiscard } from "./terminal-delivery-reconciliation.js";
 import { inspectDeliveryOwnership } from "./delivery-ownership.js";
+import { webBinding } from "./audit-round.js";
 
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
 function exact(owner, expected) {
@@ -149,16 +150,29 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         fail("DELIVERY_RESPONSE_REQUIRED", "Only this durably stored reviewer response can be acknowledged.");
       }
       if (inspected.extension.extensionBusy || inspected.extension.pageBusy || inspected.extension.generating) fail("WEB_SESSION_BUSY", "A generation is active.");
+      if (inspected.server.otherActive || inspected.extension.otherActive) fail("WEB_SESSION_BUSY", "Another delivery owns an active session.");
       const { codeChanges } = await getServices(), run = codeChanges.get(input.runId);
       const receipt = run.webDeliveryReceipts.find(item => item.deliveryId === input.currentDeliveryId);
       if (codeChanges.jobs.has(input.runId) || codeChanges.workers.has(input.runId) || codeChanges.reviewerWebBusy()) fail("WEB_SESSION_BUSY", "A reviewer operation is active.");
       if (!receipt || !codeChanges.artifactStore.verify(receipt.responseRef.sha256)
         || !codeChanges.artifactStore.verify(receipt.packetRef.sha256)) fail("DELIVERY_RESPONSE_REQUIRED", "Durable response evidence is unavailable.");
-      const binding = (await web.inspect()).binding;
+      const owner = run.conversationBindings.find(item => item.sessionId === input.sessionId);
+      if (!owner || owner.activeDeliveryId !== input.currentDeliveryId || owner.conversationUrl !== input.conversationUrl) fail("DELIVERY_RECOVERY_MISMATCH", "The reviewer owner changed before ACK.");
+      const reviewer = codeChanges.reviewerWeb?.(record.role, owner.provider ?? null) ?? web;
+      let binding = (await reviewer.inspect()).binding;
+      // Process restart loses the adapter binding, not the durable delivery.
+      if (binding === null) {
+        await reviewer.resume({ binding: webBinding(owner) });
+        binding = (await reviewer.inspect()).binding;
+        const restored = await inspect(input);
+        if (restored.server.otherActive || restored.extension.otherActive) fail("WEB_SESSION_BUSY", "Another delivery owns an active session.");
+      }
       if (!exact({ ...binding, currentDeliveryId: input.currentDeliveryId }, input)) fail("DELIVERY_RECOVERY_MISMATCH", "The adapter binding differs from this receipt.");
-      const ack = await web.acknowledgeDelivery({ turnId: input.currentDeliveryId });
+      if (!codeChanges.get(input.runId).conversationBindings.some(item => item.sessionId === input.sessionId
+        && item.activeDeliveryId === input.currentDeliveryId)) fail("DELIVERY_RECOVERY_MISMATCH", "The reviewer owner changed while restoring ACK.");
+      const ack = await reviewer.acknowledgeDelivery({ turnId: input.currentDeliveryId });
       if (ack.currentDeliveryId !== null || !exact({ ...ack, currentDeliveryId: input.currentDeliveryId }, input)) fail("ACK_UNCONFIRMED", "The exact acknowledgement was not confirmed.");
-      await web.confirmDeliveryAcknowledgement?.({ turnId: input.currentDeliveryId,
+      await reviewer.confirmDeliveryAcknowledgement?.({ turnId: input.currentDeliveryId,
         sessionId: input.sessionId, runId: input.runId, conversationUrl: input.conversationUrl });
       const latest = codeChanges.get(input.runId);
       if (!latest.conversationBindings.some(item => item.sessionId === input.sessionId && item.activeDeliveryId === input.currentDeliveryId)) fail("DELIVERY_RECOVERY_MISMATCH", "The reviewer owner changed during ACK.");

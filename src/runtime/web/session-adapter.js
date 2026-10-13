@@ -493,25 +493,32 @@ export class WebSessionAdapter {
     stableMs,
     parseResponse = this.#parseResponse,
   } = {}) {
-    this.#assertNoAmbiguousTurn();
-    if (!this.#ready) {
-      throw new WebProtocolError("Web session has not been confirmed ready", "WEB_SESSION_NOT_READY");
-    }
-    const binding = this.#transport.snapshot.binding;
-    if (!binding || !["BOUND", "ROOT_READY"].includes(binding.bindingStatus)) {
-      throw new WebProtocolError("Web session requires exact binding", "NEEDS_REBIND");
-    }
-    if (runId !== binding.runId) {
-      throw new WebProtocolError("Turn run ID does not match Web session", "DELIVERY_BINDING_MISMATCH");
-    }
-    if (typeof turnId !== "string" || !turnId || typeof controllerMessageId !== "string" || !controllerMessageId) {
-      throw new WebProtocolError("turnId and controllerMessageId are required", "INVALID_WEB_TURN");
-    }
-    if (typeof text !== "string" || !text.trim()) {
-      throw new WebProtocolError("Web turn text must be non-empty", "INVALID_WEB_TURN");
-    }
-    if (this.#activeTurnId !== null) {
-      throw new WebProtocolError("Another Web turn is already active", "WEB_SESSION_BUSY");
+    let binding;
+    try {
+      this.#assertNoAmbiguousTurn();
+      if (!this.#ready) {
+        throw new WebProtocolError("Web session has not been confirmed ready", "WEB_SESSION_NOT_READY");
+      }
+      binding = this.#transport.snapshot.binding;
+      if (!binding || !["BOUND", "ROOT_READY"].includes(binding.bindingStatus)) {
+        throw new WebProtocolError("Web session requires exact binding", "NEEDS_REBIND");
+      }
+      if (runId !== binding.runId) {
+        throw new WebProtocolError("Turn run ID does not match Web session", "DELIVERY_BINDING_MISMATCH");
+      }
+      if (typeof turnId !== "string" || !turnId || typeof controllerMessageId !== "string" || !controllerMessageId) {
+        throw new WebProtocolError("turnId and controllerMessageId are required", "INVALID_WEB_TURN");
+      }
+      if (typeof text !== "string" || !text.trim()) {
+        throw new WebProtocolError("Web turn text must be non-empty", "INVALID_WEB_TURN");
+      }
+      if (this.#activeTurnId !== null) {
+        throw new WebProtocolError("Another Web turn is already active", "WEB_SESSION_BUSY");
+      }
+    } catch (error) {
+      // Only local validation proves this request never reached the transport.
+      if (error instanceof WebProtocolError) error.details = { ...error.details, browserDispatchStarted:false };
+      throw error;
     }
 
     let response;

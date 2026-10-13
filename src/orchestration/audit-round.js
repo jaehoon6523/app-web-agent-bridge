@@ -108,7 +108,16 @@ function bindingForRole(run, role) {
   return matches[0];
 }
 
-function webBinding(record) {
+function assertDeliveryOwner(current, expected, deliveryId) {
+  if (current.activeDeliveryId !== deliveryId || current.sessionId !== expected.sessionId
+    || current.runId !== expected.runId) {
+    throw Object.assign(new Error("The reviewer delivery owner changed while awaiting its response or ACK."), {
+      code:"DELIVERY_BINDING_MISMATCH",
+    });
+  }
+}
+
+export function webBinding(record) {
   return createWebSessionBinding({
     sessionId:record.sessionId, runId:record.runId, tabId:record.tabId, windowId:record.windowId,
     documentId:record.documentId, frameId:record.frameId, conversationUrl:record.conversationUrl,
@@ -303,7 +312,8 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
       timeoutMs:run.policy.turnTimeoutMs, parseResponse });
   } catch (error) {
     run = service.get(runId); binding = bindingForRole(run, role);
-    if (binding.activeDeliveryId === requestId && error?.details?.browserDispatchStarted === false) {
+    if (binding.activeDeliveryId === requestId && binding.sessionId === active.sessionId
+      && binding.runId === active.runId && error?.details?.browserDispatchStarted === false) {
       const reverted = { ...binding, activeDeliveryId:null, updatedAt:new Date().toISOString() };
       service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, reverted) });
     }
@@ -314,6 +324,7 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
   if (response.binding?.conversationId === null) throw new Error(`${role} did not establish an exact conversation.`);
   run = service.get(runId);
   const current = bindingForRole(run, role);
+  assertDeliveryOwner(current, binding, requestId);
   const returned = recordFromReturned(current, response.binding, new Date().toISOString(), requestId);
   const bindings = replaceBinding(run.conversationBindings, returned);
   const judge = bindings.find((item) => item.role === "JUDGE"), critic = bindings.find((item) => item.role === "CRITIC");
@@ -332,6 +343,7 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
     });
   }
   run = service.get(runId); binding = bindingForRole(run, role);
+  assertDeliveryOwner(binding, returned, requestId);
   const settled = { ...binding, activeDeliveryId:null, updatedAt:new Date().toISOString(),
     historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,
       lastObservedAssistantMessageId:response.binding.lastObservedAssistantMessageId } };
@@ -421,7 +433,8 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
     });
   } catch (error) {
     const latest = service.get(runId), record = bindingForRole(latest, role);
-    if (record.activeDeliveryId === discussionId && error?.details?.browserDispatchStarted === false) {
+    if (record.activeDeliveryId === discussionId && record.sessionId === active.sessionId
+      && record.runId === active.runId && error?.details?.browserDispatchStarted === false) {
       service.update(runId, { conversationBindings:replaceBinding(latest.conversationBindings,
         { ...record, activeDeliveryId:null, updatedAt:new Date().toISOString() }) });
     }
@@ -435,6 +448,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
       throw Object.assign(new Error("Reviewer discussion returned a different conversation identity."), { code:"DELIVERY_BINDING_MISMATCH" });
     }
     let latest = service.get(runId), record = bindingForRole(latest, role);
+    assertDeliveryOwner(record, binding, discussionId);
     const returned = recordFromReturned(record, response.binding, new Date().toISOString(), discussionId);
     service.update(runId, { conversationBindings:replaceBinding(latest.conversationBindings, returned) });
     persistWebDeliveryReceipt(service, runId, role, discussionId, response);
@@ -446,6 +460,7 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
       throw Object.assign(new Error("Reviewer discussion acknowledgement did not confirm the exact binding."), { code:"ACK_UNCONFIRMED" });
     }
     latest = service.get(runId); record = bindingForRole(latest, role);
+    assertDeliveryOwner(record, returned, discussionId);
     service.update(runId, { ...markWebDeliveryAcknowledged(service, runId, discussionId), conversationBindings:replaceBinding(latest.conversationBindings, {
       ...record, activeDeliveryId:null, updatedAt:new Date().toISOString(),
       historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,

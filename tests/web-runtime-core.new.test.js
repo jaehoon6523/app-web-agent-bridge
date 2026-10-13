@@ -971,7 +971,7 @@ test("interrupt resolves only after the content path confirms cancellation", asy
   await adapter.close();
 });
 
-test("transport send failure returns no handle and emits no TURN_STARTED", async () => {
+test("transport send failure returns no handle, emits no TURN_STARTED and remains unconfirmed", async () => {
   const transport = new WebExtensionTransport({ sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY });
   const socket = new FakeSocket();
   transport.attach(socket);
@@ -986,7 +986,11 @@ test("transport send failure returns no handle and emits no TURN_STARTED", async
     runId: "run-1",
     text: "Review",
     timeoutMs: 500,
-  }), /send failed for web\.prompt/);
+  }), error => {
+    assert.match(error.message, /send failed for web\.prompt/);
+    assert.notEqual(error.details?.browserDispatchStarted, false);
+    return true;
+  });
   assert.deepEqual(events, []);
   assert.equal((await adapter.inspect()).authenticated, true);
   await adapter.close();
