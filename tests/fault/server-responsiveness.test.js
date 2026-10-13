@@ -46,11 +46,16 @@ async function start(t, fault) {
     await bridge.listen();
   `],{cwd:root,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},stdio:["ignore","pipe","pipe","ipc"]});
   const events=[];
-  child.on("message",event=>{if(event?.type==="heartbeat")events.push(event);});
-  const stop=watchServerProcess(child,event=>events.push(event),{intervalMs:100,staleMs:500});
+  const observe=event=>events.push({...event,observedAt:new Date().toISOString()});
+  child.on("message",event=>{if(event?.type==="heartbeat")observe(event);});
+  const stop=watchServerProcess(child,observe,{intervalMs:100,staleMs:500});
   let stderr="";child.stderr.on("data",chunk=>{stderr+=chunk});
   const exited=new Promise(resolve=>child.once("exit",resolve));
   t.after(async()=>{
+    t.diagnostic(JSON.stringify({fault,watchdog:events.filter(event=>/^(?:watchdog\.|event-loop\.delay)/u.test(event.type))
+      .map(({type,observedAt,silenceMs,loopDelayMs,lastStage,route})=>({type,observedAt,silenceMs,loopDelayMs,lastStage,route})),
+      lastStages:events.filter(event=>/^(?:preparation|runtime)\.initialization\.|^state\./u.test(event.type))
+        .slice(-16).map(({type,observedAt,elapsedMs,code})=>({type,observedAt,elapsedMs,code}))}));
     stop();if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
     await exited;locker?.close();fs.rmSync(root,{recursive:true,force:true});
   });

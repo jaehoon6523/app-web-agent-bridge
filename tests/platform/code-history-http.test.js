@@ -47,6 +47,8 @@ async function serverFixture(t, {corrupt = false} = {}) {
       timing.closeMs=performance.now()-closeStarted;
       timing.totalMs=performance.now()-fixtureStarted;
       t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,timing,
+        watchdog:events.filter(event=>/^(?:watchdog\.|event-loop\.delay)/u.test(event.type))
+          .map(({type,at,silenceMs,loopDelayMs,lastStage,route})=>({type,at,silenceMs,loopDelayMs,lastStage,route})),
         lastCheckpoints:events.filter(event=>/history|runtime.initialization/u.test(event.type)).slice(-12)
           .map(({type,elapsedMs,errorCode})=>({type,elapsedMs,errorCode}))}));
       fs.rmSync(root, {recursive:true,force:true});

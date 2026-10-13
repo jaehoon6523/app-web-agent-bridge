@@ -35,7 +35,9 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null) {
       config.dashboard.runtimeReadTimeoutMs = loadConfig({ env:{ DASHBOARD_RUNTIME_READ_TIMEOUT_MS:readTimeoutEnv } }).dashboard.runtimeReadTimeoutMs;
     }
     if (${stalledRuntime}) {
-      const bridge = createBridgeServer({ runtimeConfig:config, createLiveRuntime:() => new Promise(() => {}) });
+      const bridge = createBridgeServer({ runtimeConfig:config, createLiveRuntime:() => new Promise(() => {}),
+        onDiagnostic:event=>{if(/^(?:preparation|runtime)\\.initialization\\.|^state\\.|^request\\./u.test(event.type))
+          console.error('FAULT_STAGE '+JSON.stringify({type:event.type,at:event.at,route:event.route,elapsedMs:event.elapsedMs,code:event.code}));} });
       await bridge.listen();
       console.log('DEADLINE_SERVER_LISTENING');
     } else {
@@ -48,6 +50,8 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null) {
   let output = "";
   const exited = new Promise(resolve => child.once("exit", resolve));
   t.after(async () => {
+    t.diagnostic(JSON.stringify({stalledRuntime,readTimeoutEnv,
+      stages:output.split(/\r?\n/u).filter(line=>line.startsWith("FAULT_STAGE ")).slice(-25)}));
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await exited;
     fs.rmSync(root, { recursive:true, force:true });
@@ -124,9 +128,12 @@ test("runtime read deadline preserves initialization and a later snapshot observ
 
 test("configuration: parsed read budget reaches the HTTP snapshot through explicit server configuration", { timeout:10000 }, async t => {
   const baseUrl = await startServer(t, true, "100");
-  const response = await fetch(`${baseUrl}/api/state`, {
+  const started = performance.now();
+  let response;
+  try { response = await fetch(`${baseUrl}/api/state`, {
     headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(1000),
-  });
+  }); }
+  finally { t.diagnostic(JSON.stringify({stateFetchElapsedMs:performance.now()-started,deadlineMs:1000})); }
   assert.equal(response.status, 200);
   const body = await response.json();
   assert.equal(body.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");

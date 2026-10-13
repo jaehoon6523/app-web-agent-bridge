@@ -17,6 +17,7 @@ import { closeSteps } from "./diagnostics/shutdown.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
+import { performance } from "node:perf_hooks";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
 import { loadConfig } from "./config.js";
@@ -293,6 +294,7 @@ export function createBridgeServer({
   function preparations() {
     if (closing) throw Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"});
     if (preparationService) return preparationService;
+    const started = performance.now();
     diagnostics.emit("preparation.initialization.started");
     try {
       preparationService = new PreparationService({
@@ -331,9 +333,9 @@ export function createBridgeServer({
           return { ...result, repository };
         },
       });
-      diagnostics.emit("preparation.initialization.completed");
+      diagnostics.emit("preparation.initialization.completed",{elapsedMs:performance.now()-started});
     } catch (error) {
-      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error)});
+      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error),elapsedMs:performance.now()-started});
       throw error;
     }
     return preparationService;

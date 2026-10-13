@@ -10,6 +10,7 @@ import { computeWebChallengeHmac } from '../src/runtime/web/auth.js';
 import { readAgentReport } from '../src/diagnostics/report-store.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 test('HTTP and authenticated extension export share a current report without starting the execution runtime', {timeout:15000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'agent-diagnostics-http-'));
   const secret='fixture-extension-secret-0123456789', token='fixture-dashboard-token-0123456789';
@@ -42,7 +43,7 @@ test('HTTP and authenticated extension export share a current report without sta
 });
 test('server configuration failures leave a safe startup record before runtime initialization',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'agent-diagnostics-startup-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const server=new URL('../src/server.js',import.meta.url).pathname;
+  const server=fileURLToPath(new URL('../src/server.js',import.meta.url));
   await assert.rejects(promisify(execFile)(process.execPath,[server],{cwd:root,env:{...process.env,HOST:'PRIVATE_INVALID_HOST'}}));
   const value=readAgentReport(path.join(root,'.agent-controller','diagnostics'));
   assert.equal(value.startup.stage,'CONFIG');assert.equal(value.startup.status,'UNAVAILABLE');
