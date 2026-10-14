@@ -28,6 +28,7 @@ let decisionSignature = "", interventionRunId = null;
 let agreement = null, preparation = null;
 let projectConversationRoot = null, reviewDiscussionRunId = null;
 let followUpSource = null;
+let pendingProjectDraft = null;
 let reviewerSelectionRoot = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
@@ -165,8 +166,8 @@ ensureOperatorNoteControls();
 
 const syncRunInformationArchitecture = createRunActionLayout({ $, text });
 
-function selectProject(root) { projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
-function openRun(runId) { selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
+function selectProject(root) { if (root) { pendingProjectDraft?.cancel(); followUpSource = null; } projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
+function openRun(runId) { pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   const element = $(id);
   element.disabled = Boolean(disabled);
@@ -266,6 +267,7 @@ async function refresh() {
     text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음"));
   }
   render();
+  pendingProjectDraft?.complete();
   updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
@@ -1167,41 +1169,66 @@ $("chooseFolder").addEventListener("click", async () => {
   } catch (error) { text("folderStatus", userFacingError(error)); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
-$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
-$("newProjectTask").addEventListener("click", async () => {
-  if ($("newProjectTask").disabled || !projectViewRoot) return;
-  const root = projectViewRoot;
-  followUpSource = null;
-  selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start";
-  await refresh();
-  if (!connected || workflow.stage !== "START") {
-    selectProject(root);
-    text("overviewReason", "시작 화면을 열 수 없습니다. 진행 중인 작업 또는 준비 상태를 확인하세요.");
-    return;
-  }
+$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
+async function startProjectDraft(root, source) {
+  pendingProjectDraft?.cancel();
+  const fields = ["startRoot", "objective", "conversationUrl", "judgeReviewerProvider", "criticReviewerProvider"];
+  const previous = fields.map(id => $(id).value);
+  const previousSource = followUpSource, previousProject = projectViewRoot;
+  const previousView = { selected, requestedView };
+  const previousConversationRoot = projectConversationRoot, previousReuse = $("reuseProjectConversation").checked;
+  const previousReviewerRoot = reviewerSelectionRoot;
+  const focused = document.activeElement;
+  followUpSource = source; projectConversationRoot = null; selected = ""; requestedView = "start";
   $("startRoot").value = root;
   $("objective").value = "";
-  $("conversationUrl").value = "";
-  render();
-  $("objective").focus();
+  $("conversationUrl").value = source ? "https://chatgpt.com/" : "";
+  selectProject(null);
+  const initialized = fields.map(id => $(id).value);
+  let edited = false;
+  const onEdit = () => { edited = true; };
+  $("startForm").addEventListener("input", onEdit);
+  const draft = {
+    cancel() {
+      $("startForm").removeEventListener("input", onEdit);
+      if (pendingProjectDraft === draft) pendingProjectDraft = null;
+    },
+    complete() {
+      draft.cancel();
+      if (selected !== "" || projectViewRoot !== null || followUpSource !== source) return;
+      if (!connected || workflow.stage !== "START") {
+        if (!edited && fields.every((id, index) => $(id).value === initialized[index])) {
+          fields.forEach((id, index) => { $(id).value = previous[index]; });
+          followUpSource = previousSource; projectConversationRoot = previousConversationRoot;
+          selected = previousView.selected; requestedView = previousView.requestedView;
+          reviewerSelectionRoot = previousReviewerRoot;
+          $("reuseProjectConversation").checked = previousReuse;
+          if (previousProject) {
+            selectProject(previousProject);
+            text("overviewReason", "시작 화면을 열 수 없습니다. 진행 중인 작업 또는 준비 상태를 확인하세요.");
+          } else render();
+        } else render();
+        return;
+      }
+      if (document.activeElement === focused || document.activeElement === document.body) $("objective").focus();
+    },
+  };
+  pendingProjectDraft = draft;
+  await refresh();
+}
+$("newProjectTask").addEventListener("click", () => {
+  if ($("newProjectTask").disabled || !projectViewRoot) return;
+  return startProjectDraft(projectViewRoot, null);
 });
 $("openProjectBlocker").addEventListener("click", () => {
   const pending = snapshot?.runs?.find((item) => !terminal.has(item.phase));
   if (pending) openRun(pending.runId);
 });
-$("continueProject").addEventListener("click", async () => {
+$("continueProject").addEventListener("click", () => {
   if ($("continueProject").disabled) return;
   const root = snapshot?.run?.projectRef?.targetRoot;
   if (!root || snapshot?.run?.phase !== "APPLIED") return;
-  followUpSource = { runId:snapshot.run.runId, objective:snapshot.run.objective, targetRoot:root };
-  selected = ""; requestedView = "start";
-  await refresh();
-  if (workflow.stage !== "START") return;
-  $("startRoot").value = root;
-  $("conversationUrl").value = "https://chatgpt.com/";
-  $("objective").value = "";
-  $("objective").focus();
-  render();
+  return startProjectDraft(root, { runId:snapshot.run.runId, objective:snapshot.run.objective, targetRoot:root });
 });
 $("openFollowUp").addEventListener("click", () => { if (!$("openFollowUp").disabled) openRun(snapshot.run.followUp.runId); });
 $("cancelInitialPreparation").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",

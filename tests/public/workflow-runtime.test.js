@@ -105,6 +105,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     setAttribute(key, value) { this.attributes[key] = value; }
     removeAttribute(key) { delete this.attributes[key]; }
     addEventListener(key, callback) { this.listeners[key] = callback; }
+    removeEventListener(key, callback) { if (this.listeners[key] === callback) delete this.listeners[key]; }
     contains() { return false; }
   }
   for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
@@ -631,6 +632,123 @@ test("reopened follow-up preparation shows its source and still requires fresh a
   const ui = await dashboard(state);
   assert.match(ui.elements.get("planningFollowUp").textContent, /Initial app · 요구사항은 이번에 다시 승인/u);
   assert.equal(ui.elements.get("saveProject").disabled, true);
+});
+for (const action of ["continueProject", "newProjectTask"]) {
+  test(`${action} initializes the draft before a newer refresh exposes START`, {timeout:2000}, async () => {
+    const done = { runId:"applied-1", version:4, phase:"APPLIED", objective:"Initial app",
+      projectRef:{targetRoot:"C:/project"} };
+    const state = stateFor(done, []);
+    state.runs = [{...done, targetRoot:"C:/project"}];
+    const ui = await dashboard(state);
+    if (action === "newProjectTask") ui.run('selectProject("C:/project")');
+    state.workflow = {stage:"START", state:"START_IDLE"}; state.run = null;
+    state.runtimeAvailability = {ready:true}; state.commandCapabilities = ["preparation.start"];
+    const fetch = ui.context.fetch;
+    let release;
+    const pending = new Promise(resolve => { release = resolve; });
+    let first = true;
+    ui.context.fetch = async (...args) => {
+      const delay = first; first = false;
+      const result = await fetch(...args);
+      if (delay) await pending;
+      return result;
+    };
+    const click = ui.elements.get(action).listeners.click();
+    await ui.run("refresh()");
+    try {
+      assert.equal(ui.elements.get("startPanel").hidden, false);
+      assert.equal(ui.elements.get("startRoot").value, "C:/project");
+      ui.elements.get("objective").value = "Typed after START became visible";
+    } finally { release(); await click; }
+    assert.equal(ui.elements.get("objective").value, "Typed after START became visible");
+    assert.equal(ui.elements.get("startRoot").value, "C:/project");
+    assert.equal(ui.calls.some(call => call.url.startsWith("/api/preparations")), false);
+  });
+  for (const destination of action === "continueProject" ? ["project", "run"] : ["project"]) {
+  test(`${action} leaves the other ${destination} and clears its old source`, async () => {
+    const done = {runId:"applied-1",version:4,phase:"APPLIED",objective:"Initial app",
+      projectRef:{targetRoot:"C:/project"}};
+    const state = stateFor(done, []);
+    state.runs = [{...done,targetRoot:"C:/project"}, {...done,runId:"other",targetRoot:"C:/other"}];
+    const ui = await dashboard(state);
+    if (action === "newProjectTask") ui.run('selectProject("C:/project")');
+    let release;
+    const fetch = ui.context.fetch;
+    const pending = new Promise(resolve => { release = resolve; });
+    ui.context.fetch = async (...args) => { const result = await fetch(...args); await pending; return result; };
+    let focused = 0;
+    ui.elements.get("objective").focus = () => { focused++; };
+    state.workflow = {stage:"START",state:"START_IDLE"}; state.run = null;
+    const click = ui.elements.get(action).listeners.click();
+    if (destination === "project") ui.run('selectProject("C:/other")');
+    else { state.run={...done,runId:"other",projectRef:{targetRoot:"C:/other"}}; state.workflow=workflowForRun(state.run); ui.run('openRun("other")'); }
+    assert.equal(ui.run("followUpSource"), null);
+    release(); await click;
+    if (destination === "project") assert.equal(ui.run("projectViewRoot"), "C:/other");
+    else { await ui.run("refresh()"); assert.equal(ui.run("selected"), "other"); }
+    assert.equal(ui.elements.get("startPanel").hidden, true);
+    assert.equal(focused, 0);
+    assert.equal(ui.run("followUpSource"), null);
+    assert.equal(ui.elements.get("followUpSource").hidden, true);
+  });
+  }
+  for (const edit of action === "newProjectTask" ? ["none", "objective", "reuse-selection"] : ["none"]) {
+  test(`${action} preserves the ${edit === "none" ? "previous" : "edited"} draft and its view on read failure`, async () => {
+    const done = {runId:"applied-1",version:4,phase:"APPLIED",objective:"Initial app",
+      projectRef:{targetRoot:"C:/project"}};
+    const state = stateFor(done, []);
+    state.runs = [{...done,targetRoot:"C:/project"}];
+    state.projectConversations = [
+      {targetRoot:"C:/project",conversationId:"saved",conversationUrl:"https://chatgpt.com/c/saved"},
+      {targetRoot:"C:/draft",conversationId:"draft",conversationUrl:"https://chatgpt.com/c/draft"},
+    ];
+    if (action === "newProjectTask") { state.workflow = {stage:"START",state:"START_IDLE"}; state.run = null; }
+    const ui = await dashboard(state);
+    if (action === "newProjectTask") ui.run('selectProject("C:/project")');
+    const previous = {startRoot:"C:/draft",objective:"Existing unsent draft",conversationUrl:"https://chatgpt.com/c/draft"};
+    for (const [id,value] of Object.entries(previous)) ui.elements.get(id).value = value;
+    ui.run("render()");
+    ui.elements.get("judgeReviewerProvider").value = "CLAUDE_WEB";
+    ui.elements.get("criticReviewerProvider").value = "CLAUDE_WEB";
+    const previousView={selected:ui.run("selected"),view:ui.run("requestedView")};
+    let reject;
+    ui.context.fetch = () => new Promise((resolve,fail) => { reject=fail; });
+    const click=ui.elements.get(action).listeners.click();
+    if (edit === "objective") ui.elements.get("objective").value="Typed while the read was pending";
+    if (edit === "reuse-selection") {
+      ui.elements.get("reuseProjectConversation").checked=false; ui.elements.get("reuseProjectConversation").listeners.input();
+      ui.elements.get("conversationUrl").value="https://chatgpt.com/c/saved";
+    }
+    if (edit !== "none") ui.elements.get("startForm").listeners.input?.();
+    reject(new TypeError("Injected state read failure")); await click;
+    const expected=edit === "none" ? previous : {startRoot:"C:/project",objective:edit === "objective" ? "Typed while the read was pending" : "",conversationUrl:"https://chatgpt.com/c/saved"};
+    for (const [id,value] of Object.entries(expected)) assert.equal(ui.elements.get(id).value,value,id);
+    assert.equal(ui.run("followUpSource"), null);
+    assert.deepEqual({selected:ui.run("selected"),view:ui.run("requestedView")}, edit === "none" ? previousView : {selected:"",view:"start"});
+    assert.equal(ui.elements.get("judgeReviewerProvider").value, edit === "none" ? "CLAUDE_WEB" : "CHATGPT_WEB");
+    assert.equal(ui.elements.get("criticReviewerProvider").value, edit === "none" ? "CLAUDE_WEB" : "CHATGPT_WEB");
+    assert.equal(ui.elements.get("startPanel").hidden, edit === "none");
+    assert.equal(ui.run("projectViewRoot"), edit === "none" && action === "newProjectTask" ? "C:/project" : null);
+    if (edit === "reuse-selection") assert.equal(ui.elements.get("reuseProjectConversation").checked,false);
+    assert.equal(ui.elements.get("planRun").disabled,true);
+    assert.equal(ui.elements.get("startForm").listeners.input,undefined);
+    assert.equal(ui.calls.some(call => call.url.startsWith("/api/preparations")),false);
+  });
+  }
+}
+test("a failed project draft read cannot restore a project the user left", async () => {
+  const done = {runId:"applied-1",version:4,phase:"APPLIED",objective:"Initial app",
+    projectRef:{targetRoot:"C:/project"}};
+  const state = stateFor(done, []);
+  state.runs = [{...done,targetRoot:"C:/project"}, {...done,runId:"other",targetRoot:"C:/other"}];
+  const ui = await dashboard(state);
+  ui.run('selectProject("C:/project")');
+  let reject;
+  ui.context.fetch = () => new Promise((resolve,fail) => { reject = fail; });
+  const click = ui.elements.get("newProjectTask").listeners.click();
+  ui.run('selectProject("C:/other")');
+  reject(new TypeError("Injected state read failure")); await click;
+  assert.equal(ui.run("projectViewRoot"),"C:/other");
 });
 test("follow-up task can reopen its available source; deleted source stays labelled", async () => {
   const run = { runId:"next", version:2, phase:"APPLIED", objective:"Settings",

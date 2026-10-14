@@ -167,3 +167,152 @@ test('real DOM fixture: controller collects bounded repair metadata without chan
   assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), null);
   assert.deepEqual(f.errors, []);
 });
+
+for (const action of ['continueProject','newProjectTask']) {
+  const scenarios=['newer-start','other-project','read-failure','changed-focus'];
+  if (action==='newProjectTask') scenarios.push('other-project-failure','edited-read-failure','selection-read-failure','superseded-read-failure','new-run');
+  else scenarios.push('other-run');
+  for (const scenario of scenarios) {
+    test(`project draft real DOM: ${action} ${scenario}`, {timeout:20000}, async t => {
+      const f=await extensionBrowser(t,{autoConnect:false});
+      const page=await f.page.context().newPage();
+      const errors=[]; page.on('pageerror',error=>errors.push(error.message));
+      await page.addInitScript(action=>{
+        window.fixtureDraftCompleted=0;
+        const add=EventTarget.prototype.addEventListener;
+        EventTarget.prototype.addEventListener=function(type,listener,options) {
+          if (type==='click' && this.id===action) return add.call(this,type,async function(event) {
+            try { await listener.call(this,event); } finally { window.fixtureDraftCompleted++; }
+          },options);
+          return add.call(this,type,listener,options);
+        };
+      },action);
+      const done={runId:'applied-1',version:4,phase:'APPLIED',objective:'Initial app',projectRef:{targetRoot:'C:/project'}};
+      const other={...done,runId:'other',objective:'Other app',projectRef:{targetRoot:'C:/other'}};
+      const editableFailure=scenario==='edited-read-failure' || scenario==='selection-read-failure';
+      const idleFailure=editableFailure || scenario==='superseded-read-failure';
+      const snapshot=url=>{
+        const requested=new URL(url).searchParams;
+        const idle=idleFailure || requested.get('view')==='start';
+        const run=requested.get('runId')==='other' ? other : done;
+        return {
+        workflow:idle ? {stage:'START',state:'START_IDLE'} : {stage:'RESULT',state:'APPLIED',runId:run.runId,runVersion:run.version},
+        run:idle ? null : run,
+        runs:[{...done,targetRoot:'C:/project'},{...other,targetRoot:'C:/other'}],
+        preparation:null,runtimeAvailability:{ready:true},
+        dataKnowledge:{runs:{status:'AVAILABLE_NONEMPTY'}},
+        preflight:{checks:{extensionAuthenticated:true}},commandCapabilities:['preparation.start'],
+        projectConversations:[{targetRoot:'C:/project',conversationId:'saved',conversationUrl:'https://chatgpt.com/c/saved'}],
+        messages:[],events:[],findings:[],assessments:[],evidence:[],
+      }; };
+      let hold=false, paused;
+      let release;
+      const pending=new Promise(resolve=>{ release=resolve; });
+      const started=new Promise(resolve=>{ paused=resolve; });
+      let releaseLatest, latestPaused;
+      const latestPending=new Promise(resolve=>{ releaseLatest=resolve; });
+      const latestStarted=new Promise(resolve=>{ latestPaused=resolve; });
+      await page.route('**/api/state*',async route=>{
+        if (hold && new URL(route.request().url()).searchParams.get('view')==='start') {
+          hold=false; paused(); await pending;
+          if (scenario==='read-failure' || scenario==='other-project-failure' || idleFailure) return route.abort();
+        }
+        if (scenario==='superseded-read-failure' && new URL(route.request().url()).searchParams.get('view')==='start') {
+          latestPaused(); await latestPending; return route.abort();
+        }
+        if (scenario==='new-run' && new URL(route.request().url()).searchParams.get('view')==='start') return route.abort();
+        return route.fulfill({json:snapshot(route.request().url())});
+      });
+      const mutations=[];
+      await page.route('**/api/preparations**',route=>{ mutations.push(route.request().url()); return route.abort(); });
+      await page.goto('https://dashboard.fixture/');
+      assert.deepEqual(errors,[]);
+      await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
+      if (action==='newProjectTask') await page.locator('.project-open[title="C:/project"]').click();
+      const previous={startRoot:'C:/draft',objective:'Existing unsent draft',conversationUrl:'https://chatgpt.com/c/draft'};
+      if (scenario==='read-failure' || idleFailure) await page.evaluate(previous=>{
+        for (const [id,value] of Object.entries(previous)) document.getElementById(id).value=value;
+      },previous);
+      hold=true;
+      await page.locator('#'+action).click();
+      await started;
+      try {
+        if (scenario==='newer-start') {
+          await page.locator('#startPanel').waitFor({state:'visible'});
+          await page.locator('#objective').fill('Typed after the newer START');
+          await page.locator('#startRoot').focus();
+          assert.equal(await page.locator('#conversationUrl').inputValue(),'https://chatgpt.com/c/saved');
+          assert.equal(await page.locator('#reuseProjectConversation').isChecked(),true);
+          await page.locator('#reuseProjectConversation').uncheck();
+          await page.locator('#conversationUrl').fill('https://chatgpt.com/c/manual-choice');
+        } else if (scenario==='other-project' || scenario==='other-project-failure') {
+          await page.locator('.project-open[title="C:/other"]').click();
+          assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
+          assert.equal(await page.locator('#followUpSource').textContent(),'');
+        } else if (scenario==='other-run') {
+          await page.locator('.run-item').filter({hasText:'Other app'}).click();
+          assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
+        } else if (scenario==='superseded-read-failure') {
+          await latestStarted; release();
+          await page.waitForFunction(()=>window.fixtureDraftCompleted===1);
+        } else if (scenario==='new-run') {
+          await page.locator('#newRun').click();
+        } else if (editableFailure) {
+          assert.equal(await page.locator('#startPanel').isVisible(),true);
+          if (scenario==='edited-read-failure') await page.locator('#objective').fill('Typed while the failing read was pending');
+          else {
+            await page.locator('#reuseProjectConversation').uncheck();
+            await page.locator('#conversationUrl').fill('https://chatgpt.com/c/saved');
+          }
+        } else if (scenario==='changed-focus') {
+          // Focus can change while the accepted request is still pending, without another refresh.
+          await page.locator('#historySearch').fill('project');
+        }
+      } finally { release(); releaseLatest(); }
+      await page.waitForFunction(()=>window.fixtureDraftCompleted===1);
+      if (scenario==='newer-start') {
+        assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
+        assert.equal(await page.locator('#objective').inputValue(),'Typed after the newer START');
+        assert.equal(await page.locator('#conversationUrl').inputValue(),'https://chatgpt.com/c/manual-choice');
+        assert.equal(await page.locator('#reuseProjectConversation').isChecked(),false);
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'conversationUrl');
+      } else if (scenario==='other-project' || scenario==='other-project-failure') {
+        assert.equal(await page.locator('#overviewPath').textContent(),'C:/other');
+        assert.equal(await page.locator('#startPanel').isHidden(),true);
+        assert.notEqual(await page.evaluate(()=>document.activeElement.id),'objective');
+        assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
+      } else if (scenario==='other-run') {
+        await page.waitForFunction(()=>document.querySelector('.run-item.active')?.textContent.includes('Other app'));
+        assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
+        assert.equal(await page.locator('#followUpSource').textContent(),'');
+      } else if (scenario==='new-run') {
+        await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('error'));
+        assert.equal(await page.locator('#projectOverview').isHidden(),true);
+        assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
+        assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
+      } else if (editableFailure) {
+        assert.equal(await page.locator('#startPanel').isVisible(),true);
+        assert.equal(await page.locator('#projectOverview').isHidden(),true);
+        assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
+        assert.equal(await page.locator('#planRun').isDisabled(),true);
+        assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
+        if (scenario==='edited-read-failure') assert.equal(await page.locator('#objective').inputValue(),'Typed while the failing read was pending');
+        else {
+          assert.equal(await page.locator('#reuseProjectConversation').isChecked(),false);
+          assert.equal(await page.locator('#conversationUrl').inputValue(),'https://chatgpt.com/c/saved');
+        }
+      } else if (scenario==='read-failure' || scenario==='superseded-read-failure') {
+        if (scenario==='superseded-read-failure') await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('error'));
+        for (const [id,value] of Object.entries(previous)) assert.equal(await page.locator('#'+id).inputValue(),value,id);
+        assert.equal(await page.locator('#planRun').isDisabled(),true);
+        assert.equal(await page.locator('#startPanel').isHidden(),true);
+        if (action==='newProjectTask') assert.equal(await page.locator('#overviewPath').textContent(),'C:/project');
+        else assert.equal(await page.locator('#runPanel').isVisible(),true);
+      } else {
+        assert.equal(await page.evaluate(()=>document.activeElement.id),'historySearch');
+      }
+      assert.deepEqual(mutations,[]); assert.deepEqual(errors,[]);
+      assert.equal(await f.page.evaluate(()=>sessionStorage.getItem('clicks')),null);
+    });
+  }
+}
