@@ -144,31 +144,82 @@ try {
   assert.equal((await ping()).activeRequestId, 'native-delivery');
   result.steps.push({ id:'pending-reinjection', name: 'native reinjection preserves the active job and document token', pass: true }); save();
   const cdp = await context.newCDPSession(page);
-  let versions = [];
-  cdp.on('ServiceWorker.workerVersionUpdated', event => { versions = event.versions; });
+  const workerUrl = worker.url(), updates = [];
+  // MV3 can restart under the same Playwright Worker target without emitting another serviceworker event.
+  cdp.on('ServiceWorker.workerVersionUpdated', ({ versions }) => {
+    for (const item of versions) if (item.scriptURL === workerUrl) {
+      updates.push({ versionId:item.versionId, runningStatus:item.runningStatus });
+    }
+  });
+  result.workerLifecycle = updates;
   await cdp.send('ServiceWorker.enable');
-  for (let attempt = 0; attempt < 20 && !versions.some(item => item.scriptURL === worker.url()); attempt++) await new Promise(resolve => setTimeout(resolve, 100));
-  const version = versions.find(item => item.scriptURL === worker.url()); assert.ok(version, 'Native service worker version must be observable');
-  const restarted = context.waitForEvent('serviceworker', { timeout: 10_000 });
+  const waitForStatus = async (status, since, stage) => {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      if (updates.slice(since).some(item => item.runningStatus === status)) return;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error(`${stage}: no CDP ${status} transition: ${JSON.stringify(updates.slice(since))}`);
+  };
+  await waitForStatus('running', 0, 'initial-worker');
+  const version = updates.find(item => item.runningStatus === 'running');
+  assert.ok(version, 'Native service worker running version must be observable');
+  // Prove that Chrome actually stopped and subsequently restarted the worker, not just that a popup replied.
+  const stoppedFrom = updates.length;
   await cdp.send('ServiceWorker.stopWorker', { versionId: version.versionId });
-  await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'bridge.getState' }));
-  worker = await restarted;
-  assert.equal((await ping()).documentId, original); assert.equal((await ping()).activeRequestId, 'native-delivery');
-  assert.equal(await worker.evaluate(() => chrome.storage.local.get('currentDeliveryId').then(value => value.currentDeliveryId)), 'native-delivery');
-  result.steps.push({ id:'worker-restart', name: 'native service worker restart preserves pending delivery and page job', pass: true }); save();
-  await worker.evaluate(id => chrome.tabs.sendMessage(id, { type: 'agent.cancel', requestId: 'native-delivery' }), tab.id);
+  await waitForStatus('stopped', stoppedFrom, 'worker-restart');
+  const restartedFrom = updates.length;
+  const wake = await popup.evaluate(() => chrome.runtime.sendMessage({ type: 'bridge.getState' }));
+  assert.equal(wake?.ok, true, 'The restarted background worker must answer bridge.getState');
+  await waitForStatus('running', restartedFrom, 'worker-restart');
+  // Do not use a possibly stale Playwright Worker execution context after the stop/start cycle.
+  const popupPing = () => popup.evaluate(id => chrome.tabs.sendMessage(id, { type:'agent.ping' }, { frameId:0 }), tab.id);
+  const ownerFromPopup = () => popup.evaluate(() => chrome.storage.local.get('currentDeliveryId').then(value => value.currentDeliveryId));
+  assert.equal((await popupPing()).documentId, original);
+  assert.equal((await popupPing()).activeRequestId, 'native-delivery');
+  assert.equal(await ownerFromPopup(), 'native-delivery');
+  assert.equal(await page.evaluate(() => window.fixtureClicks ?? 0), 1, 'Worker restart must not resend the prompt');
+  result.steps.push({ id:'worker-restart', name:'CDP stop/start, background response, and exact pending delivery survive native restart', pass:true }); save();
+  await popup.evaluate(id => chrome.tabs.sendMessage(id, { type:'agent.cancel', requestId:'native-delivery' }), tab.id);
   await page.reload();
   for (let attempt = 0; attempt < 20; attempt++) {
-    observed = await ping().catch(() => null); if (observed?.ok && observed.documentId !== original) break;
+    observed = await popupPing().catch(() => null); if (observed?.ok && observed.documentId !== original) break;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
+  assert.ok(observed?.ok, 'Content script must respond after navigation');
   assert.notEqual(observed.documentId, original); assert.equal(observed.busy, false);
-  assert.equal(await worker.evaluate(() => chrome.storage.local.get('currentDeliveryId').then(value => value.currentDeliveryId)), 'native-delivery');
+  assert.equal(await ownerFromPopup(), 'native-delivery');
   result.steps.push({ id:'navigation', name: 'native navigation creates a new token and preserves unresolved ownership', pass: true }); save();
-  const reloaded = context.waitForEvent('serviceworker', { timeout: 10_000 });
-  await worker.evaluate(() => chrome.runtime.reload()).catch(() => {});
-  worker = await reloaded;
-  assert.equal(await worker.evaluate(() => chrome.storage.local.get('currentDeliveryId').then(value => value.currentDeliveryId)), 'native-delivery');
+  const reloadFrom = updates.length;
+  await popup.evaluate(() => chrome.runtime.reload()).catch(error => {
+    // Reload may destroy the calling extension page before its evaluation returns.
+    if (!/execution context was destroyed|target closed|page.*closed|navigation/i.test(String(error.message))) throw error;
+  });
+  const freshPopup = await context.newPage();
+  let opened = false, openError;
+  for (let attempt = 0; attempt < 20 && !opened; attempt++) {
+    try {
+      await freshPopup.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil:'domcontentloaded', timeout:2000 });
+      opened = true;
+    } catch (error) {
+      openError = error;
+      await new Promise(resolve => setTimeout(resolve, 100));
+    }
+  }
+  assert.ok(opened, `Extension popup did not reopen after runtime.reload: ${openError?.message ?? 'unknown error'}`);
+  const reloadedState = await freshPopup.evaluate(() => chrome.runtime.sendMessage({ type:'bridge.getState' }));
+  assert.equal(reloadedState?.ok, true, 'Reloaded extension must answer bridge.getState');
+  // A changed version or a stopped status, followed by running, establishes a real reload boundary.
+  let reloadConfirmed = false;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const events = updates.slice(reloadFrom);
+    const boundary = events.findIndex(item => item.runningStatus === 'stopped' || item.versionId !== version.versionId);
+    if (boundary !== -1 && events.slice(boundary).some(item => item.runningStatus === 'running')) {
+      reloadConfirmed = true; break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  assert.ok(reloadConfirmed, `Extension reload not observed via CDP: ${JSON.stringify(updates.slice(reloadFrom))}`);
+  assert.equal(await freshPopup.evaluate(() => chrome.storage.local.get('currentDeliveryId').then(value => value.currentDeliveryId)), 'native-delivery');
   assert.equal(await page.evaluate(() => window.fixtureClicks ?? 0), 0);
   result.steps.push({ id:'extension-reload', name: 'native extension reload preserves storage and does not resend', pass: true });
   assert.deepEqual(errors, []); result.status = 'PASS';
