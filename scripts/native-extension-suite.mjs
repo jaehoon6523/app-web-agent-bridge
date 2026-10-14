@@ -190,22 +190,46 @@ try {
   assert.equal(await ownerFromPopup(), 'native-delivery');
   result.steps.push({ id:'navigation', name: 'native navigation creates a new token and preserves unresolved ownership', pass: true }); save();
   const reloadFrom = updates.length;
+  const reloadRegistrations = [];
+  cdp.on('ServiceWorker.workerRegistrationUpdated', ({ registrations }) => {
+    for (const registration of registrations) {
+      if (registration.scopeURL?.startsWith(`chrome-extension://${extensionId}/`)) {
+        reloadRegistrations.push({ registrationId:registration.registrationId, isDeleted:registration.isDeleted });
+      }
+    }
+  });
   await popup.evaluate(() => chrome.runtime.reload()).catch(error => {
     // Reload may destroy the calling extension page before its evaluation returns.
     if (!/execution context was destroyed|target closed|page.*closed|navigation/i.test(String(error.message))) throw error;
   });
   const freshPopup = await context.newPage();
-  let opened = false, openError;
-  for (let attempt = 0; attempt < 20 && !opened; attempt++) {
+  let popupOpened = false, openError;
+  for (let attempt = 0; attempt < 20 && !popupOpened; attempt++) {
     try {
       await freshPopup.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil:'domcontentloaded', timeout:2000 });
-      opened = true;
+      popupOpened = true;
     } catch (error) {
       openError = error;
       await new Promise(resolve => setTimeout(resolve, 100));
     }
   }
-  assert.ok(opened, `Extension popup did not reopen after runtime.reload: ${openError?.message ?? 'unknown error'}`);
+  // Capture the exact Chrome registration/target state even when popup reopening fails.
+  // A blocked extension URL alone does not tell us whether reload failed or navigation was refused.
+  let reloadTargetInfos = [], reloadTargetError = null;
+  try {
+    ({ targetInfos:reloadTargetInfos } = await cdp.send('Target.getTargets'));
+  } catch (error) { reloadTargetError = error.message; }
+  result.extensionReloadDiagnostics = {
+    popupOpened,
+    popupNavigationError:openError?.message ?? null,
+    workerUpdates:updates.slice(reloadFrom),
+    registrationUpdates:reloadRegistrations,
+    extensionTargets:reloadTargetInfos.filter(target => target.url?.startsWith('chrome-extension://'))
+      .map(target => ({ type:target.type, url:target.url, attached:target.attached })),
+    targetQueryError:reloadTargetError,
+  };
+  save();
+  assert.ok(popupOpened, `Extension popup did not reopen after runtime.reload: ${openError?.message ?? 'unknown error'}`);
   const reloadedState = await freshPopup.evaluate(() => chrome.runtime.sendMessage({ type:'bridge.getState' }));
   assert.equal(reloadedState?.ok, true, 'Reloaded extension must answer bridge.getState');
   // A changed version or a stopped status, followed by running, establishes a real reload boundary.
