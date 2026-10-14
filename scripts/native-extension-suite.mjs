@@ -34,7 +34,7 @@ try {
   context = await chromium.launchPersistentContext(path.join(scratch, 'profile'), {
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE } : { channel: 'chromium' }),
     headless: true, viewport:null, ignoreDefaultArgs: ['--disable-extensions'],
-    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
+    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--enable-unsafe-extension-debugging'],
     timeout: 15_000,
   });
   result.browser = context.browser()?.version() ?? 'Chromium persistent context';
