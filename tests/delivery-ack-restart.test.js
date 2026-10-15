@@ -17,7 +17,6 @@ import { createActiveTurnGate } from '../extension/runtime/turn-guard.js';
 // The page/session-ready reply and Chrome storage API are controlled fixtures.
 async function fixture(t, { provider = 'CHATGPT_WEB' } = {}) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-ack-restart-'));
-  t.after(() => fs.rmSync(scratch, { recursive:true, force:true }));
   const url = provider === 'CHATGPT_WEB' ? 'https://chatgpt.com/c/test' : 'https://claude.ai/chat/test';
   const owner = { currentDeliveryId:'d', sessionId:'s', runId:'r', conversationUrl:url };
   const binding = { sessionId:'s', runId:'r', conversationUrl:url, conversationId:'test',
@@ -32,7 +31,6 @@ async function fixture(t, { provider = 'CHATGPT_WEB' } = {}) {
       responseRef:artifacts.put('Fixture response'), packetRef:artifacts.put('{"type":"REVIEW_ASSERTIONS"}') }] });
   await database.close();
   database = new CodeChangeStore(filename);
-  t.after(() => database.close());
   let saved = { ...binding, lastBoundSessionId:'s', lastBoundRunId:'r', currentDeliveryId:'d' };
   const storage = { get:async () => structuredClone(saved), set:async value => { saved = structuredClone(value); } };
   let store = createExtensionStateStore(storage);
@@ -80,10 +78,20 @@ async function fixture(t, { provider = 'CHATGPT_WEB' } = {}) {
     await authenticated;
   }
   t.after(async () => {
-    await web.close();
-    socket?.terminate();
-    for (const peer of server.clients) peer.terminate();
-    await new Promise(resolve => server.close(resolve));
+    // Shutdown order matters on Windows: terminate WebSocket ownership,
+    // close the *current* SQLite connection (including one from reopen()),
+    // and only then unlink the fixture directory.
+    const failures = [];
+    try { await web.close(); } catch (error) { failures.push(error); }
+    try {
+      socket?.terminate();
+      for (const peer of server.clients) peer.terminate();
+      await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    } catch (error) { failures.push(error); }
+    try { await database.close(); } catch (error) { failures.push(error); }
+    try { fs.rmSync(scratch, { recursive:true, force:true }); }
+    catch (error) { failures.push(error); }
+    if (failures.length) throw new AggregateError(failures, 'ACK fixture resource cleanup failed');
   });
   await connect();
   const codeChanges = { jobs:new Map(), workers:new Map(), reviewerWebBusy:() => false, artifactStore:artifacts,

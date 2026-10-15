@@ -7,7 +7,8 @@ import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { assessReload, atomicWrite, superviseTrial } from './mv3-reload-core.mjs';
+import { atomicWrite, superviseTrial } from './mv3-reload-core.mjs';
+import { backgroundCandidates, discoverMinimalExtension, verifiedReloadIdentity, assessDirectReload } from './direct-mv3-identity.mjs';
 
 const ownPath = fileURLToPath(import.meta.url);
 const root = path.resolve(path.dirname(ownPath), '..');
@@ -17,6 +18,8 @@ const sha256 = file => crypto.createHash('sha256').update(fs.readFileSync(file))
 const cases = [{ id: 'A', unsafe: false }, { id: 'B', unsafe: true }];
 const ownHash = sha256(ownPath);
 const coreHash = sha256(fileURLToPath(new URL('./mv3-reload-core.mjs', import.meta.url)));
+const identityHash = sha256(fileURLToPath(new URL('./direct-mv3-identity.mjs', import.meta.url)));
+const verificationRunId = process.env.BRIDGE_VERIFICATION_RUN_ID || crypto.randomUUID();
 const extensionHashExpected = {
   'manifest.json': '414efabb73898dea10b89de5fde7505607c2812a5ae8f864f6b72c6e6bd54081',
   'background.js': '1e24fdc16b8f6d3ef3e7ae384f4309f36aae649d9fb74dc1c7002b78891be165',
@@ -174,7 +177,7 @@ async function extensionUi(cdp, id) {
   } catch (error) { return { status: 'UNVERIFIED', error: error.message }; }
   finally { await closePage(cdp, p); }
 }
-async function popupProbe(cdp, id, { saveSentinel = false } = {}) {
+async function popupProbe(cdp, id, { saveSentinel = false, budgetMs = 3500 } = {}) {
   let page;
   try {
     page = await openPage(cdp, `chrome-extension://${id}/popup.html`);
@@ -191,7 +194,7 @@ async function popupProbe(cdp, id, { saveSentinel = false } = {}) {
     return await until(async () => {
       const value = await evaluate(cdp, page, expr, 2600);
       return value?.popupAccessible && value.backgroundResponded ? value : null;
-    }, 3500, 'POPUP_PROBE_FAILED');
+    }, Math.max(1, Math.min(3500, budgetMs)), 'POPUP_PROBE_FAILED');
   } finally { await closePage(cdp, page); }
 }
 async function browserShutdown(cdp, child) {
@@ -213,7 +216,7 @@ async function runCase(spec, scratch) {
   const trial = {
     id: spec.id, mode: 'DIRECT_CHROMIUM_CDP', execution: 'INCOMPLETE', stage: 'INIT',
     functionalRecovery: 'UNVERIFIED', reloadBoundaryEvidence: 'NOT_OBSERVED', reloadResult: 'UNVERIFIED',
-    startedAt: new Date().toISOString(), sourceHashes: { 'scripts/direct-chromium-reload-compare.mjs': ownHash, 'scripts/mv3-reload-core.mjs': coreHash },
+    startedAt: new Date().toISOString(), verificationRunId, sourceHashes: { 'scripts/direct-chromium-reload-compare.mjs': ownHash, 'scripts/mv3-reload-core.mjs': coreHash, 'scripts/direct-mv3-identity.mjs': identityHash },
     observations: { popupFailures: [], workerEvents: [], registrationEvents: [] },
   };
   const save = () => atomicWrite(snapshotPath, trial);
@@ -251,7 +254,7 @@ async function runCase(spec, scratch) {
     const actual = trial.actualProcessCommandLine.commandLine;
     trial.actualArgsEvidence = actual ? { status: 'OBSERVED', matchesRequested: args.filter(x => x !== 'about:blank').every(x => actual.includes(x)),
       unsafePresent: actual.includes('--enable-unsafe-extension-debugging'),
-      unsafeExpected: spec.unsafe, playwrightLauncherAbsent: !actual.includes('playwright') } : { status: 'UNVERIFIED' };
+      unsafeExpected: spec.unsafe, launchMethod: 'node:child_process.spawn', playwrightApiUsed: false } : { status: 'UNVERIFIED' };
     save();
     const [port, endpoint] = await waitForFile(path.join(profile, 'DevToolsActivePort'), 9500);
     cdp = new Cdp(`ws://127.0.0.1:${port}${endpoint}`);
@@ -272,21 +275,39 @@ async function runCase(spec, scratch) {
       }
     });
     await cdp.send('ServiceWorker.enable', {}, observer.sessionId);
-    let extensionId;
-    await until(async () => {
-      const info = await cdp.send('Target.getTargets', {}, undefined, 1000);
-      const target = info.targetInfos?.find(x => x.url?.startsWith('chrome-extension://'));
-      const events = trial.observations.workerEvents;
-      const reg = trial.observations.registrationEvents;
-      const url = target?.url || events[0]?.scriptURL || reg[0]?.scopeURL;
-      extensionId = url ? new URL(url).hostname : null;
-      return extensionId;
-    }, 8000, 'EXTENSION_ID_NOT_OBSERVED');
+    // Enumerate for the full SETUP window. Do not stop at the first unrelated
+    // background.js; verify marker + storage + worker ping and reject multiple
+    // positive matches, including a second extension that appears late.
+    let identified;
+    try {
+      identified = await discoverMinimalExtension({
+        timeoutMs: 9000,
+        collect: async () => {
+          const info = await cdp.send('Target.getTargets', {}, undefined, 1000);
+          return backgroundCandidates(info.targetInfos ?? [], trial.observations.workerEvents);
+        },
+        probe: async (id, { remainingMs }) => popupProbe(cdp, id,
+          { saveSentinel: true, budgetMs: Math.min(remainingMs, 3500) }),
+        onProgress: progress => { trial.observations.extensionDiscovery = progress; save(); },
+      });
+    } catch (error) {
+      trial.observations.extensionDiscovery = error.identityEvidence ?? trial.observations.extensionDiscovery;
+      save();
+      throw error;
+    }
+    const extensionId = identified.id;
+    const first = identified.observation;
+    trial.observations.extensionDiscovery = {
+      candidates: identified.candidates, attempted: identified.attempted,
+      enumerationErrors: identified.enumerationErrors,
+      elapsedMs: identified.elapsedMs, budgetMs: identified.budgetMs,
+      selected: extensionId,
+    };
     trial.extensionId = extensionId;
+    trial.verifiedExtension = verifiedReloadIdentity(extensionId,
+      trial.observations.workerEvents, trial.observations.registrationEvents);
     trial.observations.beforeUi = await extensionUi(cdp, extensionId);
-    const first = await popupProbe(cdp, extensionId, { saveSentinel: true });
-    if (!first.popupAccessible || !first.backgroundResponded || !first.sentinelPreserved || !first.instanceId)
-      throw new Error('INITIAL_WORKER_OR_STORAGE_INVALID');
+    save();
     trial.observations.beforeReloadWorkerInstance = first.instanceId;
     stage('RELOAD');
     const popup = await openPage(cdp, `chrome-extension://${extensionId}/popup.html`);
@@ -311,22 +332,25 @@ async function runCase(spec, scratch) {
       trial.observations.popupAfter = after ?? { popupAccessible: false };
       trial.observations.workerEventsAfterReload = trial.observations.workerEvents.filter(e => e.sequence > reloadSequence);
       trial.observations.registrationEventsAfterReload = trial.observations.registrationEvents.filter(e => e.sequence > reloadSequence);
-      Object.assign(trial, assessReload(trial.observations, false));
+      // Raw cross-extension events remain for diagnostics, but cannot prove
+      // the selected extension's reload boundary or post-boundary running.
+      Object.assign(trial, assessDirectReload(trial.observations,
+        trial.verifiedExtension, { windowCompleted: false }));
       save();
-      if (trial.reloadResult === 'PASS') break;
+      if (trial.functionalRecovery === 'PASS' && trial.reloadBoundaryEvidence === 'CONFIRMED') break;
       await sleep(150);
     }
     trial.observations.popupAfter = after ?? { popupAccessible: false };
     trial.observations.workerEventsAfterReload = trial.observations.workerEvents.filter(e => e.sequence > reloadSequence);
     trial.observations.registrationEventsAfterReload = trial.observations.registrationEvents.filter(e => e.sequence > reloadSequence);
-    Object.assign(trial, assessReload(trial.observations, true));
+    // An inaccessible popup is a functional observation, not proof that
+    // chrome.runtime.reload was invoked. Establish the invocation/boundary
+    // first, then finalize the reload verdict.
     trial.observations.afterUi = await extensionUi(cdp, extensionId);
     const infos = await cdp.send('Target.getTargets');
     trial.observations.extensionTargetsAfter = infos.targetInfos?.filter(x => x.url?.startsWith(`chrome-extension://${extensionId}`))
       .map(x => ({ type: x.type, url: x.url, attached: x.attached })) || [];
-    const teardownObserved = trial.observations.registrationEventsAfterReload.some(e => e.isDeleted === true)
-      || trial.observations.workerEventsAfterReload.some(e => e.runningStatus === 'stopped');
-    trial.execution = trial.observations.reloadInvocation.evaluate === 'returned' || teardownObserved ? 'COMPLETE' : 'INCOMPLETE';
+    Object.assign(trial, assessDirectReload(trial.observations, trial.verifiedExtension));
     if (trial.execution === 'INCOMPLETE') trial.error = { stage: 'RELOAD', message: 'RELOAD_INVOCATION_UNVERIFIED' };
     stage('DONE');
   } catch (error) { trial.error = { stage: trial.stage, code: error.code || null, message: error.message }; save(); }
@@ -335,7 +359,7 @@ async function runCase(spec, scratch) {
     trial.browserDiagnosticTail = browserOutput;
     trial.finishedAt = new Date().toISOString();
     save();
-    console.log('DIRECT_MV3_CASE ' + JSON.stringify({ id: trial.id, stage: trial.stage, execution: trial.execution,
+    console.log('DIRECT_MV3_CASE ' + JSON.stringify({ verificationRunId, id: trial.id, stage: trial.stage, execution: trial.execution,
       functionalRecovery: trial.functionalRecovery, reloadBoundaryEvidence: trial.reloadBoundaryEvidence,
       reloadResult: trial.reloadResult, childCleanup: trial.childCleanup.status,
       error: trial.error || null }));
@@ -344,7 +368,7 @@ async function runCase(spec, scratch) {
 
 async function runParent() {
   const result = { kind: 'DIRECT_MV3_RELOAD_COMPARISON', baselineHead: 'e331ea8ee971ac70febaea3dd04a5de021f2ca18',
-    sourceHashes: { 'scripts/direct-chromium-reload-compare.mjs': ownHash, 'scripts/mv3-reload-core.mjs': coreHash }, platform: process.platform, node: process.version, startedAt: new Date().toISOString(),
+    sourceHashes: { 'scripts/direct-chromium-reload-compare.mjs': ownHash, 'scripts/mv3-reload-core.mjs': coreHash, 'scripts/direct-mv3-identity.mjs': identityHash }, platform: process.platform, node: process.version, verificationRunId, startedAt: new Date().toISOString(),
     scope: 'Fresh A/B direct Chromium + CDP, no Playwright. Not a native bridge delivery/ACK proof.',
     execution: 'INCOMPLETE', cases: [] };
   try { result.gitHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(); }
@@ -377,10 +401,11 @@ async function runParent() {
   for (const spec of cases) {
     const scratch = fs.mkdtempSync(path.join(os.tmpdir(), `direct-mv3-${spec.id}-`));
     const observation = await superviseTrial({ command: process.execPath, args: [ownPath, '--child', spec.id, scratch],
-      cwd: root, snapshotFile: path.join(scratch, 'observation.json'), profile: path.join(scratch, 'profile'),
+      cwd: root, env: { ...process.env, BRIDGE_VERIFICATION_RUN_ID: verificationRunId },
+      snapshotFile: path.join(scratch, 'observation.json'), profile: path.join(scratch, 'profile'),
       scratch, limitMs: 45_000 });
     result.cases.push(observation); save();
-    console.log('DIRECT_MV3_TRIAL ' + JSON.stringify({ id: spec.id, stage: observation.stage,
+    console.log('DIRECT_MV3_TRIAL ' + JSON.stringify({ verificationRunId, id: spec.id, stage: observation.stage,
       execution: observation.execution, functionalRecovery: observation.functionalRecovery,
       reloadResult: observation.reloadResult, cleanup: observation.cleanup.status,
       childExecution: observation.childExecution.status }));
@@ -391,7 +416,7 @@ async function runParent() {
   result.childExecutionStatus = result.cases.every(x => x.childExecution.status === 'PASS') ? 'PASS' : 'FAIL';
   result.exitCode = result.cleanupStatus !== 'PASS' ? 3 : result.childExecutionStatus !== 'PASS' ? 4 : result.execution !== 'COMPLETE' ? 2 : 0;
   result.finishedAt = new Date().toISOString(); save();
-  console.log('DIRECT_MV3_RESULT ' + JSON.stringify({ execution: result.execution,
+  console.log('DIRECT_MV3_RESULT ' + JSON.stringify({ verificationRunId, execution: result.execution,
     cleanupStatus: result.cleanupStatus, childExecutionStatus: result.childExecutionStatus,
     exitCode: result.exitCode, results: result.cases.map(x => [x.id, x.reloadResult]), receiptPath }));
   process.exitCode = result.exitCode;
