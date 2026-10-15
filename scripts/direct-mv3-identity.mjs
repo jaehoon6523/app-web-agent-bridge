@@ -1,6 +1,6 @@
 // Identify the test-owned MV3 extension without assuming the first Chrome
 // extension worker belongs to the fixture. Chromium may load its own workers.
-import { assessReload } from './mv3-reload-core.mjs';
+import { assessReload, wait } from './mv3-reload-core.mjs';
 
 function backgroundId(url) {
   if (typeof url !== 'string') return null;
@@ -13,6 +13,13 @@ function backgroundId(url) {
 export function backgroundCandidates(targetInfos = [], workerEvents = []) {
   return [...new Set([...targetInfos.map(x => x?.url), ...workerEvents.map(x => x?.scriptURL)]
     .map(backgroundId).filter(Boolean))];
+}
+
+export function verifyExecutionContext(extensionId, context) {
+  return context?.url === `chrome-extension://${extensionId}/popup.html`
+    && context.runtimeId === extensionId && context.apis?.sendMessage === true
+    && context.apis?.reload === true && context.apis?.storageGet === true
+    && context.apis?.storageSet === true;
 }
 
 function eligible(x) {
@@ -44,13 +51,20 @@ export async function verifyMinimalExtension(candidates, probe) {
 // second matching extension fails closed as ambiguous.
 export async function discoverMinimalExtension({ collect, probe, timeoutMs = 9000,
   pollMs = 150, retryMs = 1500, clock = Date.now,
-  pause = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {} }) {
+  pause = ms => new Promise(resolve => setTimeout(resolve, ms)), onProgress = () => {}, requireContext = false }) {
   const start = clock(), end = start + timeoutMs;
   const seen = new Set(), matches = new Map(), lastTried = new Map();
   const attempted = [], enumerationErrors = [];
+  let deadlineExceeded = false;
+  const bounded = async operation => {
+    const missing = Symbol('SETUP_DEADLINE');
+    const value = await wait(Promise.resolve().then(operation), Math.max(1, end - clock()), missing);
+    if (value === missing) { deadlineExceeded = true; throw Error('SETUP_DEADLINE'); }
+    return value;
+  };
   while (clock() < end) {
     let ids = [];
-    try { ids = await collect(); }
+    try { ids = await bounded(collect); }
     catch (error) { enumerationErrors.push({ elapsedMs: clock() - start, reason: String(error?.message ?? error) }); }
     for (const id of ids) seen.add(id);
     for (const id of seen) {
@@ -59,8 +73,11 @@ export async function discoverMinimalExtension({ collect, probe, timeoutMs = 900
       lastTried.set(id, clock());
       const entry = { id, elapsedMs: clock() - start };
       try {
-        const observation = await probe(id, { remainingMs: Math.max(1, end - clock()) });
-        if (eligible(observation)) { entry.verdict = 'MATCHED'; matches.set(id, observation); }
+        const observation = await bounded(() => probe(id, { remainingMs: Math.max(1, end - clock()) }));
+        entry.observation = observation;
+        if (eligible(observation) && (!requireContext || verifyExecutionContext(id, observation.context))) {
+          entry.verdict = 'MATCHED'; matches.set(id, observation);
+        }
         else { entry.verdict = 'REJECTED'; entry.reason = 'POPUP_OR_WORKER_CONTRACT_MISMATCH'; }
       } catch (error) { entry.verdict = 'REJECTED'; entry.reason = String(error?.message ?? error); }
       attempted.push(entry);
@@ -73,6 +90,9 @@ export async function discoverMinimalExtension({ collect, probe, timeoutMs = 900
   }
   const evidence = { candidates: [...seen], attempted, enumerationErrors,
     elapsedMs: clock() - start, budgetMs: timeoutMs };
+  if (requireContext && deadlineExceeded) {
+    const error = new Error('SETUP_DISCOVERY_INCOMPLETE'); error.identityEvidence = evidence; throw error;
+  }
   if (matches.size !== 1) {
     const error = new Error(matches.size > 1 ? 'AMBIGUOUS_MINIMAL_EXTENSION_ID' : 'EXPECTED_MINIMAL_EXTENSION_NOT_FOUND');
     error.identityEvidence = evidence;
@@ -85,13 +105,15 @@ export async function discoverMinimalExtension({ collect, probe, timeoutMs = 900
 // The selected ID has already passed the popup marker, storage sentinel, and
 // worker ping checks. Capture the exact URLs used to scope subsequent CDP
 // events; versionId / registrationId may change after a legitimate reload.
-export function verifiedReloadIdentity(extensionId, workerEvents = [], registrationEvents = []) {
+export function verifiedReloadIdentity(extensionId, workerEvents = [], registrationEvents = [], initialProbe = null) {
   if (typeof extensionId !== 'string' || !/^[a-p]{32}$/u.test(extensionId))
     throw new Error('VERIFIED_EXTENSION_ID_REQUIRED');
   const workerScriptURL = `chrome-extension://${extensionId}/background.js`;
   const registrationScopeURL = `chrome-extension://${extensionId}/`;
   return {
     extensionId, workerScriptURL, registrationScopeURL,
+    setupVerified: eligible(initialProbe) && verifyExecutionContext(extensionId, initialProbe?.context),
+    initialProbe,
     initialWorkerVersionIds: [...new Set(workerEvents.filter(x => x.scriptURL === workerScriptURL).map(x => x.versionId))],
     initialRegistrationIds: [...new Set(registrationEvents.filter(x => x.scopeURL === registrationScopeURL).map(x => x.registrationId))],
   };

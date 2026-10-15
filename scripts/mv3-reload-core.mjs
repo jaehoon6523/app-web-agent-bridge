@@ -59,14 +59,27 @@ export function wait(promise, ms, fallback) {
   });
 }
 
-async function profilePids(profile) {
-  // Query actual browser processes by the unique per-case --user-data-dir, not just node parent PID.
+async function profilePids(profile, ownershipRoots = []) {
+  // Include descendants even if they omit --user-data-dir or their parent has
+  // already exited. Roots come only from this launch and its durable snapshot.
   if (process.platform === 'win32') {
-    const escaped = profile.replaceAll("'", "''");
-    const command = `$needle='${escaped}'; @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains($needle) } | Select-Object -ExpandProperty ProcessId) -join ','`;
+    const command = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress';
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command],
-      { timeout: 4000, windowsHide: true, maxBuffer: 64 * 1024 });
-    return stdout.trim().split(',').filter(Boolean).map(Number).filter(Number.isInteger);
+      { timeout: 4000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 });
+    const data = JSON.parse(stdout.trim());
+    const processes = Array.isArray(data) ? data : data ? [data] : [];
+    const escaped = (`--user-data-dir=${profile}`).replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const marker = new RegExp(`(?:^|\\s)${escaped}(?=\\s|$)`, 'u');
+    const owned = new Set(ownershipRoots);
+    for (const item of processes) if (marker.test((item.CommandLine ?? '').replaceAll('"', ''))) owned.add(item.ProcessId);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const item of processes) if (!owned.has(item.ProcessId) && owned.has(item.ParentProcessId)) {
+        owned.add(item.ProcessId); changed = true;
+      }
+    }
+    return processes.filter(item => owned.has(item.ProcessId)).map(item => item.ProcessId);
   }
   if (process.platform === 'linux') {
     const pids = [];
@@ -74,7 +87,14 @@ async function profilePids(profile) {
       if (!/^\d+$/.test(entry)) continue;
       try {
         const argv = fs.readFileSync(`/proc/${entry}/cmdline`).toString('utf8');
-        if (argv.includes(`--user-data-dir=${profile}`)) pids.push(Number(entry));
+        if (fs.readlinkSync(`/proc/${entry}/ns/pid`) === fs.readlinkSync('/proc/self/ns/pid')) {
+          const status = fs.readFileSync(`/proc/${entry}/status`, 'utf8');
+          const ids = status.match(/^NSpid:\s+(.+)$/mu)?.[1].trim().split(/\s+/u);
+          const groups = status.match(/^NSpgid:\s+(.+)$/mu)?.[1].trim().split(/\s+/u);
+          const alive = !/^State:\s+Z\b/mu.test(status);
+          if (alive && ids?.length && (argv.split('\0').includes(`--user-data-dir=${profile}`)
+            || ownershipRoots.includes(Number(groups?.at(-1))))) pids.push(Number(ids.at(-1)));
+        }
       } catch { /* process exited */ }
     }
     return pids;
@@ -105,12 +125,20 @@ async function killPid(pid) {
 }
 
 export async function superviseTrial({ command, args, env = process.env, cwd = process.cwd(),
-  snapshotFile, profile, scratch, limitMs = 35_000, stdoutLimit = 3000 }) {
+  snapshotFile, profile, scratch, limitMs = 35_000, stdoutLimit = 3000,
+  stdoutFile, expectedRunId, expectedScope,
+  removeScratch = directory => fs.rmSync(directory, { recursive: true, force: true }) }) {
   const start = Date.now();
+  // Never let a diagnostic cleanup erase an unrelated directory/profile.
+  const contained = file => { const relative = path.relative(path.resolve(scratch), path.resolve(file));
+    return relative !== '' && !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative); };
+  if (!contained(profile) || !contained(snapshotFile)) throw Error('OWNED_SCRATCH_PATH_REQUIRED');
+  if (stdoutFile) { fs.mkdirSync(path.dirname(stdoutFile), { recursive: true }); fs.writeFileSync(stdoutFile, ''); }
   const child = spawn(command, args, { cwd, env, detached: true, windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '', spawnError = null;
-  const append = chunk => { output = (output + chunk.toString('utf8')).slice(-stdoutLimit); };
+  const append = chunk => { output = (output + chunk.toString('utf8')).slice(-stdoutLimit);
+    if (stdoutFile) fs.appendFileSync(stdoutFile, chunk); };
   child.stdout?.on('data', append); child.stderr?.on('data', append);
   child.on('error', error => { spawnError = error.message; });
   const exited = new Promise(resolve => child.once('close', (code, signal) => resolve({ code, signal })));
@@ -121,22 +149,37 @@ export async function superviseTrial({ command, args, env = process.env, cwd = p
     terminate = await treeKill(child.pid);
     outcome = await wait(exited, 5000, null);
   }
+  const rawSnapshot = readSnapshot(snapshotFile); // Preserve before removing owned resources.
+  const snapshotReceiptError = !rawSnapshot ? 'RESULT_NOT_CREATED' :
+    expectedRunId && rawSnapshot.verificationRunId !== expectedRunId ? 'RESULT_RUN_MISMATCH' :
+      expectedScope && rawSnapshot.scope !== expectedScope ? 'RESULT_SCOPE_MISMATCH' : null;
+  const ownershipRoots = [child.pid, !snapshotReceiptError && expectedRunId ? rawSnapshot.browserProcessPid : null].filter(Number.isInteger);
   let survivors = null, profileQueryError = null;
-  try { survivors = await profilePids(profile); }
+  try { survivors = await profilePids(profile, ownershipRoots); }
   catch (error) { profileQueryError = error.message; }
-  if (Array.isArray(survivors) && survivors.length) {
-    for (const pid of survivors) await killPid(pid);
-    try { survivors = await profilePids(profile); }
-    catch (error) { profileQueryError = error.message; survivors = null; }
+  const browserForceRequired = Array.isArray(survivors) && survivors.length > 0;
+  if (browserForceRequired) {
+    const verificationDeadline = Date.now() + 2000;
+    do {
+      // A delivered kill signal is not an observed exit. Allow bounded time
+      // for actual disappearance, and retain ancestry roots of orphaned peers.
+      for (const pid of survivors) {
+        if (!ownershipRoots.includes(pid)) ownershipRoots.push(pid);
+        await killPid(pid);
+      }
+      await new Promise(resolve => setTimeout(resolve, 50));
+      try { survivors = await profilePids(profile, ownershipRoots); }
+      catch (error) { profileQueryError = error.message; survivors = null; }
+    } while (Array.isArray(survivors) && survivors.length > 0 && Date.now() < verificationDeadline);
   }
   const childTerminationConfirmed = outcome !== null;
   const browserTerminationConfirmed = Array.isArray(survivors) && survivors.length === 0;
-  const snapshot = readSnapshot(snapshotFile); // Capture the child's durable observations BEFORE deleting the scratch directory.
+  const snapshot = snapshotReceiptError ? null : rawSnapshot;
   const cleanupStatus = childTerminationConfirmed && browserTerminationConfirmed ? 'PASS' : 'UNCONFIRMED';
   let scratchRemoval = 'SKIPPED';
   let scratchError = null;
   if (cleanupStatus === 'PASS') {
-    try { fs.rmSync(scratch, { recursive: true, force: true }); scratchRemoval = 'PASS'; }
+    try { removeScratch(scratch); scratchRemoval = 'PASS'; }
     catch (error) { scratchRemoval = 'FAIL'; scratchError = error.message; }
   }
   const original = snapshot ?? {
@@ -144,6 +187,10 @@ export async function superviseTrial({ command, args, env = process.env, cwd = p
     functionalRecovery: 'UNVERIFIED', reloadBoundaryEvidence: 'NOT_OBSERVED', reloadResult: 'UNVERIFIED',
   };
   const observed = { ...original };
+  observed.snapshotReceiptError = snapshotReceiptError;
+  if (snapshotReceiptError && rawSnapshot) observed.rejectedSnapshot = rawSnapshot;
+  observed.supervision = { startedAt: new Date(start).toISOString(), finishedAt: new Date().toISOString(),
+    pid: child.pid ?? null, command, args, stdoutFile: stdoutFile ?? null };
   if (timedOut) {
     if (observed.execution !== 'COMPLETE') observed.execution = 'INCOMPLETE'; // Completed observations survive a cleanup timeout.
     observed.watchdog = { timedOut: true, limitMs, elapsedMs: Date.now() - start };
@@ -161,7 +208,8 @@ export async function superviseTrial({ command, args, env = process.env, cwd = p
   };
   observed.tail = output;
   const cleanup = { status: scratchRemoval === 'FAIL' || observed.childCleanup?.status === 'FAIL' ? 'FAIL' :
-    cleanupStatus === 'PASS' && timedOut ? 'FORCED_TERMINATED' : cleanupStatus, childTerminationConfirmed,
+    cleanupStatus === 'PASS' && (timedOut || browserForceRequired) ? 'FORCED_TERMINATED' : cleanupStatus, childTerminationConfirmed,
+    browserForceRequired, ownershipRoots,
     browserTerminationConfirmed, survivorPids: survivors, profileQueryError, terminate, scratchRemoval, scratchError,
     childReported: observed.childCleanup ?? null,
     profileRetained: scratchRemoval !== 'PASS' ? scratch : null };

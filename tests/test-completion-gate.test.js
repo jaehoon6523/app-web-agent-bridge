@@ -46,3 +46,22 @@ test('completion gate completes every selected file and replaces previous result
   assert.equal(JSON.parse(fs.readFileSync(path.join(directory,'latest-test-result.json'))).results.length,1);
   assert.equal(fs.readFileSync(path.join(directory,'latest-test.log'),'utf8').includes('INCOMPLETE_TEST_RUN'),false);
 });
+
+test('receipt cleanup failure retains the original verification result and a separate cleanup error', async t => {
+  const filename = fixture(t,"import test from 'node:test'; test('original failure',()=>{throw Error('original evidence');});");
+  const original = fs.rmSync;
+  let rejectedDirectory;
+  t.after(() => { if (rejectedDirectory) fs.rmSync(rejectedDirectory,{recursive:true,force:true}); });
+  fs.rmSync = (target,options) => {
+    if (path.basename(String(target)).startsWith('bridge-test-receipt-')) {
+      rejectedDirectory = target; throw Error('Synthetic receipt cleanup failure');
+    }
+    return original(target,options);
+  };
+  let result;
+  try { result = await runFile(filename,quiet); }
+  finally { fs.rmSync = original; }
+  assert.equal(result.closure.code,1); assert.equal(result.summary.failed,1);
+  assert.equal(result.reason,'TEST_FAILURE'); assert.equal(result.pass,false);
+  assert.equal(result.receiptCleanupError,'Synthetic receipt cleanup failure');
+});

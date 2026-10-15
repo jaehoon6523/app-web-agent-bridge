@@ -9,7 +9,7 @@ test('a prior PASS result cannot become this run result if the runner fails befo
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ack-stale-'));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   const old=path.join(dir,'latest-test-result.json');
-  fs.writeFileSync(old,JSON.stringify({status:'PASS',scheduled:expectedAckFiles,
+  fs.writeFileSync(old,JSON.stringify({verificationRunId:'fresh',startedAt:new Date(Date.now()-1000).toISOString(),finishedAt:new Date().toISOString(),terminal:true,exitCode:0,status:'PASS',scheduled:expectedAckFiles,
     results:expectedAckFiles.map(file=>({file,pass:true,summaryStatus:'COMPLETE'}))}));
   const previous=Date.now()-60_000;
   fs.utimesSync(old,new Date(previous),new Date(previous));
@@ -33,7 +33,7 @@ test('current PASS requires exact scheduled files, completed results and runner 
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   const p=path.join(dir,'latest-test-result.json');
   const start=Date.now()-3000;
-  fs.writeFileSync(p,JSON.stringify({status:'PASS',scheduled:expectedAckFiles,
+  fs.writeFileSync(p,JSON.stringify({verificationRunId:'fresh',startedAt:new Date(Date.now()-1000).toISOString(),finishedAt:new Date().toISOString(),terminal:true,exitCode:0,status:'PASS',scheduled:expectedAckFiles,
     results:expectedAckFiles.map(file=>({file,pass:true,summaryStatus:'COMPLETE'}))}));
   assert.equal(evaluateAckReceipt({runId:'fresh',startedMs:start,exitCode:0,resultFile:p}).status,'PASS');
   assert.equal(evaluateAckReceipt({runId:'fresh',startedMs:start,exitCode:1,resultFile:p}).status,'FAIL');
@@ -42,7 +42,7 @@ test('fresh receipt for wrong files fails even with PASS status and exit code 0'
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ack-scope-'));
   t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
   const p=path.join(dir,'latest-test-result.json');
-  fs.writeFileSync(p,JSON.stringify({status:'PASS',scheduled:['tests/other.test.js'],
+  fs.writeFileSync(p,JSON.stringify({verificationRunId:'fresh',startedAt:new Date(Date.now()-1000).toISOString(),finishedAt:new Date().toISOString(),terminal:true,exitCode:0,status:'PASS',scheduled:['tests/other.test.js'],
     results:[{file:'tests/other.test.js',pass:true,summaryStatus:'COMPLETE'}]}));
   assert.equal(evaluateAckReceipt({runId:'fresh',startedMs:Date.now()-3000,exitCode:0,resultFile:p}).reason,'RESULT_SCOPE_MISMATCH');
 });

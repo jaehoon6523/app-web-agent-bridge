@@ -108,7 +108,10 @@ export async function executeVerification({ workspace, capture, candidateId, ver
   } catch (error) { record.error = error.message; }
   finally {
     try { fs.rmSync(resultRoot, { recursive: true, force: true }); }
-    catch (error) { record.error = record.error ?? `Result cleanup failed: ${error.message}`; }
+    catch (error) {
+      record.cleanupError = error.message;
+      record.error = record.error ?? `Result cleanup failed: ${error.message}`;
+    }
   }
   record.finishedAt = new Date().toISOString();
   const evidence = evidenceRecord(artifactStore, candidateId, "EXECUTION", record, {

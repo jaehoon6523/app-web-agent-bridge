@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { atomicWrite } from './mv3-reload-core.mjs';
 
 export const expectedAckFiles = [
   'tests/delivery-ack-restart.test.js',
@@ -10,7 +11,7 @@ export const expectedAckFiles = [
   'tests/discussion-response-atomicity.test.js',
 ];
 export function evaluateAckReceipt({ runId, startedMs, endedMs = Date.now(), exitCode,
-  resultFile, expectedFiles = expectedAckFiles }) {
+  resultFile, expectedFiles = expectedAckFiles, requireRunId = true }) {
   if (!runId || !Number.isFinite(startedMs) || !Number.isInteger(exitCode)) throw Error('ACK_RUN_METADATA_INVALID');
   const base = { verificationRunId:runId, startedAt:new Date(startedMs).toISOString(),
     finishedAt:new Date(endedMs).toISOString(), runnerExitCode:exitCode, status:'FAIL',
@@ -24,6 +25,12 @@ export function evaluateAckReceipt({ runId, startedMs, endedMs = Date.now(), exi
   let result;
   try { result = JSON.parse(fs.readFileSync(resultFile,'utf8')); }
   catch (error) { return { ...base, reason:'INVALID_RESULT_JSON', error:error.message }; }
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return { ...base, reason:'INVALID_RESULT_JSON' };
+  if (requireRunId && result.verificationRunId !== runId) return { ...base, reason:'RESULT_RUN_MISMATCH' };
+  if (requireRunId && (result.terminal !== true || result.exitCode !== exitCode
+    || !Number.isFinite(Date.parse(result.startedAt)) || Date.parse(result.startedAt) < startedMs
+    || !Number.isFinite(Date.parse(result.finishedAt)) || Date.parse(result.finishedAt) < Date.parse(result.startedAt)))
+    return { ...base, reason:'RESULT_NOT_CURRENT_TERMINAL' };
   const scopeOk = Array.isArray(result.scheduled) && result.scheduled.length === expectedFiles.length
     && expectedFiles.every((file,i)=>result.scheduled[i] === file)
     && Array.isArray(result.results) && result.results.length === expectedFiles.length
@@ -36,10 +43,7 @@ export function evaluateAckReceipt({ runId, startedMs, endedMs = Date.now(), exi
 }
 export function writeAckReceipt(args, outputFile) {
   const result=evaluateAckReceipt(args);
-  fs.mkdirSync(path.dirname(outputFile),{recursive:true});
-  const tmp=`${outputFile}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp,JSON.stringify(result,null,2)+'\n');
-  fs.renameSync(tmp,outputFile);
+  atomicWrite(outputFile,result);
   return result;
 }
 const own=fileURLToPath(import.meta.url);

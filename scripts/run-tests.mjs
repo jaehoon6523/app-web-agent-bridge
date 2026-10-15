@@ -1,9 +1,12 @@
 import fs from 'node:fs';
+import {acquireLatestRun} from './latest-run.mjs';
+import {verificationSource} from './verification-source.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import {ownedSpawn, forceProcessTree} from './e2e/platform/process.mjs';
 import {fileURLToPath} from 'node:url';
 import {observeChildClose, waitChildClose} from '../src/runtime/child-close.js';
+import {atomicWrite} from './mv3-reload-core.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 // Node treats a Windows drive letter as a URL scheme if passed as a reporter path.
@@ -14,6 +17,10 @@ export const reporter = new URL('./test-completion-reporter.mjs', import.meta.ur
 const DEFAULT_FILE_TIMEOUT_MS = 180000;
 const fileTimeouts = new Map([
   ['tests/runtime-cleanup/contract.test.js', 12 * 60 * 1000],
+  // One bounded setup plus eight 15-second cases and source cleanup.
+  ['tests/verification-command.test.js', 4 * 60 * 1000],
+  // Two full invocations and an early-failure invocation, including setup.
+  ['tests/source-checkout.test.mjs', 12 * 60 * 1000],
 ]);
 export function fileTimeoutMs(filename) {
   return fileTimeouts.get(path.relative(root,filename).split(path.sep).join('/')) ?? DEFAULT_FILE_TIMEOUT_MS;
@@ -30,7 +37,7 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
   const budgetMs = timeoutMs ?? fileTimeoutMs(filename);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-test-receipt-'));
   const receipt = path.join(scratch, 'completion.json');
-  let closure, error, errorCode, cleanupError, summary, receiptError, deadline = false;
+  let closure, error, errorCode, cleanupError, summary, receiptError, item, deadline = false;
   const childEnv = {...process.env, BRIDGE_TEST_RECEIPT:receipt, BRIDGE_TEST_FILE:path.resolve(filename)};
   // A gate regression may itself execute inside node:test. Do not let that
   // worker's private context suppress the nested file's completion reporter.
@@ -63,26 +70,41 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
       : summaryStatus === 'MISSING' ? 'MISSING_RECEIPT' : summaryStatus === 'INCOMPLETE' ? 'INCOMPLETE_TEST_RUN'
       : summary?.failed > 0 || summary?.todo?.length > 0 || unexpectedSkips.length > 0 ? 'TEST_FAILURE'
       : closure?.code !== 0 || closure?.signal !== null ? 'CHILD_EXIT_NONZERO' : 'TEST_FAILURE';
-    return {file:path.relative(root,filename).split(path.sep).join('/'), pass, closure, error, errorCode,
+    item = {file:path.relative(root,filename).split(path.sep).join('/'), pass, closure, error, errorCode,
       cleanupError, timeoutMs:budgetMs, deadline, childPid:child.pid, childExitCode:child.exitCode,
       childSignal:child.signalCode, summaryStatus, receiptError, unexpectedSkips, reason, summary};
-  } finally {fs.rmSync(scratch, {recursive:true,force:true});}
+  } finally {
+    try { fs.rmSync(scratch, {recursive:true,force:true}); }
+    catch (cause) {
+      if (!item) throw cause;
+      item.receiptCleanupError = cause.message;
+      if (item.pass) item.reason = 'CLEANUP_FAILURE';
+      item.pass = false;
+    }
+  }
+  return item;
 }
 
-export async function runFiles(files, {directory = path.join(root,'.agent-controller'), output = chunk => process.stdout.write(chunk)} = {}) {
+export async function runFiles(files, {directory = path.join(root,'.agent-controller'), output = chunk => process.stdout.write(chunk),
+  verificationRunId = process.env.BRIDGE_VERIFICATION_RUN_ID ?? null} = {}) {
   if (process.env.RUNTIME_CLEANUP_IDS) throw new Error('Partial cleanup selection is diagnostic-only; clear RUNTIME_CLEANUP_IDS for a gate run');
   if (!files.length || new Set(files.map(file => path.resolve(file))).size !== files.length) throw new Error('Expected a nonempty, unique test file list');
   for (const file of files) if (!fs.statSync(file).isFile()) throw new Error('Missing test file: '+file);
   fs.mkdirSync(directory, {recursive:true});
+  const lease = acquireLatestRun(directory,'test-gate');
+  try {
   const logPath = path.join(directory,'latest-test.log');
   fs.writeFileSync(logPath,'');
   const resultPath = path.join(directory,'latest-test-result.json');
-  const result = {status:'RUNNING', node:process.version, platform:process.platform,
+  const result = {status:'RUNNING', verificationRunId:verificationRunId ?? lease.runId,
+    startedAt:new Date().toISOString(), terminal:false,
+    node:process.version, platform:process.platform,
     scheduled:files.map(file => path.relative(root,file).split(path.sep).join('/')), results:[]};
-  const save = () => fs.writeFileSync(resultPath,JSON.stringify(result,null,2)+'\n');
+  const save = () => atomicWrite(resultPath,result);
   const write = chunk => {fs.appendFileSync(logPath,chunk); output(chunk);};
   save();
   try {
+    result.source = verificationSource(root); save();
     for (const file of files) {
       const budgetMs = fileTimeoutMs(file);
       write('\nFILE '+path.relative(root,file)+' timeoutMs='+budgetMs+'\n');
@@ -91,7 +113,7 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
       write('FILE_RESULT '+JSON.stringify({file:item.file,reason:item.reason,pass:item.pass,
         timeoutMs:item.timeoutMs,deadline:item.deadline,childPid:item.childPid,
         childExitCode:item.childExitCode,childSignal:item.childSignal,
-        closure:item.closure,error:item.error,errorCode:item.errorCode,cleanupError:item.cleanupError,
+        closure:item.closure,error:item.error,errorCode:item.errorCode,cleanupError:item.cleanupError,receiptCleanupError:item.receiptCleanupError,
         summaryStatus:item.summaryStatus,receiptError:item.receiptError,
         plan:item.summary?.plan,topLevel:item.summary?.topLevel,
         passed:item.summary?.passed,failed:item.summary?.failed,skipped:item.summary?.skipped})+'\n');
@@ -105,7 +127,9 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
     result.status = 'FAIL'; result.error = cause.message;
     write('TEST_GATE_EXCEPTION '+JSON.stringify({error:cause.message,code:cause.code ?? null})+'\n');
     throw cause;
-  } finally {save();}
+  } finally {result.finishedAt=new Date().toISOString();result.terminal=true;
+    result.exitCode=result.status==='PASS'?0:1;save();}
+  } finally { lease.release(); }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -1,17 +1,64 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, {before,after} from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {spawn} from 'node:child_process';
-import {once} from 'node:events';
+import {execFile} from 'node:child_process';
+import {promisify} from 'node:util';
 import {fileURLToPath} from 'node:url';
 import {nativeExtensionSteps} from '../scripts/native-extension-contract.js';
 
-const command = fileURLToPath(new URL('../scripts/verify-all.mjs',import.meta.url));
+import {createSourceCheckout,linkDependencies} from './helpers/source-checkout.mjs';
+import {beginTestEvidenceRun} from './helpers/failure-evidence.mjs';
+const repository = fileURLToPath(new URL('../',import.meta.url));
+const run = promisify(execFile);
+const contexts = new WeakMap();
+let evidenceRun, suiteRoot, checkout, snapshot, originalContent;
+// Full source copying, Git initialization and dependency linking belong to the
+// file setup budget, rather than being repeated inside every 15-second case.
+before(() => {
+  evidenceRun = beginTestEvidenceRun(repository,'verification-command');
+  const setup = evidenceRun.record.setup = {status:'RUNNING',startedAt:new Date().toISOString()}; evidenceRun.save();
+  try {
+    suiteRoot = fs.mkdtempSync(path.join(os.tmpdir(),'bridge-verification-command-'));
+    checkout = path.join(suiteRoot,'checkout');
+    snapshot = createSourceCheckout(repository,checkout); linkDependencies(repository,checkout);
+    originalContent = fs.readFileSync(path.join(checkout,'extension/content.js'));
+    Object.assign(setup,{status:'PASS',checkout,snapshot});
+  } catch (error) {
+    setup.status = 'FAIL'; evidenceRun.record.failure = {message:error.message,stack:error.stack}; throw error;
+  } finally { setup.finishedAt = new Date().toISOString(); evidenceRun.save(); }
+},{timeout:60000});
+after(() => {
+  if (!evidenceRun) return;
+  try { if (suiteRoot) fs.rmSync(suiteRoot,{recursive:true,force:true}); }
+  catch (error) { evidenceRun.record.cleanupErrors.push(error.message); throw error; }
+  finally { evidenceRun.close(); }
+});
+function verificationTest(scenarioId, name, options, body) {
+  test(name,options,async t => {
+    const evidence = evidenceRun.scenario(scenarioId); contexts.set(t,evidence);
+    evidence.record.snapshot = snapshot; evidence.save();
+    t.after(() => { try { evidence.cleanup?.(); } finally { evidence.close(); } });
+    try { await body(t); contexts.get(t)?.finish(null); }
+    catch (error) { contexts.get(t)?.finish(error); t.diagnostic('Failure evidence: '+contexts.get(t)?.directory); throw error; }
+  });
+}
 async function execute(t, mode) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(),'bridge-verification-command-'));
-  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const root = fs.mkdtempSync(path.join(suiteRoot,mode+'-'));
+  const evidence = contexts.get(t);
+  evidence.cleanup = () => {
+    evidence.preserve(checkout);
+    for (const name of ['latest-verification.json','latest-verification.log']) evidence.copy(path.join(root,name),name);
+    const errors = [];
+    for (const clean of [() => fs.writeFileSync(path.join(checkout,'extension/content.js'),originalContent),
+      () => fs.rmSync(root,{recursive:true,force:true})]) {
+      try { clean(); } catch (error) { evidence.record.cleanupErrors.push(error.message); errors.push(error); }
+    }
+    if (errors.length) throw new AggregateError(errors,'Verification scenario cleanup failed');
+  };
+  fs.rmSync(path.join(checkout,'.agent-controller'),{recursive:true,force:true});
+  const command = path.join(checkout,'scripts/verify-all.mjs');
   const peer = path.join(root,'npm-peer.cjs');
   fs.writeFileSync(peer, `const fs=require('node:fs'),path=require('node:path');
     const stage=process.argv[3], root=process.env.BRIDGE_VERIFICATION_OUTPUT;
@@ -19,44 +66,56 @@ async function execute(t, mode) {
     if (${JSON.stringify(mode)} === 'large') process.stdout.write('x'.repeat(500000)+'\\n');
     if (${JSON.stringify(mode)} !== 'missing') {
       const uf=stage==='test:e2e:ci',native=stage==='test:extension:native';
-      const target=path.join(root,uf?'ui-qa/e2e-summary.json':native?'latest-native-extension.json':'latest-test-result.json');
+      const receiptRoot=native?root:path.join(process.cwd(),'.agent-controller');
+      const target=path.join(receiptRoot,uf?'ui-qa/e2e-summary.json':native?'latest-native-extension.json':'latest-test-result.json');
       fs.mkdirSync(path.dirname(target),{recursive:true});
       const ids=${JSON.stringify(nativeExtensionSteps)};
       fs.writeFileSync(target,JSON.stringify(native?{nativeExtension:true,completed:true,status:${JSON.stringify(mode)}==='native-unavailable'?'UNVERIFIED':'PASS',
-        steps:ids.filter(id=>${JSON.stringify(mode)}!=='missing-window-boundary'||id!=='window-resize').map(id=>({id,pass:true}))}:uf?{scope:'FULL SUITE',failed:0,unexpectedSkips:0}:
+        steps:ids.filter(id=>${JSON.stringify(mode)}!=='missing-window-boundary'||id!=='window-resize').map(id=>({id,pass:true}))}:uf?{scope:'FULL SUITE',failed:0,unexpectedSkips:0,continuationBlocked:${JSON.stringify(mode)}==='blocked-e2e'?1:0}:
         {status:'PASS',scheduled:['peer'],results:[{pass:true,summary:{completed:true}}]}));
       if(stage==='test:browser' && ${JSON.stringify(mode)}!=='missing-gui') fs.writeFileSync(path.join(root,'tab-ux-browser-latest.json'),
         JSON.stringify({exitCode:0,browserVersion:'controlled-peer',assertions:[{status:'PASS'}]}));
     }
+    if (${JSON.stringify(mode)} === 'source-changed' && stage==='check') fs.appendFileSync(path.join(process.cwd(),'extension/content.js'),'\\n// changed during verification\\n');
     if (${JSON.stringify(mode)} === 'first-fails' && stage==='check') process.exitCode=7;
     if (${JSON.stringify(mode)} === 'native-unavailable' && stage==='test:extension:native') process.exitCode=2;
   `);
-  const child=spawn(process.execPath,[command],{env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},stdio:['ignore','pipe','pipe']});
-  child.stdout.resume();child.stderr.resume();
-  const [code,signal]=await once(child,'close');
+  try {
+    await evidence.command(process.execPath,[command],{cwd:checkout,
+      env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:12000,maxBuffer:8*1024*1024},run);
+  } catch (error) {
+    if (typeof error.code !== 'number') throw error;
+  }
+  const closed = evidence.record.commands.at(-1);
+  const code = closed.exitCode, signal = closed.signal;
   const result=JSON.parse(fs.readFileSync(path.join(root,'latest-verification.json'),'utf8'));
   const log=fs.readFileSync(path.join(root,'latest-verification.log'),'utf8');
   assert.equal(signal,null);
   assert.equal(result.logBytes,Buffer.byteLength(log));
   assert.equal(result.expectedLogBytes,result.logBytes);
   assert.equal(result.stages.length,5);
+  assert.match(result.runId,/^[a-f0-9-]{36}$/u);
+  assert.equal(result.source.head,result.sourceAfter.head);
+  if (mode === 'source-changed') assert.notEqual(result.source.sourceSha256,result.sourceAfter.sourceSha256);
+  else assert.equal(result.source.sourceSha256,result.sourceAfter.sourceSha256);
+  assert.equal(result.source.sourceSha256,evidence.record.snapshot.sourceSha256);
   assert.equal((log.match(/^STAGE_RESULT /gm)||[]).length,5);
   return {code,result,log};
 }
 
-test('verification command rejects exit zero without fresh completion receipts', {timeout:15000}, async t=>{
+verificationTest('missing','verification command rejects exit zero without fresh completion receipts', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'missing');
   assert.equal(code,1);assert.equal(result.status,'FAIL');
   assert.ok(result.stages.every(stage=>stage.status==='FAIL'));
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
-test('verification command retains earlier failure after later successful stages', {timeout:15000}, async t=>{
+verificationTest('first-fails','verification command retains earlier failure after later successful stages', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'first-fails');
   assert.equal(code,1);assert.deepEqual(result.stages.map(stage=>stage.status),['FAIL','PASS','PASS','PASS','PASS']);
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
 
-test('verification command preserves the entire large output across all stages', {timeout:15000}, async t=>{
+verificationTest('large','verification command preserves the entire large output across all stages', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'large');
   assert.equal(code,0);assert.equal(result.status,'PASS');
   assert.ok(log.length>2500000);
@@ -64,14 +123,21 @@ test('verification command preserves the entire large output across all stages',
   assert.equal(chunks.length,5); assert.ok(chunks.every(chunk=>chunk.length===500000));
   assert.ok(log.endsWith('VERIFICATION PASS\n'));
 });
-test('an unavailable native extension loader cannot be reported as complete approval', {timeout:15000}, async t=>{
+verificationTest('native-unavailable','an unavailable native extension loader cannot be reported as complete approval', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'native-unavailable');
   assert.equal(code,2); assert.equal(result.status,'PARTIAL');
   assert.equal(result.stages[2].status,'UNVERIFIED'); assert.ok(log.endsWith('VERIFICATION PARTIAL\n'));
 });
-for (const [mode,command] of [['missing-gui','test:browser'],['missing-window-boundary','test:extension:native']])
-  test(`verification command rejects exit zero with ${mode} evidence`, {timeout:15000}, async t=>{
+for (const [mode,command] of [['missing-gui','test:browser'],['missing-window-boundary','test:extension:native'],['blocked-e2e','test:e2e:ci']])
+  verificationTest(mode,`verification command rejects exit zero with ${mode} evidence`, {timeout:15000}, async t=>{
     const {code,result}=await execute(t,mode);
     assert.equal(code,1); assert.equal(result.status,'FAIL');
     assert.equal(result.stages.find(stage=>stage.command===command).status,'FAIL');
   });
+
+verificationTest('source-changed','verification refuses a source change despite five successful stage receipts', {timeout:15000}, async t => {
+  const {code,result,log} = await execute(t,'source-changed');
+  assert.equal(code,1); assert.equal(result.status,'FAIL');
+  assert.ok(result.stages.every(stage => stage.status === 'PASS'));
+  assert.match(result.error,/Source changed/u); assert.ok(log.endsWith('VERIFICATION FAIL\n'));
+});

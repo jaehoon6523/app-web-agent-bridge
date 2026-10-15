@@ -73,7 +73,10 @@ test('a child hung during cleanup retains COMPLETE and reload PASS in durable sn
   const program = `require('node:fs').writeFileSync(process.argv[1], JSON.stringify({id:'A',stage:'DONE',execution:'COMPLETE',functionalRecovery:'PASS',reloadBoundaryEvidence:'CONFIRMED',reloadResult:'PASS'}));setInterval(()=>{},1000)`;
   const trial = await superviseTrial({ command: process.execPath,
     args: ['-e', program, snapshotFile], snapshotFile, profile: path.join(scratch, 'profile'),
-    scratch, limitMs: 250 });
+    // This oracle concerns durable DONE surviving cleanup, not Node startup
+    // completing within 250 ms. Keep the real child/write/watchdog assertions;
+    // allow a bounded startup budget. The 180 ms deadline oracle is separate.
+    scratch, limitMs: 2000 });
   assert.equal(trial.watchdog.timedOut, true);
   assert.equal(trial.execution, 'COMPLETE');
   assert.equal(trial.functionalRecovery, 'PASS');
@@ -87,20 +90,28 @@ test('watchdog terminates a running descendant verified by PID and advancing hea
   const marker = path.join(signals, 'heartbeat.json');
   const parentMarker = path.join(signals, 'parent.json');
   const profile = path.join(scratch, 'profile');
+  // Two real Node launches must become observable before the lifecycle oracle
+  // can begin. Keep startup readiness separate from the 3.5 s watchdog phase;
+  // never treat a child that failed to start as a demonstrated descendant kill.
+  const readinessBudgetMs = 10_000;
   const descendantCode = `const fs=require('node:fs');const marker=${JSON.stringify(marker)};let tick=0;function beat(){fs.writeFileSync(marker,JSON.stringify({pid:process.pid,ppid:process.ppid,tick:++tick,argv:process.argv}));}beat();setInterval(beat,60);`;
   // -- is required; without it Node interprets --user-data-dir as a Node CLI option and exits 9.
   const parentCode = `const fs=require('node:fs');const cp=require('node:child_process');fs.writeFileSync(${JSON.stringify(parentMarker)},JSON.stringify({pid:process.pid}));cp.spawn(process.execPath,['-e',${JSON.stringify(descendantCode)},'--',${JSON.stringify(`--user-data-dir=${profile}`)}],{stdio:'ignore'});setInterval(()=>{},1000);`;
   const ongoing = superviseTrial({ command: process.execPath, args: ['-e', parentCode],
-    profile, snapshotFile: path.join(scratch, 'observation.json'), scratch, limitMs: 3500 });
+    profile, snapshotFile: path.join(scratch, 'observation.json'), scratch, limitMs: readinessBudgetMs + 3500 });
   let result;
   try {
-    const until = Date.now() + 2500;
+    const until = Date.now() + readinessBudgetMs;
     let first;
     while (Date.now() < until) {
       try { first = JSON.parse(fs.readFileSync(marker, 'utf8')); break; }
       catch { await new Promise(resolve => setTimeout(resolve, 40)); }
     }
-    assert.ok(first?.pid > 0 && first?.ppid > 0, 'Real descendant PID must be observed before timeout');
+    if (!first) {
+      const failedObservation = await ongoing;
+      assert.fail('Real descendant PID was not observed: ' + JSON.stringify(failedObservation));
+    }
+    assert.ok(first.pid > 0 && first.ppid > 0, 'Real descendant PID must be observed before timeout');
     const launchedParent = JSON.parse(fs.readFileSync(parentMarker, 'utf8'));
     assert.equal(first.ppid, launchedParent.pid, 'The running process must descend from the monitored child');
     assert.ok(first.argv.includes(`--user-data-dir=${profile}`), 'Profile marker must be in the live descendant argv');

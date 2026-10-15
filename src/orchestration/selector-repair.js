@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { ArtifactStore } from "../evidence/artifact-store.js";
-import { executeVerification } from "../evidence/candidate-evidence.js";
+import { executeVerification, evidenceRecord } from "../evidence/candidate-evidence.js";
 import { GitChangeWorkspace } from "../repository/git-change-workspace.js";
 import { createRegisteredCodeWorker } from "../runtime/workers/registry.js";
 import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
@@ -100,9 +100,19 @@ async function verify({ workspace, capture, artifactStore, targetRoot, signal, o
       verification:{ verificationId, executable:process.execPath, args, cwd:".", timeoutMs:180000,
         purpose:"Selector repair regression", environmentId:"LOCAL_FIXTURE", resultFiles:[] } });
     const r = result.record;
-    onCheck({ verificationId, exitCode:r.exitCode, timedOut:r.timedOut, aborted:r.aborted,
-      terminationConfirmed:r.terminationConfirmed, candidateUnchanged:r.candidateUnchanged, failed:Boolean(r.error) });
-    if (r.exitCode !== 0 || r.signal || r.error || r.timedOut || r.aborted || !r.terminationConfirmed || !r.candidateUnchanged) throw fail("REPAIR_VERIFICATION_FAILED");
+    const receipts = [];
+    for (const name of verificationId === "regression" ? ["latest-test-result.json", "latest-test.log"] : []) {
+      const filename = path.join(workspace.root, ".agent-controller", name);
+      if (fs.existsSync(filename)) receipts.push(evidenceRecord(artifactStore, capture.candidateTree, "ARTIFACT",
+        fs.readFileSync(filename, "utf8"), {executionId:r.executionId, path:name}));
+    }
+    // The execution artifact contains redacted stdout/stderr and the complete
+    // command, closure and source identity. Keep its reference in the journal.
+    onCheck({ verificationId, executionId:r.executionId, executable:r.executable, args:r.args, cwd:r.cwd,
+      exitCode:r.exitCode, signal:r.signal, timedOut:r.timedOut, aborted:r.aborted,
+      terminationConfirmed:r.terminationConfirmed, candidateUnchanged:r.candidateUnchanged,
+      failed:Boolean(r.error), cleanupError:r.cleanupError ?? null, executionEvidence:result.evidence, receipts });
+    if (r.exitCode !== 0 || r.signal || r.error || r.cleanupError || r.timedOut || r.aborted || !r.terminationConfirmed || !r.candidateUnchanged) throw fail("REPAIR_VERIFICATION_FAILED");
   }
 }
 

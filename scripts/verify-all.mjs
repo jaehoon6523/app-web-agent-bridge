@@ -2,21 +2,25 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {execFileSync} from 'node:child_process';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
+import {verificationSource} from './verification-source.mjs';
+import {acquireLatestRun} from './latest-run.mjs';
 import {runOwnedNode} from './e2e/platform/process.mjs';
 import {nativeExtensionComplete} from './native-extension-contract.js';
 
 const root = fileURLToPath(new URL('../',import.meta.url));
 const directory = path.resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? path.join(root,'.agent-controller'));
 fs.mkdirSync(directory,{recursive:true});
+const runId = randomUUID(), lease = acquireLatestRun(directory,'verification',runId);
 const logPath = path.join(directory,'latest-verification.log');
 fs.writeFileSync(logPath,'');
 const resultPath = path.join(directory,'latest-verification.json');
-const result = {status:'RUNNING',node:process.version,platform:process.platform,stages:[]};
+const result = {status:'RUNNING',runId,startedAt:new Date().toISOString(),node:process.version,platform:process.platform,stages:[],
+  liveChatGpt:'UNVERIFIED: provider fixture suites do not prove a real ChatGPT delivery'};
 const identityFiles = ['extension/manifest.json','extension/content.js','extension/background.js',
   'extension/runtime/browser-runtime.js','extension/runtime/storage.js','src/orchestration/delivery-recovery-actions.js',
   'extension/popup.html','extension/popup.css','extension/popup.js'];
-result.source = {files:Object.fromEntries(identityFiles.map(file=>[file,createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex')]))};
+result.source = {...verificationSource(root),files:Object.fromEntries(identityFiles.map(file=>[file,createHash('sha256').update(fs.readFileSync(path.join(root,file))).digest('hex')]))};
 try {result.source.head=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();} catch {result.source.head=null;}
 const save = () => fs.writeFileSync(resultPath,JSON.stringify(result,null,2)+'\n');
 let logBytes = 0;
@@ -36,23 +40,24 @@ try {
   if (!npmCli) throw new Error('Run this command with npm run verify:all');
   // Spawn the npm JavaScript entry with Node, avoiding npm.cmd shell semantics.
   for (const command of stages) {
-    const stage = {command,status:'RUNNING'};
+    const stage = {command,status:'RUNNING',runId,startedAt:new Date().toISOString()};
     result.stages.push(stage); save();
     output('\nSTAGE '+command+'\n');
-    const receiptPath = path.join(directory, command === 'test:e2e:ci' ? 'ui-qa/e2e-summary.json'
+    const receiptRoot = command === 'test:extension:native' ? directory : path.join(root,'.agent-controller');
+    const receiptPath = path.join(receiptRoot, command === 'test:e2e:ci' ? 'ui-qa/e2e-summary.json'
       : command === 'test:extension:native' ? 'latest-native-extension.json' : 'latest-test-result.json');
     fs.rmSync(receiptPath,{force:true});
     const guiReceiptPath = path.join(directory,'tab-ux-browser-latest.json');
     if (command === 'test:browser') fs.rmSync(guiReceiptPath,{force:true});
     try {
       const closed = await runOwnedNode([npmCli,'run',command],{cwd:root,timeoutMs:25*60*1000,
-        onStdout:output,onStderr:output});
+        env:{...process.env,BRIDGE_VERIFICATION_RUN_ID:runId},onStdout:output,onStderr:output});
       stage.closure = closed;
       if (fs.existsSync(receiptPath)) stage.receipt = JSON.parse(fs.readFileSync(receiptPath,'utf8'));
       let complete = command === 'test:extension:native'
         ? nativeExtensionComplete(stage.receipt)
         : command === 'test:e2e:ci'
-        ? stage.receipt?.scope === 'FULL SUITE' && stage.receipt.failed === 0 && stage.receipt.unexpectedSkips === 0
+        ? stage.receipt?.scope === 'FULL SUITE' && stage.receipt.failed === 0 && stage.receipt.unexpectedSkips === 0 && stage.receipt.continuationBlocked === 0
         : stage.receipt?.status === 'PASS' && stage.receipt.results?.length > 0
           && stage.receipt.results.length === stage.receipt.scheduled?.length
           && stage.receipt.results.every(item=>item.pass && item.summary?.completed);
@@ -69,18 +74,24 @@ try {
     } catch (error) {stage.status='FAIL'; stage.error=error.message; output(stage.error+'\n');}
     // Do not let a subsequent success overwrite an earlier failed stage.
     output('STAGE_RESULT '+JSON.stringify({command,status:stage.status,closure:stage.closure,error:stage.error})+'\n');
-    save();
+    stage.finishedAt = new Date().toISOString(); save();
   }
   result.status = result.stages.some(stage=>stage.status==='FAIL') ? 'FAIL'
     : result.stages.some(stage=>stage.status==='UNVERIFIED') ? 'PARTIAL' : 'PASS';
-  output('\nVERIFICATION '+result.status+'\n');
   process.exitCode = result.status === 'PASS' ? 0 : result.status === 'PARTIAL' ? 2 : 1;
 } catch (error) {
   result.status='FAIL'; result.error=error.message; process.exitCode=1; output(error.message+'\n');
 } finally {
+  result.finishedAt = new Date().toISOString();
+  try {
+    result.sourceAfter = verificationSource(root);
+    if (result.sourceAfter.head !== result.source.head || result.sourceAfter.sourceSha256 !== result.source.sourceSha256)
+      throw Error('Source changed during verification');
+  } catch (error) { result.status='FAIL'; result.error=error.message; process.exitCode=1; }
+  output('\nVERIFICATION '+result.status+'\n');
   // Commit the complete captured stream, then verify its durable byte count.
   fs.writeFileSync(logPath,Buffer.concat(logChunks));
   result.logBytes = fs.statSync(logPath).size; result.expectedLogBytes = logBytes;
   if (result.logBytes !== logBytes) {result.status='FAIL'; result.error='Incomplete verification log'; process.exitCode=1;}
-  save();
+  try { save(); } finally { lease.release(); }
 }

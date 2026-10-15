@@ -17,5 +17,7 @@ db_temp/
 .*-test.log
 *.canonical-runtime.bak
 /.runtime-cleanup-contract-*/
+/.runtime-cleanup-store-*/
+/.history-http-closure-*/
 /evidence/runtime-cleanup/
 /test-latest.log
