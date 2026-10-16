@@ -6,7 +6,7 @@ import { performance } from "node:perf_hooks";
 import { loadConfig } from "../src/config.js";
 import { watchServerProcess } from "./server-watchdog.mjs";
 
-export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {} }) {
+export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {}, recordHeartbeats=false }) {
   fs.mkdirSync(path.dirname(outputFile), {recursive:true});
   const fd = fs.openSync(outputFile, "wx", 0o600);
   function record(event) {
@@ -28,7 +28,7 @@ export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {
     env:childEnvironment,
     stdio:["ignore", "inherit", "inherit", "ipc"],
   });
-  const stopWatchdog = watchServerProcess(child, record);
+  const stopWatchdog = watchServerProcess(child, record, {onHeartbeat:recordHeartbeats ? record : undefined});
   let stopped = false;
   let probing = false;
   const aborts = new Set();

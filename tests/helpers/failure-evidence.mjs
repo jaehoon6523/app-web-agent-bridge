@@ -1,6 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {acquireLatestRun} from '../../scripts/latest-run.mjs';
+import {verificationSource} from '../../scripts/verification-source.mjs';
+import {test as registerTest,before,after} from 'node:test';
+import {fileURLToPath} from 'node:url';
+import {createHash} from 'node:crypto';
+import {performance} from 'node:perf_hooks';
 
 function copyFiles(from, to) {
   if (!fs.existsSync(from)) return;
@@ -55,6 +60,7 @@ function scenarioEvidence(directory, runId, scenarioId, changed) {
   const record = {runId,scenarioId,status:'RUNNING',terminal:false,startedAt:new Date().toISOString(),
     commands:[],cleanupErrors:[],preservationErrors:[]};
   const save = () => {
+    if (record.cleanupErrors.length || record.preservationErrors.length) record.status = 'FAIL';
     fs.writeFileSync(path.join(directory,'result.json'),JSON.stringify(record,null,2)+'\n'); changed(record);
   };
   save();
@@ -89,4 +95,75 @@ export function beginTestEvidence(repository, label) {
   const run = beginTestEvidenceRun(repository,label);
   const scenario = run.scenario('single');
   return {...scenario,close() { try { scenario.close(); } finally { run.close(); } }};
+}
+
+// These four incident files share one timeline format and retain evidence before
+// their temporary servers are removed. This does not change any test deadline.
+export function evidenceTestFile(url) {
+  const repository = fileURLToPath(new URL('../../',import.meta.url));
+  const label = path.basename(fileURLToPath(url)).replace(/\.test\.[cm]?js$/u,'');
+  let run;
+  before(() => {
+    run = beginTestEvidenceRun(repository,label);
+    run.record.source = verificationSource(repository);
+    run.record.node = process.version;run.record.platform = process.platform;
+    run.record.automaticDiagnostics = true;run.save();
+  });
+  after(() => run?.close());
+  return (name, options, body) => {
+    if (typeof options === 'function') {body = options;options = {};}
+    return registerTest(name,options,async t => {
+      const id = createHash('sha256').update(name).digest('hex').slice(0,12);
+      const evidence = run.scenario('case-'+id), timeline = [];
+      const originalAfter = t.after.bind(t), cleanups = [];
+      // Release resources in reverse acquisition order. Attempt every cleanup,
+      // including after a failed hook, and report errors only after saving.
+      t.after = callback => {cleanups.push(callback);};
+      t.evidence = {...evidence,
+        event(event) {timeline.push({at:new Date().toISOString(),monotonicMs:performance.timeOrigin+performance.now(),
+          pid:process.pid,...event,receivedMonotonicMs:performance.timeOrigin+performance.now()});},
+        preserve(root) {for (const sub of ['diagnostics','.agent-controller/diagnostics']) evidence.copy(path.join(root,sub),'internal/'+sub);},
+      };
+      evidence.record.name = name;evidence.record.sourceSha256 = run.record.source.sourceSha256;evidence.save();
+      let failure, bodyCompleted = false;
+      originalAfter(async () => {
+        for (const cleanup of cleanups.reverse()) {
+          try {await cleanup(t);}
+          catch (error) {evidence.record.cleanupErrors.push({code:error.code,message:error.message,stack:error.stack});evidence.save();}
+        }
+        fs.writeFileSync(path.join(evidence.directory,'timeline.jsonl'),timeline.map(event => JSON.stringify(event)+'\n').join(''));
+        const http = timeline.filter(event => event.type?.startsWith('client.http.'));
+        evidence.record.observations = {httpStarted:http.filter(event => event.type === 'client.http.started').length,
+          httpCompleted:http.filter(event => event.type === 'client.http.completed').length,
+          httpFailed:http.filter(event => event.type === 'client.http.failed').length,
+          heartbeatWarnings:timeline.filter(event => event.type === 'watchdog.unresponsive').length,
+          measuredLoopDelays:timeline.filter(event => event.type === 'heartbeat').map(event => event.loopDelayMs)};
+        if (!bodyCompleted) evidence.finish(Object.assign(new Error('Test body did not complete.'),{code:'TEST_DID_NOT_COMPLETE'}));
+        evidence.close();
+        t.diagnostic(JSON.stringify({evidenceRunId:run.record.runId,sourceSha256:run.record.source.sourceSha256,
+          timeline:path.join(evidence.directory,'timeline.jsonl'),...evidence.record.observations}));
+        if (evidence.record.cleanupErrors.length || evidence.record.preservationErrors.length)
+          throw Object.assign(new Error('Test cleanup or evidence preservation failed.'),{code:'EVIDENCE_CLEANUP_FAILED'});
+      });
+      try {await body(t);}
+      catch (error) {failure = error;throw error;}
+      finally {bodyCompleted = true;if (!evidence.record.terminal) evidence.finish(failure);}
+    });
+  };
+}
+
+export async function evidenceFetch(evidence, url, options = {}) {
+  const route = new URL(url).pathname, started = performance.now();
+  evidence?.event({type:'client.http.started',route});
+  try {
+    const response = await fetch(url,options);
+    // Clone consumption observes the complete response, preserving the caller's body.
+    await response.clone().arrayBuffer();
+    evidence?.event({type:'client.http.completed',route,status:response.status,elapsedMs:performance.now()-started});
+    return response;
+  } catch (error) {
+    evidence?.event({type:'client.http.failed',route,elapsedMs:performance.now()-started,
+      code:error.code ?? error.name,timedOut:options.signal?.reason?.name === 'TimeoutError',aborted:Boolean(options.signal?.aborted)});
+    throw error;
+  }
 }

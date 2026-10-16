@@ -425,7 +425,8 @@ export function createBridgeServer({
     collectDelivery:observed => readPersistedDelivery({databasePath:runtimeConfig.persistence.databasePath,
       preparationPath:path.join(path.dirname(projectSettings.filename),"preparations.sqlite")},observed),
     directory:path.join(path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")), "diagnostics"),
-    root:runtimeConfig.workspace ?? process.cwd(), onFailure:event => diagnostics.emit("agent.report.failed", event) });
+    root:runtimeConfig.workspace ?? process.cwd(), onFailure:event => diagnostics.emit("agent.report.failed", event),
+    onDiagnostic:event => diagnostics.emit(event.type,event) });
 
   app.get("/api/agent-diagnostics",requireDashboardRead,async (_req,res) => {
     try {await agentReport.refresh("EXPORT");res.json(await agentReport.export());}

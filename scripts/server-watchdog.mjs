@@ -1,7 +1,8 @@
 import { performance } from "node:perf_hooks";
 
 // Runs in the supervisor process: a timer in the blocked server cannot report a stall.
-export function watchServerProcess(child, record, { intervalMs=250, staleMs=1500 } = {}) {
+/** @param {any} child @param {(event:any)=>void} record @param {any} [options] */
+export function watchServerProcess(child, record, { intervalMs=250, staleMs=1500, onHeartbeat } = {}) {
   let lastHeartbeat = performance.now();
   let missing = false;
   let lastStage = "process.starting";
@@ -9,6 +10,7 @@ export function watchServerProcess(child, record, { intervalMs=250, staleMs=1500
   function message(event) {
     if (!event || typeof event.type !== "string") return;
     if (event.type === "heartbeat") {
+      onHeartbeat?.(event);
       const now = performance.now();
       if (missing) record({ type:"watchdog.resumed", silenceMs:now-lastHeartbeat, loopDelayMs:event.loopDelayMs, lastStage, ...request });
       else if (event.loopDelayMs >= staleMs) record({ type:"event-loop.delay", loopDelayMs:event.loopDelayMs, lastStage, ...request });

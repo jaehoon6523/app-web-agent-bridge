@@ -23,7 +23,7 @@ export function createServerObserver(sink) {
   let sequence = 0, socketSequence = 0, shuttingDown = false;
   function emit(type, detail = {}) {
     if (typeof sink !== "function") return;
-    try { sink({ type, at:new Date().toISOString(), pid:process.pid, ...detail }); }
+    try { sink({ type, at:new Date().toISOString(), monotonicMs:performance.timeOrigin+performance.now(), pid:process.pid, ...detail }); }
     catch { /* A diagnostic sink cannot change API or mutation results. */ }
   }
   function requestSnapshot(entry) {

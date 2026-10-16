@@ -19,7 +19,7 @@ let httpStatus = null;
 const record = async (code, extra = {}) => {
   try { return await enqueueAgentReport(reportDirectory, "repair", {
   source:"SELECTOR_REPAIR_CLI", stage, code, httpStatus,
-  repository:repositoryObservation(targetRoot), tabs:snapshot ? summarizeTabs(snapshot) : null,
+  repository:await repositoryObservation(targetRoot), tabs:snapshot ? summarizeTabs(snapshot) : null,
   delivery:summarizeDelivery(snapshot?.delivery),
   requestedTabId:Number.isSafeInteger(Number(options.tab)) ? Number(options.tab) : null,
   ...repairDiagnosticSummary(targetRoot,extra.jobId ?? options.inspect ?? options.apply), ...extra });

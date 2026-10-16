@@ -12,22 +12,22 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, {recursive:true, force:true}));
   return root;
 }
-test("latest report excludes content, labels and errors; unknown delivery is not missing", t => {
+test("latest report excludes content, labels and errors; unknown delivery is not missing", async t => {
   const root = fixture(t);
   const secret = "PRIVATE_SECRET_RESPONSE";
   const tabs = summarizeTabs({tabs:[{tabId:7,pageStatus:"READY",composerPresent:true,
     responseBody:secret,diagnostics:{editableCandidates:[{visible:2,matched:2,samples:[{controlLabel:secret}]}]}}]});
   assert.equal(tabs[0].decision, "REPAIR_NOT_NEEDED");
   const error = Object.assign(new Error(secret), {cause:{message:secret,code:"ECONNREFUSED"}});
-  writeAgentReport(root, "server", {tabs,delivery:summarizeDelivery(null)});
-  const result = writeAgentReport(root, "repair", {failure:safeFailure(error,"REPAIR_HTTP_FAILED")});
+  await writeAgentReport(root, "server", {tabs,delivery:summarizeDelivery(null)});
+  const result = await writeAgentReport(root, "repair", {failure:safeFailure(error,"REPAIR_HTTP_FAILED")});
   const text = fs.readFileSync(result.logFile,"utf8"), value = JSON.parse(text);
   assert.doesNotMatch(text, /PRIVATE_SECRET_RESPONSE/u);
   assert.equal(value.server.delivery.serverExtensionMatch,"UNKNOWN");
   assert.equal(value.server.delivery.currentDeliveryId,null);
   assert.equal(value.server.delivery.recordObserved,false);
   assert.equal(value.repair.failure.causeCode,"ECONNREFUSED");
-  writeAgentReport(root,"repair",{code:"REPAIR_NOT_NEEDED"});
+  await writeAgentReport(root,"repair",{code:"REPAIR_NOT_NEEDED"});
   assert.equal(fs.readdirSync(root).length,1);
   assert.equal(JSON.parse(fs.readFileSync(result.logFile)).repair.code,"REPAIR_NOT_NEEDED");
 });
@@ -56,10 +56,11 @@ test("closing an automatic pending inspection releases its timer and listener", 
   const root=fixture(t), transport=new EventEmitter();
   transport.authenticated=true; transport.send=()=>{};
   const report=createAutomaticAgentReport({transport,directory:root,root});
+  await report.ready;
   const pending=report.refresh(); await Promise.resolve();
   assert.ok(transport.listenerCount("message")>1);
   const before=fs.readFileSync(path.join(root,"runtime-latest.json"),"utf8");
-  report.close(); await pending;
+  await report.close(); await pending;
   assert.equal(transport.listenerCount("message"),0);
   assert.equal(fs.readFileSync(path.join(root,"runtime-latest.json"),"utf8"),before);
 });
@@ -73,4 +74,14 @@ test("delivery diagnostic projection excludes bodies and preserves ownership wit
   assert.equal(result.delivery.responseObserved,true);
   assert.doesNotMatch(JSON.stringify(result),/PRIVATE_BODY|PRIVATE_KEY/u);
   cancelSelectorDiagnostics(transport);
+});
+
+
+test("closing immediately after scheduling a refresh cannot create a late inspection timer or listener",async t=>{
+  const root=fixture(t),transport=new EventEmitter();transport.authenticated=true;transport.send=()=>{};
+  const report=createAutomaticAgentReport({root,directory:root,transport});
+  const pending=report.refresh();
+  await report.close();await pending;
+  assert.equal(transport.listenerCount('message'),0);
+  assert.equal(transport.listenerCount('state'),0);
 });

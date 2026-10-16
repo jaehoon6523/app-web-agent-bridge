@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import {evidenceTestFile,evidenceFetch} from "../helpers/failure-evidence.mjs";
+const test = evidenceTestFile(import.meta.url);
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -33,8 +34,8 @@ async function serverFixture(t, {corrupt = false} = {}) {
     finally { writer.close(); }
   }
   const events = [], changed = new EventEmitter();
-  const child = runDiagnosticServer({runtimeConfig:config, outputFile:path.join(root, "events.jsonl"),
-    onEvent:event => { events.push(event); changed.emit("event", event); }});
+  const child = runDiagnosticServer({runtimeConfig:config, outputFile:path.join(root, "events.jsonl"),recordHeartbeats:true,
+    onEvent:event => { events.push(event);t.evidence.event(event);changed.emit("event", event); }});
   const observation = observeChildClose(child);
   let stopped;
   const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {
@@ -51,6 +52,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
           .map(({type,at,silenceMs,loopDelayMs,lastStage,route})=>({type,at,silenceMs,loopDelayMs,lastStage,route})),
         lastCheckpoints:events.filter(event=>/history|runtime.initialization/u.test(event.type)).slice(-12)
           .map(({type,elapsedMs,errorCode})=>({type,elapsedMs,errorCode}))}));
+      t.evidence.preserve(root);t.evidence.copy(path.join(root,"events.jsonl"),"server-events.jsonl");
       fs.rmSync(root, {recursive:true,force:true});
     }
   });
@@ -69,7 +71,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
   }
   await until(event => event.type === "server.listening");
   timing.fixtureMs=performance.now()-fixtureStarted;
-  const read = () => fetch(config.baseUrl+"/api/state", {headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(5000)});
+  const read = () => evidenceFetch(t.evidence,config.baseUrl+"/api/state", {headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(5000)});
   return {config, record, events, until, read, stop, timing};
 }
 
@@ -103,7 +105,7 @@ test("cold and invalidated real history verification keep independent HTTP respo
     phaseTiming.stage='independent HTTP probes';
     const probes = await Promise.all(["/api/health", "/api/preflight"].map(async route => {
       const started = performance.now();
-      const response = await fetch(server.config.baseUrl+route, {signal:AbortSignal.timeout(1000)});
+      const response = await evidenceFetch(t.evidence,server.config.baseUrl+route, {signal:AbortSignal.timeout(1000)});
       await response.arrayBuffer();
       assert.equal(response.status, 200);
       return {route,status:response.status,elapsedMs:performance.now()-started};
@@ -146,7 +148,7 @@ test("first-row corruption before progress produces unavailable knowledge while 
   assert.equal(server.events.some(event=>event.type==='persistence.code-store.history-background.progress'),false);
   assert.equal(server.events.some(event=>event.type==='persistence.code-store.history-background.completed'),false);
   for(const route of ['/api/health','/api/preflight']) {
-    const probe=await fetch(server.config.baseUrl+route,{signal:AbortSignal.timeout(1000)});
+    const probe=await evidenceFetch(t.evidence,server.config.baseUrl+route,{signal:AbortSignal.timeout(1000)});
     assert.equal(probe.status,200); await probe.arrayBuffer();
   }
   assert.deepEqual(await server.stop(),{code:0,signal:null});

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import {evidenceTestFile,evidenceFetch} from "../helpers/failure-evidence.mjs";
+const test = evidenceTestFile(import.meta.url);
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -34,7 +35,7 @@ async function start(t, fault) {
     import {createBridgeServer} from ${JSON.stringify(serverUrl)};
     import {performance} from 'node:perf_hooks';
     const send=e=>{if(process.connected)process.send(e,()=>{})};
-    let previous=performance.now();setInterval(()=>{const now=performance.now();send({type:'heartbeat',loopDelayMs:Math.max(0,now-previous-100)});previous=now},100).unref();
+    let previous=performance.now();setInterval(()=>{const now=performance.now();send({type:'heartbeat',at:new Date().toISOString(),monotonicMs:performance.timeOrigin+now,loopDelayMs:Math.max(0,now-previous-100)});previous=now},100).unref();
     const fault=${JSON.stringify(fault)};
     const bridge=createBridgeServer({runtimeConfig:${JSON.stringify(config)},onDiagnostic:send,
       createLiveRuntime:()=>{
@@ -46,7 +47,7 @@ async function start(t, fault) {
     await bridge.listen();
   `],{cwd:root,env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},stdio:["ignore","pipe","pipe","ipc"]});
   const events=[];
-  const observe=event=>events.push({...event,observedAt:new Date().toISOString()});
+  const observe=event=>{events.push({...event,observedAt:new Date().toISOString()});t.evidence.event(event);};
   child.on("message",event=>{if(event?.type==="heartbeat")observe(event);});
   const stop=watchServerProcess(child,observe,{intervalMs:100,staleMs:500});
   let stderr="";child.stderr.on("data",chunk=>{stderr+=chunk});
@@ -57,7 +58,9 @@ async function start(t, fault) {
       lastStages:events.filter(event=>/^(?:preparation|runtime)\.initialization\.|^state\./u.test(event.type))
         .slice(-16).map(({type,observedAt,elapsedMs,code})=>({type,observedAt,elapsedMs,code}))}));
     stop();if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
-    await exited;locker?.close();fs.rmSync(root,{recursive:true,force:true});
+    await exited;locker?.close();t.evidence.preserve(root);
+    fs.writeFileSync(path.join(t.evidence.directory,"server-stderr.log"),stderr);
+    fs.rmSync(root,{recursive:true,force:true});
   });
   async function wait(type,deadline=8000,predicate=()=>true) {
     const started=Date.now();
@@ -68,12 +71,13 @@ async function start(t, fault) {
   }
   await wait("server.listening");
   await wait("heartbeat");
+  config.evidence=t.evidence;
   return {config,events,wait,child};
 }
 async function read(config,route,{authenticated=false,deadline=1000,session=false}={}) {
   const headers=authenticated?{authorization:`Bearer ${token}`}:{ };
   if(session)Object.assign(headers,{origin:config.baseUrl,"sec-fetch-site":"same-origin"});
-  const response=await fetch(config.baseUrl+route,{method:session?"POST":"GET",headers,signal:AbortSignal.timeout(deadline)});
+  const response=await evidenceFetch(config.evidence,config.baseUrl+route,{method:session?"POST":"GET",headers,signal:AbortSignal.timeout(deadline)});
   return {status:response.status,body:await response.json()};
 }
 for(const fault of ["pending","reject","throw","corrupt-preparation","sqlite-lock"]) {

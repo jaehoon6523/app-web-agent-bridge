@@ -109,3 +109,64 @@ process writes, live/dead writer locks, repair verifier summaries, offline
 service-worker recreation, authenticated HTTP/WebSocket export without runtime
 initialization, and server configuration failure. Local Linux fixtures do not
 certify native Windows or a live ChatGPT page.
+
+### Server responsiveness and Windows writer contention
+
+The server's automatic path uses asynchronous `execFile` (two sequential Git
+commands, 1.5 seconds each) and asynchronous filesystem calls. File sync is
+`FileHandle.sync()` before atomic rename; a Promise does not wrap synchronous
+Git or synchronous file writes. Repository observation uses
+`--no-optional-locks` so observing dirty source does not refresh the Git index.
+Startup observation is queued; it does not delay listening. Export awaits the
+accepted observations and writes, and reports storage failure instead of
+returning an older report as a fresh successful export. Close stops scheduling,
+cancels the owned Git child and tab read, waits for child closure, and drains
+accepted writes. Existing ACK and delivery ownership decisions are unchanged.
+
+The cross-process writer retains its exclusive file lease. A Windows `EPERM`
+on lock creation is retried only when inspection confirms that the lock path
+already exists as a regular file. A missing, unreadable or invalid path preserves
+the original error immediately. Waiting is bounded to the existing two seconds;
+an expired `EPERM` is returned with operation/path/owner observations. A live or
+unverifiable PID is never removed. Only an ESRCH-confirmed dead writer is
+reclaimed. Its own orphan temporary output is removed, while committed report
+sections are retained. Write and cleanup errors are recorded separately.
+
+The recovery guard is a nonempty directory published by atomic rename only
+after its PID/token marker is ready. A process killed immediately after
+publication therefore leaves an identifiable owner. Only confirmed dead
+recovery owners are reclaimed; a live or unverifiable owner remains protected.
+Removal targets that owner's unique marker and uses nonrecursive `rmdir`, so
+a late reaper cannot remove a newly published nonempty guard. An empty guard
+means the critical work has finished and can be removed after interrupted
+cleanup. Preparation directories identify their PID in the name. Each write
+prunes them after confirmed death or a failed cleanup recorded by this module
+instance, while retaining active preparations. An old ownerless `.lock.recovery` file
+has no trustworthy PID: it stays explicitly UNVERIFIED instead of being
+automatically deleted. Regressions use actual child processes interrupted
+before/after publication and during release, plus concurrent restart writers
+and replacement by a live recovery owner.
+
+The existing server observer reports collection scheduling/start/completion,
+each Git command and its duration/closure, queue and lock wait, and file
+write/sync/rename duration. Events have UTC time and epoch-based monotonic time.
+The four responsiveness incident test files retain matching server, heartbeat
+and client HTTP/body-completion/timeout observations under fixed
+`.agent-controller/latest-<test-file>/` directories. Each test file replaces
+its previous run once; cases retain separate timelines and the aggregate keeps
+any failure. Temporary diagnostic reports and server stderr are copied before
+fixture removal. The normal `.agent-controller/latest-test.log` and
+`latest-test-result.json` remain the overall test verdict, including the HEAD,
+working-source manifest, Node version, scheduled files and completion receipts.
+Heartbeat warnings and actual HTTP failures have separate counts. No request
+budget, measured-loop assertion or runtime-read assertion is relaxed.
+
+For the focused Windows gate, from the intended checkout:
+
+```powershell
+node scripts/run-tests.mjs tests/agent-diagnostics-complete.test.js tests/fault/server-response-deadline.test.js tests/fault/server-responsiveness.test.js tests/platform/code-history-http.test.js
+```
+
+A Linux result does not certify the Windows lock or responsiveness behavior.
+Run the focused gate repeatedly on the same recorded source before the full
+Windows `npm run check`, browser/Native gates and an actual ChatGPT delivery.

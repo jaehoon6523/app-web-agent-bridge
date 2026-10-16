@@ -4,7 +4,8 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import test from "node:test";
+import {evidenceTestFile,evidenceFetch} from "../helpers/failure-evidence.mjs";
+const test = evidenceTestFile(import.meta.url);
 import { DashboardController } from "../../src/orchestration/dashboard-controller.js";
 
 const serverUrl = new URL("../../src/server.js", import.meta.url).href;
@@ -28,6 +29,8 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, eve
   // A subprocess keeps the test deadline enforceable even if the server blocks its event loop.
   const script = `
     import { main, createBridgeServer } from ${JSON.stringify(serverUrl)};
+    import {performance} from 'node:perf_hooks';
+    let previous=performance.now();setInterval(()=>{const now=performance.now();if(process.connected)process.send({type:'heartbeat',at:new Date().toISOString(),monotonicMs:performance.timeOrigin+now,loopDelayMs:Math.max(0,now-previous-100)},()=>{});previous=now},100).unref();
     const config = ${JSON.stringify(config)};
     const readTimeoutEnv = ${JSON.stringify(readTimeoutEnv)};
     if (readTimeoutEnv !== null) {
@@ -41,13 +44,13 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, eve
       await bridge.listen();
       console.log('DEADLINE_SERVER_LISTENING');
     } else {
-      await main(config);
+      await main(config,{onDiagnostic:event=>{if(process.connected)process.send(event,()=>{});}});
     }
   `;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
     cwd:root, env:{ PATH:process.env.PATH, SystemRoot:process.env.SystemRoot }, stdio:["ignore", "pipe", "pipe", "ipc"],
   });
-  child.on('message', event => events.push(event));
+  child.on('message', event => {events.push(event);t.evidence.event(event);});
   let output = "";
   const exited = new Promise(resolve => child.once("exit", resolve));
   t.after(async () => {
@@ -55,6 +58,8 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, eve
       stages:output.split(/\r?\n/u).filter(line=>line.startsWith("FAULT_STAGE ")).slice(-25)}));
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     await exited;
+    t.evidence.preserve(root);
+    fs.writeFileSync(path.join(t.evidence.directory,"server-output.log"),output);
     fs.rmSync(root, { recursive:true, force:true });
   });
   await new Promise((resolve, reject) => {
@@ -70,11 +75,12 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, eve
     child.once("error", error => { clearTimeout(timer); reject(error); });
     child.once("exit", () => { clearTimeout(timer); reject(new Error(`Server exited before readiness: ${output}`)); });
   });
-  return config.baseUrl;
+  return {baseUrl:config.baseUrl,evidence:t.evidence};
 }
 
-async function readResponse(baseUrl, route, headers = {}) {
-  const response = await fetch(`${baseUrl}${route}`, { headers, signal:AbortSignal.timeout(responseDeadlineMs) });
+async function readResponse(server, route, headers = {}) {
+  const {baseUrl,evidence} = server;
+  const response = await evidenceFetch.bind(null,evidence)(`${baseUrl}${route}`, { headers, signal:AbortSignal.timeout(responseDeadlineMs) });
   // Receiving headers alone is insufficient: the response body must finish too.
   return { status:response.status, body:await response.json() };
 }
@@ -132,7 +138,7 @@ for (const readBudgetMs of [100, 700]) test(`configuration: parsed ${readBudgetM
   const baseUrl = await startServer(t, true, String(readBudgetMs), events);
   const started = performance.now();
   let response;
-  try { response = await fetch(`${baseUrl}/api/state`, {
+  try { response = await evidenceFetch(baseUrl.evidence,`${baseUrl.baseUrl}/api/state`, {
     headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(responseDeadlineMs),
   }); }
   finally { t.diagnostic(JSON.stringify({stateFetchElapsedMs:performance.now()-started,deadlineMs:responseDeadlineMs})); }

@@ -105,6 +105,8 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
   save();
   try {
     result.source = verificationSource(root); save();
+    write('RUN_CONTEXT '+JSON.stringify({verificationRunId:result.verificationRunId,node:result.node,platform:result.platform,
+      head:result.source.head,sourceSha256:result.source.sourceSha256})+'\n');
     for (const file of files) {
       const budgetMs = fileTimeoutMs(file);
       write('\nFILE '+path.relative(root,file)+' timeoutMs='+budgetMs+'\n');
@@ -119,7 +121,10 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
         passed:item.summary?.passed,failed:item.summary?.failed,skipped:item.summary?.skipped})+'\n');
       save();
     }
-    result.status = result.results.length === result.scheduled.length && result.results.every(item => item.pass) ? 'PASS' : 'FAIL';
+    result.sourceAfter = verificationSource(root);
+    result.candidateUnchanged = result.source.sourceSha256 === result.sourceAfter.sourceSha256 && result.source.head === result.sourceAfter.head;
+    result.status = result.candidateUnchanged && result.results.length === result.scheduled.length && result.results.every(item => item.pass) ? 'PASS' : 'FAIL';
+    if (!result.candidateUnchanged) write('SOURCE_CHANGED '+JSON.stringify({before:result.source.sourceSha256,after:result.sourceAfter.sourceSha256})+'\n');
     write('\nTEST_GATE '+result.status+' '+result.results.filter(item=>item.pass).length+'/'+files.length+' files\n');
     save();
     return result;

@@ -7,7 +7,7 @@ function send(event) {
 let previous = performance.now();
 const heartbeat = setInterval(() => {
   const now = performance.now();
-  send({ type:"heartbeat", loopDelayMs:Math.max(0, now-previous-250) });
+  send({ type:"heartbeat", at:new Date().toISOString(),monotonicMs:performance.timeOrigin+now,loopDelayMs:Math.max(0, now-previous-250) });
   previous = now;
 }, 250);
 heartbeat.unref();

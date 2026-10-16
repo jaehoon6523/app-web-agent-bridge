@@ -37,7 +37,20 @@ test('HTTP pairing requires explicit confirmation, refuses active ownership, and
     busy: () => active, reviewerWebBusy: () => false },
   store: { listRuns: () => [], getDelivery: () => null }, close: async () => {} });
   const bridge = createBridgeServer({ runtimeConfig: config, createLiveRuntime });
-  t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  let restarted;
+  t.after(async () => {
+    const errors = [];
+    // Both servers own queued writes in this directory. Drain both before removal.
+    for (const instance of [restarted,bridge]) {
+      try { await instance?.close(); } catch (error) { errors.push(error); }
+    }
+    if (!errors.length) {
+      try { assert.deepEqual(fs.readdirSync(path.join(root,'diagnostics')),['runtime-latest.json']); }
+      catch (error) { errors.push(error); }
+    }
+    try { fs.rmSync(root, { recursive: true, force: true }); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors,'Pairing fixture cleanup failed.');
+  });
   const old = present(bridge.extensionTransport, 'new-identity');
   assert.equal(old.sent.at(-1).code, 'AUTH_IDENTITY_MISMATCH');
   let address;
@@ -68,8 +81,7 @@ test('HTTP pairing requires explicit confirmation, refuses active ownership, and
   const connected = present(bridge.extensionTransport, 'new-identity');
   assert.equal(connected.sent.at(-1).type, 'controller.auth.accepted');
   assert.equal(bridge.extensionTransport.authenticated, true);
-  const restarted = createBridgeServer({ runtimeConfig: config, createLiveRuntime });
-  t.after(() => restarted.close());
+  restarted = createBridgeServer({ runtimeConfig: config, createLiveRuntime });
   assert.equal(restarted.extensionTransport.pendingPairing, null);
   const fromRestart = present(restarted.extensionTransport, 'new-identity');
   assert.equal(fromRestart.sent.at(-1).type, 'controller.auth.accepted');
