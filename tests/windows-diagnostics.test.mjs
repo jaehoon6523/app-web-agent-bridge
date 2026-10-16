@@ -128,11 +128,12 @@ if (process.platform === 'win32' || process.env.PWSH_EXECUTABLE) {
   test('E: real PowerShell control flow rejects missing/stale/scope/termination results and opens current log/JSON', async () => {
     const { spawnSync } = await import('node:child_process');
     const executable = process.env.PWSH_EXECUTABLE || 'powershell.exe';
-    const run = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-File',
+    // Override the inherited process policy only for this isolated harness, never the registry.
+    const run = spawnSync(executable, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(root, 'tests/diagnostics/windows-workflow.ps1'), '-TargetScript',
       path.join(root, 'scripts/run-windows-direct-reload.ps1'), '-Root', root],
     { cwd: root, encoding: 'utf8', timeout: 60_000,
-      env: { ...process.env, POWERSHELL_TELEMETRY_OPTOUT: '1', POWERSHELL_UPDATECHECK: 'Off', DOTNET_CLI_TELEMETRY_OPTOUT: '1' } });
+      env: { ...process.env, PSExecutionPolicyPreference: 'Restricted', POWERSHELL_TELEMETRY_OPTOUT: '1', POWERSHELL_UPDATECHECK: 'Off', DOTNET_CLI_TELEMETRY_OPTOUT: '1' } });
     assert.equal(run.error, undefined); assert.equal(run.status, 0, run.stdout + run.stderr);
     for (const name of ['normal', 'missing', 'stale', 'scope', 'nonterminal', 'exitMismatch', 'generation', 'manual', 'wrongLocation'])
       assert.match(run.stdout, new RegExp(`PS_WORKFLOW_CASE ${name} PASS`));

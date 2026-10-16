@@ -1,6 +1,7 @@
 # Execute the real .ps1 with only native command boundaries replaced.
 param([Parameter(Mandatory=$true)][string]$TargetScript, [Parameter(Mandatory=$true)][string]$Root)
 $ErrorActionPreference = 'Stop'
+if ($env:OS -eq 'Windows_NT' -and (Get-ExecutionPolicy -Scope Process) -ne 'Bypass') { throw 'HARNESS_PROCESS_POLICY_NOT_SCOPED' }
 if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }
 $engine = @('powershell.exe','pwsh.exe','pwsh') | ForEach-Object { Join-Path $PSHOME $_ } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('bridge-powershell-' + [guid]::NewGuid().ToString('N'))
@@ -12,6 +13,7 @@ try {
         New-Item -ItemType Directory -Path $directory | Out-Null
         $scriptText = @'
 $ErrorActionPreference = 'Stop'
+if ($env:OS -eq 'Windows_NT' -and (Get-ExecutionPolicy -Scope Process) -ne 'Bypass') { throw 'CHILD_PROCESS_POLICY_NOT_SCOPED' }
 $env:BRIDGE_VERIFICATION_OUTPUT = __DIRECTORY__
 $env:BRIDGE_VERIFICATION_RUN_ID = 'previous-session-id'
 $env:PS_DIAGNOSTIC_TEST_MODE = __MODE__
@@ -57,7 +59,7 @@ exit $code
         $previousPreference = $ErrorActionPreference
         try {
             $ErrorActionPreference = 'Continue'
-            $output = & $engine -NoProfile -NonInteractive -EncodedCommand $encoded 2>&1 | ForEach-Object { [string]$_ }
+            $output = & $engine -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encoded 2>&1 | ForEach-Object { [string]$_ }
             $actual = $LASTEXITCODE
         } finally { $ErrorActionPreference = $previousPreference }
         $expected = if ($mode -eq 'normal') {0} else {2}
