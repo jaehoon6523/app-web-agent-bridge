@@ -1,3 +1,4 @@
+import { recoverAcknowledgedReviews, canResumeAcknowledgedReview } from "./review-response-recovery.js";
 import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -216,7 +217,10 @@ export class CodeChangeService {
           continue;
         } catch (error) { this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: error.message }); continue; }
       }
-      if (!terminal.has(run.stage) && run.stage !== "HOLD") this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: "Server restarted during execution. No automatic resubmission or patch application." });
+      if (!terminal.has(run.stage) && run.stage !== "HOLD") {
+        this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: "Server restarted during execution. No automatic resubmission or patch application." });
+        recoverAcknowledgedReviews(this, run.runId);
+      }
     }
   }
   async startPrepared(input, preparation) {
@@ -501,7 +505,10 @@ export class CodeChangeService {
     }
     const allowedActions = [];
     if (classification === "RECOVERY_REQUIRED" && run.stage === "RECOVERY_REQUIRED"
-      && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("run.abandon");
+      && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) {
+      allowedActions.push("run.abandon");
+      if (canResumeAcknowledgedReview(run)) allowedActions.push("code.review.retry");
+    }
     if (classification === "RECOVERABLE" && retryableAuditReview(run)
       && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("code.review.retry");
     if (classification === "RECOVERABLE" && run.stage === "AWAITING_APPLY" && hasMultiReviewAuthority(run)) allowedActions.push("code.apply");
@@ -763,7 +770,8 @@ export class CodeChangeService {
     if (type === "code.review.retry" || type === "code.decision.reply") {
       const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
       if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
-      if (!retryableAuditReview(run) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
+      const resumeAcknowledged = type === "code.review.retry" && canResumeAcknowledgedReview(run);
+      if ((!retryableAuditReview(run) && !resumeAcknowledged) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
         throw new Error("Only a settled review hold or legacy single-review candidate can be re-audited.");
       }
       let decision = null;
@@ -805,12 +813,13 @@ export class CodeChangeService {
       const previousError = run.error;
       const previousReason = run.terminationReason;
       const reset = this.update(run.runId, {
-        stage: "REVIEW_RUNNING", reviewTurnId: null, auditResult: null,
+        stage: "REVIEW_RUNNING", reviewTurnId: resumeAcknowledged ? run.reviewTurnId : null, auditResult: null,
+        ...(run.reviewRecovery ? { reviewRecovery:{ ...run.reviewRecovery, status:resumeAcknowledged ? "RESUMING" : "CLOSED" } } : {}),
         error: null, terminationReason: null, missingInformation: [], stopRequested: false,
         userDecisions:decision ? [...(run.userDecisions ?? []), decision] : run.userDecisions ?? [],
         deadlineAt: new Date(Date.now() + run.policy.totalTimeoutMs).toISOString(),
         recoveryAttempts: [...(run.recoveryAttempts ?? []), {
-          kind: decision ? "USER_DECISION_REVIEW" : run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
+          kind: resumeAcknowledged ? "ACKNOWLEDGED_REVIEW_CONTINUATION" : decision ? "USER_DECISION_REVIEW" : run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
           at: retryAt, previousError, previousReason,
           candidateId: run.candidate.candidateId, patchHash: run.candidate.patchHash,
         }],
@@ -995,7 +1004,7 @@ export class CodeChangeService {
           ? ["code.worker.intervene"] : []),
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
-        ...(retryableAuditReview(record) && !this.jobs.has(runId) && !this.workers.has(runId)
+        ...((retryableAuditReview(record) || canResumeAcknowledgedReview(record)) && !this.jobs.has(runId) && !this.workers.has(runId)
           ? [record.terminationReason === "USER_DECISION_REQUIRED" ? "code.decision.reply" : "code.review.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 && hasMultiReviewAuthority(record) ? ["code.apply"] : [])] });

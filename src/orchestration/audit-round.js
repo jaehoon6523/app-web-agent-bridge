@@ -1,11 +1,12 @@
+import { persistReviewResponse, persistProcessedReview, validateReviewResponse, restoredReviewForRole } from "./review-response-recovery.js";
 import { persistWebDeliveryReceipt, markWebDeliveryAcknowledged } from "./web-delivery-receipts.js";
 import { randomUUID } from "node:crypto";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 import { evaluateCodeReview, validateAuditResponse } from "../domain/code-review.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { createAuditManifest } from "../domain/audit-manifest.js";
-import { aggregateReviewReports, assertionsToReviewReport, createAgreedWorkOrder, createPlanBasis, freezePlan, reviewReportsDisagree,
-  validatePlanProposal, validatePlanResponse, validateReviewAssertions } from "../domain/review-coordination.js";
+import { aggregateReviewReports, createAgreedWorkOrder, createPlanBasis, freezePlan, reviewReportsDisagree,
+  validatePlanProposal, validatePlanResponse } from "../domain/review-coordination.js";
 import { evidenceRecord, excerpt, executeVerification } from "../evidence/candidate-evidence.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
@@ -477,6 +478,8 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
 }
 
 async function reviewRole(service, runId, workspace, role, auditManifest, phase, sharedArtifacts = []) {
+  const restored = restoredReviewForRole(service, runId, role, auditManifest, phase);
+  if (restored) return restored;
   let repairs = 0, feedback = null;
   while (true) {
     service.assertActive(runId);
@@ -511,32 +514,10 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
     service.assertActive(runId);
     run = service.get(runId);
     if (run.candidate.candidateId !== context.candidateId || run.candidate.patchHash !== candidateDiffHash) throw new Error("Review candidate changed after submission.");
-    const responseRef = service.artifactStore.put(redactForEvidence(response.rawText ?? `${response.body}\n${response.packetText}`), { mimeType:"text/plain", redacted:true });
-    const reasoningRef = service.artifactStore.put(redactForEvidence(response.body ?? ""), { mimeType:"text/plain", redacted:true });
-    const packetRef = service.artifactStore.put(canonicalJson(redactForEvidence(response.packet)), { mimeType:"application/json", redacted:true });
-    const reviewerBinding = bindingForRole(run, role);
-    const artifact = { reviewArtifactId:`review_artifact_${randomUUID()}`, requestId, candidateId:context.candidateId,
-      auditManifestId:auditManifest.auditManifestId, auditManifestHash:auditManifest.auditManifestHash,
-      bindingId:reviewerBinding.bindingId, role, phase, kind:phase === "ROUND0" ? "INITIAL_REVIEW" : "CROSS_REVIEW",
-      visibility:"PRIVATE", contentRef:reasoningRef, packetRef, responseRef, createdAt:new Date().toISOString() };
-    service.update(runId, { reviewArtifacts:[...(run.reviewArtifacts ?? []), artifact],
-      requests:run.requests.map((item) => item.requestId === requestId ? { ...item, status:"RECEIVED",
-        responseRef, reviewArtifactId:artifact.reviewArtifactId } : item),
-      messages:[...run.messages, { messageId:requestId, fromActor:reviewerBinding.actor ?? "WEB_REVIEWER_AGENT", role, phase,
-        candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash,
-        content:(response.body ?? "").trim() || "(설명 없이 제어 패킷만 제출됨)", createdAt:new Date().toISOString() }] });
+    const artifact = persistReviewResponse(service, runId, context, role, auditManifest, phase, response);
     let report;
     try {
-      if (response.packet.type === "INVALID_RESPONSE") {
-        throw new Error(response.packet.error);
-      }
-      if (response.packet.type === "EVIDENCE_REQUEST") {
-        validateAuditResponse(response.packet, auditContext(run, requestId));
-      } else {
-        validateReviewAssertions(response.packet, context);
-        report = assertionsToReviewReport(response.packet, context, role, artifact.reviewArtifactId);
-        validateAuditResponse(report, auditContext(run, requestId));
-      }
+      report = validateReviewResponse(response, context, role, artifact.reviewArtifactId);
     } catch (error) {
       feedback = { kind:"REPORT_REPAIR", error:error.message,
         instruction:"Keep the same candidate and auditManifestHash. Return corrected reasoning and final control packet.",
@@ -546,8 +527,7 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
       continue;
     }
     if (report) {
-      run = service.get(runId);
-      service.update(runId, { requests:run.requests.map((item) => item.requestId === requestId ? { ...item, status:"PROCESSED" } : item) });
+      persistProcessedReview(service, runId, requestId, report);
       return { report, artifact };
     }
     run = service.get(runId);
@@ -757,7 +737,9 @@ export async function auditCandidate(service, runId, workspace) {
     }
     run = service.get(runId);
     const reviewerIndependence = reviewerIndependenceSnapshot(run);
-    service.update(runId, { findings:result.findings, auditResult:result.decision,
+    service.update(runId, { ...(run.reviewRecovery?.status === "RESUMING"
+      ? { reviewRecovery:{ ...run.reviewRecovery, status:"COMPLETED" } } : {}),
+      findings:result.findings, auditResult:result.decision,
       reviews:[...run.reviews, { ...result, createdAt:new Date().toISOString(), candidateId:context.candidateId, requirementsRef:context.requirementsRef,
         requestId:context.requestId, auditManifestId:auditManifest.auditManifestId,
         auditManifestHash:auditManifest.auditManifestHash, reviewerRoles:[...REVIEW_ROLES],
