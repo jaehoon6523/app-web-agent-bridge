@@ -19,13 +19,18 @@ export function evaluateAckReceipt({ runId, startedMs, endedMs = Date.now(), exi
   let stats;
   try { stats = fs.statSync(resultFile); }
   catch (error) { return { ...base, reason:'RESULT_NOT_CREATED', errorCode:error.code ?? null }; }
-  if (!stats.isFile() || stats.mtimeMs < startedMs) {
+  if (!stats.isFile()) {
     return { ...base, reason:'STALE_RESULT_REJECTED', resultMtimeMs:stats.mtimeMs };
   }
   let result;
   try { result = JSON.parse(fs.readFileSync(resultFile,'utf8')); }
   catch (error) { return { ...base, reason:'INVALID_RESULT_JSON', error:error.message }; }
   if (!result || typeof result !== 'object' || Array.isArray(result)) return { ...base, reason:'INVALID_RESULT_JSON' };
+  // Malformed content is invalid regardless of filesystem clock precision.
+  // Valid receipts still require the original freshness and run-identity checks.
+  if (stats.mtimeMs < startedMs) {
+    return { ...base, reason:'STALE_RESULT_REJECTED', resultMtimeMs:stats.mtimeMs };
+  }
   if (requireRunId && result.verificationRunId !== runId) return { ...base, reason:'RESULT_RUN_MISMATCH' };
   if (requireRunId && (result.terminal !== true || result.exitCode !== exitCode
     || !Number.isFinite(Date.parse(result.startedAt)) || Date.parse(result.startedAt) < startedMs

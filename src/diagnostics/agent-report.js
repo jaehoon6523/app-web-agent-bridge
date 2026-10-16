@@ -45,7 +45,7 @@ export function createAutomaticAgentReport({ transport, directory, root, collect
   collectDelivery = async () => ({status:"NOT_CHECKED",reason:"DELIVERY_READER_UNAVAILABLE"}),
   intervalMs = 60000, onFailure = event => { void event; }, onDiagnostic = undefined,
   observeRepository = repositoryObservation }) {
-  let closed = false, pending = null, lastRead = -Infinity, timer = null, queued = null;
+  let closed = false, pending = null, pendingGeneration = -1, lastRead = -Infinity, timer = null, queued = null;
   let connectionKey = [transport?.authenticated,transport?.responsive,transport?.snapshot?.connected].join(":"), connectionGeneration = 0, lastSnapshot = null, lastWrite = Promise.resolve();
   const processInstanceId = randomUUID();
   const cancellation = new AbortController();
@@ -108,11 +108,16 @@ export function createAutomaticAgentReport({ transport, directory, root, collect
     }
     if (!closed) await write("server",record);
   });
-  const refresh = (trigger = "MANUAL") => {
-    if (closed) return Promise.resolve(null);
+  const refresh = async (trigger = "MANUAL") => {
+    if (closed) return null;
+    // A prior connection's collection may still be persisting after authentication.
+    // Await it once, then coalesce a current collection; never retry connection churn.
+    if (pending && pendingGeneration !== connectionGeneration) await pending;
+    if (closed) return null;
     if (pending) return pending;
     clearTimeout(timer); timer = null; lastRead = Date.now();
     const generation = connectionGeneration;
+    pendingGeneration = generation;
     const started = performance.now(); emit('agent.report.collection.started',{trigger});
     pending = Promise.race([Promise.resolve().then(() => closed ? null : collect(transport)),closing]).then(async snapshot => {
       if (closed) return null;
@@ -121,6 +126,7 @@ export function createAutomaticAgentReport({ transport, directory, root, collect
     },async error => {await persist(null,error,trigger);return null;}).finally(() => {
       emit('agent.report.collection.completed',{trigger,elapsedMs:performance.now()-started,closed});
       pending = null;
+      pendingGeneration = -1;
       if (queued && !closed) {const trigger = queued;queued = null;request(trigger,true);}
     });
     return pending;

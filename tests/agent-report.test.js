@@ -85,3 +85,52 @@ test("closing immediately after scheduling a refresh cannot create a late inspec
   assert.equal(transport.listenerCount('message'),0);
   assert.equal(transport.listenerCount('state'),0);
 });
+
+test('an authenticated export cannot reuse an unauthenticated collection still waiting for persistence',async t=>{
+  const root=fixture(t),transport=new EventEmitter();
+  Object.assign(transport,{authenticated:false,responsive:false,snapshot:{connected:false}});
+  let releaseRepository, markRepository, reads=0;
+  const repositoryEntered=new Promise(resolve=>{markRepository=resolve;});
+  const repositoryGate=new Promise(resolve=>{releaseRepository=resolve;});
+  const report=createAutomaticAgentReport({root,directory:root,transport,
+    observeRepository:async()=>{markRepository();await repositoryGate;return {commit:null,dirty:null};},
+    collect:async()=>{
+      reads++;
+      if(!transport.authenticated)throw Object.assign(new Error('Not authenticated.'),{code:'EXTENSION_NOT_AUTHENTICATED'});
+      return {inspectedAt:new Date().toISOString(),tabs:[{tabId:7,pageStatus:'READY',composerPresent:true}]};
+    }});
+  t.after(async()=>{releaseRepository();await report.close();});
+  await repositoryEntered;
+  const beforeAuthentication=report.refresh('SERVER_CREATED');
+  await Promise.resolve();
+  assert.equal(reads,1);
+  Object.assign(transport,{authenticated:true,responsive:true,snapshot:{connected:true}});
+  transport.emit('state');
+  const exports=Array.from({length:3},()=>report.refresh('EXPORT'));
+  releaseRepository();
+  const [, ...snapshots]=await Promise.all([beforeAuthentication,...exports]);
+  assert.equal(reads,2,'all current exports must share one new authenticated collection');
+  assert.ok(snapshots.every(snapshot=>snapshot?.tabs[0].tabId===7));
+  const result=await report.export();
+  assert.equal(result.server.collection.status,'OBSERVED');
+  assert.equal(result.server.tabs[0].decision,'REPAIR_NOT_NEEDED');
+});
+
+test('a connection change during collection remains unavailable instead of certifying an old snapshot',async t=>{
+  const root=fixture(t),transport=new EventEmitter();
+  Object.assign(transport,{authenticated:true,responsive:true,snapshot:{connected:true}});
+  let releaseCollection;
+  const collected=new Promise(resolve=>{releaseCollection=resolve;});
+  const report=createAutomaticAgentReport({root,directory:root,transport,
+    observeRepository:async()=>({commit:null,dirty:null}),collect:()=>collected});
+  t.after(()=>report.close());
+  const refreshed=report.refresh('EXPORT');
+  await Promise.resolve();
+  Object.assign(transport,{authenticated:false,responsive:false,snapshot:{connected:false}});
+  transport.emit('state');
+  releaseCollection({inspectedAt:new Date().toISOString(),tabs:[{tabId:7,pageStatus:'READY',composerPresent:true}]});
+  assert.equal(await refreshed,null);
+  const result=await report.export();
+  assert.equal(result.server.tabs,null);
+  assert.equal(result.server.collection.code,'DIAGNOSTIC_CONNECTION_CHANGED');
+});

@@ -46,3 +46,28 @@ test('fresh receipt for wrong files fails even with PASS status and exit code 0'
     results:[{file:'tests/other.test.js',pass:true,summaryStatus:'COMPLETE'}]}));
   assert.equal(evaluateAckReceipt({runId:'fresh',startedMs:Date.now()-3000,exitCode:0,resultFile:p}).reason,'RESULT_SCOPE_MISMATCH');
 });
+
+test('invalid JSON is rejected consistently even when the filesystem timestamp predates the stage',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ack-invalid-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'latest-test-result.json'),start=Date.now(),old=new Date(start-60_000);
+  for(const text of ['{','null','[]','true','"invalid"']) {
+    fs.writeFileSync(file,text);fs.utimesSync(file,old,old);
+    const receipt=evaluateAckReceipt({runId:'current',startedMs:start,exitCode:0,resultFile:file});
+    assert.equal(receipt.status,'FAIL');assert.equal(receipt.reason,'INVALID_RESULT_JSON',text);
+    assert.equal(receipt.receiptFresh,false);assert.equal(receipt.result,undefined);
+  }
+});
+
+test('a valid matching run receipt still cannot pass with an old filesystem timestamp',t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ack-old-matching-'));
+  t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'latest-test-result.json'),start=Date.now()-3000,old=new Date(start-60_000);
+  fs.writeFileSync(file,JSON.stringify({verificationRunId:'current',startedAt:new Date(start).toISOString(),
+    finishedAt:new Date().toISOString(),terminal:true,exitCode:0,status:'PASS',scheduled:expectedAckFiles,
+    results:expectedAckFiles.map(name=>({file:name,pass:true,summaryStatus:'COMPLETE'}))}));
+  fs.utimesSync(file,old,old);
+  const receipt=evaluateAckReceipt({runId:'current',startedMs:start,exitCode:0,resultFile:file});
+  assert.equal(receipt.status,'FAIL');assert.equal(receipt.reason,'STALE_RESULT_REJECTED');
+  assert.equal(receipt.receiptFresh,false);assert.equal(receipt.result,undefined);
+});
