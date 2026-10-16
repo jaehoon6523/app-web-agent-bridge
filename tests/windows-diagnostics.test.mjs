@@ -16,6 +16,13 @@ function withBrowser(t) {
   const old = process.env.UI_BROWSER_EXECUTABLE; process.env.UI_BROWSER_EXECUTABLE = process.execPath;
   t.after(() => { if (old === undefined) delete process.env.UI_BROWSER_EXECUTABLE; else process.env.UI_BROWSER_EXECUTABLE = old; });
 }
+function writeTestReceipt(file, record) {
+  fs.writeFileSync(file, JSON.stringify(record));
+  // The fake process owns both its declared timestamps and its filesystem timestamp.
+  // Keep them in the same clock domain without relaxing production freshness checks.
+  const finished = new Date(record.finishedAt);
+  fs.utimesSync(file, finished, finished);
+}
 function testBoundary({ ackFails = false, omitAck = false, omitReload = false, wrongScope = false, incompleteReload = false } = {}) {
   const calls = [];
   return { calls, run: async (args, options) => {
@@ -25,10 +32,10 @@ function testBoundary({ ackFails = false, omitAck = false, omitReload = false, w
       const code = ack && ackFails ? 1 : 0;
       if (!(ack && omitAck)) {
         fs.mkdirSync(directory, { recursive: true });
-        fs.writeFileSync(path.join(directory, 'latest-test-result.json'), JSON.stringify({
+        writeTestReceipt(path.join(directory, 'latest-test-result.json'), {
           verificationRunId: options.env.BRIDGE_VERIFICATION_RUN_ID, startedAt: new Date().toISOString(),
           finishedAt: new Date().toISOString(), terminal: true, exitCode: code, status: code ? 'FAIL' : 'PASS',
-          scheduled: files, results: files.map(file => ({ file, pass: !code, summaryStatus: 'COMPLETE' })) }));
+          scheduled: files, results: files.map(file => ({ file, pass: !code, summaryStatus: 'COMPLETE' })) });
       }
       return { code, signal: null, forced: false };
     }
@@ -190,4 +197,44 @@ test('E: overlapping workflows are rejected without deleting the active run evid
     await assert.rejects(runWorkflow({outputDir,runId:'other',runCommand:io.run}),{code:'LATEST_RUN_BUSY'});
     assert.equal(fs.readFileSync(path.join(outputDir,'latest-windows-diagnostics.json'),'utf8'),before);
   } finally { unblock(); await first; }
+});
+
+test('E: fixture timestamps stay current when the filesystem initial timestamp lags behind the stage', async t => {
+  withBrowser(t);
+  const old = new Date(Date.now() - 60_000), write = fs.writeFileSync;
+  let lagged = 0;
+  t.mock.method(fs, 'writeFileSync', (file, ...args) => {
+    const result = write(file, ...args);
+    if (typeof file === 'string' && path.basename(file) === 'latest-test-result.json') {
+      fs.utimesSync(file, old, old); lagged++;
+    }
+    return result;
+  });
+  const io = testBoundary();
+  const result = await runWorkflow({outputDir:temp(t),runId:crypto.randomUUID(),runCommand:io.run});
+  assert.equal(lagged, 2);
+  assert.equal(result.execution, 'COMPLETE', JSON.stringify(result.stages));
+  for (const name of ['regression', 'ack']) {
+    const stage = result.stages.find(item => item.name === name);
+    assert.equal(stage.status, 'PASS');
+    assert.ok(stage.receipt.resultMtimeMs >= Date.parse(stage.startedAt));
+  }
+});
+
+test('E: a matching receipt made stale after creation is still rejected while reload proceeds', async t => {
+  withBrowser(t); const io = testBoundary(), old = new Date(Date.now() - 60_000);
+  const runCommand = async (args, options) => {
+    const result = await io.run(args, options);
+    if (args[1] === '--tests' && path.basename(args[2]) === 'ack') {
+      const file = path.join(args[2], 'latest-test-result.json');
+      fs.utimesSync(file, old, old);
+    }
+    return result;
+  };
+  const result = await runWorkflow({outputDir:temp(t),runId:crypto.randomUUID(),runCommand});
+  const ack = result.stages.find(item => item.name === 'ack');
+  assert.equal(ack.receipt.reason, 'STALE_RESULT_REJECTED');
+  assert.equal(ack.receipt.receiptFresh, false);
+  assert.equal(result.execution, 'INCOMPLETE');
+  assert.ok(io.calls.includes('reload'));
 });
