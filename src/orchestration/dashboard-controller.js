@@ -5,6 +5,7 @@ import { createDiscussionRunPolicy } from "../domain/run-policy.js";
 import { isTerminalRunPhase } from "../domain/run-state-machine.js";
 import { canonicalConversationUrl } from "../runtime/web/binding.js";
 import { redactForEvidence } from "../security/redaction.js";
+import { publicCodeChange } from "../security/public-code-change.js";
 import { sha256CanonicalJson } from "../domain/canonical-json.js";
 import { projectRunActivity } from "./project-activity.js";
 
@@ -238,7 +239,7 @@ export class DashboardController {
     if (type === "state.get") return this.snapshot(payload.runId ?? null);
     if (this.#starting) reject("Session provisioning is still in progress.", "RUN_BUSY");
     if (live.codeChanges?.get(payload.runId)) {
-      if (type !== "run.delete") return live.codeChanges.command(type, payload);
+      if (type !== "run.delete") return publicCodeChange(await live.codeChanges.command(type, payload));
       const history = live.codeChanges.store.history(payload.runId);
       const removed = new Set();
       for (const record of history) preserveArtifactReferences(record, removed);
@@ -247,7 +248,10 @@ export class DashboardController {
       for (const record of live.codeChanges.store.list()) {
         for (const version of live.codeChanges.store.history(record.runId)) preserveArtifactReferences(version, remaining);
       }
-      for (const hash of removed) live.artifactStore?.removeIfUnreferenced?.(hash, remaining);
+      for (const hash of removed) {
+        live.artifactStore?.removeIfUnreferenced?.(hash, remaining);
+        live.artifactStore?.removePrivateResponseIfUnreferenced?.(hash, remaining);
+      }
       return result;
     }
     if (type === "run.start") {
@@ -356,11 +360,12 @@ export class DashboardController {
       if (existing.status !== "COMPLETED") reject("Previous command outcome is uncertain; inspect the run before acting. No automatic resubmission.", "RECOVERY_REQUIRED");
       const result = JSON.parse(String(existing.result_json));
       if (result.error) reject(result.error.message, result.error.code);
-      return result.payload;
+      return publicCodeChange(result.payload);
     }
     store.beginCommand(command.requestId, hash, command.payload?.runId ?? null);
     const promise = this.execute(command).then((payload) => {
-      store.finishCommand(command.requestId, { payload: redactForEvidence(payload) }); return payload;
+      const publicPayload = publicCodeChange(payload);
+      store.finishCommand(command.requestId, { payload: publicPayload }); return publicPayload;
     }, (error) => {
       store.finishCommand(command.requestId, { error: { message: redactForEvidence(error.message), code: error.code || "COMMAND_FAILED" } }); throw error;
     }).finally(() => this.#receipts.delete(command.requestId));

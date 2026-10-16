@@ -132,7 +132,7 @@ export function setupAudit(t, hooks = {}) {
         const reasoning=hooks.reviewBody?await hooks.reviewBody(data,number,service):"";
         this.activeTurnId=null;
         const raw=`${reasoning?`${reasoning}\n`:""}<controller_packet>\n${JSON.stringify(report)}\n</controller_packet>`;
-        return {turnId,completion:Promise.resolve({turnId,...parseResponse(raw),binding:{...this.activeBinding,runId}})};
+        return {turnId,completion:Promise.resolve({turnId,...parseResponse(raw),rawText:raw,binding:{...this.activeBinding,runId}})};
       }} };
   const reviewerWebProviders = typeof hooks.reviewerWebProviderFactory === "function"
     ? hooks.reviewerWebProviderFactory(options.webSession)

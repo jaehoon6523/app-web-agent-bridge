@@ -5,6 +5,7 @@ import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-pac
 import { validateAuditResponse } from "../domain/code-review.js";
 import { assertionsToReviewReport, validateReviewAssertions } from "../domain/review-coordination.js";
 import { redactForEvidence } from "../security/redaction.js";
+import { redactControllerResponseText, publicResponseBody, publicResponsePacket, privateResponseRecord } from "./web-delivery-receipts.js";
 
 const same = (a, b) => canonicalJson(a) === canonicalJson(b);
 const fail = (message) => { throw Object.assign(new Error(message), { code:"REVIEW_RECOVERY_REFUSED" }); };
@@ -23,7 +24,7 @@ function requestIdentity(request) {
 }
 function receiptIdentity(receipt) {
   return [receipt.deliveryId, receipt.sessionId, receipt.conversationUrl, receipt.role,
-    receipt.responseRef?.sha256 ?? null, receipt.packetRef?.sha256 ?? null, receipt.validation, receipt.at];
+    receipt.responseRef?.sha256 ?? null, receipt.packetRef?.sha256 ?? null, receipt.privateResponseRef ?? null, receipt.validation, receipt.at];
 }
 function bindingIdentity(binding) {
   return [binding.bindingId, binding.runId, binding.sessionId, binding.role, binding.provider ?? null,
@@ -39,10 +40,14 @@ export function persistReviewResponse(service, runId, context, role, auditManife
   }
   const request = only(run.requests, item => item.requestId === requestId, "review request");
   const binding = only(run.conversationBindings, item => item.role === role, "reviewer binding");
+  const receipt = only(run.webDeliveryReceipts, item => item.deliveryId === requestId, "review response receipt");
+  if (receipt.privateResponseRef && !same(service.artifactStore.readPrivateResponse(receipt.privateResponseRef),
+    privateResponseRecord(runId, role, requestId, binding.sessionId, response))) fail("Private response evidence differs.");
   const put = (value, mimeType) => service.artifactStore.put(value, { mimeType, redacted:true });
-  const responseRef = put(redactForEvidence(response.rawText ?? `${response.body}\n${response.packetText}`), "text/plain");
-  const contentRef = put(redactForEvidence(response.body ?? ""), "text/plain");
-  const packetRef = put(canonicalJson(redactForEvidence(response.packet)), "application/json");
+  const responseRef = put(redactControllerResponseText(response.rawText ?? `${response.body}\n${response.packetText}`), "text/plain");
+  const content = publicResponseBody(response);
+  const contentRef = put(content, "text/plain");
+  const packetRef = put(canonicalJson(publicResponsePacket(response.packet)), "application/json");
   const matches = (run.reviewArtifacts ?? []).filter(item => item.requestId === requestId);
   if (matches.length > 1) fail("Duplicate review artifacts for one request.");
   const expected = { requestId, candidateId:context.candidateId, auditManifestId:auditManifest.auditManifestId,
@@ -59,17 +64,22 @@ export function persistReviewResponse(service, runId, context, role, auditManife
   const messages = run.messages.filter(item => item.messageId === requestId);
   const expectedMessage = { messageId:requestId, fromActor:binding.actor ?? "WEB_REVIEWER_AGENT", role, phase,
     candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash,
-    content:(response.body ?? "").trim() || "(설명 없이 제어 패킷만 제출됨)" };
+    content:content.trim() || "(설명 없이 제어 패킷만 제출됨)" };
+  // Older messages can contain unredacted presentation text; all identity fields stay exact.
+  const storedMessage = messages[0] && {...messages[0],content:redactForEvidence(messages[0].content)};
   if (messages.length > 1 || (messages.length === 1
-    && !same(Object.fromEntries(Object.keys(expectedMessage).map(key => [key, messages[0][key]])), expectedMessage))) {
+    && !same(Object.fromEntries(Object.keys(expectedMessage).map(key => [key, storedMessage[key]])), expectedMessage))) {
     fail("Stored review message differs from the original response.");
   }
   const nextRequest = { ...request, status:request.status === "PROCESSED" ? "PROCESSED" : "RECEIVED",
     responseRef, reviewArtifactId:artifact.reviewArtifactId };
-  if (!existing || !messages.length || !same(nextRequest, request)) service.update(runId, {
+  const messageChanged = messages.length === 1 && messages[0].content !== expectedMessage.content;
+  if (!existing || !messages.length || messageChanged || !same(nextRequest, request)) service.update(runId, {
     reviewArtifacts:existing ? run.reviewArtifacts : [...(run.reviewArtifacts ?? []), artifact],
     requests:run.requests.map(item => item.requestId === requestId ? nextRequest : item),
-    messages:messages.length ? run.messages : [...run.messages, { ...expectedMessage, createdAt:request.createdAt }],
+    messages:messages.length ? messageChanged
+      ? run.messages.map(item => item.messageId === requestId ? {...item,content:expectedMessage.content} : item)
+      : run.messages : [...run.messages, { ...expectedMessage, createdAt:request.createdAt }],
   });
   return artifact;
 }
@@ -142,10 +152,29 @@ function restoreResponse(service, run, request, history) {
   read(service, request.promptRef);
   read(service, run.capture.artifact);
   for (const evidence of run.evidence.filter(item => item.candidateId === request.candidateId)) read(service, evidence.contentRef);
-  const rawText = read(service, receipt.responseRef), packet = JSON.parse(read(service, receipt.packetRef));
-  const parsed = parseFinalControllerPacketJsonEnvelope(rawText);
+  const publicText = read(service, receipt.responseRef), packet = JSON.parse(read(service, receipt.packetRef));
+  const originalResponse = receipt.privateResponseRef
+    ? service.artifactStore.readPrivateResponse(receipt.privateResponseRef) : null;
+  if (originalResponse && (originalResponse.version !== 1 || originalResponse.runId !== run.runId
+    || originalResponse.deliveryId !== receipt.deliveryId || originalResponse.role !== receipt.role
+    || originalResponse.sessionId !== receipt.sessionId || typeof originalResponse.rawText !== "string")) {
+    fail("Private response identity differs or exact wire bytes are unavailable.");
+  }
+  const rawText = originalResponse ? originalResponse.rawText : publicText;
+  let parsed;
+  try { parsed = parseFinalControllerPacketJsonEnvelope(rawText); }
+  catch (error) {
+    throw Object.assign(new Error("Stored controller response cannot be parsed; private evidence was retained."),
+      {code:error.code ?? "REVIEW_RECOVERY_REFUSED"});
+  }
+  // Validate the untouched wire and the independently persisted adapter packet.
+  if (originalResponse && (!same(parsed.parsed, originalResponse.packet)
+    || parsed.body !== originalResponse.body || parsed.packetText !== originalResponse.packetText
+    || !same(publicResponsePacket(originalResponse.packet), packet)
+    || redactControllerResponseText(rawText) !== publicText)) fail("Response text and packet evidence differ.");
   if (!same(redactForEvidence(parsed.parsed), packet)) fail("Response text and packet evidence differ.");
-  return { context, manifest, response:{ rawText, body:parsed.body, packetText:parsed.packetText, packet } };
+  return { context, manifest, response:{ rawText, body:parsed.body, packetText:parsed.packetText,
+    packet:originalResponse ? originalResponse.packet : packet } };
 }
 
 // Startup performs local evidence processing only. It never sends, ACKs, aggregates,
@@ -214,7 +243,7 @@ export function restoredReviewForRole(service, runId, role, manifest, phase) {
   const restored = restoreResponse(service, run, request, service.store.history(runId));
   const artifact = persistReviewResponse(service, runId, restored.context, role, manifest, phase, restored.response);
   const report = validateReviewResponse(restored.response, restored.context, role, artifact.reviewArtifactId);
-  if (!report || !request.reportRef || !same(JSON.parse(read(service, request.reportRef)), report)) {
+  if (!report || !request.reportRef || !same(JSON.parse(read(service, request.reportRef)), redactForEvidence(report))) {
     fail("Recovered review report is missing or differs.");
   }
   return { artifact, report };

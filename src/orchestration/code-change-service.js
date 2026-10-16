@@ -17,6 +17,7 @@ import { canonicalJson } from "../domain/canonical-json.js";
 import { auditManifestMatchesRun } from "../domain/audit-manifest.js";
 import { validateAgreedWorkOrder } from "../domain/review-coordination.js";
 import { redactForEvidence } from "../security/redaction.js";
+import { publicCodeChange } from "../security/public-code-change.js";
 import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts.js";
 import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
 import { workerProvenance } from "../domain/worker-provenance.js";
@@ -592,7 +593,7 @@ export class CodeChangeService {
       this.workerInspections.delete(run.runId);
       return { runId:run.runId, deleted:true };
     }
-    if (type === "evidence.export") return redactForEvidence({ ...run, historyProof:this.store.historyProof(run.runId) });
+    if (type === "evidence.export") return publicCodeChange({ ...run, historyProof:this.store.historyProof(run.runId) });
     if (type === "evidence.get") {
       const e = run.evidence?.find((e) => e.evidenceId === payload.evidenceId);
       if (!e) throw new Error("Unknown evidence in this run.");
@@ -964,7 +965,7 @@ export class CodeChangeService {
     };
     const reviewerProjections = { JUDGE:reviewerProjection("JUDGE"), CRITIC:reviewerProjection("CRITIC") };
     const reviewerRuntimes = { JUDGE:reviewerProjections.JUDGE.runtime, CRITIC:reviewerProjections.CRITIC.runtime };
-    return redactForEvidence({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
+    return publicCodeChange({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
       activeActor: record.stage === "WORKER_RUNNING"
         ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
         : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage)

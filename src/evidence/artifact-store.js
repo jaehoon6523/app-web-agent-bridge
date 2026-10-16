@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { putPrivateResponse, readPrivateResponse, removePrivateResponseIfUnreferenced } from "./private-response-store.js";
 
 export class ArtifactStoreError extends Error {
   constructor(message, code = "ARTIFACT_STORE_ERROR") {
@@ -82,6 +83,13 @@ export class ArtifactStore {
   verify(sha256) {
     this.read(sha256);
     return true;
+  }
+
+  // Private recovery bytes have a separate namespace and no public read route.
+  putPrivateResponse(record) { return putPrivateResponse(this.rootDirectory, record); }
+  readPrivateResponse(ref) { return readPrivateResponse(this.rootDirectory, ref); }
+  removePrivateResponseIfUnreferenced(sha256, referenced = new Set()) {
+    return removePrivateResponseIfUnreferenced(this.rootDirectory, sha256, referenced);
   }
 
   /** Removes an unreferenced content-addressed artifact. */

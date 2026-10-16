@@ -11,6 +11,7 @@ import { handleDeliveryAcknowledgement } from '../extension/runtime/delivery-ack
 import { classifyDeliveryOwnership, inspectDeliveryOwnership, installDeliveryOwnershipInspection } from '../src/orchestration/delivery-ownership.js';
 import { createDeliveryRecoveryActions } from '../src/orchestration/delivery-recovery-actions.js';
 import { persistWebDeliveryReceipt } from '../src/orchestration/web-delivery-receipts.js';
+import { ArtifactStore } from '../src/evidence/artifact-store.js';
 import { setupAudit } from './helpers/audit-fixtures.js';
 import { diagnosticError, diagnosticMetadata } from '../extension/runtime/document-binding.js';
 import { createBridgeServer } from '../src/server.js';
@@ -273,10 +274,12 @@ test('review response receipt is durable before ACK and final owner release', as
   await f.reopen(); assert.equal(f.service.get(run.runId).webDeliveryReceipts.length, run.webDeliveryReceipts.length);
 });
 
-test('receipt persistence rejects different bytes under the same delivery identity', () => {
+test('receipt persistence rejects different bytes under the same delivery identity', t => {
   let run = { conversationBindings: [{ role: 'JUDGE', sessionId: 's', activeDeliveryId: 'd' }], webDeliveryReceipts: [] };
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-receipt-'));
+  t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
   const service = { get: () => run, update: (_id, patch) => { run = { ...run, ...patch }; },
-    artifactStore: { put: value => ({ sha256: value }) } };
+    artifactStore: new ArtifactStore(directory) };
   const response = { turnId: 'd', binding: { runId: 'r', sessionId: 's', conversationUrl: 'u' }, body: 'First', packet: { type: 'REVIEW_ASSERTIONS' } };
   persistWebDeliveryReceipt(service, 'r', 'JUDGE', 'd', response);
   persistWebDeliveryReceipt(service, 'r', 'JUDGE', 'd', response);

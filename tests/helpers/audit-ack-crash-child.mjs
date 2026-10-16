@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { setupAudit } from './audit-fixtures.js';
+import { setupAudit, assertionsFor } from './audit-fixtures.js';
 import { ArtifactStore } from '../../src/evidence/artifact-store.js';
 import { CodeChangeService } from '../../src/orchestration/code-change-service.js';
 
@@ -23,7 +23,15 @@ if (process.argv[2] === 'recover') {
   throw new Error('Recovery crash boundary was not reached');
 }
 
-const f = setupAudit({ after() {} }, { reviewVerdicts:['SATISFIED'], reviewBody:() => 'Original review reasoning.' });
+const sensitive = process.argv.includes('--sensitive-response');
+const f = setupAudit({ after() {} }, { reviewVerdicts:['SATISFIED'],
+  reviewBody:() => process.argv.includes('--fenced-response') ? '```text\npassword=\n```' : 'Original review reasoning.',
+  ...(sensitive ? {review:data => {
+    const packet = assertionsFor(data.context, 'UNDETERMINED');
+    packet.assessments[0].missingInformation = 'password=crash-example';
+    return packet;
+  }} : {}),
+});
 const submit = f.options.webSession.submitTurn;
 f.options.webSession.submitTurn = async function(input) {
   const handle = await submit.call(this, input);

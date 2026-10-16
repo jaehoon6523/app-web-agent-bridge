@@ -2,8 +2,9 @@ import path from "node:path";
 
 const REDACTED = "[REDACTED]";
 const SENSITIVE_KEY = /(?:authorization|proxy-authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|id[_-]?token|secret|password|passwd|cookie|credential|private[_-]?key)/iu;
-const AUTHORIZATION_VALUE = /\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+\/-]+=*/giu;
-const ASSIGNMENT_VALUE = /\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s*[=:]\s*)[^\s,;]+/giu;
+const AUTHORIZATION_VALUE = /\b((?:Bearer|Basic)\s+)([A-Za-z0-9._~+\/-]+=*)/giu;
+const ASSIGNMENT_VALUE = /\b((?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password)\s*[=:]\s*)([^\s,;]+)/giu;
+const QUOTED_PAIR = /("(?:\\[\s\S]|[^"\\])*")(\s*:\s*)("(?:\\[\s\S]|[^"\\])*")/gu;
 
 export class RedactionError extends TypeError {
   constructor(message, code = "REDACTION_ERROR") {
@@ -22,9 +23,23 @@ function normalizeRoots(roots) {
 }
 
 function redactString(value, roots) {
+  const replaceCredential = (match, prefix, token, offset, source) => {
+    if (/[\r\n]/u.test(prefix)) {
+      const start = offset + prefix.length;
+      const end = source.indexOf("\n", start);
+      const line = source.slice(source.lastIndexOf("\n", start - 1) + 1, end < 0 ? undefined : end).trimEnd();
+      // A missing value must not consume Markdown or controller framing.
+      if (/^(?: {0,3}(?:`{3,}|~{3,})[^\r\n]*|CONTROLLER_PACKET_(?:BEGIN|END)|<\/?controller_packet>)$/u.test(line)) return match;
+    }
+    return `${prefix}${REDACTED}`;
+  };
   let redacted = value
-    .replace(AUTHORIZATION_VALUE, (match) => `${match.split(/\s+/u)[0]} ${REDACTED}`)
-    .replace(ASSIGNMENT_VALUE, `$1${REDACTED}`);
+    .replace(QUOTED_PAIR, (match, key, separator) => {
+      try { return SENSITIVE_KEY.test(JSON.parse(key)) ? `${key}${separator}${JSON.stringify(REDACTED)}` : match; }
+      catch { return match; }
+    })
+    .replace(AUTHORIZATION_VALUE, replaceCredential)
+    .replace(ASSIGNMENT_VALUE, replaceCredential);
   for (const root of roots) {
     const escaped = root.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     redacted = redacted.replace(new RegExp(escaped, "giu"), "<REDACTED_PATH>");

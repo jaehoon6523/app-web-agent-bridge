@@ -268,7 +268,9 @@ function parseControl(raw) {
     const parsed = parseFinalControllerPacketJsonEnvelope(raw);
     return { body:parsed.body, packetText:parsed.packetText, packet:parsed.parsed };
   } catch (error) {
-    return { body:raw, packetText:raw, packet:{ type:"INVALID_RESPONSE", error:error.message } };
+    const code = /^[A-Z0-9_]+$/u.test(error.code ?? "") ? error.code : "INVALID_CONTROLLER_PACKET";
+    // Parser messages can contain raw response fragments. Retain those bytes privately.
+    return { body:raw, packetText:raw, packet:{ type:"INVALID_RESPONSE", error:`Controller packet rejected (${code}).` } };
   }
 }
 
@@ -522,7 +524,7 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
       feedback = { kind:"REPORT_REPAIR", error:error.message,
         instruction:"Keep the same candidate and auditManifestHash. Return corrected reasoning and final control packet.",
         candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash, candidateDiffHash,
-        previousResponse:response.rawText || response.packetText || response.body || JSON.stringify(response.packet) };
+        previousResponse:service.artifactStore.read(artifact.responseRef.sha256).toString("utf8") };
       if (repairs++ >= run.policy.maxFormatRepairs) throw Object.assign(new Error(error.message), { code:"REPORT_REPAIR_LIMIT" });
       continue;
     }
