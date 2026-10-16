@@ -57,3 +57,41 @@ durable command replay, rejected malformed wire, storage failure before ACK,
 legacy presentation repair, logical request reuse and actual child-process
 termination after ACK. Linux verification does not establish Windows filesystem
 permissions or real ChatGPT/browser delivery success.
+
+## Crash probe and file budgets
+
+The crash child publishes a synchronous, atomically renamed checkpoint before
+parking its main thread at the exact persistence call. It does not use an IPC
+message that needs that same thread to drain. Each checkpoint belongs to one
+isolated directory, invocation token and child PID. The parent waits at most
+15 seconds for the boundary, requests abrupt termination, and separately waits
+at most 5 seconds for process and stdio closure. Existing forced-cleanup code
+can add its bounded containment period after that deadline; this remains a
+failure. Normal exit, missing evidence, stale identity and cleanup errors cannot
+be converted into crash-recovery PASS. Diagnostic lines record the reached
+boundary and observed closure without including the saved snapshot or wire.
+
+The original 79 cases are retained in three independently scheduled files:
+
+- `tests/audit-ack-recovery.test.js`: 37 recovery and refusal cases.
+- `tests/audit-ack-private-recovery.test.js`: 38 public/private evidence cases.
+- `tests/audit-ack-crash-recovery.test.js`: 4 actual abrupt-termination cases.
+
+The existing 180-second file budget is unchanged. This separates accumulated
+fixture work from an individual crash-probe hang. No assertions or test names
+were removed. `tests/audit-crash-harness.test.js` adds 5 protocol regressions,
+including an 8 MiB synchronous checkpoint and bounded cleanup on failure.
+
+First check the Windows crash path and private storage with:
+
+```powershell
+node .\scripts\run-tests.mjs .\tests\audit-crash-harness.test.js .\tests\audit-ack-crash-recovery.test.js .\tests\private-web-response.test.js
+$rc = $LASTEXITCODE
+Write-Host "EXIT CODE: $rc"
+notepad.exe .\.agent-controller\latest-test.log
+```
+
+This selection has 12 tests. All related cases are covered by the three
+recovery files, the harness file and the private-storage file: 5 files and
+87 tests in total. Supply each path once. The registered file runner replaces its latest log and receipt on
+each invocation. These are local contract tests, not real ChatGPT requests.

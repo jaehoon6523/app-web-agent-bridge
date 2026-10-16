@@ -1,16 +1,18 @@
 import path from 'node:path';
+import {publishCrashCheckpoint} from './audit-crash-checkpoint.js';
 import { setupAudit, assertionsFor } from './audit-fixtures.js';
 import { ArtifactStore } from '../../src/evidence/artifact-store.js';
 import { CodeChangeService } from '../../src/orchestration/code-change-service.js';
 
 function boundary(value) {
-  process.send({ type:'boundary', ...value });
+  publishCrashCheckpoint('boundary', value);
   // Keep the exact synchronous persistence boundary open until the parent kills us.
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
 }
 
 if (process.argv[2] === 'recover') {
   const metadata = JSON.parse(process.argv[3]), update = CodeChangeService.prototype.update;
+  publishCrashCheckpoint('ready', metadata);
   CodeChangeService.prototype.update = function(runId, changes) {
     const result = update.call(this, runId, changes);
     if (changes.requests?.some(item => item.status === 'PROCESSED')) boundary({ runId, snapshot:result });
@@ -38,7 +40,7 @@ f.options.webSession.submitTurn = async function(input) {
   return { ...handle, completion:handle.completion.then(response => ({ ...response,
     rawText:`${response.body}\n<controller_packet>\n${response.packetText}\n</controller_packet>` })) };
 };
-process.send({ type:'ready', directory:f.directory, filename:f.options.filename, project:f.options.project });
+publishCrashCheckpoint('ready', {directory:f.directory, filename:f.options.filename, project:f.options.project});
 const update = f.service.update.bind(f.service);
 f.service.update = (runId, changes) => {
   const saved = update(runId, changes);
