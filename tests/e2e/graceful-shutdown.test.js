@@ -4,6 +4,37 @@ import { spawn } from 'node:child_process';
 import { CodexProcessManager } from '../../src/runtime/codex/process-manager.js';
 import { productionProcess, repository } from '../../scripts/e2e/helpers/process.mjs';
 import { readHttpHeaders } from '../helpers/socket-headers.mjs';
+import { observeChildClose, waitChildClose } from '../../src/runtime/child-close.js';
+
+for (const operation of ['start','ensureReadyForNewOperation']) {
+  test(`Codex ${operation} pending at close cannot launch a later orphan`, {timeout:10000}, async t => {
+    const owned=[];
+    const source=`const rl=require('node:readline').createInterface({input:process.stdin});
+      rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'close-race-peer'}})+'\\n');});`;
+    const manager=await CodexProcessManager.create({executablePath:process.execPath,workspaceRoot:repository,
+      appServerArgs:['-e',source],sourceEnv:process.env,initializeTimeoutMs:3000,
+      spawn:(command,args,options)=>{
+        const child=spawn(command,args,options);owned.push({child,observation:observeChildClose(child)});return child;
+      }});
+    t.after(async()=>{
+      await manager.close().catch(()=>{});
+      for(const {child,observation} of owned) {
+        if(child.exitCode===null && child.signalCode===null)child.kill('SIGKILL');
+        await waitChildClose(child,observation,{timeoutMs:3000});
+      }
+    });
+    // Executable verification performs real asynchronous I/O before any spawn.
+    const pending=manager[operation]().then(()=>({resolved:true}),error=>({error}));
+    await manager.close();
+    const outcome=await pending;
+    assert.equal(outcome.error?.code,'CODEX_TRANSPORT_CLOSED');
+    assert.equal(owned.length,0,'a stale request must not spawn after ownership was released');
+    assert.equal(manager.status,'STOPPED');
+    // A separate explicit restart remains supported.
+    await manager.start();assert.equal(owned.length,1);
+    await manager.close();assert.equal(owned[0].child.exitCode,0);
+  });
+}
 
 test('production IPC stop drains HTTP resources and exits naturally without a kill', {timeout:15000}, async t => {
   const server=await productionProcess();

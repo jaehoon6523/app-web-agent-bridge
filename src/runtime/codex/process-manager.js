@@ -66,6 +66,7 @@ export class CodexProcessManager extends EventEmitter {
   #closing = false;
   #closePromise = null;
   #ownedProcess = null;
+  #closeGeneration = 0;
 
   /** @param {CodexProcessCreateOptions} [options] */
   static async create({
@@ -146,6 +147,7 @@ export class CodexProcessManager extends EventEmitter {
   }
 
   async start() {
+    if (this.#closing) throw new CodexTransportClosedError();
     if (this.#status === "READY" && this.#process && this.#peer && !this.#peer.closed) return;
     if (this.#startPromise) return this.#startPromise;
     this.#startPromise = this.#startInternal();
@@ -157,9 +159,11 @@ export class CodexProcessManager extends EventEmitter {
   }
 
   async ensureReadyForNewOperation() {
+    const generation = this.#closeGeneration;
     await verifyPinnedExecutable(this.#pin);
+    if (this.#closing || generation !== this.#closeGeneration) throw new CodexTransportClosedError();
     await this.start();
-    if (this.#status !== "READY" || !this.#peer || this.#peer.closed) {
+    if (generation !== this.#closeGeneration || this.#status !== "READY" || !this.#peer || this.#peer.closed) {
       throw new CodexTransportClosedError("Codex app-server is not ready");
     }
   }
@@ -189,6 +193,7 @@ export class CodexProcessManager extends EventEmitter {
     if (this.#closePromise) return this.#closePromise;
     this.#closePromise = (async () => {
       this.#closing = true;
+      this.#closeGeneration += 1;
       const proc = this.#ownedProcess?.proc ?? this.#process;
       const requestedEOF = proc !== null && proc === this.#process;
       const peer = this.#peer;
@@ -222,8 +227,10 @@ export class CodexProcessManager extends EventEmitter {
   }
 
   async #startInternal() {
-    this.#closePromise = null;
+    const closeGeneration = this.#closeGeneration;
     await verifyPinnedExecutable(this.#pin);
+    if (this.#closing || closeGeneration !== this.#closeGeneration) throw new CodexTransportClosedError();
+    this.#closePromise = null;
     this.#setStatus("STARTING");
     let proc;
     try {

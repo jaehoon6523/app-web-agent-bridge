@@ -7,6 +7,7 @@ import path from 'node:path';
 import { ownedSpawn, forceProcessTree } from '../platform/process.mjs';
 import { fileURLToPath } from 'node:url';
 import { waitForPreflight } from '../preflight-readiness.mjs';
+import { removeOwnedFixture } from './owned-fixture.mjs';
 
 export const repository = fileURLToPath(new URL('../../../', import.meta.url));
 export const extensionCredentials = Object.freeze({ sharedSecret:'e2e-only-extension-secret-0123456789', extensionIdentity:'e2e-extension' });
@@ -119,7 +120,7 @@ export async function productionProcess({ configured = false, fault = null, work
           assert.equal(exists, false, 'active Worker child must exit before workspace cleanup');
         }
         } catch(error) {failures.push(error);}
-        try {fs.rmSync(workspace,{recursive:true,force:true});} catch(error) {failures.push(error);}
+        try {await removeOwnedFixture(workspace);} catch(error) {failures.push(error);}
         if(failures.length)throw new AggregateError(failures,failures.map(e=>e.message).join('\n'));
       },
     };

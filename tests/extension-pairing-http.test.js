@@ -6,6 +6,7 @@ import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { createBridgeServer } from '../src/server.js';
 import { computeWebChallengeHmac } from '../src/runtime/web/auth.js';
+import { removeOwnedFixture } from '../scripts/e2e/helpers/owned-fixture.mjs';
 
 class Socket extends EventEmitter {
   readyState = 1;
@@ -48,7 +49,7 @@ test('HTTP pairing requires explicit confirmation, refuses active ownership, and
       try { assert.deepEqual(fs.readdirSync(path.join(root,'diagnostics')),['runtime-latest.json']); }
       catch (error) { errors.push(error); }
     }
-    try { fs.rmSync(root, { recursive: true, force: true }); } catch (error) { errors.push(error); }
+    try { await removeOwnedFixture(root); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors,'Pairing fixture cleanup failed.');
   });
   const old = present(bridge.extensionTransport, 'new-identity');

@@ -68,11 +68,11 @@ export async function followup(f,setup) {
   const old=setup.context.preparationId;
   await f.page.locator('#continueProject').click();
   await f.page.locator('#objective').fill('Follow-up controlled clock improvement');
-  assert.equal(await f.page.locator('#startRoot').inputValue(),f.server.workspace);
+  assert.equal(fs.realpathSync.native(await f.page.locator('#startRoot').inputValue()),fs.realpathSync.native(f.server.workspace));
   const done=state(f,b=>b.preparation && b.preparation.preparationId!==old && b.preparation.deliveries?.at(-1)?.state==='ACKNOWLEDGED');
   await f.page.locator('#planRun').click();const context=(await done).preparation;
   assert.notEqual(context.preparationId,old);assert.equal(context.followUp.runId,setup.run.runId);
-  assert.equal(context.targetRoot,f.server.workspace);assert.notEqual(context.objective,setup.run.objective);
+  assert.equal(fs.realpathSync.native(context.targetRoot),fs.realpathSync.native(f.server.workspace));assert.notEqual(context.objective,setup.run.objective);
   assert.equal(context.resultingRunId,null);assert.ok(context.followUp || context.handoff || context.followUpRunId);
   assert.equal(context.agreement.requirements[0].statement,'Follow-up new clock scope');
   const db=new DatabaseSync(path.join(f.server.workspace,'.agent-controller/preparations.sqlite'),{readOnly:true});

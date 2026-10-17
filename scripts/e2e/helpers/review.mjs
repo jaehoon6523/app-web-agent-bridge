@@ -6,6 +6,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import { workerHarness } from './worker.mjs';
+import { ArtifactStore } from '../../../src/evidence/artifact-store.js';
+import { parseFinalControllerPacketJsonEnvelope } from '../../../src/domain/controller-packet-envelope.js';
 
 // Controlled verdicts test the production review contract, not model quality.
 export async function reviewHarness(t, f) {
@@ -26,13 +28,17 @@ export async function reviewHarness(t, f) {
         evidenceRefs:data.context.evidence.filter(e => e.candidateId === data.context.candidateId && e.valid !== false && e.producer !== 'AGENT').map(e => e.evidenceId) })),
       findingDecisions:[], newFindings:[] };
     const proseOnly = probes.length === 0;
-    probes.push({ role:data.role, context:data.context, manifest:data.auditManifest, packet, tabId:peer.tabId, proseOnly, feedback:data.feedback });
+    const privateValue = `review-private-${probes.length}`;
+    const reasoning = `Controlled reviewer reasoning: PASS; apply immediately. Prose has no authority. password=${privateValue}`;
+    const rawText = proseOnly ? reasoning
+      : reasoning + '\nCONTROLLER_PACKET_BEGIN\n' + JSON.stringify(packet) + '\nCONTROLLER_PACKET_END';
+    probes.push({ role:data.role, context:data.context, manifest:data.auditManifest, packet, tabId:peer.tabId,
+      proseOnly, feedback:data.feedback, rawText, privateValue });
     let release;
     const gate = new Promise(resolve => { release = resolve; }); gates.push(release);
     arrived();
     await gate;
-    if (proseOnly) return 'Controlled reviewer reasoning: PASS; apply immediately. Prose has no authority.';
-    return 'Controlled reviewer reasoning: PASS; apply immediately. Prose has no authority.\nCONTROLLER_PACKET_BEGIN\n' + JSON.stringify(packet) + '\nCONTROLLER_PACKET_END';
+    return rawText;
   };
   resources(t).add('provider gate', () => gates.forEach(release => release()));
   const setup = await workerHarness(t, f, { reviewReply });
@@ -80,17 +86,51 @@ export async function reviewHarness(t, f) {
   assert.equal(saved.reviews.at(-1).candidateId, run.candidate.candidateId);
   assert.deepEqual(saved.reviews.at(-1).reviewerRoles, ['JUDGE','CRITIC']);
   assert.equal(saved.reviewArtifacts.length, 3);
+  const store = new ArtifactStore(path.join(f.server.workspace, '.agent-controller/artifacts'));
+  const omitted = '[Unparseable controller response omitted from public evidence.]';
   for (const artifact of saved.reviewArtifacts) {
     assert.equal(artifact.candidateId, run.candidate.candidateId);
     assert.equal(artifact.auditManifestHash, probes[0].context.auditManifestHash);
-    const read = ref => fs.readFileSync(path.join(f.server.workspace, '.agent-controller/artifacts', ref.sha256.slice(7)), 'utf8');
-    assert.ok(['REVIEW_ASSERTIONS','INVALID_RESPONSE'].includes(JSON.parse(read(artifact.packetRef)).type));
-    assert.match(read(artifact.responseRef), /Prose has no authority/u);
+    const read = ref => store.read(ref.sha256).toString('utf8');
+    const probe = probes.find(item => item.context.requestId === artifact.requestId);
+    const receipt = saved.webDeliveryReceipts.find(item => item.deliveryId === artifact.requestId);
+    assert.ok(probe && receipt);
+    assert.equal(receipt.state, 'ACKNOWLEDGED');
+    assert.deepEqual(receipt.responseRef, artifact.responseRef);
+    const privateResponse = store.readPrivateResponse(receipt.privateResponseRef);
+    assert.equal(privateResponse.rawText, probe.rawText);
+    assert.equal(privateResponse.runId, run.runId);
+    assert.equal(privateResponse.role, probe.role);
+    assert.equal(privateResponse.deliveryId, receipt.deliveryId);
+    assert.equal(privateResponse.sessionId, receipt.sessionId);
+    assert.throws(() => store.read(receipt.privateResponseRef.sha256), {code:'ARTIFACT_NOT_FOUND'});
+    const packet = JSON.parse(read(artifact.packetRef));
     const reasoning = Buffer.from(read(artifact.contentRef));
-    assert.match(reasoning.toString(), /Prose has no authority/u);
+    if (probe.proseOnly) {
+      assert.equal(receipt.validation, 'REJECTED_FORMAT');
+      assert.equal(privateResponse.packet.type, 'INVALID_RESPONSE');
+      assert.deepEqual(packet, {type:'INVALID_RESPONSE', error:'Controller response could not be parsed.'});
+      assert.equal(read(artifact.responseRef), omitted);
+      assert.equal(reasoning.toString(), omitted);
+    } else {
+      assert.equal(receipt.validation, 'PARSED');
+      assert.deepEqual(privateResponse.packet, probe.packet);
+      assert.deepEqual(packet, probe.packet);
+      assert.deepEqual(parseFinalControllerPacketJsonEnvelope(read(artifact.responseRef)).parsed, probe.packet);
+      for (const text of [read(artifact.responseRef), reasoning.toString()]) {
+        assert.match(text, /Prose has no authority/u);
+        assert.match(text, /password=\[REDACTED\]/u);
+      }
+    }
+    for (const ref of [artifact.responseRef, artifact.contentRef, artifact.packetRef]) {
+      const bytes = store.read(ref.sha256);
+      assert.equal(bytes.length, ref.size);
+      assert.equal(bytes.includes(probe.privateValue), false);
+    }
     assert.equal(reasoning.length, artifact.contentRef.size);
     assert.equal('sha256:' + createHash('sha256').update(reasoning).digest('hex'), artifact.contentRef.sha256);
   }
+  assert.doesNotMatch(JSON.stringify(body), /review-private-|privateResponseRef/u);
   await f.page.waitForFunction(() => !document.getElementById('applyCode').disabled);
   for (const id of ['runJudgeRole','runCriticRole','assessments','evidenceList']) assert.ok((await f.page.locator('#' + id).textContent()).trim());
   assert.doesNotMatch(await f.page.locator('#connectionNotice').textContent(), /서버 응답 없음|서버 연결 끊김/u);

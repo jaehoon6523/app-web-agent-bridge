@@ -11,6 +11,7 @@ import { spawn } from 'node:child_process';
 import { loadConfig } from '../src/config.js';
 import { persistPreparation } from '../src/orchestration/preparation-persistence.js';
 import { watchServerProcess } from '../scripts/server-watchdog.mjs';
+import { removeOwnedFixture } from '../scripts/e2e/helpers/owned-fixture.mjs';
 
 const locks = new WeakMap();
 async function closeLocks(t) { await Promise.all((locks.get(t) ?? []).map(w => w.terminate())); }
@@ -73,18 +74,23 @@ for (const releaseMs of [1200,null]) test(`HTTP independent endpoints remain res
   const token='preparation-http-contention-token-0123456789';
   const socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));
   const port=socket.address().port;await new Promise(r=>socket.close(r));
-  const config={...loadConfig({env:{CONTROLLER_DATA_DIR:root,DASHBOARD_TOKEN:token}}),port,baseUrl:`http://127.0.0.1:${port}`};
+  const config={...loadConfig({env:{CONTROLLER_DATA_DIR:root,DASHBOARD_TOKEN:token,
+    WEB_EXTENSION_SHARED_SECRET:'contention-fixture-secret-0123456789',WEB_EXTENSION_EXPECTED_IDENTITY:'contention-fixture-extension'}}),port,baseUrl:`http://127.0.0.1:${port}`};
   const events=[];
   const serverUrl=new URL('../src/server.js',import.meta.url).href;
-  const script=`import {createBridgeServer} from ${JSON.stringify(serverUrl)};const bridge=createBridgeServer({runtimeConfig:${JSON.stringify(config)},onDiagnostic:e=>process.send(e),createLiveRuntime:async()=>({store:{listRuns:()=>[]},composition:{},codeChanges:{list:()=>[]},close:async()=>{}})});await bridge.listen();process.send({type:'test.listening'});`;
+  const coldStartMs=releaseMs===1200 ? 1200 : 0;
+  const script=`import {createBridgeServer} from ${JSON.stringify(serverUrl)};const bridge=createBridgeServer({runtimeConfig:${JSON.stringify(config)},onDiagnostic:e=>process.send(e),createLiveRuntime:async()=>{await new Promise(r=>setTimeout(r,${coldStartMs}));return {store:{listRuns:()=>[]},composition:{},codeChanges:{list:()=>[]},close:async()=>{}}}});await bridge.listen();process.send({type:'test.listening'});`;
   const child=spawn(process.execPath,['--input-type=module','-e',script],{env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},stdio:['ignore','ignore','pipe','ipc']});
-  const exited=new Promise(resolve=>child.once('exit',resolve));
-  t.after(async()=>{await closeLocks(t);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exited;fs.rmSync(root,{recursive:true,force:true})});
+  const exited=new Promise(resolve=>child.once('close',resolve));
+  t.after(async()=>{await closeLocks(t);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exited;await removeOwnedFixture(root)});
   child.on('message',e=>events.push(e));
   await new Promise((resolve,reject)=>{const deadline=setTimeout(()=>reject(Error('HTTP fixture startup deadline')),5000);child.on('message',e=>{if(e.type==='test.listening'){clearTimeout(deadline);resolve()}});child.once('error',reject)});
   const base=config.baseUrl;
   const headers={authorization:`Bearer ${token}`,origin:config.baseUrl,'content-type':'application/json'};
-  const initial=await fetch(base+'/api/state',{headers,signal:AbortSignal.timeout(1000)});assert.equal(initial.status,200);await initial.json();
+  // First state includes lazy runtime/storage initialization. Its setup budget
+  // is separate from the unchanged 500 ms HTTP oracle under the SQLite lock.
+  const initial=await fetch(base+'/api/state',{headers,signal:AbortSignal.timeout(5000)});assert.equal(initial.status,200);
+  assert.equal((await initial.json()).runtimeAvailability.ready,true,'cold initialization must finish before the mutation oracle');
   const release=await lock(t,path.join(root,'preparations.sqlite'),releaseMs);
   const mutation=fetch(base+'/api/preparations',{method:'POST',headers,body:JSON.stringify({requestId:'http-locked',objective:'test'}),signal:AbortSignal.timeout(8000)}).then(async result=>({result,body:await result.json()}),error=>({error}));
   await new Promise(r=>setTimeout(r,100));

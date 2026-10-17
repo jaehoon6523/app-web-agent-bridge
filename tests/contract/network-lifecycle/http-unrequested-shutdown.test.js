@@ -11,6 +11,7 @@ import { productionProcess } from '../../../scripts/e2e/helpers/process.mjs';
 import { resources } from '../../../scripts/e2e/helpers/resources.mjs';
 import { bounded } from '../../../scripts/e2e/helpers/deadline.mjs';
 import { readHttpHeaders } from '../../helpers/socket-headers.mjs';
+import { removeOwnedFixture } from '../../../scripts/e2e/helpers/owned-fixture.mjs';
 
 function journal() {
   const events = [], changed = new EventEmitter();
@@ -34,7 +35,7 @@ function journal() {
 async function fixture(t, { diagnostics = true, dashboardToken } = {}) {
   const owner = resources(t), log = journal();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-unrequested-http-'));
-  owner.add('contract workspace', () => fs.rmSync(root, {recursive:true,force:true}), 30);
+  owner.add('contract workspace', () => removeOwnedFixture(root), 30);
   const runtimeConfig = {...loadConfig({cwd:root,env:{WORKSPACE:root,DEMO_MODE:'false',DASHBOARD_TOKEN:dashboardToken}}),port:0};
   const bridge = createBridgeServer({runtimeConfig,onDiagnostic:diagnostics ? log.sink : undefined});
   owner.add('contract bridge', () => bridge.close(), 20);

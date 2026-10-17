@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { assessReload, assessMatrix, recordCleanup, superviseTrial } from '../scripts/mv3-reload-core.mjs';
+import { assessReload, assessMatrix, recordCleanup, superviseTrial, atomicWrite } from '../scripts/mv3-reload-core.mjs';
 
 test('watchdog kills a real hung child after the deadline and verifies its exit', async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mv3-watchdog-test-'));
@@ -94,7 +94,9 @@ test('watchdog terminates a running descendant verified by PID and advancing hea
   // can begin. Keep startup readiness separate from the 3.5 s watchdog phase;
   // never treat a child that failed to start as a demonstrated descendant kill.
   const readinessBudgetMs = 10_000;
-  const descendantCode = `const fs=require('node:fs');const marker=${JSON.stringify(marker)};let tick=0;function beat(){fs.writeFileSync(marker,JSON.stringify({pid:process.pid,ppid:process.ppid,tick:++tick,argv:process.argv}));}beat();setInterval(beat,60);`;
+  // Readers must observe a whole heartbeat, including the final read after a
+  // forced kill. Killing a direct truncate/write can leave invalid JSON behind.
+  const descendantCode = `const fs=require('node:fs'),path=require('node:path');const atomicWrite=${atomicWrite.toString()};const marker=${JSON.stringify(marker)};let tick=0;function beat(){atomicWrite(marker,{pid:process.pid,ppid:process.ppid,tick:++tick,argv:process.argv});}beat();setInterval(beat,60);`;
   // -- is required; without it Node interprets --user-data-dir as a Node CLI option and exits 9.
   const parentCode = `const fs=require('node:fs');const cp=require('node:child_process');fs.writeFileSync(${JSON.stringify(parentMarker)},JSON.stringify({pid:process.pid}));cp.spawn(process.execPath,['-e',${JSON.stringify(descendantCode)},'--',${JSON.stringify(`--user-data-dir=${profile}`)}],{stdio:'ignore'});setInterval(()=>{},1000);`;
   const ongoing = superviseTrial({ command: process.execPath, args: ['-e', parentCode],

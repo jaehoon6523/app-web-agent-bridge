@@ -428,6 +428,20 @@ export function createBridgeServer({
     root:runtimeConfig.workspace ?? process.cwd(), onFailure:event => diagnostics.emit("agent.report.failed", event),
     onDiagnostic:event => diagnostics.emit(event.type,event) });
 
+  let stateObservationPending = false, latestStateObservation = null;
+  function observeDashboardState(snapshot) {
+    if (closing) return;
+    latestStateObservation = snapshot;
+    if (stateObservationPending) return;
+    const current = latestStateObservation;
+    latestStateObservation = null;
+    stateObservationPending = true;
+    void agentReport.observe(current).catch(() => {}).finally(() => {
+      stateObservationPending = false;
+      if (!closing && latestStateObservation !== null) observeDashboardState(latestStateObservation);
+    });
+  }
+
   app.get("/api/agent-diagnostics",requireDashboardRead,async (_req,res) => {
     try {await agentReport.refresh("EXPORT");res.json(await agentReport.export());}
     catch {res.status(503).json({code:"DIAGNOSTIC_EXPORT_UNAVAILABLE"});}
@@ -597,7 +611,11 @@ export function createBridgeServer({
           }
         }
       }
-      await agentReport.observe(snapshot); res.json(snapshot);
+      // Keep one active diagnostic observation and only the newest pending
+      // state. Dashboard polling must not wait for Git or report fsync/locks,
+      // or build an unbounded diagnostic queue while storage is delayed.
+      observeDashboardState(snapshot);
+      res.json(snapshot);
     } catch (error) {
       diagnostics.emit("state.read.failed");
       res.status(503).json({ error: redactForEvidence(error.message) });
@@ -702,6 +720,7 @@ export function createBridgeServer({
   async function close() {
     if (closePromise) return closePromise;
     closing = true;
+    latestStateObservation = null;
     const diagnosticClose = agentReport.close();
     runtimeInitialization.abort(Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"}));
     diagnostics.beginShutdown();

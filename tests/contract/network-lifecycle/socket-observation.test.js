@@ -13,6 +13,7 @@ import { createServerObserver } from '../../../src/diagnostics/server-observer.j
 import { resources } from '../../../scripts/e2e/helpers/resources.mjs';
 import { bounded } from '../../../scripts/e2e/helpers/deadline.mjs';
 import { readHttpHeaders } from '../../helpers/socket-headers.mjs';
+import { removeOwnedFixture } from '../../../scripts/e2e/helpers/owned-fixture.mjs';
 
 function eventLog() {
   const events = [], waiters = [];
@@ -31,7 +32,7 @@ function eventLog() {
 async function fixture(t, options = {}) {
   const owner = resources(t), log = eventLog();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-socket-observation-'));
-  owner.add('contract workspace', () => fs.rmSync(root, {recursive:true,force:true}), 30);
+  owner.add('contract workspace', () => removeOwnedFixture(root), 30);
   const runtimeConfig = {...loadConfig({cwd:root,env:{WORKSPACE:root,DEMO_MODE:'false',
     WEB_EXTENSION_SHARED_SECRET:'contract-secret-never-in-socket-events',
     WEB_EXTENSION_EXPECTED_IDENTITY:'contract-extension'}}),port:0};

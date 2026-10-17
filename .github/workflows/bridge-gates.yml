@@ -16,10 +16,12 @@ jobs:
         os: [ubuntu-24.04, windows-2025]
         node: ['22.14.0', '24']
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    # Windows full discovery exceeded 20 minutes before reaching all files.
+    # Keep per-file deadlines; allow the complete gate to produce a terminal result.
+    timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -27,10 +29,14 @@ jobs:
       # Full discovery includes cleanup, history HTTP and process portability.
       - run: npm run check
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: test-completion-${{ matrix.os }}-${{ matrix.node }}
-          path: .agent-controller/latest-test*
+          path: |
+            .agent-controller/latest-test*
+            .agent-controller/latest-agent-diagnostics-complete/
+            .agent-controller/latest-server-response-deadline/
+            .agent-controller/latest-server-responsiveness/
           include-hidden-files: true
           if-no-files-found: error
 
@@ -38,8 +44,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22.5.0'
           cache: npm
@@ -50,8 +56,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '24'
           cache: npm
@@ -68,8 +74,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
@@ -88,11 +94,14 @@ jobs:
       - if: runner.os == 'Linux'
         run: npm run test:sabotage
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: ui-evidence-${{ matrix.os }}-${{ matrix.node }}
           path: |
             .agent-controller/latest-test*
+            .agent-controller/latest-agent-diagnostics-complete/
+            .agent-controller/latest-server-response-deadline/
+            .agent-controller/latest-server-responsiveness/
             .agent-controller/ui-qa/
           include-hidden-files: true
           if-no-files-found: ignore

@@ -7,6 +7,7 @@ import path from "node:path";
 import {evidenceTestFile,evidenceFetch} from "../helpers/failure-evidence.mjs";
 const test = evidenceTestFile(import.meta.url);
 import { DashboardController } from "../../src/orchestration/dashboard-controller.js";
+import { removeOwnedFixture } from "../../scripts/e2e/helpers/owned-fixture.mjs";
 
 const serverUrl = new URL("../../src/server.js", import.meta.url).href;
 const token = "response-deadline-dashboard-token-0123456789";
@@ -52,7 +53,7 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, eve
   });
   child.on('message', event => {events.push(event);t.evidence.event(event);});
   let output = "";
-  const exited = new Promise(resolve => child.once("exit", resolve));
+  const exited = new Promise(resolve => child.once("close", resolve));
   t.after(async () => {
     t.diagnostic(JSON.stringify({stalledRuntime,readTimeoutEnv,
       stages:output.split(/\r?\n/u).filter(line=>line.startsWith("FAULT_STAGE ")).slice(-25)}));
@@ -60,7 +61,7 @@ async function startServer(t, stalledRuntime = false, readTimeoutEnv = null, eve
     await exited;
     t.evidence.preserve(root);
     fs.writeFileSync(path.join(t.evidence.directory,"server-output.log"),output);
-    fs.rmSync(root, { recursive:true, force:true });
+    await removeOwnedFixture(root);
   });
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`Server did not announce listening: ${output}`)), 5000);

@@ -69,12 +69,26 @@ async function recoveryObservation(recovery) {
     throw error;
   }
 }
+async function removeEmptyRecoveryDirectory(directory) {
+  let denied;
+  for (let attempt = 0; ; attempt++) {
+    try { return await io.rmdir(directory); }
+    catch (error) {
+      // A competing reaper may have just marked the same empty directory for
+      // deletion on Windows. Nonrecursive rmdir cannot remove a live guard.
+      if (error.code !== 'EPERM') throw error;
+      denied ??= error;
+      if (attempt >= 4) throw denied;
+      await wait(20);
+    }
+  }
+}
 async function removeRecoveryDirectory(recovery, marker) {
   if (marker) {
-    try { await io.rmdir(path.join(recovery,marker)); }
+    try { await removeEmptyRecoveryDirectory(path.join(recovery,marker)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  try { await io.rmdir(recovery); return true; }
+  try { await removeEmptyRecoveryDirectory(recovery); return true; }
   catch (error) {
     if (error.code === 'ENOENT') return true;
     // A replacement owner is published as a NONEMPTY directory. A late reaper
@@ -127,13 +141,25 @@ async function acquireRecovery(recovery, event) {
     await io.mkdir(path.join(staging,marker),{mode:0o700});
     // Atomic publication has no ownerless interval, even if this process dies
     // immediately after the rename. A live guard is always nonempty.
-    try { await io.rename(staging,recovery); }
-    catch (error) {
-      const observed = await recoveryObservation(recovery);
-      if (observed.exists && (['EEXIST','ENOTEMPTY','ENOTDIR','EISDIR'].includes(error.code) ||
-          error.code === 'EPERM' && ['LIVE','DEAD','EMPTY'].includes(observed.state)))
-        throw busy(error,{state:'RECOVERY',path:recovery,recoveryOwner:observed});
-      throw error;
+    let publicationError;
+    for (let attempt = 0; ; attempt++) {
+      try { await io.rename(staging,recovery); break; }
+      catch (error) {
+        const observed = await recoveryObservation(recovery);
+        if (observed.exists && (['EEXIST','ENOTEMPTY','ENOTDIR','EISDIR'].includes(error.code) ||
+            error.code === 'EPERM' && ['LIVE','DEAD','EMPTY'].includes(observed.state)))
+          throw busy(error,{state:'RECOVERY',path:recovery,recoveryOwner:observed});
+        // On Windows a competing guard can disappear between rename's EPERM
+        // and this observation. Retry publication of OUR intact staging guard;
+        // never delete an observed destination or reinterpret lock.open EPERM.
+        publicationError ??= error;
+        const prepared = !observed.exists && error.code === 'EPERM'
+          ? await recoveryObservation(staging) : null;
+        if (attempt >= 4 || prepared?.state !== 'LIVE' || prepared.pid !== process.pid
+            || prepared.token !== token || prepared.marker !== marker) throw publicationError;
+        event('agent.report.recovery.publication.wait',{path:recovery,code:error.code,retry:attempt+1});
+        await wait(20);
+      }
     }
     published = true;
     event('agent.report.recovery.acquired',{path:recovery,pid:process.pid,token,marker});

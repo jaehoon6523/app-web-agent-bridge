@@ -8,6 +8,7 @@ import os from "node:os";
 import net from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { watchServerProcess } from "../../scripts/server-watchdog.mjs";
+import { removeOwnedFixture } from "../../scripts/e2e/helpers/owned-fixture.mjs";
 
 const serverUrl = new URL("../../src/server.js", import.meta.url).href;
 const token = "responsiveness-dashboard-token-0123456789";
@@ -37,8 +38,19 @@ async function start(t, fault) {
     const send=e=>{if(process.connected)process.send(e,()=>{})};
     let previous=performance.now();setInterval(()=>{const now=performance.now();send({type:'heartbeat',at:new Date().toISOString(),monotonicMs:performance.timeOrigin+now,loopDelayMs:Math.max(0,now-previous-100)});previous=now},100).unref();
     const fault=${JSON.stringify(fault)};
+    if(fault==='diagnostic-write') {
+      const {default:io}=await import('node:fs/promises');const open=io.open.bind(io);
+      io.open=async(filename,...args)=>{
+        const handle=await open(filename,...args);
+        if(String(filename).endsWith('.tmp'))handle.sync=async()=>{
+          send({type:'test.diagnostic-held'});await new Promise(()=>{});
+        };
+        return handle;
+      };
+    }
     const bridge=createBridgeServer({runtimeConfig:${JSON.stringify(config)},onDiagnostic:send,
       createLiveRuntime:()=>{
+        if(fault==='diagnostic-write')return Promise.resolve({store:{listRuns:()=>[]},composition:{},codeChanges:{list:()=>[]},close:async()=>{}});
         if(fault==='throw')throw new Error('injected initialization failure');
         if(fault==='reject')return Promise.reject(new Error('injected asynchronous failure'));
         if(fault==='cpu'){const started=performance.now();while(performance.now()-started<2500){};return Promise.reject(new Error('CPU stall completed'));}
@@ -51,7 +63,7 @@ async function start(t, fault) {
   child.on("message",event=>{if(event?.type==="heartbeat")observe(event);});
   const stop=watchServerProcess(child,observe,{intervalMs:100,staleMs:500});
   let stderr="";child.stderr.on("data",chunk=>{stderr+=chunk});
-  const exited=new Promise(resolve=>child.once("exit",resolve));
+  const exited=new Promise(resolve=>child.once("close",resolve));
   t.after(async()=>{
     t.diagnostic(JSON.stringify({fault,watchdog:events.filter(event=>/^(?:watchdog\.|event-loop\.delay)/u.test(event.type))
       .map(({type,observedAt,silenceMs,loopDelayMs,lastStage,route})=>({type,observedAt,silenceMs,loopDelayMs,lastStage,route})),
@@ -60,7 +72,7 @@ async function start(t, fault) {
     stop();if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
     await exited;locker?.close();t.evidence.preserve(root);
     fs.writeFileSync(path.join(t.evidence.directory,"server-stderr.log"),stderr);
-    fs.rmSync(root,{recursive:true,force:true});
+    await removeOwnedFixture(root);
   });
   async function wait(type,deadline=8000,predicate=()=>true) {
     const started=Date.now();
@@ -80,6 +92,16 @@ async function read(config,route,{authenticated=false,deadline=1000,session=fals
   const response=await evidenceFetch(config.evidence,config.baseUrl+route,{method:session?"POST":"GET",headers,signal:AbortSignal.timeout(deadline)});
   return {status:response.status,body:await response.json()};
 }
+test('responsive contract: held diagnostic fsync cannot delay a successful state response',{timeout:10000},async t=>{
+  const {config,wait}=await start(t,'diagnostic-write');
+  await wait('test.diagnostic-held');
+  const response=await read(config,'/api/state',{authenticated:true,deadline:1000});
+  assert.equal(response.status,200);
+  assert.equal(response.body.runtimeAvailability.ready,true);
+  const repeated=await Promise.all(Array.from({length:8},()=>read(config,'/api/state',{authenticated:true,deadline:1000})));
+  assert.ok(repeated.every(result=>result.status===200 && result.body.runtimeAvailability.ready===true));
+  for(const route of ['/api/preflight','/api/health'])assert.equal((await read(config,route)).status,200);
+});
 for(const fault of ["pending","reject","throw","corrupt-preparation","sqlite-lock"]) {
   test(`responsive contract: runtime ${fault} preserves preflight, health and local session responses`,{timeout:12000},async t=>{
     const {config,events,wait}=await start(t,fault);

@@ -17,9 +17,10 @@ import { enqueueAgentReport, readAgentReport, writeAgentReport } from '../src/di
 import { readPersistedDelivery } from '../src/diagnostics/persisted-delivery.js';
 import { repairDiagnosticSummary } from '../src/diagnostics/repair-summary.js';
 import { createExtensionAgentDiagnostics } from '../extension/runtime/agent-diagnostics.js';
+import { removeOwnedFixture } from '../scripts/e2e/helpers/owned-fixture.mjs';
 const id = '618fcd37-ec59-4d1b-9151-eb437b6468e2';
 const owner = {currentDeliveryId:'delivery_'+id,sessionId:'web_prep_'+id,runId:'prep_'+id,conversationUrl:'https://chatgpt.com/',tabId:7};
-function fixture(t) {const root=fs.mkdtempSync(path.join(os.tmpdir(),'agent-diag-complete-'));t.after(()=>{t.evidence.preserve(root);fs.rmSync(root,{recursive:true,force:true});});return root;}
+function fixture(t) {const root=fs.mkdtempSync(path.join(os.tmpdir(),'agent-diag-complete-'));t.after(async()=>{t.evidence.preserve(root);await removeOwnedFixture(root);});return root;}
 const paths = root => ({databasePath:path.join(root,'controller.sqlite'),preparationPath:path.join(root,'preparations.sqlite')});
 function preparation(root, response = null) {
   const db = new DatabaseSync(paths(root).preparationPath);
@@ -287,6 +288,65 @@ async function heldRecovery(t,root,stage) {
   });
   return {child,closed,held};
 }
+
+test('transient Windows recovery publication EPERM retries only the owned staging guard',async t=>{
+  const {root,recovery,previous}=await deadWriterFixture(t), rename=io.rename.bind(io);
+  const denied=Object.assign(new Error('Transient Windows recovery publication'),{code:'EPERM',syscall:'rename',dest:recovery});
+  let attempts=0;const events=[];
+  t.mock.method(io,'rename',async(from,to)=>{
+    if(to===recovery && ++attempts<=2) {
+      assert.equal(fs.existsSync(recovery),false);
+      assert.ok(fs.readdirSync(from)[0].startsWith('owner-'+process.pid+'-'));
+      throw denied;
+    }
+    return rename(from,to);
+  });
+  await enqueueAgentReport(root,'repair',{code:'RECOVERED'},{onDiagnostic:event=>{events.push(event);t.evidence.event(event);}});
+  assert.equal(attempts,3);
+  assert.equal(events.filter(event=>event.type==='agent.report.recovery.publication.wait').length,2);
+  assert.deepEqual(readAgentReport(root).server,previous);
+  assert.equal(readAgentReport(root).repair.code,'RECOVERED');
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
+test('persistent recovery publication EPERM is bounded and preserves the original denial and report',async t=>{
+  const {root,lock,recovery}=await deadWriterFixture(t), before=fs.readFileSync(path.join(root,'runtime-latest.json'));
+  const lockBefore=fs.readFileSync(lock), rename=io.rename.bind(io);
+  const denied=Object.assign(new Error('Persistent recovery permission denial'),{code:'EPERM',syscall:'rename',dest:recovery});
+  let attempts=0;
+  const mocked=t.mock.method(io,'rename',async(from,to)=>{
+    if(to===recovery){attempts++;throw denied;}
+    return rename(from,to);
+  });
+  await assert.rejects(enqueueAgentReport(root,'repair',{code:'NOT_STORED'},{onDiagnostic:t.evidence.event}),
+    error=>error===denied && error.diagnosticOperation==='lock.recovery.acquire');
+  assert.equal(attempts,5);
+  assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+  assert.deepEqual(fs.readFileSync(lock),lockBefore);
+  assert.equal(fs.existsSync(recovery),false);
+  assert.equal(fs.readdirSync(root).some(name=>name.includes('.prepare-')),false);
+  mocked.mock.restore();
+  await enqueueAgentReport(root,'repair',{code:'NEXT_WRITE'});
+  assert.equal(readAgentReport(root).repair.code,'NEXT_WRITE');
+});
+
+test('a competing Windows dead-guard reaper may finish deletion after EPERM without losing the report',async t=>{
+  const {root,recovery,previous}=await deadWriterFixture(t), worker=await heldRecovery(t,root,'published');
+  const marker=path.join(recovery,fs.readdirSync(recovery)[0]);worker.child.kill('SIGKILL');await worker.closed;
+  const rmdir=io.rmdir.bind(io);let attempts=0;
+  t.mock.method(io,'rmdir',async directory=>{
+    if(directory===marker && ++attempts===1) {
+      await rmdir(directory);
+      throw Object.assign(new Error('Windows deletion pending'),{code:'EPERM',syscall:'rmdir',path:directory});
+    }
+    return rmdir(directory);
+  });
+  await enqueueAgentReport(root,'repair',{code:'RESTARTED'},{onDiagnostic:t.evidence.event});
+  assert.equal(attempts,2);
+  assert.deepEqual(readAgentReport(root).server,previous);
+  assert.equal(readAgentReport(root).repair.code,'RESTARTED');
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
 
 test('a live recovery is protected and a recovery killed immediately after publication is reclaimed without losing the report', {timeout:15000},async t=>{
   const {root,lock,recovery,previous}=await deadWriterFixture(t);
