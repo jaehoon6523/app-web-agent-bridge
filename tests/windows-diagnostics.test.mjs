@@ -19,8 +19,9 @@ function withBrowser(t) {
 function writeTestReceipt(file, record) {
   fs.writeFileSync(file, JSON.stringify(record));
   // The fake process owns both its declared timestamps and its filesystem timestamp.
-  // Keep them in the same clock domain without relaxing production freshness checks.
-  const finished = new Date(record.finishedAt);
+  // Node 22 can round utimes down by a microsecond. Keep this fixture current
+  // without relaxing production freshness checks or accepting stale receipts.
+  const finished = new Date(Date.parse(record.finishedAt) + 1);
   fs.utimesSync(file, finished, finished);
 }
 function testBoundary({ ackFails = false, omitAck = false, omitReload = false, wrongScope = false, incompleteReload = false } = {}) {
@@ -90,6 +91,20 @@ test('E: wrong execution location produces this run precondition failure and lau
   assert.equal(result.exitCode, 2); assert.equal(calls, 0);
   assert.equal(result.stages[0].name, 'preconditions'); assert.equal(result.stages[0].status, 'FAIL');
   assert.equal(result.terminal, true);
+});
+test('E: a retained root alias passes the real Git checkout boundary', async t => {
+  withBrowser(t);
+  const alias = path.join(temp(t), 'checkout alias');
+  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const realpath = fs.realpathSync;
+  const retained = t.mock.method(fs, 'realpathSync', (selected, options) =>
+    selected === alias ? alias : realpath(selected, options));
+  retained.native = realpath.native;
+  const io = testBoundary();
+  const result = await runWorkflow({root:alias, invocationDirectory:alias, outputDir:temp(t),
+    runId:crypto.randomUUID(), runCommand:io.run});
+  assert.equal(result.stages[0].status, 'PASS');
+  assert.deepEqual(io.calls, ['regression', 'ack', 'reload']);
 });
 test('E: manual preparation provides exact isolated profile/page instructions, never manual completion', async t => {
   withBrowser(t); const outputDir = temp(t), io = testBoundary();

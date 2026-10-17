@@ -8,6 +8,12 @@ import { DatabaseSync } from 'node:sqlite';
 import { preparationHarness } from './preparation.mjs';
 import { waitForState, canonicalText } from './observations.mjs';
 
+export function assertWorkerWorkspace(peer, expectedWorktree, targetRoot) {
+  const observed = fs.realpathSync.native(peer.workspaceRoot);
+  assert.equal(observed, fs.realpathSync.native(expectedWorktree));
+  assert.notEqual(observed, fs.realpathSync.native(targetRoot));
+}
+
 export async function workerHarness(t, f, { reviewReply = () => new Promise(() => {}), beforeCandidate = null } = {}) {
   // Approval performs all production workspace setup/capture. Only initialize the disposable input Git target.
   const git = (...args) => execFileSync('git', ['-C', f.server.workspace, ...args], { encoding:'utf8' }).trim();
@@ -33,9 +39,8 @@ export async function workerHarness(t, f, { reviewReply = () => new Promise(() =
   assert.deepEqual(run.requirements.items.map(({ statement, acceptanceCriteria }) => ({ statement, acceptanceCriteria })), prepared.context.agreement.requirements);
   const peer = JSON.parse(fs.readFileSync(path.join(f.server.workspace, 'worker-observed.json')));
   const expectedWorktree = path.join(path.dirname(f.server.workspace), '.bridge-worktrees', run.runId);
-  assert.equal(peer.workspaceRoot, expectedWorktree);
+  assertWorkerWorkspace(peer, expectedWorktree, f.server.workspace);
   resources(t).add('worker worktree', () => fs.rmSync(expectedWorktree, { recursive:true, force:true }), 40);
-  assert.notEqual(peer.workspaceRoot, f.server.workspace);
   assert.deepEqual(peer.requirementIds, run.requirements.items.map(item => item.requirementId));
   assert.equal(canonicalText(fs.readFileSync(path.join(peer.workspaceRoot, 'clock.txt'), 'utf8')), 'Controlled worker candidate: hours minutes seconds\n');
   assert.equal(fs.existsSync(path.join(f.server.workspace, 'clock.txt')), false);

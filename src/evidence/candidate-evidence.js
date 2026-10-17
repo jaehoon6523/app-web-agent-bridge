@@ -34,8 +34,8 @@ export function excerpt(text, startLine = 1, endLine = startLine + 199) {
     omittedBefore: startLine > 1, omittedAfter: endLine < lines.length };
 }
 function within(root, filename) {
-  const absolute = fs.realpathSync(filename);
-  const rel = path.relative(fs.realpathSync(root), absolute);
+  const absolute = fs.realpathSync.native(filename);
+  const rel = path.relative(fs.realpathSync.native(root), absolute);
   if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) throw new Error("Verification path escapes candidate.");
   return absolute;
 }

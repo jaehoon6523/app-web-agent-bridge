@@ -64,7 +64,7 @@ export async function runWorkflow({ root = checkout, invocationDirectory = proce
   try {
     const actualRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: invocationDirectory,
       encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }).trim();
-    if (fs.realpathSync(actualRoot) !== fs.realpathSync(root)
+    if (fs.realpathSync.native(actualRoot) !== fs.realpathSync.native(root)
       || !fs.existsSync(path.join(root, 'extension', 'manifest.json'))) throw Error('WRONG_CHECKOUT');
     result.source = sourceRecord(root);
     if (!browserPath) {

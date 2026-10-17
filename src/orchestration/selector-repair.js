@@ -67,7 +67,15 @@ function open(targetRoot, jobId) {
   if (!ID.test(jobId)) throw fail("INVALID_REPAIR_ID");
   const directory = path.join(targetRoot, ".agent-controller", "selector-repair", jobId);
   const state = JSON.parse(fs.readFileSync(path.join(directory, "state.json"), "utf8"));
-  if (state.jobId !== jobId || state.targetRoot !== fs.realpathSync(targetRoot)) throw fail("REPAIR_TARGET_MISMATCH");
+  if (state.jobId !== jobId || typeof state.targetRoot !== "string" || !path.isAbsolute(state.targetRoot)) throw fail("REPAIR_TARGET_MISMATCH");
+  // Persisted jobs may contain either an 8.3 alias or its native long path.
+  // Compare filesystem identities while retaining the saved approval record.
+  let savedRoot, selectedRoot;
+  try {
+    savedRoot = fs.realpathSync.native(state.targetRoot);
+    selectedRoot = fs.realpathSync.native(targetRoot);
+  } catch { throw fail("REPAIR_TARGET_MISMATCH"); }
+  if (savedRoot !== selectedRoot) throw fail("REPAIR_TARGET_MISMATCH");
   return { directory, state, journal:new SelectorRepairJournal(path.join(directory, "events.jsonl")),
     artifactStore:new ArtifactStore(path.join(directory, "artifacts")) };
 }

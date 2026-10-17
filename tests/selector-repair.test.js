@@ -67,6 +67,39 @@ test('failed verification preserves the target and blocks application', async t 
   assert.doesNotMatch(fs.readFileSync(failure.logFile, 'utf8'), /PRIVATE_BODY/u);
 });
 
+test('a persisted repair root alias remains inspectable and requires its exact approval', async t => {
+  const f = fixture(t);
+  const alias = path.join(path.dirname(f.targetRoot), 'saved target alias');
+  fs.symlinkSync(f.targetRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const result = await generateSelectorRepair({ ...f, snapshot, tabId:7, verifyCandidate:async () => {} });
+  const filename = path.join(f.targetRoot, '.agent-controller', 'selector-repair', result.jobId, 'state.json');
+  const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  state.targetRoot = alias;
+  fs.writeFileSync(filename, JSON.stringify(state));
+  const savedBytes = fs.readFileSync(filename);
+  assert.equal(inspectSelectorRepair(f.targetRoot, result.jobId).stage, 'AWAITING_APPROVAL');
+  assert.deepEqual(fs.readFileSync(filename), savedBytes, 'Inspection must not rewrite the saved approval record');
+  assert.throws(() => applySelectorRepair(f.targetRoot, result.jobId, 'wrong'), {code:'REPAIR_APPROVAL_REQUIRED'});
+  applySelectorRepair(alias, result.jobId, result.patchHash);
+  assert.equal(inspectSelectorRepair(f.targetRoot, result.jobId).applicationState, 'APPLIED');
+  assert.throws(() => applySelectorRepair(alias, result.jobId, result.patchHash), {code:'REPAIR_APPROVAL_REQUIRED'});
+});
+
+test('a different, missing or relative saved repair root cannot grant application authority', async t => {
+  const f = fixture(t);
+  const result = await generateSelectorRepair({ ...f, snapshot, tabId:7, verifyCandidate:async () => {} });
+  const filename = path.join(f.targetRoot, '.agent-controller', 'selector-repair', result.jobId, 'state.json');
+  const state = JSON.parse(fs.readFileSync(filename, 'utf8'));
+  const other = path.join(path.dirname(f.targetRoot), 'different project'); fs.mkdirSync(other);
+  for (const targetRoot of [other, path.join(other, 'missing'), 'relative-project', null]) {
+    fs.writeFileSync(filename, JSON.stringify({...state, targetRoot}));
+    assert.throws(() => inspectSelectorRepair(f.targetRoot, result.jobId), {code:'REPAIR_TARGET_MISMATCH'});
+    assert.throws(() => applySelectorRepair(f.targetRoot, result.jobId, result.patchHash), {code:'REPAIR_TARGET_MISMATCH'});
+  }
+  assert.equal(f.git('status', '--porcelain'), '');
+  assert.doesNotMatch(fs.readFileSync(result.logFile, 'utf8'), /APPLY_STARTED/u);
+});
+
 test('candidate drift and target drift after verification refuse application', async t => {
   const f = fixture(t);
   const result = await generateSelectorRepair({ ...f, snapshot, tabId:7, verifyCandidate:async () => {} });

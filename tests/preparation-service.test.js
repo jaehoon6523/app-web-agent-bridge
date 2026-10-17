@@ -95,6 +95,24 @@ test("follow-up accepts the raw APPLIED stage from production findRun and keeps 
   f.restart();
   assert.equal(f.service.current.followUp.candidateId, "candidate-1");
 });
+test("follow-up accepts a saved project alias without inheriting prior approval", async (t) => {
+  const f = fixture(t);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "follow-up-alias-"));
+  t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
+  const alias = path.join(directory, "project");
+  fs.symlinkSync(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  f.runs.set("applied-alias", {runId:"applied-alias", stage:"APPLIED", projectRef:{targetRoot:alias},
+    objective:"previous task", requirements:{items:[]}});
+  await f.service.execute("preparation.start", {requestId:"follow-up-alias", objective:"next task",
+    targetRoot:f.root, conversationUrl:"https://chatgpt.com/c/test", followUpRunId:"applied-alias"});
+  await settled(f.service);
+  assert.equal(f.service.current.followUp.runId, "applied-alias");
+  assert.equal(f.service.current.agreement.status, "DISCUSSING");
+  assert.equal(f.service.current.resultingRunId, null);
+  f.restart();
+  assert.equal(f.service.current.followUp.runId, "applied-alias");
+});
+
 test("follow-up rejects unavailable, unfinished, and different-folder tasks before web dispatch", async (t) => {
   const f = fixture(t);
   const attempt = (id, requestId) => f.service.execute("preparation.start", { requestId,
@@ -104,6 +122,10 @@ test("follow-up rejects unavailable, unfinished, and different-folder tasks befo
   await assert.rejects(attempt("pending", "pending"), { code:"FOLLOW_UP_UNAVAILABLE" });
   f.runs.set("other", { runId:"other", phase:"APPLIED", projectRef:{ targetRoot:"/another-project" } });
   await assert.rejects(attempt("other", "other"), { code:"FOLLOW_UP_PROJECT_MISMATCH" });
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), "follow-up-other-"));
+  t.after(() => fs.rmSync(other, {recursive:true, force:true}));
+  f.runs.set("existing-other", {runId:"existing-other", stage:"APPLIED", projectRef:{targetRoot:other}});
+  await assert.rejects(attempt("existing-other", "existing-other"), {code:"FOLLOW_UP_PROJECT_MISMATCH"});
   assert.equal(f.service.current, null);
   assert.equal(f.prompts.length, 0);
 });

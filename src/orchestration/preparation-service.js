@@ -331,7 +331,13 @@ export class PreparationService {
         if (typeof input.followUpRunId !== "string" || !input.followUpRunId.trim()) fail("Select an applied task to continue.", "INVALID_FOLLOW_UP");
         const prior = await this.findRun(input.followUpRunId);
         if (!prior || (prior.stage ?? prior.phase) !== "APPLIED") fail("The previous task is no longer available as an applied task. Start a new task.", "FOLLOW_UP_UNAVAILABLE");
-        if (prior.projectRef?.targetRoot !== targetRoot) fail("The previous task belongs to a different project folder.", "FOLLOW_UP_PROJECT_MISMATCH");
+        const priorRoot = prior.projectRef?.targetRoot;
+        let sameProject = false;
+        try {
+          sameProject = typeof priorRoot === "string" && path.isAbsolute(priorRoot)
+            && fs.realpathSync.native(priorRoot) === fs.realpathSync.native(targetRoot);
+        } catch { /* A missing prior folder cannot establish project ownership. */ }
+        if (!sameProject) fail("The previous task belongs to a different project folder.", "FOLLOW_UP_PROJECT_MISMATCH");
         const handoffNotes = followUpHandoffNotes(prior);
         followUp = { runId:prior.runId, objective:prior.objective, candidateId:prior.candidate?.candidateId ?? null,
           requirements:(prior.requirements?.items ?? []).map((item) => ({ statement:item.statement, acceptanceCriteria:item.acceptanceCriteria })),

@@ -31,6 +31,7 @@ jobs:
         with:
           name: test-completion-${{ matrix.os }}-${{ matrix.node }}
           path: .agent-controller/latest-test*
+          include-hidden-files: true
           if-no-files-found: error
 
   minimum-runtime:
@@ -90,5 +91,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ui-evidence-${{ matrix.os }}-${{ matrix.node }}
-          path: .agent-controller/ui-qa/
+          path: |
+            .agent-controller/latest-test*
+            .agent-controller/ui-qa/
+          include-hidden-files: true
           if-no-files-found: ignore

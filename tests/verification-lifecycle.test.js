@@ -11,6 +11,43 @@ import { setupAudit } from "./helpers/audit-fixtures.js";
 import { observeChildClose, waitChildClose } from '../src/runtime/child-close.js';
 import { inheritedPipeScript, waitForPipeHolder, assertPipeHolderAlive, stopPipeHolder, removeOwnedPipeFixture } from './helpers/inherited-pipes-fixture.js';
 
+test('verification cwd uses filesystem identity when a legacy root spelling is retained', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verification-alias-'));
+  t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
+  const root = path.join(directory, 'candidate'), alias = path.join(directory, 'candidate alias');
+  const cwd = path.join(root, 'source'); fs.mkdirSync(cwd, {recursive:true});
+  fs.symlinkSync(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const realpath = fs.realpathSync;
+  const retained = t.mock.method(fs, 'realpathSync', (selected, options) =>
+    selected === alias ? alias : realpath(selected, options));
+  retained.native = realpath.native;
+  const result = await executeVerification({workspace:{root:alias, assertCandidate() {}}, capture:{},
+    candidateId:'alias-candidate', artifactStore:new ArtifactStore(path.join(directory, 'artifacts')),
+    verification:{verificationId:'cwd', executable:process.execPath, args:['-e','process.stdout.write(process.cwd())'],
+      cwd:'source', timeoutMs:3000, purpose:'directory boundary', environmentId:'controlled-node', resultFiles:[]}});
+  assert.equal(result.record.error, null);
+  assert.equal(result.record.exitCode, 0);
+  assert.equal(result.record.terminationConfirmed, true);
+  assert.equal(fs.realpathSync.native(result.record.stdout), fs.realpathSync.native(cwd));
+});
+
+test('verification refuses an aliased cwd outside the candidate before dispatch', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'verification-outside-'));
+  t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
+  const root = path.join(directory, 'candidate'), outside = path.join(directory, 'other');
+  fs.mkdirSync(root); fs.mkdirSync(outside);
+  fs.symlinkSync(outside, path.join(root, 'outside'), process.platform === 'win32' ? 'junction' : 'dir');
+  const marker = path.join(directory, 'must-not-run');
+  const result = await executeVerification({workspace:{root, assertCandidate() {}}, capture:{},
+    candidateId:'outside-candidate', artifactStore:new ArtifactStore(path.join(directory, 'artifacts')),
+    verification:{verificationId:'cwd', executable:process.execPath,
+      args:['-e',`require('node:fs').writeFileSync(${JSON.stringify(marker)},'ran')`], cwd:'outside', timeoutMs:3000,
+      purpose:'directory boundary', environmentId:'controlled-node', resultFiles:[]}});
+  assert.match(result.record.error, /escapes candidate/u);
+  assert.equal(result.record.exitCode, null);
+  assert.equal(fs.existsSync(marker), false);
+});
+
 function inheritedVerification(t, startupDelayMs = 0) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-verification-close-"));
   const pidFile = path.join(root, "descendant.pid");
@@ -42,7 +79,8 @@ function inheritedVerification(t, startupDelayMs = 0) {
         assert.ok(child && observation,'prepare the owned child before verification dispatch');
         assert.equal(dispatched,false,'verification must dispatch exactly once');
         assert.deepEqual(actualArgs,args);
-        assert.equal(options.cwd,startedCwd,'the child must run in the actual candidate cwd');
+        assert.equal(fs.realpathSync.native(options.cwd),fs.realpathSync.native(startedCwd),
+          'the child must run in the actual candidate cwd');
         dispatched=true;
         queueMicrotask(() => child.stdin.end());
         return child;

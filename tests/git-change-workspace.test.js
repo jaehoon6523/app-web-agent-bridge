@@ -14,6 +14,7 @@ function repositoryFixture(t) {
   fs.mkdirSync(target);
   const git = (...args) => execFileSync("git", ["-C", target, ...args], { windowsHide: true });
   git("init", "--quiet");
+  git("config", "core.autocrlf", "false");
   fs.writeFileSync(path.join(target, "existing.txt"), "before\n");
   fs.writeFileSync(path.join(target, "deleted.txt"), "remove me\n");
   git("add", ".");
@@ -136,7 +137,7 @@ test("an aliased target can capture, apply and remove only its registered worktr
 test("a separate repository with the same HEAD is never a registered cleanup target", (t) => {
   const { directory, target, store, git } = repositoryFixture(t);
   const unrelated = path.join(directory, "unrelated project");
-  execFileSync("git", ["clone", "--quiet", "--local", "--", target, unrelated], { windowsHide: true });
+  execFileSync("git", ["clone", "--config", "core.autocrlf=false", "--quiet", "--local", "--", target, unrelated], { windowsHide: true });
   const baseCommit = git("rev-parse", "HEAD").toString("utf8").trim();
   const workspace = new GitChangeWorkspace({ workspaceRoot: unrelated, baseCommit, artifactStore: store, targetRoot: target });
   assert.throws(() => workspace.cleanup(), /Unregistered cleanup target/u);
