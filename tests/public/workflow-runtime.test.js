@@ -1,3 +1,4 @@
+import { registerTabSelectionTests } from "../helpers/preparation-tab-regressions.js";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -124,7 +125,8 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       getElementById: (id) => elements.get(id),
       createElement: (tagName) => new Element(tagName), addEventListener() {},
       querySelectorAll: () => all.filter((element) => element.dataset.webCommand),
-      querySelector: (selector) => selector === ".session-recovery" ? all.findLast(element => element.className === "session-recovery") ?? null : null,
+      querySelector: (selector) => [".session-recovery", ".preparation-tab-choice"].includes(selector)
+        ? all.findLast(element => element.className === selector.slice(1)) ?? null : null,
     },
     fetch: async (url, options) => {
       calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
@@ -326,34 +328,7 @@ test("missing server workflow fails closed without constructing a preparation", 
   assert.equal(ui.elements.get("planRun").disabled, true);
   assert.match(ui.elements.get("connectionNotice").textContent, /상태 응답 해석 실패 · 기술 진단을 확인하세요/u);
 });
-test("ambiguous preparation renders eligible ChatGPT tabs and sends the selected tab identity", async () => {
-  const state = prepared();
-  state.workflow.state = "WEB_BLOCKED";
-  state.preparation.state = "WEB_BLOCKED";
-  state.preparation.deliveries = [{ deliveryId:"d1", sessionId:"s1", conversationId:"c1", state:"FAILED" }];
-  state.preparation.webSession.activeDeliveryId = "d1";
-  state.preparation.error = { code:"WEB_TAB_SELECTION_REQUIRED", message:"Select a tab.", details:{
-    browserDispatchStarted:false,
-    candidates:[
-      { tabId:11, windowId:1, url:"https://chatgpt.com/c/c1" },
-      { tabId:12, windowId:2, url:"https://chatgpt.com/c/c1" },
-    ],
-  } };
-  state.commandCapabilities = ["web.rebind", "web.inspect", "preparation.cancel"];
-  const ui = await dashboard(state, async () => ({}));
-  const root = ui.elements.get("proposalSummary").children[0];
-  const radios = root.querySelectorAll("input");
-  assert.equal(radios.length, 2);
-  await radios[1].listeners.change();
-  assert.equal(ui.calls.some(item => item.url === "/api/preparations/web"), false);
-  const send = root.querySelectorAll("button").find(item => item.textContent === "이 탭에서 첫 요청 전송 계속");
-  await send.listeners.click();
-  const call = ui.calls.find((item) => item.url === "/api/preparations/web");
-  assert.equal(call.body.command, "web.rebind");
-  assert.equal(call.body.selectedTabId, 12);
-  assert.equal(call.body.sessionId, "s1");
-  assert.equal(call.body.deliveryId, "d1");
-});
+registerTabSelectionTests({ dashboard, prepared });
 
 test("an initial binding failure displays the original error and holds the request until explicit cancellation", async () => {
   const state = prepared();

@@ -34,7 +34,7 @@ try {
       onView:async id=>{window.views.push(id);},onSubmit:async id=>{window.calls.push(id);},onRefresh:async()=>{},...patch})); window.mount();
   });
   assert.equal(await page.locator('input:checked').count(),0);
-  assert.equal(await page.getByRole('button',{name:'이 탭에서 첫 요청 전송 계속'}).isDisabled(),true);
+  assert.equal(await page.getByRole('button',{name:'이 탭에서 요청 전송 계속'}).isDisabled(),true);
   await page.getByRole('button',{name:'탭 화면 보기'}).first().click();
   assert.deepEqual(await page.evaluate(()=>window.views),[7]);
   assert.equal(await page.locator('input:checked').count(),0);
@@ -44,18 +44,18 @@ try {
   assert.deepEqual(await page.evaluate(()=>window.calls),[]);
   await page.locator('input[value="8"]').check();
   assert.deepEqual(await page.evaluate(()=>window.calls),[]);
-  await page.getByRole('button',{name:'이 탭에서 첫 요청 전송 계속'}).click();
+  await page.getByRole('button',{name:'이 탭에서 요청 전송 계속'}).click();
   assert.deepEqual(await page.evaluate(()=>window.calls),[8]);
-  assert.equal(await page.getByRole('button',{name:'이 탭에서 첫 요청 전송 계속'}).isDisabled(),true);
+  assert.equal(await page.getByRole('button',{name:'이 탭에서 요청 전송 계속'}).isDisabled(),true);
   if (process.env.UX_SCREENSHOT) await page.screenshot({path:process.env.UX_SCREENSHOT});
   console.log('PASS explicit selection, hint is not selection, one submit, no optimistic success');
   await page.evaluate(()=>window.mount({hint:'99'}));
   assert.equal(await page.locator('input:disabled').count(),0);
   assert.equal(await page.locator('input:checked').count(),0);
   await page.locator('input[value="7"]').check();
-  assert.equal(await page.getByRole('button',{name:'이 탭에서 첫 요청 전송 계속'}).isEnabled(),true);
+  assert.equal(await page.getByRole('button',{name:'이 탭에서 요청 전송 계속'}).isEnabled(),true);
   await page.evaluate(()=>window.mount({operation:'UNKNOWN_RESULT'}));
-  assert.equal(await page.getByRole('button',{name:'이 탭에서 첫 요청 전송 계속'}).isVisible(),false);
+  assert.equal(await page.getByRole('button',{name:'이 탭에서 요청 전송 계속'}).isVisible(),false);
   assert.equal(await page.getByRole('button',{name:'최신 상태 조회'}).isEnabled(),true);
   console.log('PASS stale hint permits explicit current choice; unknown result blocks send');
   await page.evaluate(()=>window.mount());
@@ -67,7 +67,7 @@ try {
     for (const patch of [{},{hint:'99'},{operation:'RUNNING'},{operation:'UNKNOWN_RESULT'},{rejection:'탭이 이미 대화 화면으로 이동했습니다.'}]) {
       await page.evaluate(patch=>window.mount(patch),patch);
       assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
-      if (patch.rejection) assert.equal(await page.getByRole('button',{name:'이 탭에서 첫 요청 전송 계속'}).isVisible(),false);
+      if (patch.rejection) assert.equal(await page.getByRole('button',{name:'이 탭에서 요청 전송 계속'}).isVisible(),false);
     }
   }
   await page.emulateMedia({colorScheme:'light'});

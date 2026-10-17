@@ -7,10 +7,11 @@ import { extensionBrowser } from '../../../tests/helpers/extension-browser.mjs';
 import { resources } from './resources.mjs';
 
 // Server owns the production transport. Only Chrome APIs and provider DOM are controlled.
-export async function connectedExtension(t, f, { reply, probeReload = true, objective = 'Production extension connection request' } = {}) {
+export async function connectedExtension(t, f, { reply, observeFrame = null, probeReload = true, objective = 'Production extension connection request' } = {}) {
   const extension = await extensionBrowser(t, {
     cleanup:resources(t),
     autoConnect:false,
+    observeFrame,
     ...(reply ? { reply } : {}),
     production:{
       baseUrl:f.server.baseUrl,

@@ -26,7 +26,7 @@ function shell(step) {
 }
 function rail(step) {
   const list = el("ol", "", "tab-choice-rail");
-  ["탭 연결", "첫 요청 전송", "응답 저장과 ACK"].forEach((text, index) => {
+  ["탭 연결", "요청 전송", "응답 저장과 ACK"].forEach((text, index) => {
     const item = el("li", "", index < step ? "done" : "");
     item.append(el("span", index < step ? "✓" : String(index + 1), "rail-number"), el("span", text)); list.append(item);
   });
@@ -43,7 +43,7 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
   notice.hidden = !notice.textContent; notice.setAttribute("role", "status"); content.append(notice);
   const group = el("fieldset"); group.append(el("legend", "사용할 ChatGPT 탭"));
   let selected = null, submitted = false;
-  const send = button("이 탭에서 첫 요청 전송 계속", "tab-choice-send", async () => {
+  const send = button("이 탭에서 요청 전송 계속", "tab-choice-send", async () => {
     if (send.disabled || submitted || selected === null || !model.enabled) return;
     submitted = true; send.disabled = true; back.disabled = true; refresh.disabled = true;
     for (const control of group.querySelectorAll("input,button")) control.disabled = true;
@@ -67,7 +67,7 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
     radio.type = "radio"; radio.name = "preparation-tab-choice"; radio.value = String(candidate.tabId);
     radio.disabled = !model.enabled || Boolean(rejection);
     const copy = el("span", "", "tab-choice-copy"), status = el("span", "눌러서 선택", "tab-choice-state");
-    copy.append(el("strong", `탭 ${candidate.tabId}`), el("small", "ChatGPT 시작 화면"), el("small", candidate.url));
+    copy.append(el("strong", `탭 ${candidate.tabId}`), el("small", candidate.url === "https://chatgpt.com/" ? "ChatGPT 시작 화면" : "기존 ChatGPT 대화"), el("small", candidate.url));
     const hinted = !model.mismatch && model.hinted === candidate.tabId;
     if (hinted) { card.classList.add("hinted"); status.textContent = "팝업에서 확인한 탭"; }
     states.push({ card, status, hinted });
@@ -78,7 +78,7 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
         sibling.card.classList.toggle("selected", sibling.card === card);
         sibling.status.textContent = sibling.card === card ? "✓ 선택됨" : sibling.hinted ? "팝업에서 확인한 탭" : "눌러서 선택";
       }
-      send.disabled = false; reason.textContent = `선택한 탭 ${selected}. 아래 버튼을 누르면 다시 검사한 뒤 보류된 첫 요청을 전송합니다.`;
+      send.disabled = false; reason.textContent = `선택한 탭 ${selected}. 아래 버튼을 누르면 다시 검사한 뒤 보류된 요청을 전송합니다.`;
     });
     label.append(radio, copy, status); card.append(label);
     if (onView) {
@@ -105,7 +105,7 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
   overview.append(el("h2", "탭 선택을 보류했습니다"), el("p", "준비 작업과 전송 기록은 그대로입니다."),
     button("탭 선택으로 돌아가기", "tab-choice-refresh", () => { overview.hidden = true; content.hidden = false; }));
   actions.append(back, send); dock.append(reason, actions,
-    el("p", "전송 버튼을 누를 때만 보류된 첫 요청을 계속합니다.", "tab-choice-caption"));
+    el("p", "전송 버튼을 누를 때만 보류된 요청을 계속합니다.", "tab-choice-caption"));
   content.append(group, dock, refresh);
   if (operation !== "IDLE" || rejection) { send.hidden = true; reason.hidden = true; }
   if (operation === "RUNNING") { group.hidden = true; dock.hidden = true; content.append(rail(0)); }
@@ -117,7 +117,7 @@ export function preparationTransmissionStatus(delivery) {
     return { title: "응답 저장과 ACK를 확인했습니다", detail: "서버에서 응답 처리 완료를 확인했습니다.", step: 3 };
   }
   if (delivery.processingState === "ACK_PENDING") return { title: "응답 저장됨 · ACK 확인 대기", detail: "전송 정리 확인이 끝날 때까지 완료로 표시하지 않습니다.", step: 2 };
-  if (["SUBMITTED", "RESPONSE_STARTED", "RESPONSE_COMPLETED"].includes(delivery.state)) return { title: "첫 요청 전송됨 · 응답 처리 중", detail: "응답 저장과 ACK는 아직 모두 확인되지 않았습니다.", step: 2 };
+  if (["SUBMITTED", "RESPONSE_STARTED", "RESPONSE_COMPLETED"].includes(delivery.state)) return { title: "요청 전송됨 · 응답 처리 중", detail: "응답 저장과 ACK는 아직 모두 확인되지 않았습니다.", step: 2 };
   if (delivery.state === "RESERVED") return { title: "탭 연결 확인 중", detail: "아직 전송 완료로 확인되지 않았습니다.", step: 0 };
   return { title: "전송 상태 확인 필요", detail: "실제 처리 결과를 단정할 수 없습니다. 최신 상태와 상세 진단을 확인하세요.", step: 0 };
 }

@@ -515,7 +515,9 @@ function render() {
       text("startReason", "ChatGPT 대화 탭에 연결 중입니다. 아직 메시지를 전송하지 않았습니다.");
     } else if (preparation?.state === "WEB_BLOCKED" && preparation?.error) {
       const heldFailure = preparation.lifecycle === "ACTIVE";
-      text("startReason", (heldFailure ? "현재 준비 요청이 실패했습니다. 오류를 확인하거나 ‘요청 취소’를 선택하세요. "
+      text("startReason", heldFailure && preparation.error.code === "WEB_TAB_SELECTION_REQUIRED"
+        ? "사용할 ChatGPT 탭을 선택해야 합니다. 아래 후보를 선택한 뒤 전송 계속 버튼을 누르세요. 아직 메시지를 전송하지 않았습니다."
+        : (heldFailure ? "현재 준비 요청이 실패했습니다. 오류를 확인하거나 ‘요청 취소’를 선택하세요. "
         : `이전 준비 ${preparation.preparationId}의 전송 실패 기록입니다. `)
         + preparation.error.message + " 상세 원인은 진단 로그로 내보낼 수 있습니다.");
     }
@@ -525,6 +527,8 @@ function render() {
   text("newRunReason", !knowledge.stateRead.currentlyAvailable ? "최신 상태 확인 후 새 작업을 시작할 수 있습니다."
     : !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인한 뒤 새 작업을 시작할 수 있습니다."
     : workflow.stage === "PREPARE" ? "현재 준비를 유지합니다. 종료하려면 ‘준비 취소’를 선택하세요."
+    : preparation?.lifecycle === "ACTIVE" && preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED"
+      ? "현재 준비 요청에 사용할 ChatGPT 탭을 선택해야 합니다."
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
     : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
@@ -899,7 +903,9 @@ function proposalControls() {
         : "이전 준비 작업을 처리 중입니다.",
     "현재 준비를 종료하고 기록은 보존합니다.");
   const activeDelivery = preparation?.deliveries?.find((item) => item.deliveryId === preparation?.webSession?.activeDeliveryId);
-  const discardVisible = Boolean(activeDelivery && (
+  const unsentFailure = activeDelivery?.state === "FAILED"
+    && (activeDelivery.unsent === true || preparation.error?.details?.browserDispatchStarted === false);
+  const discardVisible = Boolean(activeDelivery && !unsentFailure && (
     ["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(preparation.state)
     || ["DELIVERY_RECOVERY_UNCONFIRMED", "REBIND_DURING_ACTIVE_DELIVERY"].includes(preparation.error?.code)
   ));
@@ -919,6 +925,7 @@ function renderPreparation() {
   $("planningFollowUp").hidden = !preparation.followUp;
   text("planningFollowUp", preparation.followUp ? `이전 적용 작업: ${preparation.followUp.objective} · 요구사항은 이번에 다시 승인합니다.` : "");
   $("projectRoot").value = preparation.targetRoot;
+  document.querySelector(".preparation-tab-choice")?.remove();
   const summary = $("proposalSummary"); summary.replaceChildren();
   const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
   summary.append(node("h2", heading), node("p", agreement?.summary ?? "요구사항을 정리하고 있습니다."));

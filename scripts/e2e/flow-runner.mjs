@@ -10,6 +10,7 @@ import { reviewHarness } from './helpers/review.mjs';
 import { workerHarness } from './helpers/worker.mjs';
 import { bounded } from './helpers/deadline.mjs';
 import { resources } from './helpers/resources.mjs';
+import { initialTabSelection } from './helpers/initial-tab-selection.mjs';
 
 export const flows = JSON.parse(fs.readFileSync(new URL('./flows.json', import.meta.url), 'utf8'));
 export function registerFlow(id) {
@@ -63,7 +64,8 @@ export function registerFlow(id) {
         }
       }
       if (['UF-01C','UF-04'].includes(id)) await connectedExtension(t, f);
-      if (flow.closure) await closureFlow(t, f, flow.id);
+      if (['UF-24','UF-25','UF-26'].includes(id)) await initialTabSelection(t, f, { stale:id === 'UF-25', recovery:id === 'UF-26' });
+      else if (flow.closure) await closureFlow(t, f, flow.id);
       else if (flow.reviewHarness) await reviewHarness(t, f);
       else if (flow.workerHarness) await workerHarness(t, f);
       if (!flow.closure && !flow.workerHarness && ['UF-05','UF-06','UF-07','UF-12'].includes(id)) await preparationHarness(t, f, { revise:['UF-06','UF-07','UF-12'].includes(id) });

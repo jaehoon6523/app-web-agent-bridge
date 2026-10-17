@@ -170,6 +170,9 @@ export async function binding(t,f) {
   await f.page.locator('.session-recovery > summary').click();
   const ready=state(f,b=>b.preparation?.deliveries.at(-1)?.state==='ACKNOWLEDGED' && b.preparation.deliveries.length===3);
   const choice=f.page.locator('.preparation-tab-choice');
+  await choice.waitFor({state:'visible'});
+  assert.match(await choice.innerText(), /기존 ChatGPT 대화/u);
+  assert.doesNotMatch(await choice.innerText(), /ChatGPT 시작 화면|첫 요청 전송/u);
   await choice.locator(`input[value="${chosenTab.id}"]`).check();
   assert.equal(await setup.extension.page.evaluate(()=>Number(sessionStorage.getItem('clicks'))),clicks,
     'selecting a candidate must not send a prompt');

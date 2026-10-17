@@ -1,9 +1,18 @@
 export function renderInitialRequest(workflow, preparation, $, text, document, canCancel) {
   const initial = workflow.stage === "START" && preparation?.lifecycle === "ACTIVE";
   const pending = initial && ["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(preparation.state);
-  const failed = initial && !pending && Boolean(preparation.error);
+  const tabSelection = initial && preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED";
+  const failed = initial && !pending && !tabSelection && Boolean(preparation.error);
   const recovery = document.querySelector(".session-recovery");
+  const tabChoice = preparation?.error?.code === "WEB_TAB_SELECTION_REQUIRED"
+    ? document.querySelector(".preparation-tab-choice") : null;
   $("startRecovery").replaceChildren();
+  // Initial requests stay on START until a response is accepted. Keep their
+  // tab controls in the visible panel, including after a polling refresh.
+  if (tabChoice) {
+    if (initial) $("startRecovery").append(tabChoice);
+    else $("proposalSummary").prepend(tabChoice);
+  }
   if (recovery) {
     const recoveryHost = initial ? $("startRecovery") : ($("preparationDiagnosticsBody") ?? $("proposalSummary"));
     recoveryHost.append(recovery);
@@ -22,9 +31,9 @@ export function renderInitialRequest(workflow, preparation, $, text, document, c
   $("startProgress").classList.toggle("error", failed);
   $("startProgress").setAttribute("role", failed ? "alert" : "status");
   $("startProgress").setAttribute("aria-busy", String(pending));
-  text("startProgressTitle", preparation?.state === "INITIALIZING" ? "ChatGPT 대화에 연결하고 있습니다"
+  text("startProgressTitle", tabSelection ? "사용할 ChatGPT 탭을 선택하세요" : preparation?.state === "INITIALIZING" ? "ChatGPT 대화에 연결하고 있습니다"
     : pending ? "ChatGPT 응답을 기다리고 있습니다" : failed ? "ChatGPT 요청에 실패했습니다" : "요청 상태 확인이 필요합니다");
-  text("startProgressDetail", pending ? "응답 확인 후 준비 화면으로 이동합니다."
+  text("startProgressDetail", tabSelection ? "아직 메시지를 전송하지 않았습니다. 아래 후보에서 사용할 탭을 선택하세요." : pending ? "응답 확인 후 준비 화면으로 이동합니다."
     : failed ? `${preparation.error.code}: ${preparation.error.message}` : "요청 상태를 확인할 수 없습니다. 기술 진단을 확인하세요.");
   const activeTabCount = preparation?.error?.details?.activeTabCount;
   if (!pending && Number.isInteger(activeTabCount)) text("startProgressDetail", `${$("startProgressDetail").textContent} · 감지된 ChatGPT 활성 탭: ${activeTabCount}개`);

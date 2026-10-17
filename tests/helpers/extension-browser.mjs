@@ -41,6 +41,7 @@ export async function extensionBrowser(t, {
   production = null,
   autoConnect = true,
   cleanup = null,
+  observeFrame = null,
 } = {}) {
   const browser = await chromium.launch({
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE }
@@ -83,6 +84,8 @@ export async function extensionBrowser(t, {
     for (const event of ['framesent', 'framereceived']) socket.on(event, frame => {
       const message = JSON.parse(String(frame.payload));
       frames.push({ direction:event, type:message.type, requestId:message.requestId ?? null });
+      try { observeFrame?.({ direction:event, ...message }); }
+      catch (error) { errors.push('Protocol observation failed: ' + error.message); }
     });
   });
   const pages = new Map([[7, page]]);
@@ -142,6 +145,7 @@ export async function extensionBrowser(t, {
     };
   }, { manifest });
   async function configureProviderPage(providerPage, id) {
+    providerPage.on('close', () => pages.delete(id));
     providerPage.on('pageerror', error => errors.push(error.message));
     await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id }) => {
       globalThis.fixtureBackgroundListener?.(message, { tab: { id }, frameId: 0 }, () => {});

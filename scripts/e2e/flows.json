@@ -1603,5 +1603,98 @@
     "workerHarness": true,
     "closure": true,
     "workerMode": "active"
+  },
+  {
+    "id": "UF-24",
+    "title": "Initial START tab selection",
+    "given": "START, blank conversation URL, three matching controlled ChatGPT root tabs before first preparation",
+    "when": "Reload, refresh, select one candidate, continue the held request",
+    "then": "Same preparation/session/delivery; selected tab sends once; other tabs send zero; validated response persisted and ACK confirmed; PREPARE; reload without resend",
+    "callPath": "index.html + app.js → POST /api/preparations → preparation-service → WEB_TAB_SELECTION_REQUIRED → START visible controls → POST /api/preparations/web → rebind → existing delivery",
+    "sources": [
+      "public/app.js",
+      "public/preparation-view.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/helpers/initial-tab-selection.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "production transport/background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM and response; no live ChatGPT",
+      "Persistence": "SQLite read-only observation",
+      "Render": "actual Dashboard parents/CSS and unforced user actions"
+    },
+    "specWave": "START REGRESSION",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED"
+  },
+  {
+    "id": "UF-25",
+    "title": "Stale initial tab selection",
+    "given": "START, blank conversation URL, three matching controlled ChatGPT root tabs before first preparation",
+    "when": "Close one candidate, navigate another; explicitly continue each; cancel isolated unsent request",
+    "then": "Both stale targets rejected visibly; no prompt sent; original identity retained; cancellation clears START controls",
+    "callPath": "index.html + app.js → POST /api/preparations → preparation-service → WEB_TAB_SELECTION_REQUIRED → START visible controls → POST /api/preparations/web → rebind → existing delivery",
+    "sources": [
+      "public/app.js",
+      "public/preparation-view.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/helpers/initial-tab-selection.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "production transport/background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM and response; no live ChatGPT",
+      "Persistence": "SQLite read-only observation",
+      "Render": "actual Dashboard parents/CSS and unforced user actions"
+    },
+    "specWave": "START REGRESSION",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED"
+  },
+  {
+    "id": "UF-26",
+    "title": "Interrupted resumed initial request",
+    "given": "START, blank conversation URL, three matching controlled ChatGPT root tabs before first preparation",
+    "when": "Select a root tab, continue the original request, restart the server after the actual provider send and before response",
+    "then": "Same original request remains RECOVERY_REQUIRED; uncertain-delivery recovery stays visible despite historical unsent marker; no automatic resend",
+    "callPath": "index.html + app.js → POST /api/preparations → preparation-service → WEB_TAB_SELECTION_REQUIRED → START visible controls → POST /api/preparations/web → rebind → existing delivery",
+    "sources": [
+      "public/app.js",
+      "public/preparation-view.js",
+      "src/orchestration/preparation-service.js"
+    ],
+    "gap": null,
+    "fault": null,
+    "configured": true,
+    "skeleton": "scripts/e2e/helpers/initial-tab-selection.mjs",
+    "coverage": {
+      "Process": "REAL",
+      "Browser": "REAL",
+      "Session": "REAL",
+      "Extension": "production transport/background/content; Chrome APIs controlled",
+      "Worker": "N/A",
+      "Provider": "CONTROLLED DOM and response; no live ChatGPT",
+      "Persistence": "SQLite read-only observation",
+      "Render": "actual Dashboard parents/CSS and unforced user actions"
+    },
+    "specWave": "START REGRESSION",
+    "execution": "RUNNABLE",
+    "blockers": [],
+    "initialSpine": "IMPLEMENTED"
   }
 ]

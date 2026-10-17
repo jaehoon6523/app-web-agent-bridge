@@ -500,7 +500,7 @@ export class PreparationService {
           context.lifecycle = "ACTIVE";
           context.error = {
             code: "WEB_TAB_SELECTION_REQUIRED",
-            message: "Several matching ChatGPT tabs are open. Select the tab to use; no message has been sent yet.",
+            message: "Select the ChatGPT tab to use; no message has been sent yet.",
             details: { ...(error.details ?? {}), originalCode: error.code ?? "AMBIGUOUS",
               browserDispatchStarted: false, candidates },
           };
