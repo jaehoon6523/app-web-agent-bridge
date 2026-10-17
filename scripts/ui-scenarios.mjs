@@ -194,9 +194,23 @@ try {
  assert.equal(await page.locator('#planRun').isDisabled(),true);
  await screenshot('02-root-waiting');
  fixture.block(); await page.reload();
- await page.waitForFunction(()=>document.getElementById('startReason').textContent.includes('WEB_DOCUMENT_CHANGED'));
+ // The code belongs to the error detail; startReason is human guidance.
+ await page.waitForFunction(()=>document.getElementById('startProgressDetail').textContent.includes('WEB_DOCUMENT_CHANGED'));
+ assert.match(await page.locator('#startReason').textContent(),/Prepare the reloaded ChatGPT document again/u);
+ assert.equal(await page.locator('#startProgress').getAttribute('role'),'alert');
+ assert.equal(await page.locator('#startProgress').isVisible(),true);
+ assert.equal(await page.locator('#planRun').isDisabled(),true);
+ assert.equal(await page.locator('#cancelInitialPreparation').isEnabled(),true);
+ const blockedObservation=await page.evaluate(()=>Object.fromEntries(
+   ['startReason','startProgressDetail','startProgress','planRun','cancelInitialPreparation'].map(id=>{
+     const el=document.getElementById(id);return [id,{text:el.textContent,hidden:el.hidden,disabled:el.disabled??null,role:el.getAttribute('role')}];
+   })));
+ fs.writeFileSync(path.join(output,'document-change-observation.json'),JSON.stringify(blockedObservation,null,2)+'\n');
  await screenshot('03-document-changed');
+ const beforeCancel=fixture.mutations.length;
  await page.click('#cancelInitialPreparation'); await enabled('planRun');
+ assert.equal(fixture.mutations.length,beforeCancel+1);
+ assert.equal(fixture.mutations.at(-1).pathname,'/api/preparations/prep-qa/cancel');
  await page.fill('#objective','UI scenario task'); await page.fill('#startRoot',target);
  await page.fill('#conversationUrl','https://chatgpt.com/'); await page.click('#planRun'); await visible('startProgress');
  fixture.discuss(); await page.reload(); await visible('projectPanel');
@@ -223,9 +237,14 @@ try {
  await page.fill('#workerInterventionText','Use the existing helper.');
  assert.equal(await page.locator('#sendWorkerIntervention').isDisabled(),false);
  fixture.extensionAuthenticated=true; await page.reload();
+ const motionBefore=await page.locator('#runStatus').evaluate(el=>({text:el.textContent,className:el.className,animation:getComputedStyle(el,'::before').animationName}));
+ await stage('stepWork');
+ await page.waitForFunction(()=>document.getElementById('runStatus').classList.contains('running'));
  await page.emulateMedia({reducedMotion:'reduce'});
  assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'none');
  await page.emulateMedia({reducedMotion:'no-preference'});
+ await page.waitForFunction(()=>getComputedStyle(document.getElementById('runStatus'),'::before').animationName==='status-pulse');
+ fs.writeFileSync(path.join(output,'motion-observation.json'),JSON.stringify({beforeReady:motionBefore,afterReady:await page.locator('#runStatus').evaluate(el=>({text:el.textContent,className:el.className,animation:getComputedStyle(el,'::before').animationName}))},null,2)+'\n');
  assert.equal(await page.locator('#runStatus').evaluate(el=>getComputedStyle(el,'::before').animationName),'status-pulse');
  await page.getByRole('button',{name:'Previous task',exact:false}).click();
  await page.waitForFunction(()=>document.getElementById('runObjective').textContent==='Previous task');

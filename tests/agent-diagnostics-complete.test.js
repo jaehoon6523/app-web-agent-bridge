@@ -309,6 +309,31 @@ test('transient Windows recovery publication EPERM retries only the owned stagin
   assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
 });
 
+for (const collisionCode of ['ENOTEMPTY','EEXIST','ENOTDIR','EISDIR'])
+test('recovery publication '+collisionCode+' retries when the competing guard disappears before observation',async t=>{
+  const {root,recovery,previous}=await deadWriterFixture(t), rename=io.rename.bind(io);
+  const collision=Object.assign(new Error('Competing guard disappeared before observation'),{code:collisionCode,syscall:'rename',dest:recovery});
+  let attempts=0;const events=[];
+  t.mock.method(io,'rename',async(from,to)=>{
+    if(to===recovery && ++attempts===1) {
+      // The failed publication observed a peer; that peer released its guard
+      // before acquireRecovery can re-observe it. OUR staging is still intact.
+      const marker=path.join(recovery,'owner-'+process.pid+'-'+randomUUID());
+      await io.mkdir(recovery);await io.mkdir(marker);
+      await assert.rejects(rename(from,to),error=>['ENOTEMPTY','EEXIST','EPERM','ENOTDIR','EISDIR'].includes(error.code));
+      await io.rmdir(marker);await io.rmdir(recovery);
+      throw collision;
+    }
+    return rename(from,to);
+  });
+  await enqueueAgentReport(root,'repair',{code:'RECOVERED_AFTER_PEER'},{onDiagnostic:event=>{events.push(event);t.evidence.event(event);}});
+  assert.equal(attempts,2);
+  assert.equal(events.filter(event=>event.type==='agent.report.recovery.publication.wait').length,1);
+  assert.deepEqual(readAgentReport(root).server,previous);
+  assert.equal(readAgentReport(root).repair.code,'RECOVERED_AFTER_PEER');
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
 test('persistent recovery publication EPERM is bounded and preserves the original denial and report',async t=>{
   const {root,lock,recovery}=await deadWriterFixture(t), before=fs.readFileSync(path.join(root,'runtime-latest.json'));
   const lockBefore=fs.readFileSync(lock), rename=io.rename.bind(io);

@@ -15,6 +15,17 @@ const source = fileURLToPath(new URL('../',import.meta.url));
 let evidenceRun;
 before(() => { evidenceRun = beginTestEvidenceRun(source,'selector-repair-cli'); });
 after(() => evidenceRun?.close());
+function failedJobEvidence(stderr, jobs) {
+  const failure = JSON.parse(stderr.trim());
+  assert.equal(failure.code,'REPAIR_VERIFICATION_FAILED');
+  assert.equal(typeof failure.jobId,'string','CLI failure must identify its repair job');
+  assert.match(failure.jobId,/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/u);
+  const journal = path.join(jobs,failure.jobId,'events.jsonl');
+  assert.ok(fs.existsSync(journal),'Missing events.jsonl for CLI job '+failure.jobId);
+  const rows = fs.readFileSync(journal,'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(rows.length>0 && rows.every(row=>row.jobId===failure.jobId),'Journal must belong to the reported CLI job');
+  return {job:failure.jobId,rows};
+}
 async function scenario(t, evidence, failVerification) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'bridge-selector-cli-'));
   const target = path.join(root,'target');
@@ -73,11 +84,11 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     evidence.preserve(target);
     t.diagnostic('Failure evidence: '+evidence.directory);
     if (!failVerification) throw error;
-    assert.match(error.stderr,/REPAIR_VERIFICATION_FAILED/u);
     fs.rmSync(root,{recursive:true,force:true});
     const jobs = path.join(evidence.directory,'internal/selector-repair');
-    const job = fs.readdirSync(jobs).find(name => /^[a-f0-9-]{36}$/u.test(name));
-    const rows = fs.readFileSync(path.join(jobs,job,'events.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    // An unrelated artifact directory must never become this command's evidence.
+    fs.mkdirSync(path.join(jobs,'00000000-0000-4000-8000-000000000000','artifacts'),{recursive:true});
+    const {job,rows} = failedJobEvidence(error.stderr,jobs);
     const check = rows.find(row => row.phase === 'VERIFICATION_RESULT' && row.verificationId === 'regression');
     assert.equal(check.exitCode,1); assert.equal(check.signal,null); assert.equal(check.timedOut,false);
     assert.equal(typeof check.cwd,'string'); assert.ok(check.args.includes('scripts/run-tests.mjs'));
@@ -97,3 +108,30 @@ function repairTest(name, failVerification = false) {
 }
 repairTest('CLI collects diagnostics, runs the real registered process and verification gate, then applies only with explicit hash approval');
 repairTest('CLI internal failure evidence remains readable after the temporary checkout is removed',true);
+
+function journalFixture(t) {
+  const jobs=fs.mkdtempSync(path.join(os.tmpdir(),'repair-job-selection-'));
+  t.after(()=>fs.rmSync(jobs,{recursive:true,force:true}));
+  const reported='ffffffff-ffff-4fff-8fff-ffffffffffff', foreign='11111111-1111-4111-8111-111111111111';
+  const write=(id,rows)=>{fs.mkdirSync(path.join(jobs,id),{recursive:true});fs.writeFileSync(path.join(jobs,id,'events.jsonl'),rows.map(JSON.stringify).join('\n')+'\n');};
+  const stderr=JSON.stringify({code:'REPAIR_VERIFICATION_FAILED',jobId:reported});
+  return {jobs,reported,foreign,write,stderr};
+}
+test('reported repair job wins over earlier unrelated UUID directories',t=>{
+  const {jobs,reported,foreign,write,stderr}=journalFixture(t);
+  fs.mkdirSync(path.join(jobs,'00000000-0000-4000-8000-000000000000','artifacts'),{recursive:true});
+  write(foreign,[{jobId:foreign,phase:'UNRELATED'}]);write(reported,[{jobId:reported,phase:'VERIFICATION_RESULT'}]);
+  assert.deepEqual(failedJobEvidence(stderr,jobs),{job:reported,rows:[{jobId:reported,phase:'VERIFICATION_RESULT'}]});
+});
+test('missing or invalid CLI job identity cannot select another job',t=>{
+  const {jobs,foreign,write}=journalFixture(t);write(foreign,[{jobId:foreign}]);
+  for(const failure of [{code:'REPAIR_VERIFICATION_FAILED'},
+    {code:'REPAIR_VERIFICATION_FAILED',jobId:'../'+foreign},
+    {code:'OTHER_FAILURE',jobId:foreign}]) assert.throws(()=>failedJobEvidence(JSON.stringify(failure),jobs));
+});
+test('missing or foreign journal fails explicitly without falling back',t=>{
+  const {jobs,reported,foreign,write,stderr}=journalFixture(t);write(foreign,[{jobId:foreign}]);
+  assert.throws(()=>failedJobEvidence(stderr,jobs),/Missing events.jsonl for CLI job/u);
+  write(reported,[{jobId:foreign}]);
+  assert.throws(()=>failedJobEvidence(stderr,jobs),/Journal must belong/u);
+});

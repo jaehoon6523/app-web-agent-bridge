@@ -1,3 +1,4 @@
+import {beginVerificationIdentity,finishVerificationIdentity} from './verification-identity.mjs';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,7 +13,8 @@ const directory = path.resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? path.jo
 fs.mkdirSync(directory, { recursive: true });
 const receiptPath = path.join(directory, 'latest-native-extension.json');
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-native-extension-'));
-const result = { nativeExtension: true, status: 'RUNNING', platform: process.platform, steps: [], completed: false };
+const identity=beginVerificationIdentity(root);
+const result = { ...identity,nativeExtension: true, status: 'RUNNING', platform: process.platform, steps: [], completed: false };
 const save = () => fs.writeFileSync(receiptPath, JSON.stringify(result, null, 2) + '\n');
 let context, initialized = false;
 save();
@@ -256,6 +258,8 @@ try {
   if (result.status === 'PASS' && !nativeExtensionComplete(result)) {
     result.status = 'FAIL'; result.error = 'Incomplete native boundary verification'; process.exitCode = 1;
   }
+  Object.assign(result,finishVerificationIdentity(root,identity));
+  if(!result.candidateUnchanged) {result.status='FAIL';result.error='Source changed during native verification';process.exitCode=1;}
   save();
   console.log('NATIVE_EXTENSION_RESULT ' + JSON.stringify(result));
 }

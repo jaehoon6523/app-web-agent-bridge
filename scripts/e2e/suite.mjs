@@ -1,3 +1,4 @@
+import {beginVerificationIdentity,finishVerificationIdentity} from '../verification-identity.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { runOwnedNode } from './platform/process.mjs';
@@ -18,7 +19,9 @@ const output = path.join(repository, '.agent-controller/ui-qa');
 if (!requested.length) fs.rmSync(path.join(output, 'e2e-wave'), { recursive:true, force:true });
 else for (const id of waveIds) fs.rmSync(path.join(output, 'e2e-wave', id), { recursive:true, force:true });
 if (includeStartup) fs.rmSync(path.join(output, 'e2e-startup'), { recursive:true, force:true });
-let gateFailed = false;
+const identity=beginVerificationIdentity(repository);
+let gateFailed = false, closureConfirmed=true;
+const cleanupErrors=[];
 const progress = createProgress(flows.map(flow => flow.id), text => process.stdout.write(text));
 async function execute(args, { startup = false, tap = false } = {}) {
   let log = '';
@@ -39,6 +42,7 @@ async function execute(args, { startup = false, tap = false } = {}) {
     });
     code = result.code ?? 1;
   } catch (error) {
+    closureConfirmed=false; if(error.cleanupError) cleanupErrors.push(error.cleanupError);
     console.error(error.message, error.cleanupError ?? '');
     fs.mkdirSync(output, { recursive:true });
     fs.writeFileSync(path.join(output, startup ? 'startup-runner-failure.json' : 'wave-runner-failure.json'),
@@ -59,7 +63,9 @@ for (const flow of flows) {
   catch { /* Missing/malformed artifacts are failures, never a skip or PASS. */ }
 }
 const summary = { environment:{node:process.version,platform:process.platform,arch:process.arch}, scope:requested.length ? `SELECTED PROFILES (${flows.map(flow => flow.id).join(', ')})` : waveOnly ? 'WAVE ONLY (UF-01A not executed)' : 'FULL SUITE',
-  ...summarizeRun(flows, results, skippedTests(tap), gateFailed) };
+  ...summarizeRun(flows, results, skippedTests(tap), gateFailed),
+  ...finishVerificationIdentity(repository,identity),closureConfirmed,cleanupErrors,
+  scheduledProfiles:flows.map(f=>f.id),profileResults:flows.map(f=>({id:f.id,outcome:results.get(f.id)?.outcome ?? 'MISSING'})) };
 fs.mkdirSync(output, { recursive:true });
 fs.writeFileSync(path.join(output, requested.length ? 'e2e-selected-summary.json' : waveOnly ? 'e2e-wave-summary.json' : 'e2e-summary.json'), JSON.stringify(summary, null, 2));
 const lines = [`Scope: ${summary.scope}`, `SPEC W1-4 COMPLETE     ${summary.specComplete}`,
@@ -71,4 +77,4 @@ const lines = [`Scope: ${summary.scope}`, `SPEC W1-4 COMPLETE     ${summary.spec
 console.log('\n' + lines.join('\n'));
 if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,
   '\n### E2E execution coverage\n\n```text\n'+lines.join('\n')+'\n```\n');
-if (summary.failed || summary.unexpectedSkips) process.exitCode = 1;
+if (summary.failed || summary.unexpectedSkips || !summary.candidateUnchanged) process.exitCode = 1;

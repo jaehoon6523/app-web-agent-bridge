@@ -22,16 +22,18 @@ export function ownedSpawn(args, { cwd, env = process.env, ipc = false } = {}) {
 }
 
 export async function runOwnedNode(args, { cwd, env, timeoutMs, isComplete = () => false,
-  drainMs = 10000, onStdout = () => {}, onStderr = () => {}, onDeadline = () => {} } = {}) {
+  drainMs = 10000, signal, onStdout = () => {}, onStderr = () => {}, onDeadline = () => {} } = {}) {
   const child = ownedSpawn(args, { cwd, env });
   const observation = observeChildClose(child);
-  let timer, drainTimer;
+  let timer, drainTimer, abort;
   const deadline = new Promise((_, reject) => {
     const expire = reason => {
       try { onDeadline({ reason, pid:child.pid, activeResources:process.getActiveResourcesInfo() }); } catch {}
       reject(Object.assign(new Error(`E2E runner resource closure failed: ${reason}`), { code:'E2E_RUNNER_DEADLINE' }));
     };
     timer = setTimeout(() => expire('execution deadline'), timeoutMs);
+    abort = () => reject(Object.assign(new Error('Verification cancelled'), {code:'VERIFICATION_CANCELLED'}));
+    if (signal?.aborted) abort(); else signal?.addEventListener('abort',abort,{once:true});
     child.stdout.on('data', chunk => {
       onStdout(chunk);
       if (!drainTimer && isComplete()) drainTimer = setTimeout(() => expire('profiles completed but runner did not close'), drainMs);
@@ -51,5 +53,5 @@ export async function runOwnedNode(args, { cwd, env, timeoutMs, isComplete = () 
     child.stdout.destroy(); child.stderr.destroy();
     child.unref();
     throw error;
-  } finally { clearTimeout(timer); clearTimeout(drainTimer); }
+  } finally { clearTimeout(timer); clearTimeout(drainTimer); signal?.removeEventListener('abort',abort); }
 }

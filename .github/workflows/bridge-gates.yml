@@ -1,45 +1,39 @@
 name: Bridge gates
-
 on:
   push:
     branches: [master]
   pull_request:
-
 permissions:
   contents: read
-
 jobs:
-  cleanup-compatibility:
+  verification:
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, windows-2025]
         node: ['22.14.0', '24']
     runs-on: ${{ matrix.os }}
-    # Windows full discovery exceeded 20 minutes before reaching all files.
-    # Keep per-file deadlines; allow the complete gate to produce a terminal result.
-    timeout-minutes: 40
+    # Sequential coverage replaces several jobs; per-test deadlines are unchanged.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
-      # Full discovery includes cleanup, history HTTP and process portability.
-      - run: npm run check
+      # Dependencies and browser preparation are catalog stages. Their failures
+      # are recorded before dependent stages become NOT_RUN.
+      - run: npm run verify:all
       - if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: test-completion-${{ matrix.os }}-${{ matrix.node }}
+          name: verification-${{ matrix.os }}-${{ matrix.node }}
           path: |
-            .agent-controller/latest-test*
-            .agent-controller/latest-agent-diagnostics-complete/
-            .agent-controller/latest-server-response-deadline/
-            .agent-controller/latest-server-responsiveness/
+            .agent-controller/latest-verification.*
+            .agent-controller/verification-runs/
           include-hidden-files: true
           if-no-files-found: error
-
+          retention-days: 30
   minimum-runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -49,59 +43,14 @@ jobs:
         with:
           node-version: '22.5.0'
           cache: npm
-      - run: npm ci
-      - run: node --experimental-sqlite --test tests/platform/sqlite-database.test.js tests/platform/sqlite-startup.test.js
-
-  verify:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '24'
-          cache: npm
-      - run: npm ci
-      - run: npm run check
-      - run: npm run test:integration
-
-  browser:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2025]
-        node: ['22.14.0', '24']
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: ${{ matrix.node }}
-          cache: npm
-      - run: npm ci
-      - run: npx playwright-core install --with-deps chromium
-      - run: npm run test:platform
-      - run: npm run test:runtime-cleanup-contract
-      - if: runner.os == 'Windows'
-        run: node scripts/run-tests.mjs tests/persistence-cleanup.test.js tests/verification-lifecycle.test.js tests/preparation-contention.test.js
-      - run: npm run test:platform:browser
-      - run: npm run test:e2e:ci
-      - if: runner.os == 'Linux'
-        run: npm run test:ui
-      - if: runner.os == 'Linux'
-        run: npm run test:browser
-      - if: runner.os == 'Linux'
-        run: npm run test:sabotage
+      - run: npm run verify:all -- --scope=minimum
       - if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: ui-evidence-${{ matrix.os }}-${{ matrix.node }}
+          name: verification-minimum
           path: |
-            .agent-controller/latest-test*
-            .agent-controller/latest-agent-diagnostics-complete/
-            .agent-controller/latest-server-response-deadline/
-            .agent-controller/latest-server-responsiveness/
-            .agent-controller/ui-qa/
+            .agent-controller/latest-verification.*
+            .agent-controller/verification-runs/
           include-hidden-files: true
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: 30

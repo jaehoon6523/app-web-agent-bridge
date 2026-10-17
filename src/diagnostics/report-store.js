@@ -149,11 +149,12 @@ async function acquireRecovery(recovery, event) {
         if (observed.exists && (['EEXIST','ENOTEMPTY','ENOTDIR','EISDIR'].includes(error.code) ||
             error.code === 'EPERM' && ['LIVE','DEAD','EMPTY'].includes(observed.state)))
           throw busy(error,{state:'RECOVERY',path:recovery,recoveryOwner:observed});
-        // On Windows a competing guard can disappear between rename's EPERM
-        // and this observation. Retry publication of OUR intact staging guard;
-        // never delete an observed destination or reinterpret lock.open EPERM.
+        // A competing guard may disappear between rename's conflict and this
+        // observation (ENOTEMPTY/EEXIST on POSIX, often EPERM on Windows).
+        // Retry only OUR intact staging guard; never delete a replacement owner
+        // or reinterpret a permission failure from the writer lock itself.
         publicationError ??= error;
-        const prepared = !observed.exists && error.code === 'EPERM'
+        const prepared = !observed.exists && ['EPERM','EEXIST','ENOTEMPTY','ENOTDIR','EISDIR'].includes(error.code)
           ? await recoveryObservation(staging) : null;
         if (attempt >= 4 || prepared?.state !== 'LIVE' || prepared.pid !== process.pid
             || prepared.token !== token || prepared.marker !== marker) throw publicationError;
