@@ -20,8 +20,10 @@ function git(root, args, { env = {}, input = undefined } = {}) {
 
 function repositoryRoot(directory) {
   if (!path.isAbsolute(directory)) throw new TypeError("An absolute repository root is required.");
-  const root = fs.realpathSync(directory);
-  const actual = fs.realpathSync(git(root, ["rev-parse", "--show-toplevel"]).toString("utf8").trim());
+  // Windows TEMP may use an 8.3 alias while Git returns its long path. Resolve
+  // both through the filesystem; folding case would weaken directory identity.
+  const root = fs.realpathSync.native(directory);
+  const actual = fs.realpathSync.native(git(root, ["rev-parse", "--show-toplevel"]).toString("utf8").trim());
   if (root !== actual) throw new Error("The supplied directory must be the Git repository root.");
   return root;
 }
@@ -52,7 +54,7 @@ function tree(root, baseCommit) {
 export class GitChangeWorkspace {
   static prepareTarget(targetRoot) {
     if (typeof targetRoot !== "string" || !path.isAbsolute(targetRoot)) throw new Error("프로젝트 폴더를 선택하세요.");
-    const root = fs.realpathSync(targetRoot);
+    const root = fs.realpathSync.native(targetRoot);
     if (!fs.statSync(root).isDirectory() || path.parse(root).root === root) throw new Error("드라이브 전체가 아닌 프로젝트 폴더를 선택하세요.");
     if (!fs.existsSync(path.join(root, ".git"))) {
       for (let parent = path.dirname(root); ; parent = path.dirname(parent)) {
@@ -170,7 +172,8 @@ export class GitChangeWorkspace {
     const relative = path.relative(this.targetRoot, this.root);
     if (!relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) throw new Error("Cleanup target is inside the target repository.");
     const registered = git(this.targetRoot, ["worktree", "list", "--porcelain"]).toString("utf8");
-    if (!registered.split("\n").some((line) => line.startsWith("worktree ") && path.resolve(line.slice(9)) === this.root)) throw new Error("Unregistered cleanup target.");
+    if (!registered.split("\n").some((line) => line.startsWith("worktree ") && fs.existsSync(line.slice(9))
+      && fs.realpathSync.native(line.slice(9)) === this.root)) throw new Error("Unregistered cleanup target.");
     git(this.targetRoot, ["worktree", "remove", "--force", this.root]);
   }
 
