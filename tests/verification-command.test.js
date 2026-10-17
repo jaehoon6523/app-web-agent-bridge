@@ -5,8 +5,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
-import {fileURLToPath} from 'node:url';
-import {verificationPlan} from '../scripts/verification-plan.mjs';
+import {fileURLToPath,pathToFileURL} from 'node:url';
+import {verificationPlan,verificationCatalog} from '../scripts/verification-plan.mjs';
 import {nativeExtensionSteps} from '../scripts/native-extension-contract.js';
 
 import {createSourceCheckout,linkDependencies} from './helpers/source-checkout.mjs';
@@ -14,6 +14,9 @@ import {beginTestEvidenceRun} from './helpers/failure-evidence.mjs';
 const repository = fileURLToPath(new URL('../',import.meta.url));
 const run = promisify(execFile);
 const contexts = new WeakMap();
+// Exercise the direct Node dispatch on every host, while keeping OS policy
+// changes local to this contract-test process.
+verificationCatalog.find(stage => stage.id === 'windows-focused').os = undefined;
 let evidenceRun, suiteRoot, checkout, snapshot, originalContent;
 // Full source copying, Git initialization and dependency linking belong to the
 // file setup budget, rather than being repeated inside every 15-second case.
@@ -62,9 +65,10 @@ async function execute(t, mode) {
   const command = path.join(checkout,'scripts/verify-all.mjs');
   const peer = path.join(root,'npm-peer.cjs');
   fs.writeFileSync(peer, `const fs=require('node:fs'),path=require('node:path');
-    const stage=process.argv[2]==='ci'?'dependencies':process.argv[3], root=process.env.BRIDGE_VERIFICATION_OUTPUT;
+    const root=process.env.BRIDGE_VERIFICATION_OUTPUT;
     const parent=JSON.parse(fs.readFileSync(path.join(root,'latest-verification.json')));
     const spec=parent.stages.find(s=>process.env.BRIDGE_VERIFICATION_RUN_ID===parent.runId+'-'+s.id);
+    const stage=spec.command || spec.id;
     const binding={verificationRunId:process.env.BRIDGE_VERIFICATION_RUN_ID,source:parent.source,sourceAfter:parent.source,candidateUnchanged:true};
     console.log('peer '+stage);
     if (${JSON.stringify(mode)} === 'large') process.stdout.write('x'.repeat(500000)+'\\n');
@@ -84,13 +88,22 @@ async function execute(t, mode) {
     if (${JSON.stringify(mode)} === 'first-fails' && stage==='lint') process.exitCode=7;
     if (${JSON.stringify(mode)} === 'native-unavailable' && stage==='test:extension:native') process.exitCode=2;
   `);
+  // npm_execpath controls npm stages only. Preload the same controlled peer
+  // for direct Node stages too; retain their original argv so expectedFiles
+  // is still derived from the real catalog. No checkout source bytes change.
+  const preload = path.join(root,'controlled-dispatch.mjs');
+  fs.writeFileSync(preload,`import {verificationCatalog} from ${JSON.stringify(pathToFileURL(path.join(checkout,'scripts/verification-plan.mjs')).href)};
+    verificationCatalog.find(stage=>stage.id==='windows-focused').os=undefined;
+    for (const stage of verificationCatalog) if (stage.nodeArgs)
+      stage.nodeArgs=[${JSON.stringify(peer)},'run',stage.id,...stage.nodeArgs];`);
   try {
-    await evidence.command(process.execPath,[command],{cwd:checkout,
+    await evidence.command(process.execPath,['--import',pathToFileURL(preload).href,command],{cwd:checkout,
       env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:12000,maxBuffer:16*1024*1024},run);
   } catch (error) {
     if (typeof error.code !== 'number') throw error;
   }
   const closed = evidence.record.commands.at(-1);
+  assert.match(closed.stdout,/^peer windows-focused$/mu);
   const code = closed.exitCode, signal = closed.signal;
   const result=JSON.parse(fs.readFileSync(path.join(root,'latest-verification.json'),'utf8'));
   const log=fs.readFileSync(path.join(root,'latest-verification.log'),'utf8');

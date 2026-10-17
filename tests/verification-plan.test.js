@@ -17,7 +17,7 @@ async function scenario(t,plan,run,options={}) {
 }
 test('CI and local use the same catalog including every previously omitted gate',()=>{
   const workflow=fs.readFileSync(new URL('../.github/workflows/bridge-gates.yml',import.meta.url),'utf8');
-  assert.match(workflow,/run: npm run verify:all\n/u);
+  assert.match(workflow,/run: npm run verify:all\r?\n/u);
   assert.match(workflow,/run: npm run verify:all -- --scope=minimum/u);
   assert.doesNotMatch(workflow,/run: npm run (?:check|test:)/u);
   for(const platform of ['linux','win32']) {

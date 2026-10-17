@@ -170,7 +170,7 @@ test('a failing first verification scenario retains its details after seven succ
   assert.equal(detail.commands[0].exitCode,1); assert.equal(detail.commands[0].signal,null);
   assert.equal(detail.commands[0].timedOut,false); assert.match(detail.commands[0].stdout,/peer lint/u);
   assert.equal(typeof detail.commands[0].stderr,'string'); assert.ok(path.isAbsolute(detail.commands[0].cwd));
-  assert.equal(detail.commands[0].args[0],path.join(detail.commands[0].cwd,'scripts/verify-all.mjs'));
+  assert.equal(detail.commands[0].args.at(-1),path.join(detail.commands[0].cwd,'scripts/verify-all.mjs'));
   assert.equal(fs.existsSync(detail.commands[0].cwd),false);
   assert.match(detail.snapshot.sourceSha256,/^[a-f0-9]{64}$/u);
   assert.match(fs.readFileSync(path.join(firstDirectory,'latest-verification.log'),'utf8'),/VERIFICATION FAIL/u);
