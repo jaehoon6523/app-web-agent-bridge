@@ -35,6 +35,16 @@ test('preparation failure blocks dependents and still executes an independent ch
   assert.deepEqual(seen,['prepare','independent']);assert.equal(result.status,'FAIL');
   assert.equal(result.stages[1].status,'NOT_RUN');assert.match(result.stages[1].reason,/PREPARATION_FAILED/u);
 });
+test('Windows discovery groups cover exactly the Linux discovery inventory with unchanged deadlines',()=>{
+  const linux=verificationPlan({platform:'linux'}).find(stage=>stage.id==='discovery');
+  const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-\d+)?$/u.test(stage.id));
+  assert.equal(groups.length,4);
+  const scheduled=groups.flatMap(stage=>stage.expectedFiles);
+  assert.equal(new Set(scheduled).size,scheduled.length,'No duplicate scheduling');
+  assert.deepEqual([...scheduled].sort(),[...linux.expectedFiles].sort(),'No missing or additional tests');
+  assert.ok(groups.every(stage=>stage.timeoutMs===linux.timeoutMs && stage.receipt==='gate'));
+  assert.ok(Math.max(...groups.map(stage=>stage.expectedFiles.length))-Math.min(...groups.map(stage=>stage.expectedFiles.length))<=1);
+});
 test('ordinary first assertion failure preserves later independent observations',async t=>{
   const result=await scenario(t,[item('first'),item('last')],s=>({code:s.id==='first'?7:0,signal:null,forced:false}));
   assert.deepEqual(result.stages.map(s=>s.status),['FAIL','PASS']);assert.equal(result.status,'FAIL');

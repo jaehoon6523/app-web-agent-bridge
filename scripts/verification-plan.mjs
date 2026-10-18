@@ -25,14 +25,27 @@ export const verificationCatalog = [
   stage('browser','test:browser:core',{browser:true,os:['linux'],receipt:'gate'}),
   stage('tab-ux','test:tab-ux-browser',{browser:true,receipt:'gui',expectedScenarios:[...requiredGuiScenarios]}),
   stage('sabotage','test:sabotage',{browser:true,os:['linux']}),
-  stage('native','test:extension:native',{browser:true,receipt:'native'}),
+  stage('native','test:extension:native',{browser:true,receipt:'native',evidencePaths:['native-reload-control']}),
   stage('minimum-dependencies',null,{args:['ci'],scopes:['minimum'],needs:[],phase:'PREPARATION'}),
   stage('minimum-sqlite',null,{scopes:['minimum'],needs:['minimum-dependencies'],nodeArgs:[
     '--experimental-sqlite','--test','tests/platform/sqlite-database.test.js','tests/platform/sqlite-startup.test.js']}),
 ];
 export function verificationPlan({scope='full',platform=process.platform}={}) {
   if (!['full','minimum'].includes(scope)) throw Error('Unknown verification scope: '+scope);
-  return verificationCatalog.filter(item=>item.scopes.includes(scope)).map(item=>{
+  // #154 exhausted the discovery stage budget while completing files normally.
+  // Split Windows discovery into bounded, sequential groups. File deadlines,
+  // the complete test inventory and OS policy stay unchanged. Each group keeps
+  // 25 minutes: their combined allowance grows from 25 to 100 minutes, while
+  // the CI job still has 90 minutes. Actual Windows elapsed time needs measurement.
+  const catalog=verificationCatalog.filter(item=>item.scopes.includes(scope)).flatMap(item=>{
+    if(item.id!=='discovery' || platform!=='win32') return [item];
+    const files=discoverTests(path.join(root,'tests')).map(file=>path.relative(root,file).split(path.sep).join('/'));
+    const groups=Array.from({length:Math.min(4,files.length)},()=>[]);
+    files.forEach((file,index)=>groups[index%groups.length].push(file));
+    return groups.map((files,index)=>({...item,id:index===0?'discovery':`discovery-${index+1}`,
+      command:null,nodeArgs:['scripts/run-tests.mjs',...files]}));
+  });
+  return catalog.map(item=>{
     const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
     const args=item.nodeArgs || (pkg.scripts[item.command] || '').split(/\s+/u);
     const gateIndex=args.findIndex(arg=>arg==='scripts/run-tests.mjs');

@@ -46,7 +46,12 @@ async function runChild(spec, scratch) {
     cleanup: { status: 'PENDING' }, stageHistory: [{ stage: 'BOOT', at: new Date().toISOString() }], observations: { workerEvents: [], registrationEvents: [], popupFailures: [] },
     sourceHashes, startedAt: new Date().toISOString(),
   };
-  const save = () => atomicWrite(snapshotFile, trial);
+  const save = () => {
+    atomicWrite(snapshotFile, trial);
+    // Keep the active case observable even if the outer matrix is terminated
+    // before superviseTrial returns or removes its temporary scratch directory.
+    atomicWrite(path.join(resultsDir, `case-${spec.id}.json`), trial);
+  };
   const setStage = stage => { trial.stage = stage; trial.stageHistory.push({ stage, at: new Date().toISOString() }); save(); };
   save();
   let context, cdp, fixtureServer;

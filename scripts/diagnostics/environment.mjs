@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 
 export const sha256 = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 const extensionHashExpected = {
@@ -44,18 +45,24 @@ export function findExecutable() {
   if (!fs.existsSync(executable)) throw new Error(`Browser executable not found: ${executable}`);
   return executable;
 }
-export function getWindowsCommandLine(pid) {
-  if (process.platform !== 'win32') return { status: 'UNSUPPORTED', commandLine: null };
+export function getWindowsCommandLine(pid, {platform=process.platform, execute=execFileSync, hash=sha256} = {}) {
+  if (platform !== 'win32') return { status: 'UNSUPPORTED', commandLine: null };
+  const started=performance.now(), query={executable:'powershell.exe',timeoutMs:6000,pid};
   const cmd = `$p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}'; if($p){$p | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress}`;
   try {
-    const str = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd],
+    const str = execute('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', cmd],
       { encoding: 'utf8', timeout: 6000, windowsHide: true }).trim();
     const record = str ? JSON.parse(str) : null;
     return { status: record?.CommandLine ? 'OBSERVED' : 'UNVERIFIED', commandLine: record?.CommandLine ?? null,
       executablePath: record?.ExecutablePath ?? null,
-      executableSha256: record?.ExecutablePath ? sha256(record.ExecutablePath) : null,
-      pid: record?.ProcessId ?? pid, parentPid: record?.ParentProcessId ?? null };
-  } catch (error) { return { status: 'UNVERIFIED', error: error.message, commandLine: null }; }
+      executableSha256: record?.ExecutablePath ? hash(record.ExecutablePath) : null,
+      pid: record?.ProcessId ?? pid, parentPid: record?.ParentProcessId ?? null,
+      query:{...query,elapsedMs:performance.now()-started,timedOut:false,
+        result:record?.CommandLine?'OBSERVED':record?'COMMAND_LINE_MISSING':'PROCESS_NOT_FOUND'} };
+  } catch (error) { return { status: 'UNVERIFIED', error: error.message, commandLine: null,
+    query:{...query,elapsedMs:performance.now()-started,errorCode:error.code ?? null,
+      exitCode:error.status ?? null,signal:error.signal ?? null,killed:error.killed ?? null,
+      timedOut:error.code==='ETIMEDOUT',result:'QUERY_FAILED'} }; }
 }
 
 
@@ -119,9 +126,22 @@ export function environmentRecord(executable = process.env.UI_BROWSER_EXECUTABLE
   return record;
 }
 
+// Node's diagnostic report records this running process's startup argv. Use it
+// for self-observation rather than starting PowerShell/CIM to query ourselves.
+// Do not substitute requested args or synthesize OBSERVED if reporting fails.
+export function nodeCommandLine(readReport=()=>process.report.getReport()) {
+  try {
+    const argv=readReport().header?.commandLine;
+    if(!Array.isArray(argv) || !argv.length || argv.some(arg=>typeof arg!=='string')) throw Error('NODE_COMMAND_LINE_UNAVAILABLE');
+    const executablePath=fs.realpathSync(process.execPath);
+    return {status:'OBSERVED',source:'NODE_DIAGNOSTIC_REPORT',pid:process.pid,parentPid:process.ppid,
+      commandLine:argv.join(' '),argv,executablePath,executableSha256:sha256(executablePath)};
+  } catch(error) {return {status:'UNVERIFIED',source:'NODE_DIAGNOSTIC_REPORT',commandLine:null,error:error.message};}
+}
+
 export function actualCommandLine(pid) {
   if (!Number.isInteger(pid)) return { status: 'UNVERIFIED', commandLine: null, reason: 'NO_PROCESS_PID' };
-  if (process.platform === 'win32') return getWindowsCommandLine(pid);
+  if (process.platform === 'win32') return pid===process.pid?nodeCommandLine():getWindowsCommandLine(pid);
   if (process.platform === 'linux') {
     try {
       // /proc can belong to the host PID namespace. Never read an unrelated

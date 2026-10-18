@@ -2,11 +2,13 @@ import {beginVerificationIdentity,finishVerificationIdentity} from './verificati
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { createControlledPrompt } from '../extension/runtime/markers.js';
 import { nativeExtensionComplete, sendNativePrompt, nativeFixtureHtml } from './native-extension-contract.js';
+import {collectNativeReloadControl} from './native-reload-control.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = path.resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? path.join(root, '.agent-controller'));
@@ -33,6 +35,8 @@ try {
   })();`);
   for (const entry of manifest.content_scripts) entry.js = ['native-observer.js', ...entry.js];
   fs.writeFileSync(path.join(extension, 'manifest.json'), JSON.stringify(manifest));
+  const executable=fs.realpathSync(process.env.UI_BROWSER_EXECUTABLE || chromium.executablePath());
+  result.browserExecutable={path:executable,sha256:createHash('sha256').update(fs.readFileSync(executable)).digest('hex')};
   context = await chromium.launchPersistentContext(path.join(scratch, 'profile'), {
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE } : { channel: 'chromium' }),
     headless: true, viewport:null, ignoreDefaultArgs: ['--disable-extensions'],
@@ -146,6 +150,12 @@ try {
   assert.equal((await ping()).activeRequestId, 'native-delivery');
   result.steps.push({ id:'pending-reinjection', name: 'native reinjection preserves the active job and document token', pass: true }); save();
   const cdp = await context.newCDPSession(page);
+  try {
+    const actualCommandLine=(await cdp.send('Browser.getBrowserCommandLine')).arguments;
+    const actualPath=fs.realpathSync(actualCommandLine[0]);
+    result.browserExecutable.observed={path:actualPath,
+      sha256:createHash('sha256').update(fs.readFileSync(actualPath)).digest('hex'),source:'CDP_BROWSER_COMMAND_LINE'};
+  } catch(error) {result.browserExecutable.observationError=error.message;}
   const workerUrl = worker.url(), updates = [];
   // MV3 can restart under the same Playwright Worker target without emitting another serviceworker event.
   cdp.on('ServiceWorker.workerVersionUpdated', ({ versions }) => {
@@ -255,6 +265,9 @@ try {
 } finally {
   try { await context?.close(); } catch (error) { result.status = 'FAIL'; result.cleanupError = error.message; process.exitCode = 1; }
   fs.rmSync(scratch, { recursive: true, force: true }); result.completed = true;
+  // Preserve the original Native FAIL. Diagnose only its reload boundary using
+  // the existing independent MV3 matrix, after releasing the Bridge browser.
+  await collectNativeReloadControl({result,root,directory,identity,save});
   if (result.status === 'PASS' && !nativeExtensionComplete(result)) {
     result.status = 'FAIL'; result.error = 'Incomplete native boundary verification'; process.exitCode = 1;
   }

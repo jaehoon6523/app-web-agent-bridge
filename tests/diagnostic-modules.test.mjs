@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { superviseTrial } from '../scripts/mv3-reload-core.mjs';
-import { actualCommandLine, launchConditions } from '../scripts/diagnostics/environment.mjs';
+import { actualCommandLine, getWindowsCommandLine, nodeCommandLine, launchConditions } from '../scripts/diagnostics/environment.mjs';
 import { discoverMinimalExtension, verifiedReloadIdentity, verifyExecutionContext } from '../scripts/direct-mv3-identity.mjs';
 import { observeReload } from '../scripts/diagnostics/reload-observer.mjs';
 import { classifyReload, readReceipt, writeReceipt, RELOAD_SCOPE } from '../scripts/diagnostics/reload-result.mjs';
@@ -36,10 +36,29 @@ test('A: failed spawn is execution failure, not browser readiness or functional 
 });
 test('A: actual argv distinguishes unknown from mismatch and records the live process', () => {
   const actual = actualCommandLine(process.pid);
-  if (['linux', 'win32'].includes(process.platform)) assert.equal(actual.status, 'OBSERVED');
+  if (['linux', 'win32'].includes(process.platform)) assert.equal(actual.status, 'OBSERVED',JSON.stringify(actual));
   assert.equal(launchConditions(['--flag'], { status: 'UNVERIFIED' }, false).status, 'UNVERIFIED');
   assert.equal(launchConditions(['--flag'], { status: 'OBSERVED', argv: ['--other'] }, false).matchesRequested, false);
   assert.equal(launchConditions(['--flag'], { status: 'OBSERVED', argv: ['--flag', '--enable-unsafe-extension-debugging'] }, false).matchesRequested, false);
+});
+test('A: command-line timeout, missing process and invalid JSON retain different query evidence',()=>{
+  const query=execute=>getWindowsCommandLine(123,{platform:'win32',execute,hash:()=> 'hash'});
+  const timeout=query(()=>{throw Object.assign(Error('query deadline'),{code:'ETIMEDOUT',signal:'SIGTERM'});});
+  assert.equal(timeout.status,'UNVERIFIED');assert.equal(timeout.query.timedOut,true);
+  assert.equal(timeout.query.errorCode,'ETIMEDOUT');assert.equal(timeout.query.timeoutMs,6000);
+  const missing=query(()=> '');assert.equal(missing.query.result,'PROCESS_NOT_FOUND');
+  const malformed=query(()=> '{');assert.equal(malformed.query.result,'QUERY_FAILED');
+  assert.equal(malformed.query.timedOut,false);
+  const observed=query(()=>JSON.stringify({ProcessId:123,ParentProcessId:1,ExecutablePath:'node.exe',CommandLine:'node.exe test.js'}));
+  assert.equal(observed.status,'OBSERVED');assert.equal(observed.executableSha256,'hash');
+});
+test('A: Node self-observation uses recorded startup argv and fails closed without report evidence',()=>{
+  const observed=nodeCommandLine();
+  assert.equal(observed.status,'OBSERVED',JSON.stringify(observed));
+  assert.deepEqual(observed.argv,process.report.getReport().header.commandLine);
+  assert.equal(observed.pid,process.pid);assert.equal(observed.source,'NODE_DIAGNOSTIC_REPORT');
+  assert.equal(nodeCommandLine(()=>({header:{}})).status,'UNVERIFIED');
+  assert.equal(nodeCommandLine(()=>{throw Error('report unavailable');}).status,'UNVERIFIED');
 });
 test('A: cleanup failure retains durable function observations and original stdout', async t => {
   const scratch = temp(t), logs = temp(t), snapshot = path.join(scratch, 'observation.json');
