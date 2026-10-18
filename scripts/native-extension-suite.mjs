@@ -9,6 +9,7 @@ import { chromium } from 'playwright-core';
 import { createControlledPrompt } from '../extension/runtime/markers.js';
 import { nativeExtensionComplete, sendNativePrompt, nativeFixtureHtml } from './native-extension-contract.js';
 import {collectNativeReloadControl} from './native-reload-control.mjs';
+import {enableExtensionDeveloperMode} from './mv3-reload-core.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = path.resolve(process.env.BRIDGE_VERIFICATION_OUTPUT ?? path.join(root, '.agent-controller'));
@@ -40,7 +41,7 @@ try {
   context = await chromium.launchPersistentContext(path.join(scratch, 'profile'), {
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE } : { channel: 'chromium' }),
     headless: true, viewport:null, ignoreDefaultArgs: ['--disable-extensions'],
-    args: [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--enable-unsafe-extension-debugging'],
+    args: ['--enable-automation', `--disable-extensions-except=${extension}`, `--load-extension=${extension}`, '--enable-unsafe-extension-debugging'],
     timeout: 15_000,
   });
   result.browser = context.browser()?.version() ?? 'Chromium persistent context';
@@ -201,6 +202,7 @@ try {
   assert.notEqual(observed.documentId, original); assert.equal(observed.busy, false);
   assert.equal(await ownerFromPopup(), 'native-delivery');
   result.steps.push({ id:'navigation', name: 'native navigation creates a new token and preserves unresolved ownership', pass: true }); save();
+  result.developerModeChange = await enableExtensionDeveloperMode(context); save();
   const reloadFrom = updates.length;
   const reloadRegistrations = [];
   cdp.on('ServiceWorker.workerRegistrationUpdated', ({ registrations }) => {
@@ -260,6 +262,7 @@ try {
   result.steps.push({ id:'extension-reload', name: 'native extension reload preserves storage and does not resend', pass: true });
   assert.deepEqual(errors, []); result.status = 'PASS';
 } catch (error) {
+  if (error.developerModeChange) result.developerModeChange = error.developerModeChange;
   result.status = initialized ? 'FAIL' : 'UNVERIFIED'; result.error = error.message;
   process.exitCode = initialized ? 1 : 2;
 } finally {

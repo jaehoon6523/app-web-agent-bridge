@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import http from 'node:http';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { MATRIX_CASES, assessReload, assessMatrix, atomicWrite, superviseTrial } from './mv3-reload-core.mjs';
+import { MATRIX_CASES, assessReload, assessMatrix, atomicWrite, superviseTrial, enableExtensionDeveloperMode } from './mv3-reload-core.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const ownPath = fileURLToPath(import.meta.url);
@@ -62,7 +62,7 @@ async function runChild(spec, scratch) {
     const { chromium } = await import('playwright-core');
     // Always pass an explicit executablePath so the executable used is unambiguous.
     const executablePath = path.resolve(process.env.UI_BROWSER_EXECUTABLE ?? chromium.executablePath());
-    const args = [`--disable-extensions-except=${extension}`, `--load-extension=${extension}`,
+    const args = ['--enable-automation', `--disable-extensions-except=${extension}`, `--load-extension=${extension}`,
       ...(spec.unsafeDebugging ? ['--enable-unsafe-extension-debugging'] : [])];
     trial.launch = { executablePath, executableSha256: fs.existsSync(executablePath) ? fileHash(executablePath) : null,
       headless: true, ignoreDefaultArgs: ['--disable-extensions'], args, profilePath: profile };
@@ -171,6 +171,8 @@ async function runChild(spec, scratch) {
       await fixture.close();
     } else trial.observations.precondition = { stopStart: 'SKIPPED', navigation: 'SKIPPED' };
 
+    setStage('DEVELOPER_MODE');
+    trial.observations.developerModeChange = await enableExtensionDeveloperMode(context); save();
     const before = await ping(popup);
     if (!before?.ok) throw new Error('Worker unresponsive before reload');
     trial.observations.beforeReloadWorkerInstance = before.instanceId;
@@ -226,6 +228,7 @@ async function runChild(spec, scratch) {
     } catch (error) { trial.observations.targetQueryError = error.message; }
     trial.execution = 'COMPLETE'; setStage('DONE');
   } catch (error) {
+    if (error.developerModeChange) trial.observations.developerModeChange = error.developerModeChange;
     trial.error = { stage: trial.stage, message: error.message, code: error.code ?? null };
     // Preserve any earlier functionalRecovery/reloadResult; do not report setup failures as reload failures.
     save();

@@ -5,7 +5,83 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { assessReload, assessMatrix, recordCleanup, superviseTrial, atomicWrite } from '../scripts/mv3-reload-core.mjs';
+import { runInNewContext } from 'node:vm';
+import { assessReload, assessMatrix, recordCleanup, superviseTrial, atomicWrite, enableExtensionDeveloperMode } from '../scripts/mv3-reload-core.mjs';
+
+function developerModeFixture({ enabled = false, policy = false, ignoreUpdate = false,
+  updateError, pendingRead = false, navigationError } = {}) {
+  let effective = enabled, closed = 0;
+  const updates = [], timers = new Set();
+  const api = {
+    getProfileConfiguration: async () => pendingRead ? new Promise(() => {})
+      : { inDeveloperMode: effective, isDeveloperModeControlledByPolicy: policy },
+    updateProfileConfiguration: async value => {
+      updates.push(value.inDeveloperMode);
+      if (updateError) throw Error(updateError);
+      if (!ignoreUpdate) effective = value.inDeveloperMode;
+    },
+  };
+  const page = {
+    async goto(url, options) {
+      assert.equal(url, 'chrome://extensions/');
+      assert.ok(options.timeout > 0);
+      if (navigationError) throw Error(navigationError);
+    },
+    async evaluate(callback) {
+      const observed = await runInNewContext(`(${callback.toString()})()`, {
+        chrome: { developerPrivate: api },
+        setTimeout(fn, ms) {
+          assert.ok(Number.isFinite(ms) && ms > 0);
+          const timer = setTimeout(fn, 0); timers.add(timer); return timer;
+        },
+        clearTimeout(timer) { clearTimeout(timer); timers.delete(timer); },
+      });
+      return JSON.parse(JSON.stringify(observed));
+    },
+    async close() { closed++; },
+  };
+  return { context: { newPage: async () => page }, updates, timers, get closed() { return closed; } };
+}
+
+test('reload profile enables developer mode through Chrome and verifies effective readback', async () => {
+  const fixture = developerModeFixture();
+  const change = await enableExtensionDeveloperMode(fixture.context);
+  assert.equal(change.before.inDeveloperMode, false);
+  assert.equal(change.after.inDeveloperMode, true);
+  assert.deepEqual(fixture.updates, [true]);
+  assert.equal(fixture.closed, 1);
+  assert.equal(fixture.timers.size, 0);
+});
+
+test('reload profile preserves an already enabled setting without writing through policy', async () => {
+  const fixture = developerModeFixture({ enabled: true, policy: true });
+  const change = await enableExtensionDeveloperMode(fixture.context);
+  assert.equal(change.after.inDeveloperMode, true);
+  assert.deepEqual(fixture.updates, []);
+  assert.equal(fixture.closed, 1);
+  assert.equal(fixture.timers.size, 0);
+});
+
+test('reload profile rejects unconfirmed settings and closes the management page', async t => {
+  for (const [name, options, reason] of [
+    ['policy', { policy: true }, /disabled by policy/u],
+    ['ignored update', { ignoreUpdate: true }, /ON was not confirmed/u],
+    ['API error', { updateError: 'update rejected' }, /update rejected/u],
+    ['pending API', { pendingRead: true }, /timed out/u],
+    ['navigation error', { navigationError: 'navigation refused' }, /navigation refused/u],
+  ]) await t.test(name, async () => {
+    const fixture = developerModeFixture(options);
+    await assert.rejects(enableExtensionDeveloperMode(fixture.context), error => {
+      assert.match(error.message, reason);
+      if (name === 'ignored update') assert.equal(error.developerModeChange.after.inDeveloperMode, false);
+      if (name === 'policy') assert.equal(error.developerModeChange.before.inDeveloperMode, false);
+      return true;
+    });
+    if (name === 'policy') assert.deepEqual(fixture.updates, []);
+    assert.equal(fixture.closed, 1);
+    assert.equal(fixture.timers.size, 0);
+  });
+});
 
 test('watchdog kills a real hung child after the deadline and verifies its exit', async () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mv3-watchdog-test-'));

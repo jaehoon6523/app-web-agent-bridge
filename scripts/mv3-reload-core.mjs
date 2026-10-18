@@ -12,6 +12,42 @@ export const MATRIX_CASES = Object.freeze([
   { id: 'D', precondition: 'stop-start-navigation', unsafeDebugging: true },
 ]);
 
+// runtime.reload() treats a command-line extension as unpacked. Prepare only
+// the disposable browser profile, and verify Chrome's effective setting.
+export async function enableExtensionDeveloperMode(context) {
+  const page = await context.newPage();
+  try {
+    await page.goto('chrome://extensions/', { waitUntil: 'domcontentloaded', timeout: 3000 });
+    const change = await page.evaluate(async () => {
+      const observation = {};
+      let timer;
+      try {
+        await Promise.race([
+          (async () => {
+            observation.before = await chrome.developerPrivate.getProfileConfiguration();
+            if (observation.before.inDeveloperMode !== true) {
+              if (observation.before.isDeveloperModeControlledByPolicy)
+                throw new Error('Extension developer mode is disabled by policy');
+              await chrome.developerPrivate.updateProfileConfiguration({ inDeveloperMode: true });
+            }
+            observation.after = await chrome.developerPrivate.getProfileConfiguration();
+          })(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error('Extension developer mode configuration timed out')), 4000);
+          }),
+        ]);
+      } catch (error) { observation.error = error.message; }
+      finally { clearTimeout(timer); }
+      return observation;
+    });
+    if (change.after?.inDeveloperMode !== true) {
+      throw Object.assign(new Error(change.error ?? 'Extension developer mode ON was not confirmed'),
+        { developerModeChange: change });
+    }
+    return change;
+  } finally { await page.close(); }
+}
+
 export function assessReload(observation, windowCompleted) {
   const popup = observation.popupAfter ?? {};
   const recovered = popup.popupAccessible === true && popup.sentinelPreserved === true &&
