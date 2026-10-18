@@ -11,8 +11,7 @@ import { loadConfig } from "../../src/config.js";
 import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { observeChildClose, waitChildClose } from "../../src/runtime/child-close.js";
 import { runDiagnosticServer } from "../../scripts/diagnose-server.mjs";
-import { seedHistory } from "../helpers/code-history-fixture.js";
-import { canonicalJson, sha256CanonicalJson } from "../../src/domain/canonical-json.js";
+import { seedHistory, appendHistory } from "../helpers/code-history-fixture.js";
 
 async function serverFixture(t, {corrupt = false} = {}) {
   const fixtureStarted=performance.now(), timing={phases:[]};
@@ -37,13 +36,18 @@ async function serverFixture(t, {corrupt = false} = {}) {
   const child = runDiagnosticServer({runtimeConfig:config, outputFile:path.join(root, "events.jsonl"),recordHeartbeats:true,
     onEvent:event => { events.push(event);t.evidence.event(event);changed.emit("event", event); }});
   const observation = observeChildClose(child);
-  let stopped;
+  let stopped, pendingAppend;
   const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {
     if (child.connected) child.send({type:"bridge.shutdown"});
   }});
   t.after(async () => {
     const closeStarted=performance.now();
-    try { assert.deepEqual(await stop(), {code:0,signal:null}); }
+    try {
+      // Abort cancels fixture work too. Observe its worker exit before removing
+      // the database, including when node:test has already ended the test body.
+      await pendingAppend?.catch(() => {});
+      assert.deepEqual(await stop(), {code:0,signal:null});
+    }
     finally {
       timing.closeMs=performance.now()-closeStarted;
       timing.totalMs=performance.now()-fixtureStarted;
@@ -72,7 +76,8 @@ async function serverFixture(t, {corrupt = false} = {}) {
   await until(event => event.type === "server.listening");
   timing.fixtureMs=performance.now()-fixtureStarted;
   const read = () => evidenceFetch(t.evidence,config.baseUrl+"/api/state", {headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(5000)});
-  return {config, record, events, until, read, stop, timing};
+  const append = record => pendingAppend = appendHistory(config.persistence.databasePath,record,{signal:t.signal});
+  return {config, record, events, until, read, stop, timing, append};
 }
 
 // Windows took 43.23s including the real cumulative-history fixture under a 45s
@@ -85,18 +90,8 @@ test("cold and invalidated real history verification keep independent HTTP respo
     const phaseTiming={phase,stage:'starting'}; server.timing.phases.push(phaseTiming);
     const checkpoint = server.events.length;
     if (phase === "external append") {
-      const writer = new DatabaseSync(server.config.persistence.databasePath);
-      try {
-        expected = {...expected, version:expected.version+1};
-        const json = canonicalJson(expected), hash = sha256CanonicalJson(expected);
-        const previousHash = writer.prepare("SELECT entry_hash FROM code_change_history ORDER BY version DESC LIMIT 1").get().entry_hash;
-        const headHash = sha256CanonicalJson({kind:"CODE_CHANGE_HISTORY",runId:expected.runId,version:expected.version,recordHash:hash,previousHash});
-        writer.exec("BEGIN IMMEDIATE");
-        writer.prepare("UPDATE code_change_runs SET version=?,record_json=?,record_hash=? WHERE run_id=?").run(expected.version,json,hash,expected.runId);
-        writer.prepare("INSERT INTO code_change_history VALUES (?,?,?,?,?,?)").run(expected.runId,expected.version,json,hash,previousHash,headHash);
-        writer.exec("COMMIT");
-      }
-      finally { writer.close(); }
+      expected = {...expected, version:expected.version+1};
+      await server.append(expected);
     }
     const pending = server.read(); pending.catch(() => {});
     phaseTiming.stage='waiting for progress';

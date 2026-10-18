@@ -7,6 +7,7 @@ import {ownedSpawn, forceProcessTree} from './e2e/platform/process.mjs';
 import {fileURLToPath} from 'node:url';
 import {observeChildClose, waitChildClose} from '../src/runtime/child-close.js';
 import {atomicWrite} from './mv3-reload-core.mjs';
+import {resourceClosureUnconfirmed} from './verification-identity.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 // Node treats a Windows drive letter as a URL scheme if passed as a reporter path.
@@ -37,17 +38,21 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
   const budgetMs = timeoutMs ?? fileTimeoutMs(filename);
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-test-receipt-'));
   const receipt = path.join(scratch, 'completion.json');
+  let child, descriptor, failure;
   let closure, error, errorCode, cleanupError, summary, receiptError, item, deadline = false;
-  const childEnv = {...process.env, BRIDGE_TEST_RECEIPT:receipt, BRIDGE_TEST_FILE:path.resolve(filename)};
+  const childEnv = {...process.env, BRIDGE_TEST_RECEIPT:receipt, BRIDGE_TEST_RECEIPT_FD:'3', BRIDGE_TEST_FILE:path.resolve(filename)};
   // A gate regression may itself execute inside node:test. Do not let that
   // worker's private context suppress the nested file's completion reporter.
   delete childEnv.NODE_TEST_CONTEXT;
-  const child = ownedSpawn(['--test', '--experimental-test-isolation=none',
-    '--test-reporter='+reporter, filename], {cwd:root, env:childEnv});
-  const observation = observeChildClose(child);
-  child.on('error', cause => {error = cause.message; errorCode = cause.code;});
-  child.stdout.on('data', output); child.stderr.on('data', output);
   try {
+    // Allocate the proof's file object before the producer starts. The child
+    // receives a duplicate at fd 3; namespace cleanup cannot replace this object.
+    descriptor = fs.openSync(receipt, 'wx+', 0o600);
+    child = ownedSpawn(['--test', '--experimental-test-isolation=none',
+      '--test-reporter='+reporter, filename], {cwd:root, env:childEnv, extraStdio:[descriptor]});
+    const observation = observeChildClose(child);
+    child.on('error', cause => {error = cause.message; errorCode = cause.code;});
+    child.stdout.on('data', output); child.stderr.on('data', output);
     try {
       closure = await waitChildClose(child, observation, {timeoutMs:budgetMs,
         onDeadline:()=>{deadline = true;}, forceClose:()=>forceProcessTree(child)});
@@ -55,10 +60,19 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
       error = cause.message; errorCode = cause.code; cleanupError = cause.cleanupError ?? null;
       child.stdout.destroy(); child.stderr.destroy();
     }
-    if (fs.existsSync(receipt)) {
-      try {summary = JSON.parse(fs.readFileSync(receipt, 'utf8'));}
-      catch (cause) {receiptError = cause.message;}
-    }
+    try {
+      const size = fs.fstatSync(descriptor).size;
+      if (size) {
+        const bytes = Buffer.alloc(size);
+        let read = 0;
+        while (read < size) {
+          const count = fs.readSync(descriptor, bytes, read, size-read, read);
+          if (!count) throw Error('INCOMPLETE_RECEIPT_READ');
+          read += count;
+        }
+        summary = JSON.parse(bytes.toString('utf8'));
+      }
+    } catch (cause) {receiptError = cause.message;}
     const allowedSkip = path.resolve(filename) === path.join(root,'tests/certify.test.js') && process.platform !== 'win32'
       ? ['certification command runner launches npm on Windows'] : [];
     const summaryStatus = receiptError ? 'INVALID' : !summary ? 'MISSING' : summary.completed === true ? 'COMPLETE' : 'INCOMPLETE';
@@ -73,13 +87,22 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
     item = {file:path.relative(root,filename).split(path.sep).join('/'), pass, closure, error, errorCode,
       cleanupError, timeoutMs:budgetMs, deadline, childPid:child.pid, childExitCode:child.exitCode,
       childSignal:child.signalCode, summaryStatus, receiptError, unexpectedSkips, reason, summary};
-  } finally {
+  } catch (cause) { failure = cause; throw cause; }
+  finally {
+    const errors = [];
+    if (descriptor !== undefined) {
+      try { fs.closeSync(descriptor); } catch (cause) { errors.push(cause); }
+    }
     try { fs.rmSync(scratch, {recursive:true,force:true}); }
-    catch (cause) {
-      if (!item) throw cause;
-      item.receiptCleanupError = cause.message;
-      if (item.pass) item.reason = 'CLEANUP_FAILURE';
-      item.pass = false;
+    catch (cause) { errors.push(cause); }
+    if (errors.length) {
+      const message = errors.map(cause => cause.message).join('; ');
+      if (item) {
+        item.receiptCleanupError = message;
+        if (item.pass) item.reason = 'CLEANUP_FAILURE';
+        item.pass = false;
+      } else if (failure) failure.cleanupError = message;
+      else throw new AggregateError(errors, message);
     }
   }
   return item;
@@ -120,6 +143,11 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
         plan:item.summary?.plan,topLevel:item.summary?.topLevel,
         passed:item.summary?.passed,failed:item.summary?.failed,skipped:item.summary?.skipped})+'\n');
       save();
+      if (resourceClosureUnconfirmed(item)) {
+        result.cleanupError = item.receiptCleanupError ?? item.cleanupError ?? 'RESOURCE_CLOSURE_UNCONFIRMED';
+        result.blockedAfter = item.file;
+        break;
+      }
     }
     result.sourceAfter = verificationSource(root);
     result.candidateUnchanged = result.source.sourceSha256 === result.sourceAfter.sourceSha256 && result.source.head === result.sourceAfter.head;
@@ -129,8 +157,8 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
     save();
     return result;
   } catch (cause) {
-    result.status = 'FAIL'; result.error = cause.message;
-    write('TEST_GATE_EXCEPTION '+JSON.stringify({error:cause.message,code:cause.code ?? null})+'\n');
+    result.status = 'FAIL'; result.error = cause.message; result.cleanupError ??= cause.cleanupError ?? null;
+    write('TEST_GATE_EXCEPTION '+JSON.stringify({error:cause.message,code:cause.code ?? null,cleanupError:result.cleanupError})+'\n');
     throw cause;
   } finally {result.finishedAt=new Date().toISOString();result.terminal=true;
     result.exitCode=result.status==='PASS'?0:1;save();}

@@ -83,11 +83,11 @@ export async function forceProcessTree(child) {
   }
 }
 
-export function ownedSpawn(args, { cwd, env = process.env, ipc = false } = {}) {
+export function ownedSpawn(args, { cwd, env = process.env, ipc = false, extraStdio = [] } = {}) {
   return spawn(process.execPath, args, { cwd, env, windowsHide:true,
     // One process group per owner permits bounded descendant cleanup on POSIX.
     detached:process.platform !== 'win32',
-    stdio:['ignore','pipe','pipe', ...(ipc ? ['ipc'] : [])] });
+    stdio:['ignore','pipe','pipe', ...(ipc ? ['ipc'] : []), ...extraStdio] });
 }
 
 export async function runOwnedNode(args, { cwd, env, timeoutMs, isComplete = () => false,

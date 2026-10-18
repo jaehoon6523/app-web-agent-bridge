@@ -16,7 +16,7 @@ const SHARED_SECRET = "integration-shared-secret-0123456789abcdef";
 const EXTENSION_IDENTITY = "extension-integration";
 const DASHBOARD_TOKEN = "dashboard-token-0123456789abcdef-dashboard-token";
 
-function runtimeConfig({
+function runtimeConfig(directory, {
   demoMode = false,
   dashboardToken = null,
   codexExecutablePath = null,
@@ -29,6 +29,7 @@ function runtimeConfig({
     baseUrl: "http://127.0.0.1:0",
     workspace: process.cwd(),
     logDir: process.cwd(),
+    persistence: { databasePath: path.join(directory, "controller.sqlite") },
     demoMode,
     auditProjectFile,
     dashboard: { token: dashboardToken },
@@ -140,12 +141,14 @@ test("optional integration configuration is feature-gated and EXTENSION_TOKEN is
 });
 
 test("server rejects token URLs and authenticates the exact extension identity by HMAC", async (t) => {
-  const bridge = createBridgeServer({ runtimeConfig: runtimeConfig() });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "server-cutover-"));
+  const bridge = createBridgeServer({ runtimeConfig: runtimeConfig(directory) });
   assert.equal(bridge.extensionWss.options.maxPayload, 1024 * 1024);
   await bridge.listen();
   t.after(async () => {
     for (const client of bridge.extensionWss.clients) client.terminate();
     await bridge.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   });
 
   const { port } = bridge.server.address();
@@ -206,10 +209,12 @@ test("server rejects token URLs and authenticates the exact extension identity b
 });
 
 test("demo mode is transport-free and does not accept extension or dashboard upgrades", async (t) => {
-  const bridge = createBridgeServer({ runtimeConfig: runtimeConfig({ demoMode: true }) });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "server-cutover-"));
+  const bridge = createBridgeServer({ runtimeConfig: runtimeConfig(directory, { demoMode: true }) });
   await bridge.listen();
   t.after(async () => {
     await bridge.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   });
 
   assert.equal(bridge.extensionTransport, null);
@@ -220,8 +225,9 @@ test("demo mode is transport-free and does not accept extension or dashboard upg
 });
 
 test("server boots without optional live credentials and local browser session remains usable", async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "server-cutover-"));
   const bridge = createBridgeServer({
-    runtimeConfig: runtimeConfig({
+    runtimeConfig: runtimeConfig(directory, {
       dashboardToken: null,
       extensionEnabled: false,
       codexExecutablePath: null,
@@ -230,6 +236,7 @@ test("server boots without optional live credentials and local browser session r
   await bridge.listen();
   t.after(async () => {
     await bridge.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   });
 
   assert.equal(bridge.extensionTransport, null);
@@ -293,7 +300,7 @@ test("legacy authenticated start cannot bypass preparation approval", async (t) 
   fs.writeFileSync(auditProjectFile, JSON.stringify(project(directory)));
   const receipts = new CodeChangeStore(path.join(directory, "receipts.sqlite"));
   const bridge = createBridgeServer({
-    runtimeConfig: runtimeConfig({
+    runtimeConfig: runtimeConfig(directory, {
       dashboardToken: DASHBOARD_TOKEN,
       codexExecutablePath: "C:\\safe\\codex.exe",
       auditProjectFile,

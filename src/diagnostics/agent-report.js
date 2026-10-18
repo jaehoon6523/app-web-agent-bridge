@@ -17,7 +17,9 @@ const array = value => Array.isArray(value) ? value : [];
 /** @param {string} root @param {any} [options] */
 export async function repositoryObservation(root, {signal,onDiagnostic,execute = execFile} = {}) {
   const read = args => new Promise(resolve => {
-    const started = performance.now(), command = ['--no-optional-locks','-C',root,...args];
+    // A read-only observation must not invoke repository/global fsmonitor hooks
+    // or start a daemon whose lifetime is outside this report's owned child.
+    const started = performance.now(), command = ['--no-optional-locks','-c','core.fsmonitor=false','-C',root,...args];
     const event = (type,detail = {}) => {
       try { onDiagnostic?.({type,at:new Date().toISOString(),monotonicMs:performance.timeOrigin+performance.now(),
         command:['git',...command],cwd:root,...detail}); } catch { /* Observation only. */ }

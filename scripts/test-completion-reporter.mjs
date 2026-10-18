@@ -23,7 +23,13 @@ export default async function* reporter(source) {
   }
   yield* tap(observe());
   result.completed = result.plan > 0 && result.plan === result.topLevel && result.synthetic === 0;
-  if (process.env.BRIDGE_TEST_RECEIPT) {
+  if (process.env.BRIDGE_TEST_RECEIPT_FD !== undefined) {
+    const descriptor = Number(process.env.BRIDGE_TEST_RECEIPT_FD);
+    if (!Number.isSafeInteger(descriptor) || descriptor < 3) throw Error('INVALID_COMPLETION_DESCRIPTOR');
+    // The parent owns this file object until the child closes. Its directory
+    // name may disappear during a long test; do not reopen it at completion.
+    fs.writeFileSync(descriptor, JSON.stringify(result)+'\n');
+  } else if (process.env.BRIDGE_TEST_RECEIPT) {
     fs.writeFileSync(process.env.BRIDGE_TEST_RECEIPT, JSON.stringify(result)+'\n', {flag:'wx'});
   }
 }

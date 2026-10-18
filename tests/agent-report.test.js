@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
 import { createAutomaticAgentReport, summarizeTabs, summarizeDelivery, safeFailure, writeAgentReport } from "../src/diagnostics/agent-report.js";
 import { collectSelectorDiagnostics, cancelSelectorDiagnostics } from "../src/orchestration/selector-diagnostics.js";
 
@@ -12,6 +13,29 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, {recursive:true, force:true}));
   return root;
 }
+test("automatic repository observation bypasses fsmonitor hooks while preserving HEAD and dirty evidence", async t => {
+  const root = fixture(t), marker = path.join(root, "fsmonitor-invoked");
+  const hook = path.join(root, "fsmonitor.mjs");
+  fs.writeFileSync(hook, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)},'invoked'); process.stdout.write('token\\0/');`);
+  const git = args => execFileSync("git", ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=", "-C", root, ...args], {encoding:"utf8",windowsHide:true});
+  git(["init", "--quiet"]);
+  fs.writeFileSync(path.join(root, "tracked.txt"), "before\n");
+  git(["add", "tracked.txt"]);
+  git(["-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "fixture"]);
+  const commit = git(["rev-parse", "HEAD"]).trim();
+  // Git invokes this command through its shell, including Git for Windows.
+  const quote = value => '"' + value.replaceAll('\\','/').replaceAll('"','\\"') + '"';
+  git(["config", "core.fsmonitor", [process.execPath, hook].map(quote).join(" ")]);
+  execFileSync("git", ["--no-optional-locks", "-C", root, "status", "--porcelain", "--untracked-files=normal"], {windowsHide:true});
+  assert.equal(fs.readFileSync(marker,"utf8"), "invoked", "the real Git control must invoke the configured hook");
+  fs.unlinkSync(marker);
+  fs.writeFileSync(path.join(root, "tracked.txt"), "after\n");
+  const report = createAutomaticAgentReport({root,directory:path.join(root,"diagnostics")});
+  try { await report.ready; } finally { await report.close(); }
+  assert.equal(fs.existsSync(marker), false, "read-only diagnostics must not invoke a hook that can start unowned processes");
+  const saved = JSON.parse(fs.readFileSync(path.join(root,"diagnostics/runtime-latest.json"),"utf8"));
+  assert.deepEqual(saved.server.repository, {commit,dirty:true});
+});
 test("latest report excludes content, labels and errors; unknown delivery is not missing", async t => {
   const root = fixture(t);
   const secret = "PRIVATE_SECRET_RESPONSE";

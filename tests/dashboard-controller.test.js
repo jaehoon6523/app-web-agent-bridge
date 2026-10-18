@@ -19,7 +19,7 @@ const proposal = { type: "PROPOSAL", summary: "Test", body: "Keep exact sessions
 const token = "dashboard-integration-token-0123456789abcdef";
 const secret = "extension-integration-secret-0123456789abcdef";
 
-function fixture(t) {
+function fixture(t, beforeClose = async () => {}) {
   const directory = mkdtempSync(join(tmpdir(), "dashboard-controller-"));
   const store = new SqliteStore(join(directory, "controller.sqlite"));
   const receipts = new CodeChangeStore(join(directory, "controller.sqlite"));
@@ -47,10 +47,10 @@ function fixture(t) {
   let closed = false;
   const live = { store, composition, codeChanges: { store: receipts, list: () => [], busy: () => false, get: () => null }, artifactStore: artifacts,
     async close() { if (closed) return; closed = true; composition.close(); receipts.close(); store.close(); } };
-  t.after(async () => { await live.close(); rmSync(directory, { recursive: true, force: true }); });
+  t.after(async () => { await beforeClose(); await live.close(); rmSync(directory, { recursive: true, force: true }); });
   const dashboard = new DashboardController({ getRuntime: async () => live, preflight: () => ({ readyForProvisioning: true }), webSession: null, transport: null });
   t.after(() => dashboard.close());
-  return { live, store, composition, dashboard, sessions, ledger };
+  return { live, store, composition, dashboard, sessions, ledger, directory };
 }
 
 async function settled(dashboard, runId) {
@@ -138,16 +138,18 @@ test("an unfinished run blocks another start and invalid URL has no persisted ef
 });
 
 test("HTTP dashboard enforces authentication and forbids direct run.start approval bypass", async (t) => {
-  const { live, store, dashboard } = fixture(t);
+  let bridge;
+  // Drain server diagnostics before closing its stores and removing the fixture.
+  const { live, store, dashboard, directory } = fixture(t, () => bridge?.close());
   const advertised = await dashboard.snapshot();
   assert.equal(advertised.commandCapabilities.includes("run.start"), false);
-  const bridge = createBridgeServer({ runtimeConfig: {
+  bridge = createBridgeServer({ runtimeConfig: {
     host: "127.0.0.1", port: 0, baseUrl: "http://127.0.0.1:0", demoMode: false,
+    persistence: { databasePath: join(directory, "controller.sqlite") },
     codex: { executablePath: process.execPath }, dashboard: { token },
     webExtension: { enabled: true, sharedSecret: secret, expectedExtensionIdentity: "test-extension" }, relay: { webResponseTimeoutMs: 1000 },
   }, createLiveRuntime: async () => live });
   await bridge.listen();
-  t.after(() => bridge.close());
   const base = `http://127.0.0.1:${bridge.server.address().port}`;
   assert.equal((await fetch(`${base}/api/state`)).status, 401);
   const headers = { authorization: `Bearer ${token}`, origin: "http://127.0.0.1:0", "content-type": "application/json" };
