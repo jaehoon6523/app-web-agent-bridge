@@ -16,7 +16,17 @@ const run = promisify(execFile);
 const contexts = new WeakMap();
 // Exercise the direct Node dispatch on every host, while keeping OS policy
 // changes local to this contract-test process.
-verificationCatalog.find(stage => stage.id === 'windows-focused').os = undefined;
+function controlledPlan() {
+  verificationCatalog.find(stage => stage.id === 'windows-focused').os = undefined;
+  // Exercise Windows' generated direct-Node groups on every test host. Keep
+  // process.platform intact: this models the plan, not a Windows OS runtime.
+  if (process.platform !== 'win32') {
+    const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-[234])?$/u.test(stage.id));
+    const index=verificationCatalog.findIndex(stage=>stage.id==='discovery');
+    verificationCatalog.splice(index,1,...groups);
+  }
+}
+controlledPlan();
 let evidenceRun, suiteRoot, checkout, snapshot, originalContent;
 // Full source copying, Git initialization and dependency linking belong to the
 // file setup budget, rather than being repeated inside every 15-second case.
@@ -88,14 +98,19 @@ async function execute(t, mode) {
     if (${JSON.stringify(mode)} === 'first-fails' && stage==='lint') process.exitCode=7;
     if (${JSON.stringify(mode)} === 'native-unavailable' && stage==='test:extension:native') process.exitCode=2;
   `);
-  // npm_execpath controls npm stages only. Preload the same controlled peer
-  // for direct Node stages too; retain their original argv so expectedFiles
-  // is still derived from the real catalog. No checkout source bytes change.
+  // npm_execpath controls npm stages only. Route direct Node commands at
+  // dispatch, including discovery groups generated after catalog setup.
+  // Keep the real plan and expectedFiles intact; no checkout bytes change.
   const preload = path.join(root,'controlled-dispatch.mjs');
-  fs.writeFileSync(preload,`import {verificationCatalog} from ${JSON.stringify(pathToFileURL(path.join(checkout,'scripts/verification-plan.mjs')).href)};
-    verificationCatalog.find(stage=>stage.id==='windows-focused').os=undefined;
-    for (const stage of verificationCatalog) if (stage.nodeArgs)
-      stage.nodeArgs=[${JSON.stringify(peer)},'run',stage.id,...stage.nodeArgs];`);
+  fs.writeFileSync(preload,`import {ChildProcess} from 'node:child_process';
+    import {verificationCatalog,verificationPlan} from ${JSON.stringify(pathToFileURL(path.join(checkout,'scripts/verification-plan.mjs')).href)};
+    (${controlledPlan.toString()})();
+    const spawn=ChildProcess.prototype.spawn;
+    ChildProcess.prototype.spawn=function(options) {
+      if (options.file===process.execPath && options.args[1]==='scripts/run-tests.mjs')
+        options={...options,args:[options.args[0],${JSON.stringify(peer)},'run','controlled-node',...options.args.slice(1)]};
+      return spawn.call(this,options);
+    };`);
   try {
     await evidence.command(process.execPath,['--import',pathToFileURL(preload).href,command],{cwd:checkout,
       env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:12000,maxBuffer:16*1024*1024},run);
@@ -103,6 +118,10 @@ async function execute(t, mode) {
     if (typeof error.code !== 'number') throw error;
   }
   const closed = evidence.record.commands.at(-1);
+  assert.equal(closed.timedOut,false);
+  assert.deepEqual(closed.stdout.match(/^peer discovery(?:-[234])?$/gmu),
+    ['discovery','discovery-2','discovery-3','discovery-4'].map(id=>'peer '+id));
+  assert.doesNotMatch(closed.stdout,/^FILE tests[\\/]/mu);
   assert.match(closed.stdout,/^peer windows-focused$/mu);
   const code = closed.exitCode, signal = closed.signal;
   const result=JSON.parse(fs.readFileSync(path.join(root,'latest-verification.json'),'utf8'));
