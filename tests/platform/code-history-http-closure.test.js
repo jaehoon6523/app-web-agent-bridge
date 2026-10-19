@@ -10,6 +10,7 @@ import {loadConfig} from '../../src/config.js';
 import {SqliteStore} from '../../src/persistence/sqlite-store.js';
 import {observeChildClose,waitChildClose} from '../../src/runtime/child-close.js';
 import {seedHistory} from '../helpers/code-history-fixture.js';
+import {settleFixture,waitForResourceOwner} from '../helpers/fixture-resource-cleanup.js';
 
 const repository=fileURLToPath(new URL('../../',import.meta.url));
 const cases=[
@@ -25,7 +26,7 @@ for(const config of cases){
     // Repository ancestor resolves installed dependencies on both platforms;
     // no POSIX symlinks, shell processes or Windows symlink privileges needed.
     const root=fs.mkdtempSync(path.join(repository,'.history-http-closure-'));
-    let stop;
+    let stop,child,dbPath,operationError;
     try{
       const program=path.join(root,'program');fs.mkdirSync(program);
       fs.cpSync(path.join(repository,'src'),path.join(program,'src'),{recursive:true});
@@ -44,15 +45,19 @@ for(const config of cases){
       const token='closure-contract-token-0123456789abcdef';
       const runtimeConfig=loadConfig({cwd:root,env:{WORKSPACE:root,CONTROLLER_DATA_DIR:root,PORT:String(port),DASHBOARD_TOKEN:token,
         WEB_EXTENSION_SHARED_SECRET:'closure-extension-secret-0123456789abcdef',WEB_EXTENSION_EXPECTED_IDENTITY:'closure-extension'}});
+      dbPath=runtimeConfig.persistence.databasePath;
       new SqliteStore(runtimeConfig.persistence.databasePath).close();
       seedHistory(runtimeConfig.persistence.databasePath,{versions:8});
       if(config.corrupt){const db=new DatabaseSync(runtimeConfig.persistence.databasePath);
         try{db.exec("UPDATE code_change_history SET record_json='{broken' WHERE version=1");}finally{db.close();}}
       const events=[],changed=new EventEmitter();
       const {runDiagnosticServer}=await import(pathToFileURL(path.join(program,'scripts/diagnose-server.mjs')));
-      const child=runDiagnosticServer({runtimeConfig,outputFile:path.join(root,'events.jsonl'),onEvent:event=>{events.push(event);changed.emit('event',event);}});
+      child=runDiagnosticServer({runtimeConfig,outputFile:path.join(root,'events.jsonl'),onEvent:event=>{events.push(event);changed.emit('event',event);}});
       const observation=observeChildClose(child);let stopped;
-      stop=()=>stopped??=waitChildClose(child,observation,{timeoutMs:8000,request:()=>{if(child.connected)child.send({type:'bridge.shutdown'});}});
+      // Child process exit plus IPC disconnect can precede the monitor's own
+      // file descriptor closure. Require that owner's close event as well.
+      stop=()=>stopped??=waitForResourceOwner(()=>waitChildClose(child,observation,{timeoutMs:8000,
+        request:()=>{if(child.connected)child.send({type:'bridge.shutdown'});}}),child.recorderClosed);
       async function until(type){
         if(events.some(event=>event.type===type))return;
         let listener,timer;
@@ -85,8 +90,20 @@ for(const config of cases){
       assert.ok(events.some(event=>event.type==='shutdown.ipc.start'));
       assert.ok(events.some(event=>event.type==='shutdown.stage.done' && event.stage==='HTTP server close'));
       fs.unlinkSync(runtimeConfig.persistence.databasePath);
+    }catch(error){
+      operationError=error;
     }finally{
-      try{if(stop)await stop();}finally{fs.rmSync(root,{recursive:true,force:true});}
+      await settleFixture({operationError,stop:stop??(child ? async()=>{throw Error('CHILD_CLOSURE_UNCONFIRMED');} : null),
+        cleanup:()=>fs.rmSync(root,{recursive:true,force:true}),
+        observe:({phase,error,closeConfirmed})=>{
+          const sqliteFiles=dbPath?[dbPath,dbPath+'-wal',dbPath+'-shm']
+            .filter(file=>fs.existsSync(file)).map(file=>path.basename(file)):[];
+          t.diagnostic(JSON.stringify({type:'HTTP_CLOSURE_RESOURCE_EVIDENCE',case:config.id,
+            phase,code:error?.code??null,failedBasename:path.basename(error?.path??root),
+            closeConfirmed,childPid:child?.pid??null,childExitCode:child?.exitCode??null,
+            childSignal:child?.signalCode??null,childConnected:child?.connected??null,
+            sqliteFiles}));
+        }});
     }
   });
 }
