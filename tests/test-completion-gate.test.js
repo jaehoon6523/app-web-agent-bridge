@@ -32,10 +32,14 @@ function failReceiptClose(t) {
   });
 }
 
-test('completion receipt survives its directory moving before the reporter finishes', async t => {
-  const filename = fixture(t, `import test from 'node:test'; import fs from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
-    test('finished after move', () => fs.renameSync(path.dirname(process.env.BRIDGE_TEST_RECEIPT),
-      path.join(path.dirname(fileURLToPath(import.meta.url)),'moved-receipt')));`);
+test('completion receipt remains readable when the reporter pathname is unavailable', async t => {
+  const filename = fixture(t, `import test from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';
+    test('finished without receipt pathname', () => {
+      assert.equal(process.env.BRIDGE_TEST_RECEIPT_FD, '3');
+      const invalid = path.join(path.dirname(process.env.BRIDGE_TEST_RECEIPT), 'missing-directory', 'completion.json');
+      assert.throws(() => fs.writeFileSync(invalid, 'no', {flag:'wx'}), {code:'ENOENT'});
+      process.env.BRIDGE_TEST_RECEIPT = invalid;
+    });`);
   let transcript = '';
   const result = await runFile(filename, {output:chunk=>{transcript+=chunk;}});
   assert.equal(result.pass, true, transcript);
