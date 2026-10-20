@@ -1,3 +1,4 @@
+import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -25,7 +26,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     return { store: { listRuns: () => [], getRun: () => null }, codeChanges: service, close: () => service.close() };
   } });
   let bridge = create();
-  t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await bridge.close(); await removeOwnedFixture(root); });
   let binding, active = null, count = 0, release, dropAck = false;
   class Socket extends EventEmitter {
     readyState = 1;

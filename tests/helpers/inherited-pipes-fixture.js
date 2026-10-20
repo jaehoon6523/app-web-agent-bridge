@@ -4,6 +4,10 @@ import {setTimeout as wait} from 'node:timers/promises';
 
 export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false}) {
   const descendant = `const fs=require('node:fs');
+    const pidFile=${JSON.stringify(pidFile)};
+    fs.writeFileSync(pidFile+'.pending',String(process.pid));
+    fs.renameSync(pidFile+'.pending',pidFile);
+    if(fs.existsSync(pidFile+'.stop')) process.exit(0);
     fs.appendFileSync(process.argv[1],'x');
     setInterval(()=>fs.appendFileSync(process.argv[1],'x'),50);
     process.send('ready',()=>process.disconnect());`;
@@ -13,7 +17,6 @@ export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false}
     const d=require('node:child_process').spawn(process.execPath,
       ['-e',${JSON.stringify(descendant)},${JSON.stringify(markerFile)}],
       {detached:true,windowsHide:true,stdio:['ignore',1,2,'ipc']});
-    fs.writeFileSync(${JSON.stringify(pidFile)},String(d.pid));
     d.once('message',()=>d.unref());
     ${stdinProtocol ? `const rl=require('node:readline').createInterface({input:process.stdin});
     rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'pipe-contract'}})+'\\n');});` : ''}`;
@@ -52,6 +55,10 @@ function processHasExited(pid) {
 }
 
 export async function stopPipeHolder(pidFile, {timeoutMs = 3000} = {}) {
+  // Publish cancellation before checking registration. A late descendant either
+  // sees this request before doing work, or has already published a killable PID.
+  // Keep the request until the caller confirms pipe closure and removes the fixture.
+  fs.writeFileSync(pidFile+'.stop','stop');
   if (!fs.existsSync(pidFile)) return;
   const pid=Number(fs.readFileSync(pidFile,'utf8'));
   assert.ok(Number.isInteger(pid) && pid>0);
