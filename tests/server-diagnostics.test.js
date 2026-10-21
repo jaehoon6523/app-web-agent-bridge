@@ -9,6 +9,40 @@ import { createBridgeServer } from "../src/server.js";
 import { PreparationService } from "../src/orchestration/preparation-service.js";
 import { loadConfig } from "../src/config.js";
 
+for (const failClose of [false, true]) {
+  test(`diagnostic recorder closure preserves descriptor outcome: failure=${failClose}`, {timeout:10000}, async t => {
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),"bridge-recorder-close-"));
+    const outputFile=path.join(root,"events.jsonl");
+    const open=fs.openSync, close=fs.closeSync;
+    const fault=Object.assign(new Error("Controlled recorder close failure"),{code:"RECORDER_CLOSE_FAULT"});
+    let descriptor;
+    t.mock.method(fs,"openSync",(file,...args)=>{
+      const fd=open(file,...args);
+      if(file===outputFile)descriptor=fd;
+      return fd;
+    });
+    t.mock.method(fs,"closeSync",fd=>{
+      close(fd);
+      if(failClose&&fd===descriptor)throw fault;
+    });
+    const child=runDiagnosticServer({runtimeConfig:{...loadConfig({env:{CONTROLLER_DATA_DIR:root}}),port:0},outputFile});
+    const closed=new Promise(resolve=>child.once("close",resolve));
+    t.after(async()=>{
+      if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
+      await closed;
+      fs.rmSync(root,{recursive:true,force:true});
+    });
+    child.kill("SIGKILL");
+    if(failClose)await assert.rejects(child.recorderClosed,error=>{
+      assert.ok(error instanceof AggregateError);
+      assert.deepEqual(error.errors,[fault]);
+      return true;
+    });
+    else await child.recorderClosed;
+    assert.throws(()=>fs.fstatSync(descriptor),{code:"EBADF"});
+  });
+}
+
 test("diagnostic supervisor boots the configured server and records completed real HTTP probes without credentials",{timeout:15000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"bridge-diagnostic-supervisor-"));
   const socket=net.createServer();await new Promise(r=>socket.listen(0,"127.0.0.1",r));

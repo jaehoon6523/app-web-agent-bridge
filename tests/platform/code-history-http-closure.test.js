@@ -10,6 +10,7 @@ import {loadConfig} from '../../src/config.js';
 import {SqliteStore} from '../../src/persistence/sqlite-store.js';
 import {observeChildClose,waitChildClose} from '../../src/runtime/child-close.js';
 import {seedHistory} from '../helpers/code-history-fixture.js';
+import {removeOwnedFixture} from '../../scripts/e2e/helpers/owned-fixture.mjs';
 
 const repository=fileURLToPath(new URL('../../',import.meta.url));
 const cases=[
@@ -25,7 +26,8 @@ for(const config of cases){
     // Repository ancestor resolves installed dependencies on both platforms;
     // no POSIX symlinks, shell processes or Windows symlink privileges needed.
     const root=fs.mkdtempSync(path.join(repository,'.history-http-closure-'));
-    let stop;
+    let stop,child;
+    const failures=[];
     try{
       const program=path.join(root,'program');fs.mkdirSync(program);
       fs.cpSync(path.join(repository,'src'),path.join(program,'src'),{recursive:true});
@@ -50,9 +52,11 @@ for(const config of cases){
         try{db.exec("UPDATE code_change_history SET record_json='{broken' WHERE version=1");}finally{db.close();}}
       const events=[],changed=new EventEmitter();
       const {runDiagnosticServer}=await import(pathToFileURL(path.join(program,'scripts/diagnose-server.mjs')));
-      const child=runDiagnosticServer({runtimeConfig,outputFile:path.join(root,'events.jsonl'),onEvent:event=>{events.push(event);changed.emit('event',event);}});
+      child=runDiagnosticServer({runtimeConfig,outputFile:path.join(root,'events.jsonl'),onEvent:event=>{events.push(event);changed.emit('event',event);}});
       const observation=observeChildClose(child);let stopped;
-      stop=()=>stopped??=waitChildClose(child,observation,{timeoutMs:8000,request:()=>{if(child.connected)child.send({type:'bridge.shutdown'});}});
+      // The existing deadline covers both child resources and the parent's recorder.
+      stop=()=>stopped??=waitChildClose(child,{promise:Promise.all([observation.promise,child.recorderClosed])
+        .then(([closure])=>closure)},{timeoutMs:8000,request:()=>{if(child.connected)child.send({type:'bridge.shutdown'});}});
       async function until(type){
         if(events.some(event=>event.type===type))return;
         let listener,timer;
@@ -85,8 +89,23 @@ for(const config of cases){
       assert.ok(events.some(event=>event.type==='shutdown.ipc.start'));
       assert.ok(events.some(event=>event.type==='shutdown.stage.done' && event.stage==='HTTP server close'));
       fs.unlinkSync(runtimeConfig.persistence.databasePath);
+    }catch(error){
+      failures.push(error);
     }finally{
-      try{if(stop)await stop();}finally{fs.rmSync(root,{recursive:true,force:true});}
+      let closed=!child;
+      if(stop){
+        try{await stop();closed=true;}
+        catch(error){if(!failures.includes(error))failures.push(error);}
+      }
+      if(closed){
+        try{await removeOwnedFixture(root);}
+        catch(error){failures.push(error);}
+      }else{
+        failures.push(Object.assign(new Error('Fixture retained: resource closure unconfirmed'),
+          {code:'FIXTURE_CLOSURE_UNCONFIRMED'}));
+      }
+      if(failures.length===1)throw failures[0];
+      if(failures.length>1)throw new AggregateError(failures,'HTTP fixture operation/closure/cleanup failed');
     }
   });
 }

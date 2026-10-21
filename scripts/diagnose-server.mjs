@@ -28,6 +28,12 @@ export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {
     env:childEnvironment,
     stdio:["ignore", "inherit", "inherit", "ipc"],
   });
+  let resolveRecorderClosed, rejectRecorderClosed;
+  child.recorderClosed = new Promise((resolve, reject) => {
+    resolveRecorderClosed = resolve;
+    rejectRecorderClosed = reject;
+  });
+  void child.recorderClosed.catch(() => {});
   const stopWatchdog = watchServerProcess(child, record, {onHeartbeat:recordHeartbeats ? record : undefined});
   let stopped = false;
   let probing = false;
@@ -53,12 +59,17 @@ export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {
     finally { probing = false; }
   }, 1000);
   child.once("close", (code, signal) => {
-    record({ type:"process.exited", code, signal });
+    const errors = [];
     stopped = true;
     clearInterval(probes);
-    stopWatchdog();
-    for (const abort of aborts) abort.abort();
-    fs.closeSync(fd);
+    try { record({ type:"process.exited", code, signal }); } catch (error) { errors.push(error); }
+    try { stopWatchdog(); } catch (error) { errors.push(error); }
+    for (const abort of aborts) {
+      try { abort.abort(); } catch (error) { errors.push(error); }
+    }
+    try { fs.closeSync(fd); } catch (error) { errors.push(error); }
+    if (errors.length) rejectRecorderClosed(new AggregateError(errors, "Diagnostic recorder close failed"));
+    else resolveRecorderClosed();
   });
   child.once("error", () => record({type:"process.error"}));
   child.send({ runtimeConfig });
