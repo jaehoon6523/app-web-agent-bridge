@@ -288,12 +288,15 @@ test('C → D: real WebSocket CDP transport records call interruption, owned eve
 
 test('A: a live descendant without a profile argument is collected after its parent exits normally', async t => {
   const scratch = temp(t), signals = temp(t), marker = path.join(signals, 'heartbeat.json');
+  const heartbeat = path.join(signals, 'heartbeat.ticks');
   t.after(() => {
     if (!fs.existsSync(marker)) return;
     try { process.kill(JSON.parse(fs.readFileSync(marker)).pid,'SIGKILL'); }
     catch (error) { if (error.code !== 'ESRCH') throw error; }
   });
-  const child = `const fs=require('node:fs');let tick=0;const beat=()=>fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,tick:++tick}));beat();setInterval(beat,40);`;
+  // Publish immutable identity only after the first heartbeat is complete.
+  // Killing a writer must not truncate the identity needed for cleanup.
+  const child = `const fs=require('node:fs');const beat=()=>fs.appendFileSync(${JSON.stringify(heartbeat)},'.');beat();fs.writeFileSync(${JSON.stringify(marker + '.tmp')},JSON.stringify({pid:process.pid}));fs.renameSync(${JSON.stringify(marker + '.tmp')},${JSON.stringify(marker)});setInterval(beat,40);`;
   // A Windows child must be independent of the collector parent's console.
   // POSIX retains the inherited group so supervision can discover the orphan.
   const parent = `const fs=require('node:fs');const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore',detached:process.platform==='win32',windowsHide:true});child.unref();const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(marker)})){clearInterval(timer);process.exit(0)}},20);`;
@@ -304,9 +307,10 @@ test('A: a live descendant without a profile argument is collected after its par
       heartbeat:fs.existsSync(marker) ? JSON.parse(fs.readFileSync(marker)) : null}));
   assert.equal(result.watchdog.timedOut, false); assert.equal(result.childExit.code, 0);
   assert.equal(result.cleanup.browserForceRequired, true); assert.equal(result.cleanup.status, 'FORCED_TERMINATED');
-  const stopped = JSON.parse(fs.readFileSync(marker));
+  const stopped = fs.statSync(heartbeat).size;
+  assert.ok(stopped > 0);
   await new Promise(resolve => setTimeout(resolve, 150));
-  assert.equal(JSON.parse(fs.readFileSync(marker)).tick, stopped.tick);
+  assert.equal(fs.statSync(heartbeat).size, stopped);
 });
 
 test('B: a positive first candidate cannot finish SETUP while a late second candidate remains pending', async () => {
