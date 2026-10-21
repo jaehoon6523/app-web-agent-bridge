@@ -32,16 +32,53 @@ function failReceiptClose(t) {
   });
 }
 
-test('completion receipt survives its directory moving before the reporter finishes', async t => {
-  const filename = fixture(t, `import test from 'node:test'; import fs from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
-    test('finished after move', () => fs.renameSync(path.dirname(process.env.BRIDGE_TEST_RECEIPT),
-      path.join(path.dirname(fileURLToPath(import.meta.url)),'moved-receipt')));`);
-  let transcript = '';
-  const result = await runFile(filename, {output:chunk=>{transcript+=chunk;}});
-  assert.equal(result.pass, true, transcript);
-  assert.equal(result.summaryStatus, 'COMPLETE');
-  assert.equal(result.summary.passed, 1);
-  assert.deepEqual(result.closure, {code:0,signal:null});
+test('completion receipt remains readable when the reporter pathname is unavailable', async t => {
+  // Moving a directory containing an inherited open file can fail on Windows.
+  // Give the reporter an actually missing pathname without moving open files;
+  // the parent's owned descriptor must remain the completion evidence channel.
+  const open = fs.openSync, read = fs.readFileSync;
+  let receiptPath;
+  t.mock.method(fs,'openSync',(file,...args)=>{
+    const fd = open(file,...args);
+    if (path.basename(String(file))==='completion.json') receiptPath=file;
+    return fd;
+  });
+  t.mock.method(fs,'readFileSync',(file,...args)=>{
+    if (file===receiptPath) throw Object.assign(Error('Receipt pathname unavailable'),{code:'ENOENT'});
+    return read(file,...args);
+  });
+  for (const descriptor of [false,true]) {
+    const filename = fixture(t, `import test from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs'; import path from 'node:path';
+      test('finished with unavailable receipt pathname', () => {
+        const missing = path.join(path.dirname(process.env.BRIDGE_TEST_RECEIPT),'missing','completion.json');
+        assert.throws(()=>fs.writeFileSync(missing,'probe'),{code:'ENOENT'});
+        process.env.BRIDGE_TEST_RECEIPT = missing;
+        if (!${descriptor}) delete process.env.BRIDGE_TEST_RECEIPT_FD;
+      });`);
+    let transcript = '';
+    const pending = runFile(filename, {output:chunk=>{transcript+=chunk;}});
+    let result;
+    try {
+      assert.equal(fs.existsSync(receiptPath), true);
+      assert.throws(()=>fs.readFileSync(receiptPath),{code:'ENOENT'});
+    } finally { result = await pending; }
+    if (!descriptor) {
+      // The legacy pathname transport must fail on that same condition.
+      assert.equal(result.pass, false);
+      assert.equal(result.reason, 'MISSING_RECEIPT');
+      assert.deepEqual(result.closure, {code:1,signal:null});
+      assert.match(transcript, /# pass 1/u);
+      assert.match(transcript, /ENOENT/u);
+    } else {
+      assert.equal(result.pass, true, transcript);
+      assert.equal(result.summaryStatus, 'COMPLETE');
+      assert.equal(result.summary.completed, true);
+      assert.equal(result.summary.plan, 1);
+      assert.equal(result.summary.passed, 1);
+      assert.equal(result.summary.failed, 0);
+      assert.deepEqual(result.closure, {code:0,signal:null});
+    }
+  }
 });
 
 test('completion descriptors remain isolated when a test runs another file', async t => {
