@@ -205,7 +205,7 @@ async function reclaimDeadWriter(lock, observed, event) {
 
 // Async I/O preserves the lock over read/merge/fsync/rename without blocking HTTP.
 /** @param {string} directory @param {string} section @param {any} record @param {any} [options] */
-export async function writeAgentReport(directory, section, record, {onDiagnostic} = {}) {
+export async function writeAgentReport(directory, section, record, {onDiagnostic,platform = process.platform} = {}) {
   if (!sections.has(section) && section !== 'incident') throw new TypeError('Unsupported diagnostic section.');
   const filename = path.join(directory,'runtime-latest.json'), lock = filename+'.lock';
   const operationId = randomUUID(), started = performance.now();
@@ -219,6 +219,24 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
       throw error;
     }
   };
+  const openLock = async () => {
+    let firstDenial;
+    for (let attempt = 0; ; attempt++) {
+      try { return await step('lock.open',() => io.open(lock,'wx',0o600)); }
+      catch (error) {
+        if (platform !== 'win32' || error.code !== 'EPERM') throw error;
+        const observed = await lockObservation(lock);
+        if (observed.state !== 'MISSING' || observed.exists !== false) throw error;
+        // Windows may deny exclusive creation while a deleted file is still
+        // pending release. MISSING does not prove that cause or a dead owner.
+        // Retry only exclusive creation; never unlink or bypass another owner.
+        firstDenial ??= error; firstDenial.lockState = observed;
+        if (attempt >= 4) throw firstDenial;
+        event('agent.report.lock.open.wait',{path:lock,code:error.code,lockState:observed,retry:attempt+1});
+        await wait(20);
+      }
+    }
+  };
   let fd, temporary, result, failure;
   const cleanupErrors = [];
   event('agent.report.write.started');
@@ -226,16 +244,17 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
     await step('mkdir',() => io.mkdir(directory,{recursive:true,mode:0o700}));
     await step('lock.recovery.preparations',() => pruneRecoveryPreparations(lock+'.recovery',event));
     await step('lock.recovery.observe',() => recoveryAvailable(lock+'.recovery',event));
-    try { fd = await step('lock.open',() => io.open(lock,'wx',0o600)); }
+    try { fd = await openLock(); }
     catch (error) {
       if (!['EEXIST','EPERM'].includes(error.code)) throw error;
       const observed = await lockObservation(lock);
       event('agent.report.lock.observed',{operation:'open',path:lock,code:error.code,lockState:observed});
-      // EPERM alone is not contention. Missing/unreadable paths keep their real error.
+      // EPERM alone is not contention. Exhausted missing-path retries and
+      // unreadable paths retain the original denial rather than becoming BUSY.
       const contended = observed.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(observed.state);
       if (error.code === 'EPERM' && !contended) { error.lockState = observed; throw error; }
       if (observed.state === 'DEAD' && await reclaimDeadWriter(lock,observed,event)) {
-        try { fd = await step('lock.open',() => io.open(lock,'wx',0o600)); }
+        try { fd = await openLock(); }
         catch (retry) {
           const current = await lockObservation(lock);
           if (retry.code === 'EEXIST' || retry.code === 'EPERM' && current.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(current.state)) throw busy(retry,current);
@@ -286,7 +305,7 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
   return result;
 }
 /** @param {string} directory @param {string} section @param {any} record @param {any} [options] */
-export function enqueueAgentReport(directory, section, record, {onDiagnostic,lockTimeoutMs = 2000} = {}) {
+export function enqueueAgentReport(directory, section, record, {onDiagnostic,lockTimeoutMs = 2000,platform = process.platform} = {}) {
   const key = path.resolve(directory), enqueued = performance.now();
   const event = (type,detail = {}) => emit(onDiagnostic,type,{section,...detail});
   const operation = async () => {
@@ -300,7 +319,7 @@ export function enqueueAgentReport(directory, section, record, {onDiagnostic,loc
       saveMs:acquiredAt === undefined ? null : performance.now()-acquiredAt,elapsedMs:performance.now()-started,retries});
     for (;;) {
       try {
-        const result = await writeAgentReport(directory,section,record,{onDiagnostic:observe});
+        const result = await writeAgentReport(directory,section,record,{onDiagnostic:observe,platform});
         event('agent.report.queue.completed',{...timing(),status:'PASS'});
         return result;
       } catch (error) {

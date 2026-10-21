@@ -65,10 +65,31 @@ test('A: cleanup failure retains durable function observations and original stdo
   const program = `require('node:fs').writeFileSync(process.argv[1],JSON.stringify({execution:'COMPLETE',functionalRecovery:'PASS',reloadResult:'PASS'}));console.log('raw-evidence');`;
   const r = await superviseTrial({ command: process.execPath, args: ['-e', program, snapshot], scratch,
     profile: path.join(scratch, 'profile'), snapshotFile: snapshot, stdoutFile: path.join(logs, 'raw.log'),
+    // This assertion covers scratch removal after confirmed process closure.
+    // Real OS process discovery is covered by the descendant and native tests.
+    queryProfilePids: async (profile, roots) => {
+      assert.equal(profile,path.join(scratch,'profile')); assert.equal(roots.length,1);
+      return [];
+    },
     removeScratch: () => { throw Error('REMOVAL_DENIED'); } });
   assert.equal(r.functionalRecovery, 'PASS'); assert.equal(r.cleanup.status, 'FAIL');
+  assert.equal(r.childExecution.status,'PASS'); assert.equal(r.cleanup.childTerminationConfirmed,true);
+  assert.equal(r.cleanup.browserTerminationConfirmed,true); assert.equal(r.cleanup.scratchRemoval,'FAIL');
   assert.equal(r.cleanup.scratchError, 'REMOVAL_DENIED');
   assert.match(fs.readFileSync(path.join(logs, 'raw.log'), 'utf8'), /raw-evidence/);
+});
+test('A: unavailable process discovery retains observations and prevents scratch removal', async t => {
+  const scratch=temp(t), logs=temp(t), snapshot=path.join(scratch,'observation.json');
+  const program=`require('node:fs').writeFileSync(process.argv[1],JSON.stringify({execution:'COMPLETE',functionalRecovery:'PASS',reloadResult:'PASS'}));console.log('raw-evidence');`;
+  let removals=0;
+  const r=await superviseTrial({command:process.execPath,args:['-e',program,snapshot],scratch,
+    profile:path.join(scratch,'profile'),snapshotFile:snapshot,stdoutFile:path.join(logs,'raw.log'),
+    queryProfilePids:async()=>{throw Error('PROCESS_QUERY_UNAVAILABLE');},removeScratch:()=>{removals++;}});
+  assert.equal(r.childExecution.status,'PASS');assert.equal(r.functionalRecovery,'PASS');
+  assert.equal(r.cleanup.status,'UNCONFIRMED');assert.equal(r.cleanup.browserTerminationConfirmed,false);
+  assert.equal(r.cleanup.profileQueryError,'PROCESS_QUERY_UNAVAILABLE');assert.equal(r.cleanup.scratchRemoval,'SKIPPED');
+  assert.equal(removals,0);assert.equal(fs.existsSync(snapshot),true);
+  assert.match(fs.readFileSync(path.join(logs,'raw.log'),'utf8'),/raw-evidence/);
 });
 for (const [field, value, reason] of [['verificationRunId', 'old-run', 'RESULT_RUN_MISMATCH'], ['scope', 'other-scope', 'RESULT_SCOPE_MISMATCH']]) {
   test(`A/D: snapshot ${reason} cannot reuse PASS`, async t => {

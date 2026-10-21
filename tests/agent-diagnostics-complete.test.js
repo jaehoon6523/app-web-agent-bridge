@@ -163,7 +163,7 @@ test('EPERM is retried only with an observed existing lock and never removes its
   assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
 });
 
-test('EPERM without an existing lock is a write failure, is not retried, and leaves the previous report intact',async t=>{
+test('non-Windows EPERM without an existing lock is not retried and leaves the previous report intact',async t=>{
   const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock'), events=[];
   await enqueueAgentReport(root,'server',{source:'PREVIOUS'});
   const before=fs.readFileSync(path.join(root,'runtime-latest.json'));
@@ -172,13 +172,103 @@ test('EPERM without an existing lock is a write failure, is not retried, and lea
     if(filename===lock) {denied++;throw Object.assign(new Error('Injected permission failure'),{code:'EPERM',syscall:'open',path:lock});}
     return original(filename,...args);
   });
-  await assert.rejects(enqueueAgentReport(root,'server',{source:'CURRENT'},{onDiagnostic:event=>{events.push(event);t.evidence.event(event);}}),
+  await assert.rejects(enqueueAgentReport(root,'server',{source:'CURRENT'},{platform:'linux',onDiagnostic:event=>{events.push(event);t.evidence.event(event);}}),
     error=>error.code==='EPERM' && error.diagnosticOperation==='lock.open' && error.lockState.state==='MISSING');
   opened.mock.restore();
   assert.equal(denied,1);assert.equal(events.some(event=>event.type==='agent.report.lock.wait'),false);
   assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
   await enqueueAgentReport(root,'server',{source:'RECOVERED'});
   assert.equal(readAgentReport(root).server.source,'RECOVERED');
+});
+
+for (const [name,write] of [['direct',writeAgentReport],['queued',enqueueAgentReport]])
+test('Windows missing-lock EPERM can recover through exclusive creation ('+name+')',async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
+  await enqueueAgentReport(root,'server',{source:'PREVIOUS'});
+  const previous=readAgentReport(root).server, original=io.open.bind(io), events=[];let attempts=0;
+  const opened=t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock) {
+      assert.equal(args[0],'wx');
+      if(++attempts<=2) {
+        assert.equal(fs.existsSync(lock),false);
+        throw Object.assign(new Error('Injected missing-path Windows denial'),{code:'EPERM',syscall:'open',path:lock});
+      }
+    }
+    return original(filename,...args);
+  });
+  await write(root,'repair',{code:'STORED'},{platform:'win32',onDiagnostic:event=>{events.push(event);t.evidence.event(event);}});
+  opened.mock.restore();
+  assert.ok(attempts>2);assert.equal(readAgentReport(root).repair.code,'STORED');
+  assert.deepEqual(readAgentReport(root).server,previous);
+  assert.equal(events.filter(event=>event.type==='agent.report.lock.open.wait').length,2);
+  assert.equal(events.some(event=>event.type==='agent.report.lock.acquired'),true);
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
+test('persistent Windows missing-lock EPERM retains the first denial and never publishes a report',async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
+  await enqueueAgentReport(root,'server',{source:'PREVIOUS'});
+  const before=fs.readFileSync(path.join(root,'runtime-latest.json')), original=io.open.bind(io), events=[];
+  let first, attempts=0;
+  t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock) {
+      attempts++;const error=Object.assign(new Error('Denied attempt '+attempts),{code:'EPERM',syscall:'open',path:lock});
+      first ??= error;throw error;
+    }
+    return original(filename,...args);
+  });
+  await assert.rejects(enqueueAgentReport(root,'server',{source:'UNSAVED'},{platform:'win32',onDiagnostic:event=>{events.push(event);t.evidence.event(event);}}),
+    error=>error===first && error.diagnosticOperation==='lock.open' && error.lockState.state==='MISSING');
+  assert.ok(attempts>1 && attempts<=5);
+  assert.equal(events.some(event=>event.type==='agent.report.lock.acquired'),false);
+  assert.equal(events.some(event=>event.type==='agent.report.queue.completed' && event.status==='PASS'),false);
+  assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
+test('a live replacement lock during Windows missing-path retry is never removed',async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
+  await enqueueAgentReport(root,'server',{source:'PREVIOUS'});
+  const before=fs.readFileSync(path.join(root,'runtime-latest.json')), original=io.open.bind(io);
+  const owner=JSON.stringify({pid:process.pid,token:randomUUID()});let injected=false, replaced=false;
+  t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock && !injected) {
+      injected=true;throw Object.assign(new Error('Injected Windows release interval'),{code:'EPERM',syscall:'open',path:lock});
+    }
+    return original(filename,...args);
+  });
+  await assert.rejects(enqueueAgentReport(root,'server',{source:'UNSAVED'},{platform:'win32',lockTimeoutMs:60,onDiagnostic:event=>{
+    t.evidence.event(event);
+    if(event.type==='agent.report.lock.open.wait' && !replaced) {replaced=true;fs.writeFileSync(lock,owner);}
+  }}),error=>error.code==='DIAGNOSTIC_WRITER_BUSY' && error.lockState.state==='LIVE');
+  assert.equal(replaced,true);assert.equal(fs.readFileSync(lock,'utf8'),owner);
+  assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+});
+
+test('Windows non-EPERM lock failure is not retried or treated as contention',async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock'), original=io.open.bind(io);
+  let attempts=0;const denied=Object.assign(new Error('Actual access denial'),{code:'EACCES',syscall:'open',path:lock});
+  t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock) {attempts++;throw denied;}
+    return original(filename,...args);
+  });
+  await assert.rejects(enqueueAgentReport(root,'server',{}, {platform:'win32',onDiagnostic:t.evidence.event}),error=>error===denied);
+  assert.equal(attempts,1);assert.equal(fs.existsSync(lock),false);
+  assert.equal(fs.existsSync(path.join(root,'runtime-latest.json')),false);
+});
+
+test('Windows missing-lock EPERM after dead-owner recovery preserves committed sections',async t=>{
+  const {root,lock,previous}=await deadWriterFixture(t), original=io.open.bind(io);let denied=false;
+  t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock && !fs.existsSync(lock) && !denied) {
+      denied=true;throw Object.assign(new Error('Injected post-recovery denial'),{code:'EPERM',syscall:'open',path:lock});
+    }
+    return original(filename,...args);
+  });
+  await enqueueAgentReport(root,'repair',{code:'RECOVERED'},{platform:'win32',onDiagnostic:t.evidence.event});
+  assert.equal(denied,true);assert.deepEqual(readAgentReport(root).server,previous);
+  assert.equal(readAgentReport(root).repair.code,'RECOVERED');
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
 });
 
 test('an unreleased observed lock has a bounded retry and returns the original EPERM with owner evidence',async t=>{

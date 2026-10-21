@@ -163,6 +163,7 @@ async function killPid(pid) {
 export async function superviseTrial({ command, args, env = process.env, cwd = process.cwd(),
   snapshotFile, profile, scratch, limitMs = 35_000, stdoutLimit = 3000,
   stdoutFile, expectedRunId, expectedScope,
+  queryProfilePids = profilePids,
   removeScratch = directory => fs.rmSync(directory, { recursive: true, force: true }) }) {
   const start = Date.now();
   // Never let a diagnostic cleanup erase an unrelated directory/profile.
@@ -191,7 +192,7 @@ export async function superviseTrial({ command, args, env = process.env, cwd = p
       expectedScope && rawSnapshot.scope !== expectedScope ? 'RESULT_SCOPE_MISMATCH' : null;
   const ownershipRoots = [child.pid, !snapshotReceiptError && expectedRunId ? rawSnapshot.browserProcessPid : null].filter(Number.isInteger);
   let survivors = null, profileQueryError = null;
-  try { survivors = await profilePids(profile, ownershipRoots); }
+  try { survivors = await queryProfilePids(profile, ownershipRoots); }
   catch (error) { profileQueryError = error.message; }
   const browserForceRequired = Array.isArray(survivors) && survivors.length > 0;
   if (browserForceRequired) {
@@ -204,7 +205,7 @@ export async function superviseTrial({ command, args, env = process.env, cwd = p
         await killPid(pid);
       }
       await new Promise(resolve => setTimeout(resolve, 50));
-      try { survivors = await profilePids(profile, ownershipRoots); }
+      try { survivors = await queryProfilePids(profile, ownershipRoots); }
       catch (error) { profileQueryError = error.message; survivors = null; }
     } while (Array.isArray(survivors) && survivors.length > 0 && Date.now() < verificationDeadline);
   }
