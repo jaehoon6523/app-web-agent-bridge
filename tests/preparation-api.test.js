@@ -28,6 +28,8 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   let bridge = create();
   t.after(async () => { await bridge.close(); await removeOwnedFixture(root); });
   let binding, active = null, count = 0, release, dropAck = false;
+  let promptReceived;
+  let nextPrompt = new Promise(resolve => { promptReceived = resolve; });
   class Socket extends EventEmitter {
     readyState = 1;
     close() { this.readyState = 3; this.emit("close"); }
@@ -51,6 +53,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
             evidence: { documentId: binding.documentId, frameId: binding.frameId },
             trace: { requestId: active, actionId: active, result: "success", tabId: binding.tabId,
               bindingId: `${binding.sessionId}:${binding.runId}`, documentId: binding.documentId, frameId: binding.frameId } });
+          promptReceived();
         }
         if (message.type === "web.delivery.inspect" && !binding) reply("web.delivery.inspected", { currentDeliveryId: null,
           sessionId: null, runId: null, conversationUrl: null, conversationId: null,
@@ -98,7 +101,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     }
     assert.fail("State did not reach " + expected + ": " + JSON.stringify(await state()));
   };
-  await ready("WAITING_WEB_RESPONSE"); release();
+  await ready("WAITING_WEB_RESPONSE"); await nextPrompt; release();
   let current = await ready("DISCUSSING");
   assert.equal(current.preparation.preparationId, prep.preparationId);
   const identity = { preparationId: prep.preparationId, sessionId: current.preparation.webSession.sessionId,
@@ -110,11 +113,12 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.deepEqual(current.preparation, beforeRestart);
   assert.equal(count, 1);
   assert.equal(current.preparation.objective, "  아무거나\n");
+  nextPrompt = new Promise(resolve => { promptReceived = resolve; });
   const reply = await post("/api/preparations/" + prep.preparationId + "/reply", {
     requestId: "reply", content: "값 표시",
   });
   assert.equal(reply.status, 202, await reply.clone().text());
-  await ready("WAITING_WEB_RESPONSE"); dropAck = true; release();
+  await ready("WAITING_WEB_RESPONSE"); await nextPrompt; dropAck = true; release();
   current = await ready("RECOVERY_REQUIRED");
   const deliveryId = current.preparation.webSession.activeDeliveryId;
   assert.equal(current.preparation.deliveries[1].state, "RESPONSE_COMPLETED");

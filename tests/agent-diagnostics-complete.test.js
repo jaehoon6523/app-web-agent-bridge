@@ -326,7 +326,8 @@ test('a writer killed during an actual queued write is recovered on restart with
     child.on('message',event=>{t.evidence.event(event);if(event.type==='writer.held'){clearTimeout(timeout);resolve();}});
     child.once('error',error=>{clearTimeout(timeout);reject(error);});
   });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'runtime-latest.json.lock'),'utf8')).pid,child.pid);
+  assert.equal(fs.existsSync(path.join(root,'runtime-latest.json.lock')),false,'private fsync must not hold the merge lock');
+  assert.ok(fs.readdirSync(root).some(name=>name.startsWith('runtime-latest.json.'+child.pid+'.')));
   child.kill('SIGKILL');await closed;
   await enqueueAgentReport(root,'repair',{code:'RESTARTED'},{onDiagnostic:t.evidence.event});
   const report=readAgentReport(root);assert.equal(report.server.source,'COMMITTED');assert.equal(report.repair.code,'RESTARTED');

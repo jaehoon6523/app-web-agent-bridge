@@ -36,9 +36,9 @@ for(const config of cases){
       if(config.worker!==undefined)fs.writeFileSync(path.join(program,'src/persistence/code-change-history-worker.js'),config.worker);
       if(config.closeFault)fs.writeFileSync(path.join(program,'src/persistence/sqlite-database.js'),`
         import {DatabaseSync as Native} from 'node:sqlite';
-        import {isMainThread} from 'node:worker_threads';
+        import {isMainThread,workerData} from 'node:worker_threads';
         export class DatabaseSync extends Native {
-          close(){super.close();if(!isMainThread)throw Object.assign(new Error('controlled close reporting failure'),{code:'CLOSE_REPORT_FAILED'});}
+          close(){super.close();if(!isMainThread && workerData?.cancellation instanceof SharedArrayBuffer)throw Object.assign(new Error('controlled close reporting failure'),{code:'CLOSE_REPORT_FAILED'});}
         }
       `);
       const probe=net.createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
