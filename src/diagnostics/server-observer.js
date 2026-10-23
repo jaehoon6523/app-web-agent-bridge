@@ -16,6 +16,30 @@ export function diagnosticErrorCode(error) {
   return typeof label === "string" && /^[A-Za-z0-9_]{1,64}$/u.test(label) ? label : "ERROR";
 }
 
+// Bound nested failures and retain only codes and resource-lifecycle metadata.
+export function diagnosticErrorDetails(error) {
+  const details = [], seen = new Set();
+  function visit(current, parent = null) {
+    if (!current || typeof current !== 'object' || seen.has(current) || details.length >= 8) return;
+    seen.add(current);
+    const index = details.length;
+    const detail = {code:diagnosticErrorCode(current), parent};
+    for (const key of ['exitCode', 'errcode']) {
+      if (Number.isSafeInteger(current[key])) detail[key] = current[key];
+    }
+    for (const key of ['terminationConfirmed', 'resourceClosureFailed']) {
+      if (typeof current[key] === 'boolean') detail[key] = current[key];
+    }
+    details.push(detail);
+    visit(current.cause, index);
+    if (Array.isArray(current.errors)) {
+      for (const nested of current.errors.slice(0, 8)) visit(nested, index);
+    }
+  }
+  visit(error);
+  return details;
+}
+
 /** @param {((event: any) => void) | undefined} sink */
 export function createServerObserver(sink) {
   const requests = new WeakMap();

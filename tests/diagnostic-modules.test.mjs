@@ -65,10 +65,31 @@ test('A: cleanup failure retains durable function observations and original stdo
   const program = `require('node:fs').writeFileSync(process.argv[1],JSON.stringify({execution:'COMPLETE',functionalRecovery:'PASS',reloadResult:'PASS'}));console.log('raw-evidence');`;
   const r = await superviseTrial({ command: process.execPath, args: ['-e', program, snapshot], scratch,
     profile: path.join(scratch, 'profile'), snapshotFile: snapshot, stdoutFile: path.join(logs, 'raw.log'),
+    // This assertion covers scratch removal after confirmed process closure.
+    // Real OS process discovery is covered by the descendant and native tests.
+    queryProfilePids: async (profile, roots) => {
+      assert.equal(profile,path.join(scratch,'profile')); assert.equal(roots.length,1);
+      return [];
+    },
     removeScratch: () => { throw Error('REMOVAL_DENIED'); } });
   assert.equal(r.functionalRecovery, 'PASS'); assert.equal(r.cleanup.status, 'FAIL');
+  assert.equal(r.childExecution.status,'PASS'); assert.equal(r.cleanup.childTerminationConfirmed,true);
+  assert.equal(r.cleanup.browserTerminationConfirmed,true); assert.equal(r.cleanup.scratchRemoval,'FAIL');
   assert.equal(r.cleanup.scratchError, 'REMOVAL_DENIED');
   assert.match(fs.readFileSync(path.join(logs, 'raw.log'), 'utf8'), /raw-evidence/);
+});
+test('A: unavailable process discovery retains observations and prevents scratch removal', async t => {
+  const scratch=temp(t), logs=temp(t), snapshot=path.join(scratch,'observation.json');
+  const program=`require('node:fs').writeFileSync(process.argv[1],JSON.stringify({execution:'COMPLETE',functionalRecovery:'PASS',reloadResult:'PASS'}));console.log('raw-evidence');`;
+  let removals=0;
+  const r=await superviseTrial({command:process.execPath,args:['-e',program,snapshot],scratch,
+    profile:path.join(scratch,'profile'),snapshotFile:snapshot,stdoutFile:path.join(logs,'raw.log'),
+    queryProfilePids:async()=>{throw Error('PROCESS_QUERY_UNAVAILABLE');},removeScratch:()=>{removals++;}});
+  assert.equal(r.childExecution.status,'PASS');assert.equal(r.functionalRecovery,'PASS');
+  assert.equal(r.cleanup.status,'UNCONFIRMED');assert.equal(r.cleanup.browserTerminationConfirmed,false);
+  assert.equal(r.cleanup.profileQueryError,'PROCESS_QUERY_UNAVAILABLE');assert.equal(r.cleanup.scratchRemoval,'SKIPPED');
+  assert.equal(removals,0);assert.equal(fs.existsSync(snapshot),true);
+  assert.match(fs.readFileSync(path.join(logs,'raw.log'),'utf8'),/raw-evidence/);
 });
 for (const [field, value, reason] of [['verificationRunId', 'old-run', 'RESULT_RUN_MISMATCH'], ['scope', 'other-scope', 'RESULT_SCOPE_MISMATCH']]) {
   test(`A/D: snapshot ${reason} cannot reuse PASS`, async t => {
@@ -288,12 +309,15 @@ test('C → D: real WebSocket CDP transport records call interruption, owned eve
 
 test('A: a live descendant without a profile argument is collected after its parent exits normally', async t => {
   const scratch = temp(t), signals = temp(t), marker = path.join(signals, 'heartbeat.json');
+  const heartbeat = path.join(signals, 'heartbeat.ticks');
   t.after(() => {
     if (!fs.existsSync(marker)) return;
     try { process.kill(JSON.parse(fs.readFileSync(marker)).pid,'SIGKILL'); }
     catch (error) { if (error.code !== 'ESRCH') throw error; }
   });
-  const child = `const fs=require('node:fs');let tick=0;const beat=()=>fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,tick:++tick}));beat();setInterval(beat,40);`;
+  // Publish immutable identity only after the first heartbeat is complete.
+  // Killing a writer must not truncate the identity needed for cleanup.
+  const child = `const fs=require('node:fs');const beat=()=>fs.appendFileSync(${JSON.stringify(heartbeat)},'.');beat();fs.writeFileSync(${JSON.stringify(marker + '.tmp')},JSON.stringify({pid:process.pid}));fs.renameSync(${JSON.stringify(marker + '.tmp')},${JSON.stringify(marker)});setInterval(beat,40);`;
   // A Windows child must be independent of the collector parent's console.
   // POSIX retains the inherited group so supervision can discover the orphan.
   const parent = `const fs=require('node:fs');const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore',detached:process.platform==='win32',windowsHide:true});child.unref();const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(marker)})){clearInterval(timer);process.exit(0)}},20);`;
@@ -304,9 +328,10 @@ test('A: a live descendant without a profile argument is collected after its par
       heartbeat:fs.existsSync(marker) ? JSON.parse(fs.readFileSync(marker)) : null}));
   assert.equal(result.watchdog.timedOut, false); assert.equal(result.childExit.code, 0);
   assert.equal(result.cleanup.browserForceRequired, true); assert.equal(result.cleanup.status, 'FORCED_TERMINATED');
-  const stopped = JSON.parse(fs.readFileSync(marker));
+  const stopped = fs.statSync(heartbeat).size;
+  assert.ok(stopped > 0);
   await new Promise(resolve => setTimeout(resolve, 150));
-  assert.equal(JSON.parse(fs.readFileSync(marker)).tick, stopped.tick);
+  assert.equal(fs.statSync(heartbeat).size, stopped);
 });
 
 test('B: a positive first candidate cannot finish SETUP while a late second candidate remains pending', async () => {

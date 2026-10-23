@@ -12,7 +12,7 @@ import { collectSelectorDiagnostics } from "./orchestration/selector-diagnostics
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
-import { createServerObserver, diagnosticErrorCode } from "./diagnostics/server-observer.js";
+import { createServerObserver, diagnosticErrorCode, diagnosticErrorDetails } from "./diagnostics/server-observer.js";
 import { closeSteps } from "./diagnostics/shutdown.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -291,13 +291,16 @@ export function createBridgeServer({
   });
   const commandReceipts = new Map();
   let preparationService = null;
-  function preparations() {
+  let preparationPromise = null;
+  let preparationClosureFailure = null;
+  async function preparations() {
     if (closing) throw Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"});
-    if (preparationService) return preparationService;
+    if (preparationPromise) return preparationPromise;
+    preparationPromise = (async () => {
     const started = performance.now();
     diagnostics.emit("preparation.initialization.started");
     try {
-      preparationService = new PreparationService({
+      preparationService = await PreparationService.open({
         filename: path.join(path.dirname(projectSettings.filename), "preparations.sqlite"),
         onFailure:event => {void agentReport.incident(event,"PREPARATION_SERVICE","PREPARE");},
         web: webSession,
@@ -335,15 +338,20 @@ export function createBridgeServer({
       });
       diagnostics.emit("preparation.initialization.completed",{elapsedMs:performance.now()-started});
     } catch (error) {
-      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error),elapsedMs:performance.now()-started});
+      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error),errors:diagnosticErrorDetails(error),elapsedMs:performance.now()-started});
       throw error;
     }
     return preparationService;
+    })().catch(error => {
+      if (error.resourceClosureFailed) preparationClosureFailure = error;
+      preparationPromise = null; throw error;
+    });
+    return preparationPromise;
   }
 
 
   const deliverySources = async () => {
-    const contexts = Object.values(preparations().data.contexts);
+    const contexts = Object.values((await preparations()).data.contexts);
     const live = await getLiveRuntime();
     return { contexts, runs: live.codeChanges?.list() ?? [], discussionStore: live.store };
   };
@@ -370,14 +378,14 @@ export function createBridgeServer({
       }
       const { contexts, runs, discussionStore } = await deliverySources();
       const live = await getLiveRuntime();
-      if (preparations().busy || contexts.some(context => context.webSession?.activeDeliveryId)
+      if ((await preparations()).busy || contexts.some(context => context.webSession?.activeDeliveryId)
         || contexts.some(context => (context.deliveries ?? []).some(delivery =>
           delivery.processingState === "ACK_PENDING"))
         || runs.some(run => (run.conversationBindings ?? []).some(binding => binding.activeDeliveryId))
         || runs.some(run => (run.webDeliveryReceipts ?? []).some(receipt => receipt.state === "ACK_PENDING"))
         || (discussionStore?.listRuns?.() ?? []).some(run => !isTerminalRunPhase(run.phase)
           || discussionStore.listAgentSessions(run.runId).some(session => session.activeTurnId))
-        || preparations().jobs.size || live.codeChanges?.jobs.size || live.codeChanges?.workers.size
+        || (await preparations()).jobs.size || live.codeChanges?.jobs.size || live.codeChanges?.workers.size
         || live.codeChanges?.busy() || live.codeChanges?.reviewerWebBusy()) {
         throw Object.assign(new Error("An active delivery or operation prevents extension pairing."), { code: "WEB_SESSION_BUSY" });
       }
@@ -398,7 +406,7 @@ export function createBridgeServer({
       directory: path.join(path.dirname(runtimeConfig.persistence?.databasePath ?? path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller", "controller.sqlite")), "delivery-recovery"),
       observe: record => agentReport?.observeRecovery(record),
     }),
-    getServices: async () => ({ preparationService: preparations(), codeChanges: (await getLiveRuntime()).codeChanges }) });
+    getServices: async () => ({ preparationService: await preparations(), codeChanges: (await getLiveRuntime()).codeChanges }) });
 
   function requireDashboardRead(req, res, next) {
     try {
@@ -483,7 +491,7 @@ export function createBridgeServer({
         throw Object.assign(new Error("Invalid Web command."), { code: "INVALID_COMMAND" });
       }
       diagnostics.stage(req, "preparation.mutation.started");
-      const result = await preparations().execute(command, input);
+      const result = await (await preparations()).execute(command, input);
       diagnostics.stage(req, "preparation.mutation.completed");
       res.status(type === "preparation.start" || type === "preparation.reply" ? 202 : 200).json(result);
     } catch (error) {
@@ -498,7 +506,7 @@ export function createBridgeServer({
   };
   app.post("/api/preparations", requireDashboardMutation, preparationRoute("preparation.start"));
   app.post("/api/preparations/tab-focus", requireDashboardMutation, async (req, res) => {
-    try { res.json(await preparations().focusCandidateTab(req.body ?? {})); }
+    try { res.json(await (await preparations()).focusCandidateTab(req.body ?? {})); }
     catch (error) { res.status(409).json({ code:error.code ?? "TAB_FOCUS_FAILED", message:redactForEvidence(error.message) }); }
   });
   app.post("/api/preparations/web", requireDashboardMutation, preparationRoute("web"));
@@ -585,7 +593,7 @@ export function createBridgeServer({
         res.status(400).json({ error: "runId must be a string." });
         return;
       }
-      const service = preparations();
+      const service = await preparations();
       diagnostics.emit("state.snapshot.started");
       const baseSnapshot = await dashboard.snapshot(req.query.runId || null,
         event => diagnostics.stage(req, event.type, event));
@@ -727,7 +735,13 @@ export function createBridgeServer({
     closePromise = closeSteps([
       ["agentReport.close", () => diagnosticClose],
       ["dashboard.close", () => dashboard.close()],
-      ["preparationService.close", () => preparationService?.close()],
+      ["preparationService.close", async () => {
+        if (preparationPromise) await preparationPromise.catch(error => {
+          if (error.resourceClosureFailed) throw error;
+        });
+        if (preparationClosureFailure) throw preparationClosureFailure;
+        await preparationService?.close();
+      }],
       ["extension websocket terminate", () => { for (const ws of extensionWss.clients) {
         // CLOSING peers may never finish their TCP half-close. Shutdown owns
         // these upgraded sockets too; do not wait for the peer close timeout.

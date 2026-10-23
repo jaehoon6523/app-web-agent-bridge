@@ -1,5 +1,18 @@
 import { performance } from 'node:perf_hooks';
 import { setTimeout as wait } from 'node:timers/promises';
+import { canonicalJson } from '../domain/canonical-json.js';
+
+export function persistPreparationReceipt(service, requestId, receipt, wait = true) {
+  const json = () => canonicalJson({...service.data, receipts:{...service.data.receipts, [requestId]:receipt}});
+  const committed = () => { service.data.receipts[requestId] = receipt; };
+  if (service.storage) return service.storage.persist(json, committed, wait);
+  if (!wait) {
+    service.saveSync({...service.data, receipts:{...service.data.receipts, [requestId]:receipt}});
+    committed();
+    return;
+  }
+  return persistPreparation(service.db, json, committed, () => service.closed);
+}
 
 // Preserve the former SQLite contention budget, but yield between no-wait attempts.
 export const PREPARATION_WRITE_WAIT_MS = 5000;

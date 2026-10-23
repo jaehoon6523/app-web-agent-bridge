@@ -131,15 +131,22 @@ test("verification timeout remains bounded after slow startup when an exited par
 });
 
 test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:10000}, async t => {
+  const started = performance.now();
+  const checkpoint = phase => t.diagnostic(JSON.stringify({phase, elapsedMs:performance.now()-started}));
+  checkpoint('audit.setup.started');
   const fixture=inheritedVerification(t);
   const f = setupAudit(t, {configure(project) {
     project.verifications = [{verificationId:"pipes",executable:process.execPath,args:fixture.args,
       cwd:".",timeoutMs:1500,purpose:"lifetime",environmentId:"controlled-node",resultFiles:[]}];
   }, async worker({workspace}) {
     fs.writeFileSync(path.join(workspace.root,'file.txt'),'revision 1\n');
+    checkpoint('pipe-holder.starting');
     await fixture.start(workspace.root);
+    checkpoint('pipe-holder.ready');
   }, review() {throw new Error("uncertain verification must not reach reviewer");}});
+  checkpoint('audit.setup.completed');
   const run = await fixture.run(() => f.run());
+  checkpoint('verification.completed');
   assert.equal(run.stage, "RECOVERY_REQUIRED");
   assert.equal(f.reviews(), 0);
   assert.equal(run.application, null);
@@ -151,7 +158,9 @@ test("unconfirmed verification closure persists recovery and never dispatches an
     parentExitCode:fixture.child.exitCode,heartbeat}));
   assert.equal(execution.result.terminationConfirmed, false);
   assert.equal(execution.result.timedOut, true);
+  checkpoint('persistence.reopen.started');
   await f.reopen();
+  checkpoint('persistence.reopen.completed');
   assert.equal(f.service.get(run.runId).stage, "RECOVERY_REQUIRED");
   assert.equal(f.reviews(), 0);
 });

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "../persistence/sqlite-database.js";
-import { persistPreparation } from "./preparation-persistence.js";
+import { openStoredPreparation } from "./preparation-storage.js";
+import { persistPreparation, persistPreparationReceipt } from "./preparation-persistence.js";
 import { canonicalJson } from "../domain/canonical-json.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
@@ -187,22 +188,25 @@ export function filterPreparationCapabilitiesForRuntimeContext({
 }
 
 /** Owns preparation identity, durable receipts, and all PREPARE transitions.
- * @param is intentionally kept in the injected boundaries for testability.
  */
 export class PreparationService {
-  /** @param {{filename:string, web:any, available:Function, assertStart:Function, approve:Function, findRun:Function, onFailure?:Function}} options */
-  constructor({ filename, web, available, assertStart, approve, findRun, onFailure = null }) {
+  static async open(options) {
+    return openStoredPreparation(options, settings => new PreparationService(settings));
+  }
+  /** @param {{storage?:any, filename:string, web:any, available:Function, assertStart:Function, approve:Function, findRun:Function, onFailure?:Function}} options */
+  constructor({ filename, web, available, assertStart, approve, findRun, onFailure = null, storage = null }) {
     this.onFailure = onFailure; this.web = web; this.available = available; this.assertStart = assertStart;
     this.approveRun = approve; this.findRun = findRun; this.jobs = new Map(); this.closed = false;
-    fs.mkdirSync(path.dirname(filename), { recursive: true });
-    this.db = new DatabaseSync(filename);
-    // Initialization runs on the /api/state read path: lock contention must fail
-    // closed immediately rather than block every HTTP endpoint on this thread.
-    // Mutation lock waits yield in persistPreparation; native calls never wait.
+    this.storage = storage;
+    if (!storage) {
+      fs.mkdirSync(path.dirname(filename), { recursive: true });
+      this.db = new DatabaseSync(filename);
+    }
+    // HTTP uses worker-owned storage; direct construction retains offline compatibility.
     try {
-      this.db.exec("PRAGMA busy_timeout=0; CREATE TABLE IF NOT EXISTS preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT;");
-      const row = this.db.prepare("SELECT json FROM preparation_state WHERE id=1").get();
-      this.data = row ? JSON.parse(String(row.json)) : { currentId: null, contexts: {}, receipts: {}, projectConversations: {} };
+      if (!storage) this.db.exec("PRAGMA busy_timeout=0; CREATE TABLE IF NOT EXISTS preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT;");
+      const row = storage ? null : this.db.prepare("SELECT json FROM preparation_state WHERE id=1").get();
+      this.data = storage?.data ?? (row ? JSON.parse(String(row.json)) : { currentId: null, contexts: {}, receipts: {}, projectConversations: {} });
       this.data.projectConversations ??= {};
       for (const context of Object.values(this.data.contexts)) {
         if (context.lifecycle !== "ACTIVE") continue;
@@ -214,9 +218,9 @@ export class PreparationService {
           context.version++; context.updatedAt = stamp();
         }
       }
-      this.saveSync();
+      if (!storage) this.saveSync();
     } catch (error) {
-      this.db.close();
+      this.db?.close();
       throw error;
     }
     this.unsubscribe = web?.onEvent?.((event) => {
@@ -234,14 +238,14 @@ export class PreparationService {
     if (this.closed) return;
     this.db.prepare("INSERT INTO preparation_state VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET json=excluded.json").run(canonicalJson(data));
   }
-  save() { return persistPreparation(this.db, () => canonicalJson(this.data), () => {}, () => this.closed); }
-  saveReceipt(requestId, receipt) {
-    return persistPreparation(this.db,
-      () => canonicalJson({ ...this.data, receipts:{ ...this.data.receipts, [requestId]:receipt } }),
-      () => { this.data.receipts[requestId] = receipt; }, () => this.closed);
+  saveImmediate(data = this.data) {
+    return this.storage ? this.storage.persist(() => canonicalJson(data), () => {}, false) : this.saveSync(data);
+  }
+  save() { if (this.storage) return this.storage.persist(() => canonicalJson(this.data)); return persistPreparation(this.db, () => canonicalJson(this.data), () => {}, () => this.closed); }
+  saveReceipt(requestId, receipt, wait = true) {
+    return persistPreparationReceipt(this, requestId, receipt, wait);
   }
   async touch(context) { context.version++; context.updatedAt = stamp(); await this.save(); }
-  touchSync(context) { context.version++; context.updatedAt = stamp(); this.saveSync(); }
   snapshot() {
     const context = this.current;
     let changed = false;
@@ -265,6 +269,7 @@ export class PreparationService {
         }
       }
     }
+    if (changed && this.storage) return Promise.resolve(this.saveImmediate()).then(() => structuredClone(context));
     if (changed) this.saveSync();
     return structuredClone(context);
   }
@@ -285,13 +290,21 @@ export class PreparationService {
       if (previous.status === "COMPLETED") return structuredClone(previous.result);
       fail("Previous request is processing or requires recovery. No automatic resubmission.", "UNKNOWN_RESULT");
     }
-    if (this.jobs.has("mutation")) fail("Another preparation command is processing.");
+    if (this.jobs.has("mutation")) {
+      if (this.activeCommand?.requestId === input.requestId) {
+        if (this.activeCommand.hash !== hash) fail("requestId identifies a different command.", "REQUEST_ID_CONFLICT");
+        fail("Previous request is processing or requires recovery. No automatic resubmission.", "UNKNOWN_RESULT");
+      }
+      fail("Another preparation command is processing.");
+    }
     const receipt = { hash, status: "PROCESSING", result: null, error: null };
     // Hold command ownership while the initial write waits. Publish the receipt
     // only after commit: a failed pre-dispatch write is known not to have run.
     this.jobs.set("mutation", true);
+    this.activeCommand = {requestId:input.requestId, hash};
     try {
       await this.saveReceipt(input.requestId, receipt);
+      if (this.closed) fail("Server is closing.");
       let result;
       try { result = await this.dispatch(type, input); }
       catch (error) {
@@ -302,9 +315,8 @@ export class PreparationService {
       }
       await this.saveReceipt(input.requestId, {...receipt, result:structuredClone(result), status:"COMPLETED"});
       return result;
-    } finally { this.jobs.delete("mutation"); }
+    } finally { this.jobs.delete("mutation"); this.activeCommand = null; }
   }
-
   context(input) {
     const context = this.current;
     if (!context || context.preparationId !== input.preparationId) fail("Preparation identity changed.");
@@ -485,7 +497,6 @@ export class PreparationService {
   }
   launchDelivery(context, deliveryId, preparedBinding = null) {
     const session = context.webSession;
-    // No Web response is awaited by the HTTP request. The intent is durable first.
     const job = new Promise((resolve) => setImmediate(resolve)).then(() => this.generate(context, deliveryId, preparedBinding))
       .catch(async (rawError) => {
         if (this.closed) return;
@@ -569,6 +580,7 @@ export class PreparationService {
     });
     context.conversationUrl = binding.conversationUrl;
     delivery.state = "DISPATCHING"; context.state = "WAITING_WEB_RESPONSE"; await this.touch(context);
+    if (this.closed) return;
     const instructions = '너는 구현 설계자다. 구현, 저장소 변경, 승인하지 말고 사용자와 작업 범위 및 완료 기준을 합의한다. 모호한 요청은 질문이나 선택지를 반환하고 완료 기준을 억지로 만들지 않는다. 한국어로 답한다. 응답 마지막에 독립된 <controller_packet> 및 </controller_packet> 줄로 JSON을 감싼다: {"type":"REQUIREMENTS_PROPOSAL","summary":"설명","questions":["미해결 질문"],"items":[{"statement":"기능","acceptanceCriteria":"관찰 가능한 동작"}]}. packet 내부는 JSON.parse가 성공하는 엄격한 JSON이어야 한다. Windows 경로는 C:/path 형식의 슬래시를 우선 사용하고, 역슬래시를 쓸 때는 JSON 문자열에서 \\\\로 escape한다. 태그에 Markdown escape나 코드 fence를 붙이지 않는다. 출력 직전에 JSON 문자열과 독립된 태그 줄을 스스로 검증한다. 질문만 있으면 items는 빈 배열이다. 검증 방식은 코드 스냅샷 검토이며 실행 테스트를 수행했다고 주장하지 않는다.\n첫 메시지에서 다음 개발 진입 데이터를 모두 확인한다:\n- 작업 대상: 무엇을 어느 저장소·경로에서 변경하는가\n- 구현 범위: 포함할 기능과 제외할 범위\n- 요구사항: 각 기능의 구체적인 statement\n- 완료 기준: 각 요구사항의 관찰 가능한 acceptanceCriteria\n- 검증 방법: 실행할 테스트·명령과 기대 결과\n- 한도와 제약: 실행 한도, 금지된 변경, 외부 연동 조건\n- 승인 조건: 위 항목에 미해결 질문이 없고 사용자가 승인해야 구현을 시작한다\n이미 제공된 값은 다시 묻지 말고, 빠진 값만 질문한다. 질문이 남아 있으면 status는 DISCUSSING, 모든 항목이 합의되면 questions는 빈 배열이고 status는 READY가 되도록 제안한다.\n기존 준비 문맥:\n';
     const responseFormatFallback = '중요: 요구사항 제안 packet을 정확히 만들 수 없거나 필요한 정보가 부족하면 <controller_packet>을 추측해서 만들지 말고, 태그가 전혀 없는 평문으로 부족한 정보와 질문만 설명한다. 평문 응답은 오류가 아니라 사용자 확인을 위한 정상적인 대화 응답이다.\n';
     const projectConversationBoundary = context.projectConversationSource
@@ -927,7 +939,8 @@ export class PreparationService {
       const existing = await this.findRun(context.reservedRunId);
       if (existing) {
         context.resultingRunId = existing.runId; context.agreement.status = "APPROVED";
-        context.lifecycle = "COMPLETED"; context.stage = "WORK"; this.touchSync(context);
+        context.lifecycle = "COMPLETED"; context.stage = "WORK";
+        context.version++; context.updatedAt = stamp(); await this.saveImmediate();
       }
     }
     if (context?.resultingRunId) {
@@ -936,8 +949,7 @@ export class PreparationService {
         const command = JSON.parse(receipt.hash);
         if (command.type === "preparation.approve" && command.input.preparationId === context.preparationId) {
           const completed = {...receipt, status:"COMPLETED", result:{runId:context.resultingRunId}};
-          this.saveSync({...this.data, receipts:{...this.data.receipts, [requestId]:completed}});
-          this.data.receipts[requestId] = completed;
+          await this.saveReceipt(requestId, completed, false);
         }
       }
     }
@@ -972,12 +984,16 @@ export class PreparationService {
       commandCapabilities: caps };
   }
   close() {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
     this.unsubscribe?.();
     for (const job of this.jobs.values()) {
       if (job && typeof job.cancel === "function") job.cancel();
     }
     this.jobs.clear();
+    if (this.storage) {
+      return this.closePromise = this.storage.close();
+    }
     this.db.close();
   }
 }

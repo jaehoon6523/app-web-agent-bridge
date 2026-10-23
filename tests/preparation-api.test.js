@@ -1,3 +1,4 @@
+import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -25,8 +26,10 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     return { store: { listRuns: () => [], getRun: () => null }, codeChanges: service, close: () => service.close() };
   } });
   let bridge = create();
-  t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await bridge.close(); await removeOwnedFixture(root); });
   let binding, active = null, count = 0, release, dropAck = false;
+  let promptReceived;
+  let nextPrompt = new Promise(resolve => { promptReceived = resolve; });
   class Socket extends EventEmitter {
     readyState = 1;
     close() { this.readyState = 3; this.emit("close"); }
@@ -50,6 +53,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
             evidence: { documentId: binding.documentId, frameId: binding.frameId },
             trace: { requestId: active, actionId: active, result: "success", tabId: binding.tabId,
               bindingId: `${binding.sessionId}:${binding.runId}`, documentId: binding.documentId, frameId: binding.frameId } });
+          promptReceived();
         }
         if (message.type === "web.delivery.inspect" && !binding) reply("web.delivery.inspected", { currentDeliveryId: null,
           sessionId: null, runId: null, conversationUrl: null, conversationId: null,
@@ -77,8 +81,8 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   };
   const headers = { authorization: "Bearer " + token, origin: config.baseUrl, "content-type": "application/json" };
   const post = (url, body) => fetch(base + url, { method: "POST", headers, body: JSON.stringify(body) });
-  const state = async (query = "") => {
-    const response = await fetch(base + "/api/state" + query, { headers });
+  const state = async (query = "", signal = undefined) => {
+    const response = await fetch(base + "/api/state" + query, { headers, signal });
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
@@ -91,13 +95,17 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   const prep = await created.json();
   assert.equal(fs.existsSync(path.join(target, ".git")), false);
   const ready = async (expected) => {
-    for (let i = 0; i < 50; i++) {
-      const result = await state(); if (result.workflow.state === expected) return result;
-      await new Promise(setImmediate);
+    const deadline = performance.now() + 5000;
+    const signal = AbortSignal.timeout(5000);
+    let lastResponse;
+    while (performance.now() < deadline) {
+      lastResponse = await state("", signal);
+      if (lastResponse.workflow.state === expected) return lastResponse;
+      await new Promise(resolve => setTimeout(resolve, 10));
     }
-    assert.fail("State did not reach " + expected + ": " + JSON.stringify(await state()));
+    assert.fail("State did not reach " + expected + ": " + JSON.stringify(lastResponse));
   };
-  await ready("WAITING_WEB_RESPONSE"); release();
+  await ready("WAITING_WEB_RESPONSE"); await nextPrompt; release();
   let current = await ready("DISCUSSING");
   assert.equal(current.preparation.preparationId, prep.preparationId);
   const identity = { preparationId: prep.preparationId, sessionId: current.preparation.webSession.sessionId,
@@ -109,11 +117,12 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.deepEqual(current.preparation, beforeRestart);
   assert.equal(count, 1);
   assert.equal(current.preparation.objective, "  아무거나\n");
+  nextPrompt = new Promise(resolve => { promptReceived = resolve; });
   const reply = await post("/api/preparations/" + prep.preparationId + "/reply", {
     requestId: "reply", content: "값 표시",
   });
   assert.equal(reply.status, 202, await reply.clone().text());
-  await ready("WAITING_WEB_RESPONSE"); dropAck = true; release();
+  await ready("WAITING_WEB_RESPONSE"); await nextPrompt; dropAck = true; release();
   current = await ready("RECOVERY_REQUIRED");
   const deliveryId = current.preparation.webSession.activeDeliveryId;
   assert.equal(current.preparation.deliveries[1].state, "RESPONSE_COMPLETED");

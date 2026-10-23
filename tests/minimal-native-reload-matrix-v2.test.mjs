@@ -83,7 +83,7 @@ test('reload profile rejects unconfirmed settings and closes the management page
   });
 });
 
-test('watchdog kills a real hung child after the deadline and verifies its exit', async () => {
+test('watchdog kills a real hung child after the deadline and verifies its exit', async t => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mv3-watchdog-test-'));
   const start = Date.now();
   const trial = await superviseTrial({
@@ -91,6 +91,7 @@ test('watchdog kills a real hung child after the deadline and verifies its exit'
     snapshotFile: path.join(scratch, 'nonexistent.json'), profile: path.join(scratch, 'profile'),
     scratch, limitMs: 180,
   });
+  t.diagnostic(JSON.stringify({cleanup:trial.cleanup, childExit:trial.childExit, watchdog:trial.watchdog}));
   assert.equal(trial.watchdog.timedOut, true);
   assert.equal(trial.execution, 'INCOMPLETE');
   assert.equal(trial.cleanup.childTerminationConfirmed, true);
@@ -142,7 +143,7 @@ test('cleanup failure never overwrites a previously proven successful reload', (
   assert.equal(after.cleanup.status, 'FAIL');
 });
 
-test('a child hung during cleanup retains COMPLETE and reload PASS in durable snapshot', async () => {
+test('a child hung during cleanup retains COMPLETE and reload PASS in durable snapshot', async t => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'mv3-cleanup-watchdog-'));
   const snapshotFile = path.join(scratch, 'observation.json');
   // The subprocess first durably records a completed experiment, then hangs during cleanup.
@@ -153,6 +154,7 @@ test('a child hung during cleanup retains COMPLETE and reload PASS in durable sn
     // completing within 250 ms. Keep the real child/write/watchdog assertions;
     // allow a bounded startup budget. The 180 ms deadline oracle is separate.
     scratch, limitMs: 2000 });
+  t.diagnostic(JSON.stringify({cleanup:trial.cleanup, childExit:trial.childExit, watchdog:trial.watchdog}));
   assert.equal(trial.watchdog.timedOut, true);
   assert.equal(trial.execution, 'COMPLETE');
   assert.equal(trial.functionalRecovery, 'PASS');

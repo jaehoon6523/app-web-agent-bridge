@@ -5,11 +5,12 @@ import os from 'node:os';
 import path from 'node:path';
 import {createDeliveryRecoveryAudit} from '../src/diagnostics/delivery-recovery-audit.js';
 import {createAutomaticAgentReport,readAgentReport} from '../src/diagnostics/agent-report.js';
+import {removeOwnedFixture} from '../scripts/e2e/helpers/owned-fixture.mjs';
 
 test('durable recovery audit and single latest diagnostic separate unknown outcome from completed disposal',async t => {
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'recovery-audit-'));
   const report=createAutomaticAgentReport({directory:path.join(root,'diagnostics'),root});
-  t.after(async()=>{await report.close();await fs.rm(root,{recursive:true,force:true});});
+  t.after(async()=>{await report.close();await removeOwnedFixture(root);});
   const audit=createDeliveryRecoveryAudit({directory:root,observe:record=>report.observeRecovery(record)});
   const input={currentDeliveryId:'delivery_618fcd37-ec59-4d1b-9151-eb437b6468e2',reason:'PRIVATE_PROMPT',conversationUrl:'https://chatgpt.com/?secret=PRIVATE_KEY',terminalDiscardConfirmed:true};
   for(const phase of ['STARTED','FAILED','STARTED','COMPLETED']) await audit({phase,input,code:'CONFIRM_FAILED'});
@@ -21,7 +22,7 @@ test('durable recovery audit and single latest diagnostic separate unknown outco
   assert.equal(latest.deliveryRecovery.disposalStatus,'BOTH_DISCARDED');assert.equal(latest.deliveryReview.discardConfirmed,true);
 });
 test('audit storage failure reports a safe failure and fails closed',async t => {
-  const root=await fs.mkdtemp(path.join(os.tmpdir(),'recovery-audit-fail-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'recovery-audit-fail-'));t.after(()=>removeOwnedFixture(root));
   const file=path.join(root,'file');await fs.writeFile(file,'occupied');const records=[];
   const audit=createDeliveryRecoveryAudit({directory:file,observe:async record=>records.push(record)});
   await assert.rejects(audit({phase:'STARTED',input:{}}),{code:'DELIVERY_AUDIT_WRITE_FAILED'});

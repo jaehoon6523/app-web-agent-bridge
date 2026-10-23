@@ -1,3 +1,4 @@
+import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import fs from "node:fs";
@@ -110,9 +111,10 @@ test("real controller SQLite contention preserves independent HTTP responses and
       if (child.connected) child.send({type:"bridge.shutdown"});
     }});
     assert.deepEqual(result, {code:0,signal:null});
-    fs.rmSync(root, {recursive:true,force:true});
+    await removeOwnedFixture(root);
   });
-  async function until(predicate) {
+  async function until(expected, predicate) {
+    const started = performance.now();
     const found = events.find(predicate);
     if (found) return found;
     let listener, timer;
@@ -120,12 +122,27 @@ test("real controller SQLite contention preserves independent HTTP responses and
       return await new Promise((resolve, reject) => {
         listener = event => { if (predicate(event)) resolve(event); };
         changed.on("event", listener);
-        timer = setTimeout(() => reject(new Error("Missing snapshot diagnostic checkpoint: "+JSON.stringify(
-          events.filter(event => event.type.startsWith("state.snapshot.") || event.type.startsWith("watchdog.")).slice(-20)))), 6000);
+        timer = setTimeout(() => reject(new Error("Missing snapshot diagnostic checkpoint: "+JSON.stringify({
+          expected, timeoutMs:6000, elapsedMs:Math.round(performance.now()-started),
+          serverListeningObserved:events.some(event => event.type === "server.listening"),
+          child:{pid:child.pid,exitCode:child.exitCode,signalCode:child.signalCode,connected:child.connected},
+          recentEventTypes:events.slice(-20).map(({at,type}) => ({at,type})),
+          // Retain relevant evidence independently of unrelated event traffic.
+          // Select fields explicitly; never copy URLs, messages, or payloads.
+          relevantEvents:events.filter(event => event.type.startsWith("state.snapshot.") ||
+            event.type.startsWith("watchdog.") || event.type.startsWith("startup.") ||
+            event.type === "server.listening").slice(-20).map(event => ({
+            at:event.at,type:event.type,snapshotId:event.snapshotId,stepId:event.stepId,
+            requestId:event.requestId,lastStage:event.lastStage,elapsedMs:event.elapsedMs,
+            silenceMs:event.silenceMs,loopDelayMs:event.loopDelayMs,
+            code:event.code,errorCode:event.errorCode,stage:event.stage,
+            bootstrapElapsedMs:event.bootstrapElapsedMs,
+          })),
+        }))), 6000);
       });
     } finally { changed.off("event", listener); clearTimeout(timer); }
   }
-  await until(event => event.type === "server.listening");
+  await until("server.listening", event => event.type === "server.listening");
   const read = () => fetch(runtimeConfig.baseUrl+"/api/state?private="+token, {
     headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(7000),
   });
@@ -135,7 +152,7 @@ test("real controller SQLite contention preserves independent HTTP responses and
   // requests a writer transaction; observe that existing wait, without changing
   // journal mode, server deadlines or persistence implementation.
   const pending = read(); pending.catch(() => {});
-  const start = await until(event => event.type === "state.snapshot.runtime.started");
+  const start = await until("state.snapshot.runtime.started", event => event.type === "state.snapshot.runtime.started");
   const probes = await Promise.all(["/api/preflight", "/api/health"].map(async route => {
     const response = await fetch(runtimeConfig.baseUrl+route, {signal:AbortSignal.timeout(1000)});
     await response.arrayBuffer();
@@ -152,7 +169,8 @@ test("real controller SQLite contention preserves independent HTTP responses and
   locker.exec("COMMIT"); locked = false;
   const recovered = await read(); assert.equal(recovered.status, 200);
   assert.equal((await recovered.json()).runtimeAvailability.ready, true);
-  const completed = await until(event => event.type === "state.snapshot.runtime.completed" && event.snapshotId > start.snapshotId);
+  const completed = await until(`state.snapshot.runtime.completed after snapshot ${start.snapshotId}`,
+    event => event.type === "state.snapshot.runtime.completed" && event.snapshotId > start.snapshotId);
   assert.doesNotMatch(fs.readFileSync(path.join(root, "events.jsonl"), "utf8"), new RegExp(token));
   t.diagnostic(JSON.stringify({snapshot:start, independentHttp:probes, unavailable:unavailable.runtimeAvailability, completed}));
 });
