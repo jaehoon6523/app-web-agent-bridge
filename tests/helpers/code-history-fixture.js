@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { Worker, isMainThread, workerData } from "node:worker_threads";
 import { CodeChangeStore } from "../../src/persistence/code-change-store.js";
-import { canonicalJson, sha256CanonicalJson } from "../../src/domain/canonical-json.js";
+import { canonicalJson, sha256CanonicalJson, sha256Text } from "../../src/domain/canonical-json.js";
 
 // Actual cumulative records and canonical hash chain, independently written in
 // one transaction. No delayed response, fake verifier or mocked SQLite handle.
@@ -10,14 +10,19 @@ export function seedHistory(filename, {versions = 8, eventBytes = 32, legacy = f
   const db = new DatabaseSync(filename);
   db.exec("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE");
   let previousHash = null, record, json, hash;
-  const events = [], runId = "accumulated-history";
+  const events = [], serializedEvents = [], runId = "accumulated-history";
   const insert = db.prepare("INSERT INTO code_change_history VALUES (?,?,?,?,?,?)");
   try {
     for (let version = 1; version <= versions; version++) {
       events.push({type:"STATE_CHANGED", detail:"x".repeat(eventBytes), version});
+      serializedEvents.push(canonicalJson(events.at(-1)));
       record = {runId, version, schemaVersion:3, stage:"CANCELLED", events, objective:"history contract",
         createdAt:"2026-10-05T00:00:00.000Z", updatedAt:"2026-10-05T00:00:00.000Z"};
-      json = canonicalJson(record); hash = sha256CanonicalJson(record);
+      // Events are immutable after append. Serialize each once, retaining the
+      // same cumulative canonical bytes and full history size at every version.
+      json = '{' + Object.keys(record).sort().map(key => JSON.stringify(key) + ':' +
+        (key === 'events' ? '[' + serializedEvents.join(',') + ']' : canonicalJson(record[key]))).join(',') + '}';
+      hash = sha256Text(json);
       const headHash = sha256CanonicalJson({kind:"CODE_CHANGE_HISTORY",runId,version,recordHash:hash,previousHash});
       insert.run(runId, version, json, hash, legacy ? null : previousHash, legacy ? null : headHash);
       previousHash = headHash;

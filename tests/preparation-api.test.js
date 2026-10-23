@@ -81,8 +81,8 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   };
   const headers = { authorization: "Bearer " + token, origin: config.baseUrl, "content-type": "application/json" };
   const post = (url, body) => fetch(base + url, { method: "POST", headers, body: JSON.stringify(body) });
-  const state = async (query = "") => {
-    const response = await fetch(base + "/api/state" + query, { headers });
+  const state = async (query = "", signal = undefined) => {
+    const response = await fetch(base + "/api/state" + query, { headers, signal });
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
@@ -95,11 +95,15 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   const prep = await created.json();
   assert.equal(fs.existsSync(path.join(target, ".git")), false);
   const ready = async (expected) => {
-    for (let i = 0; i < 50; i++) {
-      const result = await state(); if (result.workflow.state === expected) return result;
-      await new Promise(setImmediate);
+    const deadline = performance.now() + 5000;
+    const signal = AbortSignal.timeout(5000);
+    let lastResponse;
+    while (performance.now() < deadline) {
+      lastResponse = await state("", signal);
+      if (lastResponse.workflow.state === expected) return lastResponse;
+      await new Promise(resolve => setTimeout(resolve, 10));
     }
-    assert.fail("State did not reach " + expected + ": " + JSON.stringify(await state()));
+    assert.fail("State did not reach " + expected + ": " + JSON.stringify(lastResponse));
   };
   await ready("WAITING_WEB_RESPONSE"); await nextPrompt; release();
   let current = await ready("DISCUSSING");

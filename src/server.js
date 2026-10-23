@@ -12,7 +12,7 @@ import { collectSelectorDiagnostics } from "./orchestration/selector-diagnostics
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
-import { createServerObserver, diagnosticErrorCode } from "./diagnostics/server-observer.js";
+import { createServerObserver, diagnosticErrorCode, diagnosticErrorDetails } from "./diagnostics/server-observer.js";
 import { closeSteps } from "./diagnostics/shutdown.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -338,7 +338,7 @@ export function createBridgeServer({
       });
       diagnostics.emit("preparation.initialization.completed",{elapsedMs:performance.now()-started});
     } catch (error) {
-      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error),elapsedMs:performance.now()-started});
+      diagnostics.emit("preparation.initialization.failed",{code:diagnosticErrorCode(error),errors:diagnosticErrorDetails(error),elapsedMs:performance.now()-started});
       throw error;
     }
     return preparationService;

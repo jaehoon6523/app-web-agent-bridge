@@ -68,7 +68,7 @@ async function start(t, fault) {
     t.diagnostic(JSON.stringify({fault,watchdog:events.filter(event=>/^(?:watchdog\.|event-loop\.delay)/u.test(event.type))
       .map(({type,observedAt,silenceMs,loopDelayMs,lastStage,route})=>({type,observedAt,silenceMs,loopDelayMs,lastStage,route})),
       lastStages:events.filter(event=>/^(?:preparation|runtime)\.initialization\.|^state\./u.test(event.type))
-        .slice(-16).map(({type,observedAt,elapsedMs,code})=>({type,observedAt,elapsedMs,code}))}));
+        .slice(-16).map(({type,observedAt,elapsedMs,code,errors})=>({type,observedAt,elapsedMs,code,errors}))}));
     stop();if(child.exitCode===null&&child.signalCode===null)child.kill("SIGKILL");
     await exited;locker?.close();t.evidence.preserve(root);
     fs.writeFileSync(path.join(t.evidence.directory,"server-stderr.log"),stderr);
@@ -121,6 +121,9 @@ for(const fault of ["pending","reject","throw","corrupt-preparation","sqlite-loc
       assert.equal(events.some(event=>event.type==="runtime.initialization.started"),false);
       return;
     }
+    assert.equal(stateResponse.status,200,JSON.stringify({status:stateResponse.status,
+      failures:events.filter(event=>event.type==="preparation.initialization.failed")
+        .map(({code,errors})=>({code,errors}))}));
     assert.equal(stateResponse.body.runtimeAvailability.ready,false);
     assert.equal(stateResponse.body.dataKnowledge.runs.status,"UNAVAILABLE");
     assert.ok(events.some(event=>event.type==="runtime.initialization.started"));
