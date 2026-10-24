@@ -1,4 +1,7 @@
 import { registerTabSelectionTests } from "../helpers/preparation-tab-regressions.js";
+import { registerTabFocusUiContract } from "../helpers/tab-focus-ui-contract.js";
+import { registerCandidateSelectionTests } from "../helpers/tab-focus-selection.js";
+registerCandidateSelectionTests(dashboard);
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -161,6 +164,7 @@ function prepared() {
     runs: [], run: null, preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: ["preparation.reply", "web.reconcile"],
   };
 }
+registerTabFocusUiContract({dashboard, prepared});
 function renderedText(element) {
   return [element?.textContent ?? "", ...(element?.children ?? []).map(renderedText)].join("\n");
 }
