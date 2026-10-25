@@ -12,6 +12,10 @@ const GENERATOR_VERSION = "audit-reality-v2";
 const DEFAULT_SEED = 0x5eedc0de;
 const DEFAULT_DOMAIN_CASES = 200;
 const DEFAULT_FLOW_CASES = 12;
+// The normal discovery runs this file and two wrappers; each owns four
+// deterministic flow cases with the unchanged 180-second file deadline.
+const FLOW_SHARD = Number(new URL(import.meta.url).searchParams.get('flowShard') ?? '0');
+if (![0, 1, 2].includes(FLOW_SHARD)) throw new Error('Invalid audit flow shard');
 const DOMAIN_SALTS = Object.freeze({
   "evidence-binding": 0x00000001,
   "prompt-literal": 0x000a11ce,
@@ -159,7 +163,7 @@ function generatedContext(rng, index) {
   return { kinds, context, report };
 }
 
-test("seeded single-invariant mutations exercise validator threat model", () => {
+if (FLOW_SHARD === 0) test("seeded single-invariant mutations exercise validator threat model", () => {
   const seed = seedEnv();
   const target = targetCaseEnv();
   const targetDomain = targetDomainEnv();
@@ -202,7 +206,7 @@ test("seeded single-invariant mutations exercise validator threat model", () => 
   }
 });
 
-test("seeded reviewer prompt preserves production-shaped literals exactly", () => {
+if (FLOW_SHARD === 0) test("seeded reviewer prompt preserves production-shaped literals exactly", () => {
   const seed = seedEnv();
   const target = targetCaseEnv();
   const targetDomain = targetDomainEnv();
@@ -243,6 +247,9 @@ test("seeded mutations and explicit external review scripts cross Git capture, C
   const salt = DOMAIN_SALTS[domain];
 
   for (const index of caseIndexes("AUDIT_FLOW_CASES", DEFAULT_FLOW_CASES, 50, target)) {
+    // Explicit single-case replay stays on the original entrypoint.
+    if (target === null && index % 3 !== FLOW_SHARD) continue;
+    if (target !== null && FLOW_SHARD !== 0) continue;
     const rng = random(caseSeed(seed, index, salt));
     const passAt = 1 + (rng() % 4);
     const noise = choose(rng, [
@@ -267,7 +274,11 @@ test("seeded mutations and explicit external review scripts cross Git capture, C
       },
     };
 
+    const flowStarted = performance.now();
+    process.stderr.write('AUDIT_FLOW_START '+JSON.stringify({seed,case:index,shard:FLOW_SHARD})+'\n');
+    try {
     await t.test(`generator=${GENERATOR_VERSION} seed=${seed} flow-case=${index}`, async (st) => {
+      const setupStarted = performance.now();
       const f = setupAudit(st, {
         reviewVerdicts:scenario.externalReview.verdicts,
         worker({ workspace, number }) {
@@ -275,7 +286,13 @@ test("seeded mutations and explicit external review scripts cross Git capture, C
           fs.writeFileSync(path.join(workspace.root, "file.txt"), mutation.content);
         },
       });
+      process.stderr.write('AUDIT_PHASE_END '+JSON.stringify({case:index,phase:'setup',
+        elapsedMs:Math.round(performance.now()-setupStarted)})+'\n');
+      const runStarted = performance.now();
+      process.stderr.write('AUDIT_PHASE_START '+JSON.stringify({case:index,phase:'run'})+'\n');
       const run = await f.run();
+      process.stderr.write('AUDIT_PHASE_END '+JSON.stringify({case:index,phase:'run',
+        elapsedMs:Math.round(performance.now()-runStarted)})+'\n');
       const snapshot = f.service.snapshot(run.runId, {});
 
       const failure = (mutation, extra = {}) => failureContext(descriptor(seed, index, domain, mutation, {
@@ -342,5 +359,9 @@ test("seeded mutations and explicit external review scripts cross Git capture, C
         assert.equal(finding.verifiedCandidateId, null, failure("INCONCLUSIVE_FINDING_NOT_VERIFIED"));
       }
     });
+    } finally {
+      process.stderr.write('AUDIT_FLOW_END '+JSON.stringify({seed,case:index,shard:FLOW_SHARD,
+        elapsedMs:Math.round(performance.now()-flowStarted)})+'\n');
+    }
   }
 });
