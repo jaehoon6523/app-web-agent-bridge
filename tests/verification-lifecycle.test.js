@@ -9,6 +9,7 @@ import { executeVerification } from "../src/evidence/candidate-evidence.js";
 import { ArtifactStore } from "../src/evidence/artifact-store.js";
 import { setupAudit } from "./helpers/audit-fixtures.js";
 import { observeChildClose, waitChildClose } from '../src/runtime/child-close.js';
+import { forceProcessTree } from '../scripts/e2e/platform/process.mjs';
 import { inheritedPipeScript, waitForPipeHolder, assertPipeHolderAlive, stopPipeHolder, removeOwnedPipeFixture } from './helpers/inherited-pipes-fixture.js';
 
 test('verification cwd uses filesystem identity when a legacy root spelling is retained', async t => {
@@ -52,12 +53,16 @@ function inheritedVerification(t, startupDelayMs = 0) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-verification-close-"));
   const pidFile = path.join(root, "descendant.pid");
   const markerFile=path.join(root,'heartbeat');
-  const source = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${startupDelayMs});\n`
-    + inheritedPipeScript({pidFile,markerFile,stdinProtocol:true});
+  const readyFile=path.join(root,'startup-ready');
+  // Parent startup and descendant work are separate preparation boundaries.
+  const source = inheritedPipeScript({pidFile,markerFile,stdinProtocol:true,startupDelayMs,readyFile});
   const args = ['-e',source], spawn = childProcess.spawn;
   let child, observation, startedCwd, dispatched = false;
   t.after(async () => {
-    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    if (child && child.exitCode === null && child.signalCode === null) {
+      if (process.platform === 'win32' && !dispatched) await forceProcessTree(child);
+      else child.kill('SIGKILL');
+    }
     await stopPipeHolder(pidFile);
     if (observation) await waitChildClose(child,observation,{timeoutMs:5000});
     await removeOwnedPipeFixture(root);
@@ -67,7 +72,9 @@ function inheritedVerification(t, startupDelayMs = 0) {
       startedCwd=cwd;
       child=spawn(process.execPath,args,{cwd,windowsHide:true,stdio:['pipe','pipe','pipe']});
       observation=observeChildClose(child);
-      await waitForPipeHolder({pidFile,markerFile});
+      await waitForPipeHolder({pidFile,markerFile,readyFile});
+      assert.ok(Number(fs.readFileSync(readyFile,'utf8')) >= startupDelayMs,
+        'the actual parent startup delay must complete before verification dispatch');
       assert.equal(child.exitCode,null,'fixture parent must wait for stdin EOF');
       assert.equal(observation.result,undefined);
       assert.equal(child.stdout.closed,false); assert.equal(child.stderr.closed,false);
@@ -94,6 +101,13 @@ function inheritedVerification(t, startupDelayMs = 0) {
     },
   };
 }
+
+test("fixture readiness failure preserves its cause and closes the real owned descendant", {timeout:10000}, async t => {
+  const fixture=inheritedVerification(t,4000);
+  await assert.rejects(fixture.start(fixture.root), /owned descendant must perform real work/);
+  assert.equal(fixture.child.exitCode,null,'the startup failure must precede parent exit');
+  await assertPipeHolderAlive(fixture.markerFile);
+});
 
 test("verification timeout remains bounded after slow startup when an exited parent leaves inherited descendant pipes", {timeout:10000}, async t => {
   const fixture=inheritedVerification(t,1700);

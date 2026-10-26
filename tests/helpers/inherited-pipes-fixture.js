@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {setTimeout as wait} from 'node:timers/promises';
 
-export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false}) {
+export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false, startupDelayMs = 0, readyFile}) {
   const descendant = `const fs=require('node:fs');
     fs.appendFileSync(process.argv[1],'x');
     setInterval(()=>fs.appendFileSync(process.argv[1],'x'),50);
@@ -16,12 +16,17 @@ export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false}
     fs.writeFileSync(${JSON.stringify(pidFile)},String(d.pid));
     d.once('message',()=>d.unref());
     ${stdinProtocol ? `const rl=require('node:readline').createInterface({input:process.stdin});
-    rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'pipe-contract'}})+'\\n');});` : ''}`;
+    rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'pipe-contract'}})+'\\n');});` : ''}
+    ${readyFile ? `const started=performance.now();
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${startupDelayMs});
+    fs.writeFileSync(${JSON.stringify(readyFile)},String(performance.now()-started));` : ''}`;
 }
 
-export async function waitForPipeHolder({pidFile,markerFile}) {
+export async function waitForPipeHolder({pidFile,markerFile,readyFile}) {
   const deadline=performance.now()+3000;
-  while (!fs.existsSync(markerFile) || fs.statSync(markerFile).size < 2) {
+  while (!fs.existsSync(pidFile) || fs.statSync(pidFile).size === 0
+    || !fs.existsSync(markerFile) || fs.statSync(markerFile).size < 2
+    || (readyFile && (!fs.existsSync(readyFile) || fs.statSync(readyFile).size === 0))) {
     assert.ok(performance.now()<deadline,'owned descendant must perform real work before the closure oracle');
     await wait(10);
   }
