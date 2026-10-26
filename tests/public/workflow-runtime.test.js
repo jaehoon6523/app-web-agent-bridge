@@ -41,7 +41,7 @@ test("initial recovery stays open when extension capabilities change and closes 
   state.commandCapabilities = ["web.inspect", "preparation.discard"];
   await ui.run("refresh()");
   const current = ui.elements.get("startRecovery").children[0];
-  assert.notEqual(current, previous);
+  assert.equal(current, previous, "capability-only updates must preserve the recovery DOM");
   assert.equal(current.open, true, "a capability refresh must not hide the newly enabled recovery action");
   assert.equal(current.children.find(item => item.dataset.webCommand === "web.inspect").disabled, false);
   state.preparation.preparationId = "p2";
@@ -426,7 +426,7 @@ test("[데이터 로드] selected request rejects a coherent response for anothe
   ui.run('selected = "A"');
   await ui.run("refresh()");
   assert.equal(ui.calls.at(-1).url, "/api/state?runId=A");
-  assert.equal(ui.run("connected"), false, "[데이터 로드] runId 기대=A, 실제=B를 차단해야 함");
+  assert.equal(ui.run("dashboardStateReady(connectionState)"), false, "[데이터 로드] runId 기대=A, 실제=B를 차단해야 함");
   assert.equal(ui.run("snapshot.run.runId"), "A");
   assert.equal(ui.elements.get("stopRun").disabled, true);
   assert.notEqual(ui.elements.get("runObjective").textContent, "작업 B");
@@ -439,11 +439,11 @@ test("[로딩 연결] changing selection blocks commands immediately and a faile
   ui.context.fetch = (url) => new Promise((resolve, reject) => { rejectRead = reject; });
   ui.run('selected = "B"');
   const pending = ui.run("refresh()");
-  assert.equal(ui.run("connected"), false, "[로딩 연결] LOADING 중 변경 명령 차단");
+  assert.equal(ui.run("dashboardStateReady(connectionState)"), false, "[로딩 연결] LOADING 중 변경 명령 차단");
   assert.equal(ui.elements.get("runPanel").hidden, true);
   rejectRead(new TypeError("controlled network failure"));
   await pending;
-  assert.equal(ui.run("connected"), false);
+  assert.equal(ui.run("dashboardStateReady(connectionState)"), false);
   assert.equal(ui.elements.get("runPanel").hidden, true);
   assert.equal(ui.elements.get("stopRun").disabled, true);
   assert.match(ui.elements.get("connectionNotice").textContent, /상태 조회 실패|서버 응답 없음/u);
@@ -848,7 +848,7 @@ test("audit hold → retry → pass → apply: commands use one run and the revi
   run.phase = "AWAITING_APPLY"; run.version++; run.reviews.push({ reviewId: "review-2" });
   state.workflow = workflowForRun(run); state.commandCapabilities = ["code.apply"];
   await ui.run("refresh()");
-  assert.equal(ui.elements.get("applyCode").disabled, false, JSON.stringify({ calls: ui.calls, workflow: ui.run("workflow"), connected: ui.run("connected"), cap: ui.run("[...capabilities()]") }));
+  assert.equal(ui.elements.get("applyCode").disabled, false, JSON.stringify({ calls: ui.calls, workflow: ui.run("workflow"), connected: ui.run("dashboardStateReady(connectionState)"), cap: ui.run("[...capabilities()]") }));
   await ui.elements.get("applyCode").listeners.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ui.elements.get("runStatus").textContent, "적용됨");
@@ -878,7 +878,7 @@ test("recovery diagnosis cannot authorize discard and disconnected state sends n
   assert.equal(calls, 1);
   assert.equal(ui.elements.get("abandonRun").disabled, true);
   state.commandCapabilities = ["run.reconcile", "run.abandon"];
-  ui.run("connected = false; render()");
+  ui.run("connectionState = markStateReadStarted(connectionState); render()");
   assert.equal(ui.elements.get("reconcileRun").disabled, true);
   await ui.elements.get("reconcileRun").listeners.click();
   assert.equal(calls, 1);
@@ -895,6 +895,6 @@ test("uncertain audit retry is not sent twice without a settled receipt", async 
   assert.equal(ui.elements.get("retryRun").disabled, true);
   await ui.elements.get("retryRun").listeners.click();
   assert.equal(ui.calls.filter(({ url }) => url === "/api/commands").length, 1);
-  assert.ok(ui.calls.some(({ url }) => url === "/api/state?requestId=request-1"), JSON.stringify({ calls: ui.calls, connected: ui.run("connected"), state: ui.run("operations.runCommand") }));
+  assert.ok(ui.calls.some(({ url }) => url === "/api/state?requestId=request-1"), JSON.stringify({ calls: ui.calls, connected: ui.run("dashboardStateReady(connectionState)"), state: ui.run("operations.runCommand") }));
   assert.match(ui.elements.get("commandResult").textContent, /같은 요청을 자동으로 다시 보내지 않습니다/u);
 });

@@ -22,7 +22,7 @@ function shell(step) {
   });
   const panel = el("div", "", "tab-choice-panel"), head = el("div", "", "tab-choice-head"), body = el("div", "", "tab-choice-body");
   head.append(el("b", "컨트롤러"), el("span", "여기서만 전송이 시작됩니다"));
-  panel.append(head, body); root.append(steps, panel); return { root, body };
+  panel.append(head, body); root.append(steps, panel); return { root, body, steps };
 }
 function rail(step) {
   const list = el("ol", "", "tab-choice-rail");
@@ -92,8 +92,8 @@ function focusOutcomeMessage(result) {
 export function renderPreparationTabChoice({ candidates, hint, operation, allowed, onSubmit, onRefresh, onView, onInspect, isCurrent = () => true, rejection = "", focusState = {} }) {
   focusState.unconfirmedTabs ??= new Set();
   const unconfirmed = tabId => focusState.unconfirmedTabs.has(tabId);
-  const model = choiceAvailability({ candidates, hint, operation, allowed });
-  const { root, body } = shell(operation === "IDLE" ? 2 : 3);
+  let model = choiceAvailability({ candidates, hint, operation, allowed });
+  const { root, body, steps } = shell(operation === "IDLE" ? 2 : 3);
   const content = el("div"), overview = el("div"); overview.hidden = true;
   body.append(content, overview);
   content.append(el("h2", "이 작업에 쓸 탭 고르기"), el("p", operation !== "IDLE" ? model.reason
@@ -121,7 +121,7 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
   send.disabled = true;
   const reason = el("p", "후보를 먼저 선택하면 전송 버튼이 켜집니다.", "tab-choice-reason"); reason.setAttribute("role", "status");
   const syncFocus = () => {
-    const blocked = submitted || focusState.busy || focusState.needsRefresh || operation !== "IDLE";
+    const blocked = !isCurrent() || submitted || focusState.busy || focusState.needsRefresh || operation !== "IDLE";
     for (const control of group.querySelectorAll("input,button")) {
       control.disabled = Boolean(blocked || unconfirmed(control.focusTabId)
         || (control.tagName === "INPUT" && (!model.enabled || rejection)));
@@ -129,6 +129,14 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
     send.disabled = Boolean(blocked || selected === null || unconfirmed(selected) || !model.enabled || rejection);
     refresh.disabled = Boolean(focusState.busy || focusState.refreshing || operation === "RUNNING");
     if (focusState.message) reason.textContent = focusState.message;
+    group.hidden = dock.hidden = operation === "RUNNING";
+    send.hidden = reason.hidden = operation !== "IDLE" || Boolean(rejection);
+    progress.hidden = operation !== "RUNNING"; back.disabled = operation !== "IDLE" || submitted;
+    Array.from(steps.children).forEach((item, index) => {
+      const step = operation === "IDLE" ? 2 : 3; item.classList.toggle("done", index + 1 < step);
+      item.setAttribute("aria-current", index + 1 === step ? "step" : "false");
+    });
+    if (!submitted) { notice.textContent = rejection || model.reason || model.warning; notice.hidden = !notice.textContent; }
   };
   const states = [];
   for (const candidate of candidates) {
@@ -222,8 +230,11 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
   actions.append(back, send); dock.append(reason, actions,
     el("p", "전송 버튼을 누를 때만 보류된 요청을 계속합니다.", "tab-choice-caption"));
   content.append(group, dock, refresh);
-  if (operation !== "IDLE" || rejection) { send.hidden = true; reason.hidden = true; }
-  if (operation === "RUNNING") { group.hidden = true; dock.hidden = true; content.append(rail(0)); }
+  const progress = rail(0); content.append(progress);
+  focusState.updateAvailability = (nextOperation, nextAllowed) => {
+    operation = nextOperation; allowed = nextAllowed;
+    model = choiceAvailability({ candidates, hint, operation, allowed }); syncFocus();
+  };
   focusState.render = syncFocus;
   syncFocus();
   return root;
