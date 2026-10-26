@@ -51,22 +51,29 @@ function busy(cause, observation) {
 }
 const recoveryOwnerPattern = /^owner-([1-9][0-9]*)-([a-f0-9-]{36})$/u;
 async function recoveryObservation(recovery) {
-  try {
-    const stat = await io.lstat(recovery);
-    // Legacy ownerless files and links cannot establish a dead owner.
-    if (!stat.isDirectory() || stat.isSymbolicLink()) return {state:'UNVERIFIED',exists:true,identity:stat.ino};
-    const names = await io.readdir(recovery);
-    if (names.length === 0) return {state:'EMPTY',exists:true,identity:stat.ino};
-    const match = names.length === 1 && recoveryOwnerPattern.exec(names[0]);
-    if (!match) return {state:'INVALID',exists:true,identity:stat.ino};
-    const marker = path.join(recovery,names[0]), owner = await io.lstat(marker);
-    if (!owner.isDirectory() || owner.isSymbolicLink() || (await io.readdir(marker)).length !== 0)
-      return {state:'INVALID',exists:true,identity:stat.ino};
-    const pid = Number(match[1]);
-    return {state:ownerState(pid),exists:true,pid,token:match[2],marker:names[0],identity:stat.ino,markerIdentity:owner.ino};
-  } catch (error) {
-    if (error.code === 'ENOENT') return {state:'MISSING',exists:false};
-    throw error;
+  let denied;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const stat = await io.lstat(recovery);
+      // Legacy ownerless files and links cannot establish a dead owner.
+      if (!stat.isDirectory() || stat.isSymbolicLink()) return {state:'UNVERIFIED',exists:true,identity:stat.ino};
+      const names = await io.readdir(recovery);
+      if (names.length === 0) return {state:'EMPTY',exists:true,identity:stat.ino};
+      const match = names.length === 1 && recoveryOwnerPattern.exec(names[0]);
+      if (!match) return {state:'INVALID',exists:true,identity:stat.ino};
+      const marker = path.join(recovery,names[0]), owner = await io.lstat(marker);
+      if (!owner.isDirectory() || owner.isSymbolicLink() || (await io.readdir(marker)).length !== 0)
+        return {state:'INVALID',exists:true,identity:stat.ino};
+      const pid = Number(match[1]);
+      return {state:ownerState(pid),exists:true,pid,token:match[2],marker:names[0],identity:stat.ino,markerIdentity:owner.ino};
+    } catch (error) {
+      if (error.code === 'ENOENT') return {state:'MISSING',exists:false};
+      if (error.code !== 'EPERM' || error.syscall !== 'scandir') throw error;
+      // Windows deletion can deny a read; re-observe ownership instead of assuming absence.
+      denied ??= error;
+      if (attempt >= 4) throw denied;
+      await wait(20);
+    }
   }
 }
 async function removeEmptyRecoveryDirectory(directory) {

@@ -10,6 +10,7 @@ export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false,
   // Windows libuv kills non-detached children when their spawning parent exits.
   // Only this owned fixture descendant is detached; production policy is untouched.
   return `const fs=require('node:fs');
+    ${readyFile ? 'const started=performance.now();' : ''}
     const d=require('node:child_process').spawn(process.execPath,
       ['-e',${JSON.stringify(descendant)},${JSON.stringify(markerFile)}],
       {detached:true,windowsHide:true,stdio:['ignore',1,2,'ipc']});
@@ -17,8 +18,7 @@ export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false,
     d.once('message',()=>d.unref());
     ${stdinProtocol ? `const rl=require('node:readline').createInterface({input:process.stdin});
     rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'pipe-contract'}})+'\\n');});` : ''}
-    ${readyFile ? `const started=performance.now();
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${startupDelayMs});
+    ${readyFile ? `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,Math.max(0,Math.ceil(${startupDelayMs}-(performance.now()-started))));
     fs.writeFileSync(${JSON.stringify(readyFile)},String(performance.now()-started));` : ''}`;
 }
 
