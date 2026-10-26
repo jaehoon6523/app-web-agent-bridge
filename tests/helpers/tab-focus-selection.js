@@ -130,9 +130,11 @@ test('a late rejected rebind cannot poison a newer preparation version', async()
   await new Promise(setImmediate);
   state.preparation.version++;state.workflow.preparationVersion=state.preparation.version;
   await ui.run('refresh()');
+  const before=ui.elements.get('projectStatus').textContent;
   release({ok:false,status:409,json:async()=>({error:{code:'TAB_CLOSED',message:'old tab closed'}})});
   await pending;
   assert.equal(ui.run('preparation.version'),4);
+  assert.equal(ui.elements.get('projectStatus').textContent,before,'old-version status messages must also remain owner scoped');
   assert.equal(ui.run('tabChoiceFailures.has("d1")'),false,'old-version refusal must not become the new version recovery state');
   choice().querySelectorAll('input')[1].listeners.change();assert.equal(send().disabled,false);
   assert.equal(ui.calls.filter(x=>x.url==='/api/preparations/web').length,1,'version recovery must never auto resend');

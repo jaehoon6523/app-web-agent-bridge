@@ -1,5 +1,5 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
-import { renderPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
+import { renderPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions, tabFocusKey } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
@@ -284,6 +284,7 @@ async function refresh() {
       "/api/preparations/" + encodeURIComponent(autoApprovalPreparationId) + "/approve");
   }
 }
+function requestOwnerKey() { return JSON.stringify([selected, projectViewRoot, snapshot?.run?.runId, snapshot?.run?.version, tabFocusKey(preparation)]); }
 function capabilities() { return new Set(dashboardStateReady(connectionState) ? snapshot?.commandCapabilities ?? [] : []); }
 function webConnected() { return dashboardStateReady(connectionState) && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
 function currentPreparationActions() {
@@ -838,12 +839,12 @@ function render() {
 }
 async function command(type, payload = {}) {
   if (operations.runCommand !== "IDLE" || !capabilities().has(type)) return;
-  const run = snapshot?.run, target = run?.runId;
+  const owner = requestOwnerKey();
   const body = { type, requestId:crypto.randomUUID(), payload:{ ...payload, runId:workflow.runId, expectedVersion:workflow.runVersion } };
   operations.runCommand = "RUNNING"; lastCommandError = ""; render();
   try {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
-    if (snapshot?.run?.runId === target) {
+    if (owner === requestOwnerKey()) {
       const successMessage = {
         "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
@@ -862,18 +863,20 @@ async function command(type, payload = {}) {
       }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
       text("commandResult", successMessage);
     }
-    if (type === "run.delete") { selected = null; requestedView = "start"; }
+    if (type === "run.delete" && owner === requestOwnerKey()) { selected = null; requestedView = "start"; }
     return result.payload;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
-    lastCommandError = userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.");
-    text("commandResult", lastCommandError);
+    if (owner === requestOwnerKey()) {
+      lastCommandError = userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.");
+      text("commandResult", lastCommandError);
+    }
   } finally { if (operations.runCommand !== "UNKNOWN_RESULT") operations.runCommand = "IDLE"; await refresh(); }
 }
 async function openEvidence(id, startLine = 1) {
-  const target = snapshot?.run?.runId;
+  const target = snapshot?.run?.runId, owner = requestOwnerKey();
   const result = await command("evidence.get", { evidenceId:id, startLine, endLine:startLine + 199 });
-  if (!result || snapshot?.run?.runId !== target) return;
+  if (!result || owner !== requestOwnerKey()) return;
   evidencePage = { id, next:result.endLine + 1, target };
   text("evidenceTitle", `${result.kind} · ${id}`); text("evidenceContent", result.content);
   text("evidenceRange", `${result.startLine}–${result.endLine} / ${result.totalLines}줄${result.omittedAfter ? " · 다음 구간 있음" : ""}`);
@@ -1082,17 +1085,19 @@ function renderPreparation() {
 async function preparationMutation(operation, capability, url, payload = {}) {
   if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;
   if (["preparation.start", "preparation.reply"].includes(capability) && !webConnected()) return false;
-  const requestId = crypto.randomUUID(), choice = tabFocusViewState;
+  const requestId = crypto.randomUUID(), choice = tabFocusViewState, owner = requestOwnerKey();
   operations[operation] = "RUNNING"; render();
   try {
     await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId }) });
-    text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
+    if (owner === requestOwnerKey()) text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
     return true;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations[operation] = "UNKNOWN_RESULT"; unknownRequests.set(operation, requestId); }
     const message = userFacingError(error);
-    if (capability === "web.rebind" && error.code !== "UNKNOWN_RESULT" && choice === tabFocusViewState) { choice.selectedTabId = null; tabChoiceFailures.set(payload.deliveryId, message); }
-    text("projectStatus", message); text("startReason", message);
+    if (owner === requestOwnerKey()) {
+      if (capability === "web.rebind" && error.code !== "UNKNOWN_RESULT" && choice === tabFocusViewState) { choice.selectedTabId = null; tabChoiceFailures.set(payload.deliveryId, message); }
+      text("projectStatus", message); text("startReason", message);
+    }
     return false;
   } finally {
     if (operations[operation] !== "UNKNOWN_RESULT") operations[operation] = "IDLE";

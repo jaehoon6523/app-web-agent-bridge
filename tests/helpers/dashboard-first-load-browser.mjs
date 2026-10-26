@@ -35,7 +35,8 @@ export async function firstLoadBrowser(t, { intercept, init, expectedCommands = 
     if (!pathname.startsWith('/api/')) return;
     const authorization = request.headers().authorization;
     requests.push({ pathname, method:request.method(), at:performance.now(),
-      ...(pathname === '/api/commands' ? {command:request.postDataJSON()?.type} : {}),
+      ...(['/api/commands','/api/preparations/web'].includes(pathname)
+        ? {command:pathname === '/api/commands' ? request.postDataJSON()?.type : request.postDataJSON()?.command} : {}),
       credential:authorization ? digest(authorization) : null });
   });
   if (intercept) await context.route('**/api/**', async route => {
@@ -56,9 +57,10 @@ export async function firstLoadBrowser(t, { intercept, init, expectedCommands = 
     }));
     assert.deepEqual(pageErrors, [], 'the production page must not raise an uncaught error');
     assert.deepEqual(routeErrors, [], 'an interception failure must not masquerade as a product failure');
-    assert.deepEqual(requests.filter(r => !['GET', 'HEAD'].includes(r.method)
-      && r.pathname !== '/api/dashboard/session' && !(r.pathname === '/api/commands' && expectedCommands.includes(r.command))), [], 'startup/recovery must not send an unexpected product mutation');
-    assert.deepEqual(requests.filter(r => r.pathname === '/api/commands').map(r => r.command), expectedCommands);
+    assert.equal(requests.filter(r => ['/api/commands','/api/preparations/web'].includes(r.pathname)).every(r => r.method === 'POST'),true,'command endpoints require POST');
+    const expected = expectedCommands.map(command => typeof command === 'string' ? {pathname:'/api/commands',command} : command);
+    assert.deepEqual(requests.filter(r => !['GET','HEAD'].includes(r.method) && r.pathname !== '/api/dashboard/session')
+      .map(({pathname,command}) => ({pathname,command})),expected,'only explicitly expected product mutations may be sent');
   }, 10);
   t.diagnostic(JSON.stringify({ node:process.version, platform:process.platform, browser:browser.version(),
     boundary:'production process + unmodified page; selected HTTP faults', timeoutAcceleration:false }));

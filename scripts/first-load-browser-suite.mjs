@@ -338,3 +338,55 @@ test('FL-10: an actual render exception blocks controls, stops polling and reloa
   assert.equal(await f.page.locator('#dashboardPageError').isHidden(), true);
   assert.equal(f.count(SESSION), 2, 'reload must bootstrap a fresh page session');
 });
+
+test('[UI ownership] late previous-version refusal cannot replace current preparation messages', options, async t=>{
+  let version=3;const held=deferred(),release=deferred();
+  const f=await firstLoadBrowser(t,{expectedCommands:[{pathname:'/api/preparations/web',command:'web.rebind'}],intercept:async({route,pathname})=>{
+    if(pathname==='/api/state'){
+      const base=await(await route.fetch()).json();
+      await json(route,200,{...base,runtimeAvailability:{...base.runtimeAvailability,ready:true},
+        preflight:{...base.preflight,checks:{...base.preflight.checks,extensionAuthenticated:true}},
+        workflow:{stage:'PREPARE',state:'DISCUSSING',preparationId:'p1',preparationVersion:version},
+        preparation:{preparationId:'p1',version,state:'WEB_BLOCKED',lifecycle:'ACTIVE',objective:'owned task',targetRoot:'C:/project',
+          agreement:{status:'DISCUSSING',requirements:[],unresolvedQuestions:[]},discussion:[],webSession:{sessionId:'s1',activeDeliveryId:'d1'},
+          error:{code:'WEB_TAB_SELECTION_REQUIRED',details:{candidates:[{tabId:7,url:'https://chatgpt.com/'},{tabId:8,url:'https://chatgpt.com/'}]}}},
+        commandCapabilities:['web.rebind'],run:null,runs:[]});return true;
+    }
+    if(pathname==='/api/preparations/web'){held.resolve();await release.promise;await json(route,409,{error:{code:'TAB_CLOSED',message:'old-version refusal'}});return true;}
+    return false;
+  }});
+  f.owner.add('release old command response',()=>release.resolve(),0);
+  await f.open();await f.ready();
+  const choice=f.page.locator('.preparation-tab-choice');await choice.locator('input[value="7"]').check();
+  const oldChoice=await choice.elementHandle();await choice.locator('.tab-choice-send').click();await held.promise;
+  version=4;const changed=f.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/state');
+  await f.page.locator('#refreshDashboard').click();await changed;await f.ready();
+  assert.equal(await oldChoice.evaluate(el=>el.isConnected),false,'version change must invalidate the old choice DOM');
+  const before=await f.page.locator('#projectStatus').textContent(),beforeStart=await f.page.locator('#startReason').textContent();
+  release.resolve();await choice.locator('input[value="8"]').waitFor({state:'visible'});
+  await f.page.waitForFunction(()=>!document.querySelector('.preparation-tab-choice input[value="8"]').disabled);
+  assert.equal(await f.page.locator('#projectStatus').textContent(),before,'[UI ownership] old refusal must not overwrite current #projectStatus');
+  assert.equal(await f.page.locator('#startReason').textContent(),beforeStart,'[UI ownership] old refusal must not overwrite current #startReason');
+  assert.equal(await choice.locator('.tab-choice-send').isDisabled(),true);
+  assert.equal(f.count('/api/preparations/web'),1,'version recovery must not resend');
+});
+
+test('[UI ownership] late command error for A cannot replace the current B screen', options, async t=>{
+  const held=deferred(),release=deferred();let command;
+  const f=await firstLoadBrowser(t,{expectedCommands:['run.stop'],intercept:async({route,pathname})=>{
+    if(pathname===STATE){const base=await(await route.fetch()).json();const id=new URL(route.request().url()).searchParams.get('runId')||'A';await json(route,200,loadedRunState(base,id));return true;}
+    if(pathname==='/api/commands'){command=route.request().postDataJSON();held.resolve();await release.promise;await json(route,409,{error:{code:'RUN_CONFLICT',message:'old A refusal'}});return true;}
+    return false;
+  }});
+  f.owner.add('release old run response',()=>release.resolve(),0);
+  await f.open();await f.ready();await f.page.locator('#runSecondaryTier > summary').click();await f.page.locator('#stopRun').click();await held.promise;
+  const changed=f.page.waitForResponse(r=>new URL(r.url()).pathname===STATE&&new URL(r.url()).searchParams.get('runId')==='B');
+  await f.page.locator('#runList .run-item').filter({hasText:'작업 B'}).click();await changed;await f.ready();
+  assert.equal(await f.page.locator('#runObjective').innerText(),'작업 B');
+  const before=await f.page.locator('#commandResult').textContent();release.resolve();
+  await f.page.waitForFunction(()=>!document.getElementById('stopRun').disabled);
+  assert.equal(await f.page.locator('#commandResult').textContent(),before,'[UI ownership] old A refusal must not overwrite current B #commandResult');
+  assert.equal(await f.page.locator('#runPanel').getAttribute('data-run-id'),'B');
+  assert.equal(command.payload.runId,'A');assert.equal(command.payload.expectedVersion,3);
+  assert.equal(f.count('/api/commands'),1,'changing view must not resend an old command');
+});
