@@ -101,7 +101,7 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
   const notice = el("div", rejection || model.reason || model.warning, "tab-choice-note" + (rejection ? " rejected" : ""));
   notice.hidden = !notice.textContent; notice.setAttribute("role", "status"); content.append(notice);
   const group = el("fieldset"); group.append(el("legend", "사용할 ChatGPT 탭"));
-  let selected = null, submitted = false;
+  let selected = candidates.some(tab => tab.tabId === focusState.selectedTabId) ? focusState.selectedTabId : null, submitted = false;
   const send = button("이 탭에서 요청 전송 계속", "tab-choice-send", async () => {
     if (!isCurrent() || send.disabled || submitted || focusState.busy || focusState.needsRefresh || selected === null || unconfirmed(selected) || !model.enabled) return;
     submitted = true; send.disabled = true; back.disabled = true; refresh.disabled = true;
@@ -134,16 +134,17 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
   for (const candidate of candidates) {
     const card = el("div", "", "tab-choice-candidate"), label = el("label"), radio = el("input");
     radio.type = "radio"; radio.name = "preparation-tab-choice"; radio.value = String(candidate.tabId);
-    radio.focusTabId = candidate.tabId;
+    radio.focusTabId = candidate.tabId; radio.checked = selected === candidate.tabId;
     radio.disabled = !model.enabled || Boolean(rejection);
     const copy = el("span", "", "tab-choice-copy"), status = el("span", "눌러서 선택", "tab-choice-state");
     copy.append(el("strong", `탭 ${candidate.tabId}`), el("small", candidate.url === "https://chatgpt.com/" ? "ChatGPT 시작 화면" : "기존 ChatGPT 대화"), el("small", candidate.url));
     const hinted = !model.mismatch && model.hinted === candidate.tabId;
     if (hinted) { card.classList.add("hinted"); status.textContent = "팝업에서 확인한 탭"; }
+    if (radio.checked) { card.classList.add("selected"); status.textContent = "✓ 선택됨"; }
     states.push({ card, status, hinted });
     radio.addEventListener("change", () => {
       if (!isCurrent() || unconfirmed(candidate.tabId) || !model.enabled || submitted || focusState.busy || focusState.needsRefresh || rejection) return;
-      selected = candidate.tabId;
+      selected = candidate.tabId; focusState.selectedTabId = selected;
       for (const sibling of states) {
         sibling.card.classList.toggle("selected", sibling.card === card);
         sibling.status.textContent = sibling.card === card ? "✓ 선택됨" : sibling.hinted ? "팝업에서 확인한 탭" : "눌러서 선택";

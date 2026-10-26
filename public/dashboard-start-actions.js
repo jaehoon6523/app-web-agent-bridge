@@ -2,6 +2,7 @@ import { RunListKnowledgeStatus } from "./dashboard-run-list-knowledge.js";
 
 export function projectDashboardStartActions({
   stateAvailable,
+  navigationAvailable = stateAvailable,
   runListKnowledge,
   runtimeAvailable,
   extensionAuthenticated,
@@ -15,13 +16,14 @@ export function projectDashboardStartActions({
     RunListKnowledgeStatus.AVAILABLE_NONEMPTY,
   ].includes(runListKnowledge?.status);
 
-  const canOpenNewRun = stateAvailable === true
+  const canOpenNewRun = navigationAvailable === true
     && runListKnown
     && hasUnfinishedRun !== true
     && preparationActive !== true
     && !["PREPARE", "WORK"].includes(workflowStage);
 
   const canStartPreparation = canOpenNewRun
+    && stateAvailable === true
     && workflowStage === "START"
     && runtimeAvailable === true
     && extensionAuthenticated === true

@@ -40,7 +40,6 @@ const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "I
 let preparationSignature = "";
 let requestedView = "";
 const unknownRequests = new Map();
-
 const openFindings = new Set();
 const { bindHealthInteractions, health, signal, runAppearance, workerRuntimeStatus } = createDashboardHealthPresentation({
   $, text, time, getConnectionState:() => connectionState, getConnected:() => connected,
@@ -398,6 +397,7 @@ function render() {
   const allRuns = runListKnowledge.runs ?? [], unfinished = runsKnown ? allRuns.find((r) => !terminal.has(r.phase)) : null;
   const busy = Boolean(unfinished);
   const startActions = projectDashboardStartActions({ stateAvailable:knowledge.stateRead.currentlyAvailable, runListKnowledge,
+    navigationAvailable:knowledge.stateRead.currentlyAvailable || Boolean(lastConfirmed && knowledge.session.currentlyVerified && connectionState.stateRead === "IN_FLIGHT"),
     runtimeAvailable:snapshot?.runtimeAvailability?.ready === true, extensionAuthenticated:checks?.extensionAuthenticated === true,
     preparationStartCapability:caps.has("preparation.start"), hasUnfinishedRun:busy, workflowStage:workflow.stage,
     preparationActive:preparation?.lifecycle === "ACTIVE" });
