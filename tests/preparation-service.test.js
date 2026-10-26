@@ -575,7 +575,7 @@ test("first response must be stored and acknowledged before preparation is shown
 test("run transitions preserve in-progress and terminal meaning across frontend validation", () => {
   for (const [phase, stage] of [["STOPPING", "WORK"], ["HOLD", "WORK"], ["RECOVERY_REQUIRED", "WORK"],
     ["COMPLETE", "RESULT"], ["CANCELLED", "RESULT"], ["APPLIED", "RESULT"], ["APPLYING", "WORK"]]) {
-    const run = { runId: "run-test", version: 1, phase };
+    const run = { runId: "run-test", version: 1, phase, objective:"Workflow transition contract" };
     const workflow = workflowForRun(run);
     assert.equal(workflow.stage, stage);
     assert.equal(workflow.state, phase);

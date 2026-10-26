@@ -17,8 +17,8 @@ test("binding presentation distinguishes bootstrap, exact binding and recovery",
 
 test("diagnostics preserve runtime failure separately from successful HTTP state observation", () => {
   const previousDocument = globalThis.document, previousWindow = globalThis.window;
-  const ids = ["dashboardAddress", "dashboardPhase", "dashboardErrorCode", "dashboardRuntimeDetail", "dashboardLastConfirmed", "connectionDiagnostics"];
-  const elements = Object.fromEntries(ids.map(id => [id, { textContent:"", open:false }]));
+  const ids = ["dashboardAddress", "dashboardPhase", "dashboardErrorCode", "dashboardRuntimeDetail", "dashboardLastConfirmed", "connectionDiagnostics", "runPanel"];
+  const elements = Object.fromEntries(ids.map(id => [id, { textContent:"", open:false, dataset:{} }]));
   globalThis.document = { getElementById:id => elements[id] };
   globalThis.window = { location:{ origin:"http://127.0.0.1:8787" } };
   try {
@@ -28,6 +28,7 @@ test("diagnostics preserve runtime failure separately from successful HTTP state
     assert.match(elements.dashboardRuntimeDetail.textContent, /LIVE_RUNTIME_READ_TIMEOUT/u);
     assert.equal(elements.connectionDiagnostics.open, true);
     assert.equal(elements.dashboardErrorCode.textContent, "없음");
+    assert.equal(elements.runPanel.dataset.loadState, "READY");
   } finally { globalThis.document = previousDocument; globalThis.window = previousWindow; }
 });
 

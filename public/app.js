@@ -1,5 +1,5 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
-import { renderPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
+import { renderPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions, tabFocusKey } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
@@ -13,13 +13,13 @@ import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-con
 import { createDashboardAuditPresentation } from "./dashboard-audit-presentation.js";
 import { createDashboardHealthPresentation } from "./dashboard-health-presentation.js";
 import {
-  classifyDashboardFailure, connectionNoticeFor, dashboardStateReady,
+  classifyDashboardFailure, dashboardStateReady,
   initialDashboardConnectionState, markDashboardSessionAuthenticated,
   markDashboardSessionPending, markStateReadReady, markStateReadStarted,
   projectDashboardKnowledge, requestFailureCode,
 } from "./dashboard-connection-state.js";
 const $ = (id) => document.getElementById(id);
-let token = "", snapshot = null, selected = "", connected = false;
+let token = "", snapshot = null, selected = "";
 let connectionState = initialDashboardConnectionState();
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
 let sequence = 0, lastConfirmed = null, evidencePage = null;
@@ -40,10 +40,9 @@ const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "I
 let preparationSignature = "";
 let requestedView = "";
 const unknownRequests = new Map();
-
 const openFindings = new Set();
 const { bindHealthInteractions, health, signal, runAppearance, workerRuntimeStatus } = createDashboardHealthPresentation({
-  $, text, time, getConnectionState:() => connectionState, getConnected:() => connected,
+  $, text, time, getConnectionState:() => connectionState, getConnected:() => dashboardStateReady(connectionState),
   getSnapshot:() => snapshot, getLastConfirmed:() => lastConfirmed,
 });
 bindHealthInteractions();
@@ -167,7 +166,7 @@ ensureOperatorNoteControls();
 
 const syncRunInformationArchitecture = createRunActionLayout({ $, text });
 
-function selectProject(root) { if (root) { pendingProjectDraft?.cancel(); followUpSource = null; } projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
+function selectProject(root) { if (root) { pendingProjectDraft?.cancel(); followUpSource = null; } sequence++; projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
 function openRun(runId) { pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   const element = $(id);
@@ -196,10 +195,9 @@ function workerIdentity(run) {
 }
 const renderRunContextView = createRunContextView({ $, text, labels, terminal, folderName, workerIdentity });
 async function request(url, options = {}) {
-  const fetchOptions = options;
   let response = null;
   try {
-    response = await fetch(url, { ...fetchOptions, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...fetchOptions.headers } });
+    response = await fetch(url, { ...options, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
     let body;
     try { body = await response.json(); }
     catch (error) {
@@ -210,7 +208,7 @@ async function request(url, options = {}) {
     return body;
   } catch (error) {
     if (error.name === "TimeoutError" || error.name === "AbortError" || (!response && error instanceof TypeError)) {
-      const code = requestFailureCode({ url, method:fetchOptions.method, responseReceived:Boolean(response) });
+      const code = requestFailureCode({ url, method:options.method, responseReceived:Boolean(response) });
       throw Object.assign(new Error(code === "UNKNOWN_RESULT" ? "요청 결과를 확인할 수 없습니다." : "서버 응답을 받지 못했습니다."), {
         code, responseReceived:Boolean(response),
       });
@@ -219,9 +217,11 @@ async function request(url, options = {}) {
   }
 }
 async function refresh() {
-  const current = ++sequence, target = selected;
-  let phase = token ? "STATE" : "SESSION";
-  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed });
+  const current = ++sequence, target = selected, draft = pendingProjectDraft;
+  let owner = snapshot, phase = token ? "STATE" : "SESSION";
+  connectionState = markStateReadStarted(connectionState);
+  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
+  if (snapshot) render();
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
@@ -231,17 +231,16 @@ async function refresh() {
       connectionState = markDashboardSessionAuthenticated(connectionState);
     }
     phase = "STATE";
-    connectionState = markStateReadStarted(connectionState);
     const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
-    if (current !== sequence || target !== selected) return;
+    if (current !== sequence || target !== selected || snapshot !== owner) return;
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     projectRunListKnowledge(result);
-    const canonical = normalizeDashboardState(result);
+    const canonical = normalizeDashboardState(result, target);
     connectionState = markStateReadReady(connectionState);
-    connected = dashboardStateReady(connectionState);
-    snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
+    snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]}; owner = snapshot;
+    workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     const runtimeUnavailable = result.runtimeAvailability?.ready === false;
@@ -252,7 +251,7 @@ async function refresh() {
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
     for (const [operation, requestId] of unknownRequests) {
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
-      if (current !== sequence || target !== selected) return;
+      if (current !== sequence || target !== selected || snapshot !== owner) return;
       const receipt = observed.requestResult;
       if (receipt?.requestId !== requestId) continue;
       if (["COMPLETED", "FAILED", "NOT_FOUND"].includes(receipt.status)) {
@@ -261,15 +260,14 @@ async function refresh() {
       }
     }
   } catch (error) {
-    if (current !== sequence || target !== selected) return;
+    if (current !== sequence || target !== selected || snapshot !== owner) return;
+    if (phase === "PROJECTION" && !error.code) Object.assign(error, {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = classifyDashboardFailure(connectionState, phase, error);
-    connected = dashboardStateReady(connectionState);
     if (phase === "STATE" && [401, 403].includes(error.status)) token = "";
-    text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음"));
   }
   render();
-  pendingProjectDraft?.complete();
-  updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
+  if (pendingProjectDraft === draft) draft?.complete();
+  updateDashboardDiagnostics({ phase:dashboardStateReady(connectionState) ? "READY" : phase, connectionState, snapshot, lastConfirmed, target });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
   if (autoApprovalPreparationId
@@ -286,8 +284,9 @@ async function refresh() {
       "/api/preparations/" + encodeURIComponent(autoApprovalPreparationId) + "/approve");
   }
 }
-function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
-function webConnected() { return connected && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
+function requestOwnerKey() { return JSON.stringify([selected, projectViewRoot, snapshot?.run?.runId, snapshot?.run?.version, tabFocusKey(preparation)]); }
+function capabilities() { return new Set(dashboardStateReady(connectionState) ? snapshot?.commandCapabilities ?? [] : []); }
+function webConnected() { return dashboardStateReady(connectionState) && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
 function currentPreparationActions() {
   const knowledge = projectDashboardKnowledge(connectionState);
   return projectPreparationActions({
@@ -307,7 +306,7 @@ function renderPreparationPersistence() {
     return;
   }
   const savedAt = preparation.updatedAt ? ` · 마지막 저장 ${time(preparation.updatedAt)}` : "";
-  if (!connected) {
+  if (!dashboardStateReady(connectionState)) {
     element.textContent = `저장됨 · 준비 ID ${preparation.preparationId}${savedAt} · 최신 상태 미확인으로 조작 불가`;
     element.className = "persistence-status warn";
     return;
@@ -321,7 +320,7 @@ function renderPreparationPersistence() {
   }
 }
 function disabledWebReason(action) {
-  if (!connected) return "최신 상태를 확인할 수 없습니다.";
+  if (!dashboardStateReady(connectionState)) return "최신 상태를 확인할 수 없습니다.";
   if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
   if (operations.webTurn !== "IDLE") return "다른 웹 요청을 처리 중입니다.";
   if (preparation?.webSession?.bindingState !== "BOUND") return `대화 탭 연결이 필요합니다. 현재: ${preparation?.webSession?.bindingState ?? "UNBOUND"}.`;
@@ -331,7 +330,9 @@ function disabledWebReason(action) {
 }
 function render() {
   renderPreparation();
-  const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
+  const run = selected && snapshot?.run?.runId !== selected ? null : snapshot?.run;
+  const preflight = snapshot?.preflight, caps = capabilities();
+  if (!run) { text("runObjective", ""); text("runStatus", ""); }
   if (!$("proposalWaiting")) {
     const waiting = node("p", "ChatGPT 응답을 기다리고 있습니다", "proposal-waiting");
     const spinner = node("span", "", "spinner"), dots = node("span", "...", "waiting-dots");
@@ -343,7 +344,7 @@ function render() {
   $("proposalWaiting").hidden = workflow.stage !== "PREPARE" || !["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(workflow.state);
   proposalControls();
   renderPreparationPersistence();
-  const readiness = JSON.stringify([connected, preflight, [...caps], snapshot?.runs]);
+  const readiness = JSON.stringify([dashboardStateReady(connectionState), preflight, [...caps], snapshot?.runs]);
   if (readiness !== readinessSignature) { lastCommandError = ""; readinessSignature = readiness; }
   const checks = preflight?.checks;
   const knowledge = projectDashboardKnowledge(connectionState);
@@ -356,12 +357,12 @@ function render() {
     ? { state:"warn", detail:"런타임 준비 필요" }
     : workerRuntimeStatus(snapshot?.workerRuntime);
   health("engineHealth", "Worker", workerStatus.state, workerStatus.detail);
-  health("channelHealth", "확장", !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
-    !connected || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "연결됨" : "연결 대기");
+  health("channelHealth", "확장", !dashboardStateReady(connectionState) || typeof checks?.extensionAuthenticated !== "boolean" ? "unknown" : checks.extensionAuthenticated ? "ok" : "warn",
+    !dashboardStateReady(connectionState) || typeof checks?.extensionAuthenticated !== "boolean" ? "확인 전" : checks.extensionAuthenticated ? "연결됨" : "연결 대기");
   signal("serverSignal", "서버", knowledge.transport.currentlyReachable ? "ok" : "error",
     knowledge.transport.currentlyReachable ? "연결됨" : "상태 확인 필요");
-  signal("cliSignal", "CLI", connected ? workerStatus.state : "warn",
-    !connected ? "상태 확인 필요" : workerStatus.detail);
+  signal("cliSignal", "CLI", dashboardStateReady(connectionState) ? workerStatus.state : "warn",
+    !dashboardStateReady(connectionState) ? "상태 확인 필요" : workerStatus.detail);
   const webAuthenticated = checks?.extensionAuthenticated === true;
   const runActions = projectRunCommandActions({
     stateAvailable:knowledge.stateRead.currentlyAvailable,
@@ -380,13 +381,13 @@ function render() {
     exactBindingAvailable,
     exactDiscardDeliveryAvailable,
   });
-  signal("webSignal", "웹", connected ? (webAuthenticated ? "ok" : "warn") : "warn",
-    !connected ? "상태 확인 필요" : webAuthenticated ? "연결됨" : "연결 대기");
+  signal("webSignal", "웹", dashboardStateReady(connectionState) ? (webAuthenticated ? "ok" : "warn") : "warn",
+    !dashboardStateReady(connectionState) ? "상태 확인 필요" : webAuthenticated ? "연결됨" : "연결 대기");
   const lastBinding = preflight?.lastWebBinding;
-  const bindingStatus = bindingPresentation({ connected, webAuthenticated, binding:lastBinding, workflowStage:workflow.stage });
+  const bindingStatus = bindingPresentation({ connected:dashboardStateReady(connectionState), webAuthenticated, binding:lastBinding, workflowStage:workflow.stage });
   signal("webBindingSignal", "대화 탭", bindingStatus.state, bindingStatus.detail);
-  signal("refreshSignal", "런", connected && lastConfirmed ? "ok" : "error",
-    connected ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
+  signal("refreshSignal", "런", dashboardStateReady(connectionState) && lastConfirmed ? "ok" : "error",
+    dashboardStateReady(connectionState) ? `갱신됨 ${time(lastConfirmed)}` : `마지막 확인 · ${lastConfirmed ? time(lastConfirmed) : "없음"}`);
   const runListKnowledge = snapshot
     ? projectRunListKnowledge(snapshot)
     : Object.freeze({ status:"NOT_OBSERVED", count:null, runs:null });
@@ -394,18 +395,19 @@ function render() {
   const allRuns = runListKnowledge.runs ?? [], unfinished = runsKnown ? allRuns.find((r) => !terminal.has(r.phase)) : null;
   const busy = Boolean(unfinished);
   const startActions = projectDashboardStartActions({ stateAvailable:knowledge.stateRead.currentlyAvailable, runListKnowledge,
+    navigationAvailable:Boolean(snapshot),
     runtimeAvailable:snapshot?.runtimeAvailability?.ready === true, extensionAuthenticated:checks?.extensionAuthenticated === true,
     preparationStartCapability:caps.has("preparation.start"), hasUnfinishedRun:busy, workflowStage:workflow.stage,
     preparationActive:preparation?.lifecycle === "ACTIVE" });
   syncReviewerProviderControls();
-  const reviewerProvidersLocked = workflow.stage !== "START" || operations.preparationStart !== "IDLE" || !connected || busy;
+  const reviewerProvidersLocked = workflow.stage !== "START" || operations.preparationStart !== "IDLE" || !dashboardStateReady(connectionState) || busy;
   $("judgeReviewerProvider").disabled = reviewerProvidersLocked;
   $("criticReviewerProvider").disabled = reviewerProvidersLocked;
   $("planRun").disabled = (operations.runCommand !== "IDLE") || !startActions.canStartPreparation || (operations.webTurn !== "IDLE");
   $("newRun").disabled = (operations.runCommand !== "IDLE") || !startActions.canOpenNewRun;
   text("newRunReason", !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다." : busy ? "진행 중인 작업을 먼저 확인하세요." : "");
   $("showUnfinishedRun").hidden = !busy;
-  $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
+  $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE");
   $("historySearch").value = historyQuery;
   $("historyStatusFilter").value = ["ALL", "ACTIVE", "ATTENTION", "CLOSED", "ARCHIVED"].includes(historyScope) ? historyScope : "ALL";
   historyScope = $("historyStatusFilter").value;
@@ -533,7 +535,7 @@ function render() {
     : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
     : busy ? "진행 중인 작업을 먼저 종료하세요."
     : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
-  if (overviewGroup) renderProjectOverview({ group:overviewGroup, busyRun:unfinished, allRuns, $, text, node, folderName, labels, runAppearance, terminal, time, connected, newRunDisabled:$("newRun").disabled, openRun });
+  if (overviewGroup) renderProjectOverview({ group:overviewGroup, busyRun:unfinished, allRuns, $, text, node, folderName, labels, runAppearance, terminal, time, connected:dashboardStateReady(connectionState), newRunDisabled:$("newRun").disabled, openRun });
   if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
     && !preparation?.error && !checks?.extensionAuthenticated) {
     text("startReason", "입력은 가능합니다. 브릿지 확장이 인증되면 준비 대화를 시작할 수 있습니다. ChatGPT 탭은 자동으로 엽니다.");
@@ -592,7 +594,7 @@ function render() {
     text("reviewDiscussionStatus", `${discussionRole} 감사 provider를 현재 사용할 수 없습니다. 다른 역할의 연결 상태와는 별개입니다.`);
   } else if (!discussionBinding) {
     text("reviewDiscussionStatus", `${discussionRole}의 기존 대화 연결이 아직 확인되지 않았습니다. 다른 역할을 선택하거나 감사자 연결 상태를 확인하세요.`);
-  } else if (!connected) {
+  } else if (!dashboardStateReady(connectionState)) {
     text("reviewDiscussionStatus", "최신 상태 확인 후 감사자에게 질문할 수 있습니다.");
   } else if (!caps.has("code.review.discuss")) {
     text("reviewDiscussionStatus", "현재 감사 작업이 진행 중이거나 아직 자유 대화를 받을 수 있는 정지 상태가 아닙니다.");
@@ -671,7 +673,7 @@ function render() {
     text("workerInterventionStatus", "");
   } else if (scopeChange) {
     text("workerInterventionStatus", "요구사항이나 완료 기준을 바꾸는 내용은 현재 승인 범위를 우회할 수 없습니다. 작업을 중단한 뒤 새 작업에서 다시 합의·승인하세요.");
-  } else if (!connected) {
+  } else if (!dashboardStateReady(connectionState)) {
     text("workerInterventionStatus", "최신 상태 확인 후 Worker에 전달할 수 있습니다.");
   } else if (!interventionTurnId || !caps.has("code.worker.intervene")) {
     text("workerInterventionStatus", "현재 Worker에 실시간으로 전달할 수 있는 상태가 아직 확인되지 않았습니다. Worker 실행이 시작된 뒤 다시 시도하세요.");
@@ -706,7 +708,7 @@ function render() {
     const recoveryConfirmed = $("recoveryConfirm").checked;
     const abandonBlocked = (operations.runCommand !== "IDLE") || !runActions.abandonRun || !recoveryConfirmed;
     const abandonReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 실행을 폐기할 수 있습니다."
-      : !connected ? "최신 상태 확인 후 실행을 폐기할 수 있습니다."
+      : !dashboardStateReady(connectionState) ? "최신 상태 확인 후 실행을 폐기할 수 있습니다."
       : !runActions.abandonRun ? "현재 런이 복구 폐기 명령을 받을 수 없는 상태입니다. 상태 갱신 후에도 같으면 실행 기록의 오류·복구 상태를 확인하세요."
       : !recoveryConfirmed ? "외부 작업 종료·대상 저장소 상태 확인·실행 폐기를 한 번에 확인하세요."
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
@@ -778,7 +780,7 @@ function render() {
   renderRunContextView(run, snapshot);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? (userFacingStoredError(run.error ?? snapshot?.error, "") || (run.phase === "CANCELLED" ? "중단됨 · 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "검토 통과 · 아직 적용되지 않았습니다." : run.phase === "APPLIED" ? "적용 완료 · 배포·환경 검증은 별도입니다." : phaseReasons[run.phase] ?? `미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`)));
-  text("runTime", `접수 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}`);
+  text("runTime", `작업 ID ${run.runId} · 버전 ${run.version} · 접수 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
   let reviewerRuntimeStatus = $("reviewerRuntimeStatus");
@@ -809,7 +811,7 @@ function render() {
       : "감사자 독립성: 아직 고정된 감사 결과가 없습니다.");
   }
   const stopReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
-    : !connected ? "최신 상태 확인 후 중단할 수 있습니다."
+    : !dashboardStateReady(connectionState) ? "최신 상태 확인 후 중단할 수 있습니다."
     : terminal.has(run.phase) ? "이미 종료된 작업입니다."
     : run.phase === "RECOVERY_REQUIRED" ? "복구 확인 후 종료할 수 있습니다."
     : caps.has("run.stop") ? "작업을 중단합니다. 기록은 보존됩니다."
@@ -819,30 +821,30 @@ function render() {
   text("stopReason", stopReason);
 
   const applyReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
-    : !connected ? "최신 상태 확인 후 적용할 수 있습니다."
+    : !dashboardStateReady(connectionState) ? "최신 상태 확인 후 적용할 수 있습니다."
     : caps.has("code.apply") ? "검토 통과 변경사항을 프로젝트에 적용합니다."
     : run.phase === "AWAITING_APPLY" ? "현재 적용할 수 없습니다. 상태를 확인하세요."
     : "검토 통과 후 적용할 수 있습니다.";
   actionState("applyCode", (operations.runCommand !== "IDLE") || !runActions.applyCode, applyReason, applyReason);
 
   const exportReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
-    : !connected ? "최신 상태 확인 후 다운로드할 수 있습니다."
+    : !dashboardStateReady(connectionState) ? "최신 상태 확인 후 다운로드할 수 있습니다."
     : !caps.has("evidence.export") ? "다운로드할 감사 기록이 없습니다."
     : "감사 기록을 다운로드합니다.";
   actionState("exportEvidence", (operations.runCommand !== "IDLE") || !runActions.exportEvidence, exportReason, exportReason);
   text("commandReason", "");
   syncRunInformationArchitecture(run);
-  const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
+  const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, dashboardStateReady(connectionState), (operations.runCommand !== "IDLE")]);
   if (renderedRecords !== signature) { renderedRecords = signature; renderConversation(run, $("conversationTimeline"), node, time); renderAudit(); renderLog(); }
 }
 async function command(type, payload = {}) {
   if (operations.runCommand !== "IDLE" || !capabilities().has(type)) return;
-  const run = snapshot?.run, target = run?.runId;
+  const owner = requestOwnerKey();
   const body = { type, requestId:crypto.randomUUID(), payload:{ ...payload, runId:workflow.runId, expectedVersion:workflow.runVersion } };
   operations.runCommand = "RUNNING"; lastCommandError = ""; render();
   try {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
-    if (snapshot?.run?.runId === target) {
+    if (owner === requestOwnerKey()) {
       const successMessage = {
         "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
@@ -861,18 +863,20 @@ async function command(type, payload = {}) {
       }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
       text("commandResult", successMessage);
     }
-    if (type === "run.delete") { selected = null; requestedView = "start"; }
+    if (type === "run.delete" && owner === requestOwnerKey()) { selected = null; requestedView = "start"; }
     return result.payload;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
-    lastCommandError = userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.");
-    text("commandResult", lastCommandError);
+    if (owner === requestOwnerKey()) {
+      lastCommandError = userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.");
+      text("commandResult", lastCommandError);
+    }
   } finally { if (operations.runCommand !== "UNKNOWN_RESULT") operations.runCommand = "IDLE"; await refresh(); }
 }
 async function openEvidence(id, startLine = 1) {
-  const target = snapshot?.run?.runId;
+  const target = snapshot?.run?.runId, owner = requestOwnerKey();
   const result = await command("evidence.get", { evidenceId:id, startLine, endLine:startLine + 199 });
-  if (!result || snapshot?.run?.runId !== target) return;
+  if (!result || owner !== requestOwnerKey()) return;
   evidencePage = { id, next:result.endLine + 1, target };
   text("evidenceTitle", `${result.kind} · ${id}`); text("evidenceContent", result.content);
   text("evidenceRange", `${result.startLine}–${result.endLine} / ${result.totalLines}줄${result.omittedAfter ? " · 다음 구간 있음" : ""}`);
@@ -899,7 +903,7 @@ function proposalControls() {
     "현재 요구사항을 승인하고 작업을 시작합니다.");
   const cancelDisabled = !actions.cancel || operations.preparationStart !== "IDLE";
   actionState("closeProject", cancelDisabled,
-    !connected ? "최신 상태 확인 후 준비를 종료할 수 있습니다."
+    !dashboardStateReady(connectionState) ? "최신 상태 확인 후 준비를 종료할 수 있습니다."
       : !caps.has("preparation.cancel") ? "현재 응답 또는 전송 처리가 끝난 뒤 준비를 취소할 수 있습니다."
         : "이전 준비 작업을 처리 중입니다.",
     "현재 준비를 종료하고 기록은 보존합니다.");
@@ -914,11 +918,15 @@ function proposalControls() {
   text("discardDelivery", discardVisible ? `준비 ID: ${preparation.preparationId} · 전송 ID: ${activeDelivery.deliveryId} · 세션: ${activeDelivery.sessionId} · 대화: ${activeDelivery.conversationId ?? preparation.webSession?.conversationUrl ?? "확인되지 않음"}` : "");
   $("discardDeliveryButton").disabled = !discardVisible || !actions.discard || operations.preparationStart !== "IDLE"
     || !$("discardUnresolved").checked || !$("discardNoResend").checked || $("discardReason").value.trim().length < 3;
-  for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
+  for (const button of document.querySelectorAll("[data-web-command]")) {
+    button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
+    buttonReason(button, button.disabled ? disabledWebReason(button.dataset.webCommand) : "");
+  }
 }
 function renderPreparation() {
   if (!preparation) { preparationSignature = ""; return; }
-  const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
+  tabFocusViewState.updateAvailability?.(operations.webTurn, capabilities().has("web.rebind"));
+  const signature = JSON.stringify([preparation, [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
   $("planningObjective").value = preparation.objective;
@@ -1035,13 +1043,6 @@ function renderPreparation() {
     }
   }
   recovery.append(node("p", "선택자·문서 토큰·전송 상세·원시 응답은 진단 로그 내보내기에 포함됩니다."));
-  const webActionReason = (action) => {
-    if (!connected) return "최신 상태를 확인할 수 없습니다.";
-    if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
-    if (operations.webTurn !== "IDLE") return "다른 웹 요청을 처리 중입니다.";
-    if (!capabilities().has(action)) return "현재 서버 상태에서는 이 작업을 사용할 수 없습니다.";
-    return "";
-  };
   for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
     const button = node("button", action === "web.reconcile" && displayedDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
     button.dataset.webCommand = action;
@@ -1084,17 +1085,19 @@ function renderPreparation() {
 async function preparationMutation(operation, capability, url, payload = {}) {
   if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;
   if (["preparation.start", "preparation.reply"].includes(capability) && !webConnected()) return false;
-  const requestId = crypto.randomUUID();
+  const requestId = crypto.randomUUID(), choice = tabFocusViewState, owner = requestOwnerKey();
   operations[operation] = "RUNNING"; render();
   try {
     await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId }) });
-    text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
+    if (owner === requestOwnerKey()) text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
     return true;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations[operation] = "UNKNOWN_RESULT"; unknownRequests.set(operation, requestId); }
     const message = userFacingError(error);
-    if (capability === "web.rebind" && error.code !== "UNKNOWN_RESULT") tabChoiceFailures.set(payload.deliveryId, message);
-    text("projectStatus", message); text("startReason", message);
+    if (owner === requestOwnerKey()) {
+      if (capability === "web.rebind" && error.code !== "UNKNOWN_RESULT" && choice === tabFocusViewState) { choice.selectedTabId = null; tabChoiceFailures.set(payload.deliveryId, message); }
+      text("projectStatus", message); text("startReason", message);
+    }
     return false;
   } finally {
     if (operations[operation] !== "UNKNOWN_RESULT") operations[operation] = "IDLE";
@@ -1206,9 +1209,10 @@ async function startProjectDraft(root, source) {
       if (pendingProjectDraft === draft) pendingProjectDraft = null;
     },
     complete() {
+      if (pendingProjectDraft !== draft) return;
       draft.cancel();
       if (selected !== "" || projectViewRoot !== null || followUpSource !== source) return;
-      if (!connected || workflow.stage !== "START") {
+      if (!dashboardStateReady(connectionState) || workflow.stage !== "START") {
         if (!edited && fields.every((id, index) => $(id).value === initialized[index])) {
           fields.forEach((id, index) => { $(id).value = previous[index]; });
           followUpSource = previousSource; projectConversationRoot = previousConversationRoot;
@@ -1358,7 +1362,7 @@ $("nextEvidence").addEventListener("click", () => { if (evidencePage?.target ===
 $("refreshDashboard").addEventListener("click", () => { if ($("dashboardPageError").hidden) void refresh().catch(showDashboardPageError); });
 async function poll() {
   try { await refresh(); }
-  catch (error) { connected = false; showDashboardPageError(error); }
+  catch (error) { connectionState = classifyDashboardFailure(connectionState, "PROJECTION", error); showDashboardPageError(error); }
   finally { if ($("dashboardPageError").hidden) setTimeout(poll, 2500); }
 }
 

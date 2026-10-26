@@ -80,12 +80,15 @@ test("history remains readable without a configured Codex executable",async(t)=>
   finally { await runtime.close(); }
 });
 test("total deadline stops pending worker creation without dispatching an implementation",async(t)=>{
+  let workerCreationEntered=false;
   const f=setupAudit(t,{
     configure(p){p.policy.totalTimeoutMs=200;},
-    createWorker(){return new Promise(()=>{});},
+    createWorker(){workerCreationEntered=true;return new Promise(()=>{});},
     review(){throw new Error("The timed-out Worker must not reach audit.");},
   });
-  const run=await f.run();assert.equal(run.stage,"RECOVERY_REQUIRED");assert.equal(run.terminationReason,"TOTAL_TIME_LIMIT");assert.equal(f.starts(),0);
+  const run=await f.run();
+  t.diagnostic(JSON.stringify({boundary:"pending worker creation",workerCreationEntered,stage:run.stage,terminationReason:run.terminationReason,error:run.error??null,deadlineAt:run.deadlineAt??null,observedAtMs:Date.now(),policy:f.options.project.policy}));
+  assert.equal(run.stage,"RECOVERY_REQUIRED");assert.equal(run.terminationReason,"TOTAL_TIME_LIMIT");assert.equal(f.starts(),0);
 });
 test("requirements cannot change contents under a previously used revision",async(t)=>{
   const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();

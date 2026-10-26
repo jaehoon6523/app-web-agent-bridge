@@ -82,4 +82,62 @@ test('handoff: an unconfirmed candidate must not generate a rebind request',asyn
   assert.equal(selectionBlocked,true);
   assert.equal(submitBlocked,true);
 });
+
+test('same-owner read updates permission without replacing selection; changed candidates invalidate it', async()=>{
+  const state=fixture(), ui=await dashboard(state);
+  const choice=()=>ui.elements.get('proposalSummary').children.find(x=>x.className==='preparation-tab-choice');
+  const root=choice(), radio=root.querySelectorAll('input')[0];
+  const send=()=>choice().querySelectorAll('button').find(x=>x.className==='tab-choice-send');
+  radio.checked=true;radio.listeners.change();
+  ui.elements.get('objective').value='unsaved objective';ui.elements.get('conversationUrl').value='https://chatgpt.com/c/draft';
+  let release;const fetch=ui.context.fetch;
+  ui.context.fetch=async(...args)=>{await new Promise(resolve=>{release=resolve;});return fetch(...args);};
+  const pending=ui.run('refresh()');await new Promise(setImmediate);
+  assert.equal(ui.run('projectDashboardKnowledge(connectionState).session.currentlyVerified'),true,'transport/auth survives a read');
+  assert.equal(ui.run('dashboardStateReady(connectionState)'),false);
+  assert.equal(choice(),root,'[permission → DOM] pending read must not recreate the same choice');
+  assert.equal(radio.checked,true);assert.equal(send().disabled,true);
+  await send().listeners.click();assert.equal(ui.calls.filter(x=>x.url==='/api/preparations/web').length,0);
+  release();await pending;ui.context.fetch=fetch;
+  assert.equal(choice(),root);assert.equal(radio.checked,true);assert.equal(send().disabled,false);
+  assert.equal(ui.elements.get('objective').value,'unsaved objective');
+  assert.equal(ui.elements.get('conversationUrl').value,'https://chatgpt.com/c/draft');
+  const oldSend=send();state.preparation.error.details.candidates[0].url='https://chatgpt.com/c/replaced';
+  await ui.run('refresh()');assert.notEqual(choice(),root);
+  assert.equal(choice().querySelectorAll('input')[0].checked,false,'changed candidate identity requires a new explicit choice');
+  oldSend.disabled=false;await oldSend.listeners.click();
+  assert.equal(ui.calls.filter(x=>x.url==='/api/preparations/web').length,0,'stale handlers cannot submit');
+  ui.context.fetch=(url,...args)=>url==='/api/preparations/web'
+    ? (ui.calls.push({url}),Promise.resolve({ok:false,status:409,json:async()=>({error:{code:'TAB_CLOSED',message:'tab closed'}})}))
+    : fetch(url,...args);
+  choice().querySelectorAll('input')[1].listeners.change();await send().listeners.click();
+  const recover=choice().querySelectorAll('button').find(x=>x.textContent==='후보 다시 보기');
+  await recover.listeners.click();
+  assert.equal(send().disabled,true,'known rejection requires a new explicit selection after recovery');
+  assert.equal(choice().querySelectorAll('input').some(x=>x.checked),false);
+  assert.equal(ui.calls.filter(x=>x.url==='/api/preparations/web').length,1,'recovery must not resend');
+
+});
+
+
+test('a late rejected rebind cannot poison a newer preparation version', async()=>{
+  const state=fixture(),ui=await dashboard(state),fetch=ui.context.fetch;let release;
+  ui.context.fetch=(url,...args)=>url==='/api/preparations/web'
+    ? new Promise(resolve=>{ui.calls.push({url});release=resolve;}) : fetch(url,...args);
+  const choice=()=>ui.elements.get('proposalSummary').children.find(x=>x.className==='preparation-tab-choice');
+  const send=()=>choice().querySelectorAll('button').find(x=>x.className==='tab-choice-send');
+  choice().querySelectorAll('input')[0].listeners.change();const pending=send().listeners.click();
+  await new Promise(setImmediate);
+  state.preparation.version++;state.workflow.preparationVersion=state.preparation.version;
+  await ui.run('refresh()');
+  const before=ui.elements.get('projectStatus').textContent;
+  release({ok:false,status:409,json:async()=>({error:{code:'TAB_CLOSED',message:'old tab closed'}})});
+  await pending;
+  assert.equal(ui.run('preparation.version'),4);
+  assert.equal(ui.elements.get('projectStatus').textContent,before,'old-version status messages must also remain owner scoped');
+  assert.equal(ui.run('tabChoiceFailures.has("d1")'),false,'old-version refusal must not become the new version recovery state');
+  choice().querySelectorAll('input')[1].listeners.change();assert.equal(send().disabled,false);
+  assert.equal(ui.calls.filter(x=>x.url==='/api/preparations/web').length,1,'version recovery must never auto resend');
+});
+
 }

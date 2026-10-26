@@ -227,6 +227,10 @@ try {
  assert.match(await page.locator('#preparationPersistence').textContent(),/prep-qa/);
  await screenshot('05-agreement-ready');
  await page.click('#saveProject'); await stage('stepWork');
+ assert.equal(await page.locator('#runObjective').innerText(),'UI scenario task');
+ assert.equal(await page.locator('#runStatus').innerText(),'구현·수정 중');
+ assert.equal(await page.locator('#runPanel').getAttribute('data-run-id'),'active');
+ assert.match(await page.locator('#runTime').innerText(),/작업 ID active · 버전/u);
  assert.equal(fixture.mutations.at(-1).pathname,'/api/preparations/prep-qa/approve');
  await screenshot('06-working');
  assert.match(await page.locator('#runWorkerRole').textContent(),/Worker · codex \/ fixture-model · 구현 중/);

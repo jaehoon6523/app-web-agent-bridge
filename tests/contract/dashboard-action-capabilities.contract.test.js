@@ -183,3 +183,12 @@ test("contract: failed state read disables every projected action family", () =>
     stateAvailable:false, extensionAuthenticated:true,
   }).chooseFolder, false);
 });
+
+// Local navigation cannot authorize a server mutation while a read is pending.
+test("contract: pending read permits known local navigation but blocks preparation start", () => {
+  assert.deepEqual(project({ stateAvailable:false, navigationAvailable:true }), {
+    canOpenNewRun:true, canStartPreparation:false,
+  }, "[navigation → command] expected local draft entry only during pending read");
+  assert.equal(project({ stateAvailable:false, navigationAvailable:true, runListKnowledge:UNKNOWN }).canOpenNewRun, false);
+  assert.equal(project({ stateAvailable:false, navigationAvailable:true, hasUnfinishedRun:true }).canOpenNewRun, false);
+});

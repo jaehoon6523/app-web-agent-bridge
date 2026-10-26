@@ -95,9 +95,9 @@ export function renderProjectOverview({
     activityList.append(row);
   }
 
-  $("newProjectTask").disabled = !connected || newRunDisabled;
+  $("newProjectTask").disabled = newRunDisabled;
   $("openProjectBlocker").hidden = !busyRun;
-  $("openProjectBlocker").disabled = !connected;
+  $("openProjectBlocker").disabled = !busyRun;
   text("overviewReason", !connected ? "최신 상태를 확인하세요."
     : busyRun ? "진행 중인 작업을 먼저 확인하세요."
     : $("newProjectTask").disabled ? "현재 요청이 끝난 뒤 시작할 수 있습니다."

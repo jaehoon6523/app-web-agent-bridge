@@ -16,7 +16,7 @@ fs.rmSync(output, { recursive:true, force:true });
 fs.mkdirSync(output, { recursive:true });
 const production = await productionProcess();
 const { workspace, baseUrl, alive } = production;
-const boundary = [], pageErrors = [], consoleErrors = [];
+const boundary = [], pageErrors = [], consoleErrors = [], consoleErrorSources = [];
 let browser, page, outcome = 'FAIL', shutdown, snapshot;
 async function stop() { shutdown = await production.stop(); }
 const owner = createResourceOwner();
@@ -31,7 +31,7 @@ owner.add('startup result', cleanupErrors => {
   if (cleanupErrors.length) outcome = 'FAIL';
   fs.writeFileSync(path.join(output, 'result.json'), JSON.stringify({ testId:'E2E-UF01A-FRESH-STARTUP', specWave:'W1-4 COMPLETE', execution:'RUNNABLE', outcome,
     fixture:'fresh LIVE installation; no extension/provider configuration; no mocked boundary',
-    boundary, pageErrors, consoleErrors, shutdown, lifecycleClosed:cleanupErrors.length === 0,
+    boundary, pageErrors, consoleErrors, consoleErrorSources, shutdown, lifecycleClosed:cleanupErrors.length === 0,
     cleanupFailures:cleanupErrors.map(error => error.message),
     state:snapshot ? { runtimeAvailability:snapshot.runtimeAvailability, workflow:snapshot.workflow,
       dataKnowledge:snapshot.dataKnowledge, commandCapabilities:snapshot.commandCapabilities } : null }, null, 2));
@@ -45,7 +45,11 @@ try {
   page = await context.newPage();
   page.setDefaultTimeout(15000);
   page.on('pageerror', error => pageErrors.push(error.message));
-  page.on('console', message => { if (message.type() === 'error') consoleErrors.push(message.text()); });
+  page.on('console', message => { if (message.type() === 'error') {
+    consoleErrors.push(message.text());
+    const source=message.location().url;
+    consoleErrorSources.push({route:source ? new URL(source).pathname : null});
+  } });
   page.on('requestfailed', request => boundary.push({ method:request.method(), route:new URL(request.url()).pathname, failed:true }));
   page.on('response', response => boundary.push({ method:response.request().method(), route:new URL(response.url()).pathname, status:response.status() }));
   // Waiting for the entire body, not just a listen log or response headers.

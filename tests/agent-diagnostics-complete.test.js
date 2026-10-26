@@ -289,6 +289,42 @@ async function heldRecovery(t,root,stage) {
   return {child,closed,held};
 }
 
+test('a transient exclusive reopen denial after owned dead-lock recovery preserves every report section',async t=>{
+  const {root,lock,previous}=await deadWriterFixture(t), open=io.open.bind(io);
+  const denied=Object.assign(new Error('Transient owned recovery reopen denial'),{code:'EPERM',syscall:'open',path:lock});
+  let attempts=0;
+  const mocked=t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock&&++attempts===2) {
+      assert.equal(fs.existsSync(lock),false,'the observed dead lock must already be reclaimed');throw denied;
+    }
+    return open(filename,...args);
+  });
+  try {
+    await enqueueAgentReport(root,'repair',{code:'RECOVERED_AFTER_REOPEN'},{onDiagnostic:t.evidence.event});
+    assert.ok(attempts>=3,'the same exclusive open must be attempted after the injected denial');
+    assert.deepEqual(readAgentReport(root).server,previous);
+    assert.equal(readAgentReport(root).repair.code,'RECOVERED_AFTER_REOPEN');
+    assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+  } finally {mocked.mock.restore();}
+});
+
+test('a permanent exclusive reopen denial after owned recovery preserves the original error and report',async t=>{
+  const {root,lock}=await deadWriterFixture(t), before=fs.readFileSync(path.join(root,'runtime-latest.json'));
+  const open=io.open.bind(io),denied=Object.assign(new Error('Permanent owned recovery reopen denial'),
+    {code:'EPERM',syscall:'open',path:lock});let attempts=0;
+  const mocked=t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock&&++attempts>1) {assert.equal(fs.existsSync(lock),false);throw denied;}
+    return open(filename,...args);
+  });
+  try {
+    await assert.rejects(enqueueAgentReport(root,'repair',{code:'MUST_NOT_STORE'},{onDiagnostic:t.evidence.event}),
+      error=>error===denied&&error.lockState.state==='MISSING');
+    assert.ok(attempts>1&&attempts<=6,'post-recovery denial must remain bounded');
+    assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+    assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+  } finally {mocked.mock.restore();}
+});
+
 test('transient Windows recovery publication EPERM retries only the owned staging guard',async t=>{
   const {root,recovery,previous}=await deadWriterFixture(t), rename=io.rename.bind(io);
   const denied=Object.assign(new Error('Transient Windows recovery publication'),{code:'EPERM',syscall:'rename',dest:recovery});
@@ -431,6 +467,61 @@ test('a late dead-guard reaper cannot remove a newly published live recovery gua
   await enqueueAgentReport(root,'extension',{status:'AFTER_RECOVERY'},{onDiagnostic:t.evidence.event});
   assert.deepEqual(readAgentReport(root).server,previous);assert.equal(readAgentReport(root).repair.code,'CHILD_FINISHED');
   assert.equal(readAgentReport(root).extension.status,'AFTER_RECOVERY');assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
+test('transient recovery scandir denial re-observes removed and replaced guard owners',async t=>{
+  for(const mode of ['removed','replaced']) {
+    const {root,recovery,previous}=await deadWriterFixture(t), worker=await heldRecovery(t,root,'published');
+    const marker=path.join(recovery,fs.readdirSync(recovery)[0]);
+    worker.child.kill('SIGKILL');await worker.closed;
+    const before=fs.readFileSync(path.join(root,'runtime-latest.json')), readdir=io.readdir.bind(io);
+    const denied=Object.assign(new Error('Transient recovery scandir denial'),{code:'EPERM',syscall:'scandir',path:marker});
+    let injected=false, active;
+    const mocked=t.mock.method(io,'readdir',async(...args)=>{
+      if(args[0]===marker&&!injected) {
+        injected=true;await io.rmdir(marker);await io.rmdir(recovery);
+        if(mode==='replaced')active=await heldRecovery(t,root,'published');
+        throw denied;
+      }
+      return readdir(...args);
+    });
+    try {
+      if(mode==='removed') {
+        await writeAgentReport(root,'repair',{code:'RECOVERED_AFTER_SCANDIR'},{onDiagnostic:t.evidence.event});
+        assert.equal(readAgentReport(root).repair.code,'RECOVERED_AFTER_SCANDIR');
+      } else {
+        await assert.rejects(writeAgentReport(root,'extension',{status:'MUST_NOT_STORE'},{onDiagnostic:t.evidence.event}),
+          error=>error.code==='DIAGNOSTIC_WRITER_BUSY' && error.lockState.recoveryOwner.pid===active.child.pid &&
+            error.lockState.recoveryOwner.state==='LIVE');
+        assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+        assert.ok(fs.readdirSync(recovery)[0].startsWith('owner-'+active.child.pid+'-'));
+        active.child.send({type:'release'});assert.deepEqual(await active.closed,{code:0,signal:null});
+        await enqueueAgentReport(root,'extension',{status:'AFTER_RECOVERY'},{onDiagnostic:t.evidence.event});
+        assert.equal(readAgentReport(root).extension.status,'AFTER_RECOVERY');
+      }
+      assert.equal(injected,true,mode+' must exercise the real filesystem observation boundary');
+      assert.deepEqual(readAgentReport(root).server,previous);
+      assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+    } finally {mocked.mock.restore();}
+  }
+});
+
+test('persistent recovery scandir denial preserves the original error, report and guard',async t=>{
+  const {root,lock,recovery}=await deadWriterFixture(t), worker=await heldRecovery(t,root,'published');
+  const marker=path.join(recovery,fs.readdirSync(recovery)[0]);
+  worker.child.kill('SIGKILL');await worker.closed;
+  const before=fs.readFileSync(path.join(root,'runtime-latest.json')), lockBefore=fs.readFileSync(lock);
+  const readdir=io.readdir.bind(io), denied=Object.assign(new Error('Persistent recovery scandir denial'),
+    {code:'EPERM',syscall:'scandir',path:marker});let attempts=0;
+  const mocked=t.mock.method(io,'readdir',async(...args)=>{
+    if(args[0]===marker){attempts++;throw denied;}return readdir(...args);
+  });
+  try {
+    await assert.rejects(writeAgentReport(root,'repair',{code:'MUST_NOT_STORE'},{onDiagnostic:t.evidence.event}),error=>error===denied);
+    assert.ok(attempts>=1&&attempts<=5,'permission denial must remain bounded');
+    assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+    assert.deepEqual(fs.readFileSync(lock),lockBefore);assert.equal(fs.existsSync(marker),true);
+  } finally {mocked.mock.restore();}
 });
 
 test('concurrent restart writers retain every section after the recovery owner is killed', {timeout:15000},async t=>{
