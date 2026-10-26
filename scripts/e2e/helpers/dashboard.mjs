@@ -45,8 +45,8 @@ export async function dashboardSpine(t, flow) {
     page = await context.newPage(); page.setDefaultTimeout(15000);
     page.on('pageerror', error => errors.push(error.message));
     // Do not record token/header/body/query or arbitrary external URL.
-    page.on('response', r => boundary.push({ route:new URL(r.url()).pathname, method:r.request().method(), status:r.status() }));
-    page.on('requestfailed', r => boundary.push({ route:new URL(r.url()).pathname, failed:true }));
+    page.on('response', r => boundary.push({ route:new URL(r.url()).pathname, method:r.request().method(), status:r.status(), at:Date.now() }));
+    page.on('requestfailed', r => boundary.push({ route:new URL(r.url()).pathname, failed:true, error:r.failure()?.errorText, startedAt:r.timing().startTime, at:Date.now() }));
     const session = page.waitForResponse(r => new URL(r.url()).pathname === '/api/dashboard/session');
     const state = page.waitForResponse(r => new URL(r.url()).pathname === '/api/state');
     assert.equal((await page.goto(server.baseUrl)).status(), 200);

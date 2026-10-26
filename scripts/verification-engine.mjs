@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
+import {atomicWrite} from './mv3-reload-core.mjs';
 import {identityMatches,sameUniqueMembers,resourceClosureUnconfirmed} from './verification-identity.mjs';
 import {nativeExtensionComplete} from './native-extension-contract.js';
 
@@ -61,9 +62,8 @@ export async function executeVerification({root,directory,plan,source,readSource
   const resultPath=path.join(directory,'latest-verification.json'), logPath=path.join(directory,'latest-verification.log');
   fs.writeFileSync(logPath,''); let bytes=0;
   const save=()=>{
-    const data=JSON.stringify(result,null,2)+'\n';
     for(const target of [resultPath,path.join(evidenceRoot,'result.json')]) {
-      fs.writeFileSync(target+'.tmp',data); fs.renameSync(target+'.tmp',target);
+      atomicWrite(target,result);
     }
   };
   const log=chunk=>{const data=Buffer.from(chunk);fs.appendFileSync(logPath,data);bytes+=data.length;output(data);};

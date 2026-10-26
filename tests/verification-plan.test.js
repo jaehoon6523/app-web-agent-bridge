@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {runOwnedNode} from '../scripts/e2e/platform/process.mjs';
+import {bounded} from '../scripts/e2e/helpers/deadline.mjs';
 import {verificationPlan} from '../scripts/verification-plan.mjs';
 import {executeVerification,receiptComplete} from '../scripts/verification-engine.mjs';
 const source={head:'candidate',sourceSha256:'source'};
@@ -158,4 +160,28 @@ for(const [name,change] of [
 ]) test('GUI refuses '+name,()=>{
   assert.equal(receiptComplete('gui',guiGood,guiContext),true);
   assert.equal(receiptComplete('gui',{...guiGood,...change},guiContext),false);
+});
+
+
+test('progress metadata atomically replaces a concurrently read file and preserves permanent write failure', async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-progress-reader-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const directory=path.join(root,'evidence');fs.mkdirSync(directory);
+  const file=path.join(directory,'latest-verification.json');fs.writeFileSync(file,'{"before":true}');
+  let ready,transcript='';const locked=new Promise(resolve=>{ready=resolve;});
+  const script=`const fs=require('fs');const fd=fs.openSync(process.argv[1],'r');console.log('LOCKED');setTimeout(()=>{console.log('HELD:'+fs.readFileSync(fd,'utf8'));fs.closeSync(fd);},150);`;
+  const reader=runOwnedNode(['-e',script,file],{timeoutMs:3000,onStdout:chunk=>{transcript+=chunk;if(transcript.includes('LOCKED'))ready();}});
+  const options={root,directory,source,readSource:()=>source,plan:[item('check')],run:async()=>({code:0,signal:null,forced:false})};
+  try {
+    await bounded(locked,2000);
+    const result=await executeVerification(options);
+    assert.equal(result.status,'PASS');
+    const published=JSON.parse(fs.readFileSync(file,'utf8'));
+    assert.equal(published.runId,result.runId);assert.equal(published.status,'PASS');
+  } finally { assert.equal((await reader).code,0); }
+  assert.match(transcript,/HELD:\{"before":true\}/u,'atomic replacement must not truncate the reader-owned file object');
+  const previous=fs.readFileSync(file,'utf8'),rename=fs.renameSync;
+  t.mock.method(fs,'renameSync',(from,to)=>{if(to===file)throw Object.assign(Error('persistent reader lock'),{code:'EPERM'});return rename(from,to);});
+  await assert.rejects(executeVerification({...options,runId:'persistent-denial'}),{code:'EPERM'});
+  assert.equal(fs.readFileSync(file,'utf8'),previous,'a failed writer must not publish a fresh success');
 });
