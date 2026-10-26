@@ -4,154 +4,11 @@ import { registerCandidateSelectionTests } from "../helpers/tab-focus-selection.
 registerCandidateSelectionTests(dashboard);
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
-import vm from "node:vm";
-import * as dashboardActionCapabilities from "../../public/dashboard-action-capabilities.js";
-import * as dashboardConnectionState from "../../public/dashboard-connection-state.js";
-import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
-import * as dashboardRunListKnowledge from "../../public/dashboard-run-list-knowledge.js";
-import * as dashboardStartActions from "../../public/dashboard-start-actions.js";
-import { renderProjectOverview } from "../../public/project-overview-view.js";
-import { createRunActionLayout } from "../../public/run-action-layout.js";
-import * as runContextView from "../../public/run-context-view.js";
+import { normalizeDashboardState } from "../../public/dashboard-model.js";
 import { workflowForRun } from "../../src/orchestration/preparation-service.js";
+import { dashboard } from "../helpers/dashboard-ui.mjs";
+export { dashboard };
 
-function inlineModule(source) {
-  const lines = [];
-  let importing = false;
-  for (const line of source.split(/\r?\n/u)) {
-    if (!importing && /^\s*import\b/u.test(line)) {
-      importing = !/;\s*$/u.test(line);
-      continue;
-    }
-    if (importing) {
-      if (/;\s*$/u.test(line)) importing = false;
-      continue;
-    }
-    if (/^\s*export\s*\{/u.test(line)) continue;
-    lines.push(line.replace(/^(\s*)export\s+/u, "$1"));
-  }
-  return lines.join("\n");
-}
-
-function withRunKnowledge(state) {
-  if (!Array.isArray(state?.runs) || state.dataKnowledge != null) return state;
-  return {
-    ...state,
-    dataKnowledge: { runs: { status: state.runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
-  };
-}
-
-export async function dashboard(state, mutate = async () => ({}), storage = new Map()) {
-  const html = await readFile(new URL("../../public/index.html", import.meta.url), "utf8");
-  const source = await readFile(new URL("../../public/app.js", import.meta.url), "utf8");
-  const conversationSource = await readFile(new URL("../../public/conversation-view.js", import.meta.url), "utf8");
-  const preparationSource = await readFile(new URL("../../public/preparation-view.js", import.meta.url), "utf8");
-  const healthPresentationSource = await readFile(new URL("../../public/dashboard-health-presentation.js", import.meta.url), "utf8");
-  const auditPresentationSource = await readFile(new URL("../../public/dashboard-audit-presentation.js", import.meta.url), "utf8");
-  const statusSource = await readFile(new URL("../../public/dashboard-status-view.js", import.meta.url), "utf8");
-  const elements = new Map(), all = [], calls = [];
-  class Element {
-    constructor(tagName = "") {
-      this.tagName = String(tagName).toUpperCase();
-      this.children = []; this.listeners = {}; this.dataset = {}; this.value = "";
-      this.checked = false; this.hidden = false; this.textContent = ""; this.attributes = {};
-      this.classList = {
-        add: (...names) => { for (const name of names) this.className = `${this.className ?? ""} ${name}`.trim(); },
-        remove: (...names) => { this.className = String(this.className ?? "").split(/\s+/u).filter((name) => !names.includes(name)).join(" "); },
-        contains: (name) => String(this.className ?? "").split(/\s+/u).includes(name),
-        toggle: (name, force) => {
-          const included = force === undefined ? !this.classList.contains(name) : Boolean(force);
-          this.classList[included ? "add" : "remove"](name);
-          return included;
-        },
-      };
-      all.push(this);
-    }
-    set id(value) { this._id = value; elements.set(value, this); }
-    get id() { return this._id; }
-    append(...children) { for (const child of children) { child.parentElement = this; this.children.push(child); } }
-    prepend(child) { if (!this.children.includes(child)) this.children.unshift(child); child.parentElement = this; }
-    after(...siblings) {
-      const parent = this.parentElement;
-      if (!parent) return;
-      const index = parent.children.indexOf(this);
-      parent.children.splice(index + 1, 0, ...siblings);
-      for (const sibling of siblings) sibling.parentElement = parent;
-    }
-    get nextElementSibling() {
-      if (!this.parentElement) return null;
-      const index = this.parentElement.children.indexOf(this);
-      return this.parentElement.children[index + 1] ?? null;
-    }
-    querySelectorAll(selector) {
-      const descendants = [];
-      const visit = (element) => {
-        for (const child of element.children) {
-          if (selector.split(",").map(item => item.toUpperCase()).includes(child.tagName)) descendants.push(child);
-          visit(child);
-        }
-      };
-      visit(this);
-      return descendants;
-    }
-    querySelector(selector) {
-      if (selector === "a[data-delivery-recovery]") return this.querySelectorAll("a")
-        .find(element => Object.hasOwn(element.dataset, "deliveryRecovery")) ?? null;
-      return this.querySelectorAll(selector)[0] ?? null;
-    }
-    remove() {
-      if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
-      this.parentElement = null;
-    }
-    focus() {}
-    replaceChildren(...children) { this.children = []; this.append(...children); }
-    setAttribute(key, value) { this.attributes[key] = value; }
-    removeAttribute(key) { delete this.attributes[key]; }
-    addEventListener(key, callback) { this.listeners[key] = callback; }
-    removeEventListener(key, callback) { if (this.listeners[key] === callback) delete this.listeners[key]; }
-    contains() { return false; }
-  }
-  for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
-  const context = vm.createContext({ location:{search:""},
-    ...dashboardActionCapabilities,
-    ...dashboardConnectionState,
-    ...dashboardRunListKnowledge,
-    ...dashboardStartActions,
-    ...runContextView,
-    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
-    sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
-    crypto: { randomUUID: () => "request-1" },
-    AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
-    window: { location: { origin:"http://127.0.0.1:8787", reload:() => {} } },
-    document: {
-      getElementById: (id) => elements.get(id),
-      createElement: (tagName) => new Element(tagName), addEventListener() {},
-      querySelectorAll: () => all.filter((element) => element.dataset.webCommand),
-      querySelector: (selector) => [".session-recovery", ".preparation-tab-choice"].includes(selector)
-        ? all.findLast(element => element.className === selector.slice(1)) ?? null : null,
-    },
-    fetch: async (url, options) => {
-      calls.push({ url, body: options.body ? JSON.parse(options.body) : null });
-      const body = url === "/api/dashboard/session" ? { token: "test" }
-        : url.startsWith("/api/state") ? withRunKnowledge(state) : await mutate(url, options);
-      return { ok: true, json: async () => body };
-    },
-  });
-  const tabChoiceSource = await readFile(new URL("../../public/preparation-tab-choice.js", import.meta.url), "utf8");
-  const executableSource = [
-    inlineModule(tabChoiceSource),
-    inlineModule(conversationSource),
-    inlineModule(preparationSource),
-    inlineModule(healthPresentationSource),
-    inlineModule(auditPresentationSource),
-    inlineModule(statusSource),
-    inlineModule(source).replace(/\r?\n(?:void\s+)?poll\(\);\s*$/, ""),
-  ].join("\n");
-  vm.runInContext(executableSource, context);
-  await vm.runInContext("refresh()", context);
-  return { elements, calls, context, run: (code) => vm.runInContext(code, context) };
-}
 function prepared() {
   return {
     workflow: { stage: "PREPARE", state: "DISCUSSING", preparationId: "p1", preparationVersion: 3 },
@@ -491,6 +348,13 @@ for (const [stage, state] of [["START", "START_IDLE"], ["WORK", "WORKER_RUNNING"
       assert.equal(ui.elements.get("startPanel").hidden, stage !== "START");
       assert.equal(ui.elements.get("projectPanel").hidden, true);
       assert.equal(ui.elements.get("runPanel").hidden, stage === "START");
+      if (run) {
+        assert.equal(ui.elements.get("runObjective").textContent, "테스트 작업");
+        assert.equal(ui.elements.get("runStatus").textContent, {WORKER_RUNNING:"구현·수정 중",HOLD:"확인 필요",
+          RECOVERY_REQUIRED:"복구 확인 필요",AWAITING_APPLY:"감사 통과·적용 대기"}[state]);
+        assert.equal(ui.elements.get("runPanel").dataset.runId, run.runId);
+        assert.equal(ui.run("snapshot.run.version"), run.version);
+      }
       const step = { START: "stepCollect", WORK: "stepWork", RESULT: "stepResult" }[stage];
       assert.equal(ui.elements.get(step).attributes["aria-current"], "step");
       assert.deepEqual(ui.calls.map((call) => call.url), ["/api/dashboard/session", "/api/state"]);
@@ -533,6 +397,57 @@ function stateFor(run, capabilities) {
     preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: capabilities,
     events: [], messages: [], assessments: [], findings: [], evidence: [] };
 }
+
+test("[데이터 전달/렌더링] normalized id/status reaches snapshot, DOM and command identity without losing response fields", async () => {
+  const run = { runId:"A", phase:"WORKER_RUNNING", version:3, objective:"작업 A", extensionField:{retained:true} };
+  const state = stateFor(run, ["run.stop"]);
+  state.run = { ...run, id:"A", status:run.phase };
+  delete state.run.runId; delete state.run.phase;
+  state.extensionField = {retained:true};
+  const ui = await dashboard(state);
+  assert.equal(ui.run("snapshot.run.runId"), "A", "[데이터 전달] snapshot.run.runId 기대=A");
+  assert.equal(ui.run("snapshot.run.phase"), "WORKER_RUNNING", "[데이터 전달] snapshot.run.phase 기대=WORKER_RUNNING");
+  assert.equal(ui.run("snapshot.run.version"), 3);
+  assert.equal(ui.run("snapshot.extensionField.retained && snapshot.run.extensionField.retained"), true);
+  assert.equal(ui.elements.get("runObjective").textContent, "작업 A");
+  assert.equal(ui.elements.get("runStatus").textContent, "구현·수정 중", "[데이터 렌더링] #runStatus 기대=구현·수정 중");
+  assert.equal(ui.run("workflow.runId"), "A");
+  await ui.run('command("run.stop")');
+  const sent = ui.calls.find(call => call.url === "/api/commands");
+  assert.equal(sent.body.payload.runId, "A");
+  assert.equal(sent.body.payload.expectedVersion, 3);
+});
+
+test("[데이터 로드] selected request rejects a coherent response for another run before display or commands", async () => {
+  const state = stateFor({runId:"A",version:3,phase:"WORKER_RUNNING",objective:"작업 A"}, ["run.stop"]);
+  const ui = await dashboard(state);
+  state.run = {runId:"B",version:2,phase:"APPLIED",objective:"작업 B"};
+  state.workflow = workflowForRun(state.run);
+  ui.run('selected = "A"');
+  await ui.run("refresh()");
+  assert.equal(ui.calls.at(-1).url, "/api/state?runId=A");
+  assert.equal(ui.run("connected"), false, "[데이터 로드] runId 기대=A, 실제=B를 차단해야 함");
+  assert.equal(ui.run("snapshot.run.runId"), "A");
+  assert.equal(ui.elements.get("stopRun").disabled, true);
+  assert.notEqual(ui.elements.get("runObjective").textContent, "작업 B");
+});
+
+test("[로딩 연결] changing selection blocks commands immediately and a failed B read never displays A as B", async () => {
+  const state = stateFor({runId:"A",version:3,phase:"WORKER_RUNNING",objective:"작업 A"}, ["run.stop"]);
+  const ui = await dashboard(state);
+  let rejectRead;
+  ui.context.fetch = (url) => new Promise((resolve, reject) => { rejectRead = reject; });
+  ui.run('selected = "B"');
+  const pending = ui.run("refresh()");
+  assert.equal(ui.run("connected"), false, "[로딩 연결] LOADING 중 변경 명령 차단");
+  assert.equal(ui.elements.get("runPanel").hidden, true);
+  rejectRead(new TypeError("controlled network failure"));
+  await pending;
+  assert.equal(ui.run("connected"), false);
+  assert.equal(ui.elements.get("runPanel").hidden, true);
+  assert.equal(ui.elements.get("stopRun").disabled, true);
+  assert.match(ui.elements.get("connectionNotice").textContent, /상태 조회 실패|서버 응답 없음/u);
+});
 
 function withAvailableReviewers(state) {
   state.reviewerRuntimes = {
@@ -757,11 +672,18 @@ test("selected run exposes child tasks and archived applied runs cannot start a 
   assert.equal(ui.elements.get("runLineage").hidden,false);
   assert.match(ui.elements.get("runLineageSummary").textContent,/후속 작업 2건/u);
   assert.equal(ui.elements.get("runLineageChildren").children.length,2);
+  state.run={...run,runId:"second",objective:"Settings"};
+  state.workflow=workflowForRun(state.run);
   await ui.elements.get("runLineageChildren").children[0].listeners.click();
+  await ui.run("refresh()");
   assert.equal(ui.run("selected"),"second");
+  assert.equal(ui.elements.get("runObjective").textContent,"Settings");
 
   state.run={...run,archivedAt:"2026-09-26T00:00:00Z"};
+  state.workflow=workflowForRun(state.run);
+  ui.run('selected = "first"');
   await ui.run("refresh()");
+  assert.equal(ui.elements.get("runObjective").textContent,"Initial app");
   assert.equal(ui.elements.get("continueProject").hidden,true);
 });
 

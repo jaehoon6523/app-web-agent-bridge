@@ -1,3 +1,5 @@
+import { connectionNoticeFor } from "./dashboard-connection-state.js";
+
 export function bindingPresentation({ connected, webAuthenticated, binding, workflowStage }) {
   if (!connected) return { state:"unknown", detail:"최신 상태 확인 필요" };
   if (!webAuthenticated) return { state:"warn", detail:"확장 연결 대기" };
@@ -23,8 +25,15 @@ export function showDashboardPageError(error) {
   console.error("Dashboard page failed:", error);
 }
 
-export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed }) {
+export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading = false }) {
   const put = (id, value) => { document.getElementById(id).textContent = value; };
+  const run = target && snapshot?.run?.runId !== target ? null : snapshot?.run;
+  document.getElementById("runPanel").dataset.runId = run?.runId ?? "";
+  if (connectionState.lastError) put("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? new Date(lastConfirmed).toLocaleString("ko-KR") : "없음")
+    + (run ? " · 마지막 확인 데이터 표시 중입니다." : ""));
+  document.getElementById("runPanel").dataset.loadState = phase === "READY" ? "READY" : connectionState.lastError ? "ERROR" : "LOADING";
+  if (loading && snapshot) put("connectionNotice", target && target !== snapshot.run?.runId
+    ? `작업 ${target} 조회 중입니다.` : "작업 상태 조회 중 · 마지막 확인 데이터 표시 중입니다.");
   const labels = { SESSION:"대시보드 인증 확인", STATE:"작업 상태 조회", PROJECTION:"화면 데이터 확인", READY:"최신 상태 확인 완료" };
   put("dashboardAddress", window.location.origin);
   put("dashboardPhase", connectionState.runtimeError ? "화면 데이터 해석 실패" : labels[phase] ?? phase);

@@ -13,7 +13,7 @@ import { createRunContextView, reviewerRuntimeTechnicalSummary } from "./run-con
 import { createDashboardAuditPresentation } from "./dashboard-audit-presentation.js";
 import { createDashboardHealthPresentation } from "./dashboard-health-presentation.js";
 import {
-  classifyDashboardFailure, connectionNoticeFor, dashboardStateReady,
+  classifyDashboardFailure, dashboardStateReady,
   initialDashboardConnectionState, markDashboardSessionAuthenticated,
   markDashboardSessionPending, markStateReadReady, markStateReadStarted,
   projectDashboardKnowledge, requestFailureCode,
@@ -196,10 +196,9 @@ function workerIdentity(run) {
 }
 const renderRunContextView = createRunContextView({ $, text, labels, terminal, folderName, workerIdentity });
 async function request(url, options = {}) {
-  const fetchOptions = options;
   let response = null;
   try {
-    response = await fetch(url, { ...fetchOptions, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...fetchOptions.headers } });
+    response = await fetch(url, { ...options, signal:AbortSignal.timeout(url === "/api/project/folder" ? 310000 : url.startsWith("/api/preparations/") ? 180000 : url.startsWith("/api/state") || url === "/api/dashboard/session" ? 10000 : 30000), cache:"no-store", headers:{ "Content-Type":"application/json", ...(token ? { Authorization:`Bearer ${token}` } : {}), ...options.headers } });
     let body;
     try { body = await response.json(); }
     catch (error) {
@@ -210,7 +209,7 @@ async function request(url, options = {}) {
     return body;
   } catch (error) {
     if (error.name === "TimeoutError" || error.name === "AbortError" || (!response && error instanceof TypeError)) {
-      const code = requestFailureCode({ url, method:fetchOptions.method, responseReceived:Boolean(response) });
+      const code = requestFailureCode({ url, method:options.method, responseReceived:Boolean(response) });
       throw Object.assign(new Error(code === "UNKNOWN_RESULT" ? "요청 결과를 확인할 수 없습니다." : "서버 응답을 받지 못했습니다."), {
         code, responseReceived:Boolean(response),
       });
@@ -221,7 +220,10 @@ async function request(url, options = {}) {
 async function refresh() {
   const current = ++sequence, target = selected;
   let phase = token ? "STATE" : "SESSION";
-  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed });
+  connected = false;
+  connectionState = markStateReadStarted(connectionState);
+  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
+  if (snapshot) render();
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
@@ -231,17 +233,17 @@ async function refresh() {
       connectionState = markDashboardSessionAuthenticated(connectionState);
     }
     phase = "STATE";
-    connectionState = markStateReadStarted(connectionState);
     const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
     if (current !== sequence || target !== selected) return;
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     projectRunListKnowledge(result);
-    const canonical = normalizeDashboardState(result);
+    const canonical = normalizeDashboardState(result, target);
     connectionState = markStateReadReady(connectionState);
     connected = dashboardStateReady(connectionState);
-    snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
+    snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]};
+    workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     const runtimeUnavailable = result.runtimeAvailability?.ready === false;
@@ -262,14 +264,14 @@ async function refresh() {
     }
   } catch (error) {
     if (current !== sequence || target !== selected) return;
+    if (phase === "PROJECTION" && !error.code) Object.assign(error, {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = classifyDashboardFailure(connectionState, phase, error);
     connected = dashboardStateReady(connectionState);
     if (phase === "STATE" && [401, 403].includes(error.status)) token = "";
-    text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음"));
   }
   render();
   pendingProjectDraft?.complete();
-  updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
+  updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed, target });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
   if (autoApprovalPreparationId
@@ -331,7 +333,9 @@ function disabledWebReason(action) {
 }
 function render() {
   renderPreparation();
-  const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
+  const run = selected && snapshot?.run?.runId !== selected ? null : snapshot?.run;
+  const preflight = snapshot?.preflight, caps = capabilities();
+  if (!run) { text("runObjective", ""); text("runStatus", ""); }
   if (!$("proposalWaiting")) {
     const waiting = node("p", "ChatGPT 응답을 기다리고 있습니다", "proposal-waiting");
     const spinner = node("span", "", "spinner"), dots = node("span", "...", "waiting-dots");
@@ -778,7 +782,7 @@ function render() {
   renderRunContextView(run, snapshot);
   text("runStatus", labels[run.phase] ?? run.phase); $("runStatus").className = `health ${runAppearance(run.phase)}`;
   text("runReason", reasons[run.terminationReason] ?? (userFacingStoredError(run.error ?? snapshot?.error, "") || (run.phase === "CANCELLED" ? "중단됨 · 기록은 보존됩니다." : run.phase === "AWAITING_APPLY" ? "검토 통과 · 아직 적용되지 않았습니다." : run.phase === "APPLIED" ? "적용 완료 · 배포·환경 검증은 별도입니다." : phaseReasons[run.phase] ?? `미해결 필수 지적 ${(run.findings ?? []).filter((f) => f.required && ["OPEN","FIX_SUBMITTED"].includes(f.status)).length}건`)));
-  text("runTime", `접수 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}`);
+  text("runTime", `작업 ID ${run.runId} · 버전 ${run.version} · 접수 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}${run.archivedAt ? ` · 보관 ${time(run.archivedAt)}` : ""}`);
   const workerEvidence = run.worker?.provenance;
   text("workerProvenance", workerEvidence ? `Worker 출처: 설정 ${workerEvidence.requested.provider ?? "미지정"} / 실행 보고 ${workerEvidence.reported.provider ?? "미확인"} · 모델 보고 ${workerEvidence.reported.model ?? "미확인"}` : "Worker 실행 출처: 현재 기록에서 확인되지 않음");
   let reviewerRuntimeStatus = $("reviewerRuntimeStatus");

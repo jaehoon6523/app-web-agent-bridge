@@ -18,7 +18,8 @@
     "test:fault": "node --test tests/fault/runtime-failure.test.js tests/fault/extension-failure.test.js tests/fault/reviewer-provider-failure.test.js tests/fault/state-projection-failure.test.js tests/fault/run-store-read-failure.test.js",
     "test:tab-ux-browser": "node scripts/preparation-tab-ux-browser.mjs",
     "test:ui": "node scripts/ui-scenarios.mjs",
-    "test:browser": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs && npm run test:tab-ux-browser",
+    "test:first-load": "node scripts/e2e/with-browser.mjs --test --test-reporter=tap --test-concurrency=1 scripts/first-load-browser-suite.mjs",
+    "test:browser": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs scripts/first-load-browser-suite.mjs && npm run test:tab-ux-browser",
     "test:extension:native": "node scripts/native-extension-suite.mjs",
     "test:critical": "node scripts/preparation-critical-suite.mjs",
     "test:sabotage": "node scripts/sabotage-critical-preparation.mjs",
@@ -47,7 +48,7 @@
     "verify:delivery-recovery": "node scripts/verify-delivery-recovery.mjs",
     "verify:all": "node --experimental-sqlite scripts/verify-all.mjs",
     "diagnose:windows": "node scripts/windows-diagnostics.mjs",
-    "test:browser:core": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs",
+    "test:browser:core": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs scripts/first-load-browser-suite.mjs",
     "verify:browser-install": "node scripts/verification-browser.mjs"
   },
   "dependencies": {

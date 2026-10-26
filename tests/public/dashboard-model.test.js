@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { workflowForRun } from "../../src/orchestration/preparation-service.js";
+import { RunPhase } from "../../src/domain/vocabulary.js";
 import { fileURLToPath } from "node:url";
 import {
   ACTORS,
@@ -223,6 +225,50 @@ test("contract: dashboard state preserves canonical workflow identity and versio
     stage: "PREPARE", state: "DISCUSSING", preparationId: "prep_1",
     preparationVersion: 4, runId: null, runVersion: null,
   });
+});
+
+test("[데이터 검증] workflow and run must describe one identity, version and legal phase projection", () => {
+  const valid = {workflow:{stage:"WORK",state:"WORKER_RUNNING",runId:"A",runVersion:3},
+    run:{runId:"A",version:3,phase:"WORKER_RUNNING",objective:"작업 A"}};
+  for (const [name, change] of [
+    ["run ID", s => {s.run.runId="B";}],
+    ["run version", s => {s.run.version=2;}],
+    ["phase mapping", s => {s.run.phase="APPLIED";}],
+    ["unknown phase", s => {s.run.phase="INVENTED";}],
+    ["missing phase", s => {delete s.run.phase;}],
+    ["wrong phase type", s => {s.run.phase={};}],
+    ["missing run", s => {s.run=null;}],
+    ["missing objective", s => {delete s.run.objective;}],
+    ["wrong objective type", s => {s.run.objective=12;}],
+  ]) {
+    const input=structuredClone(valid); change(input);
+    assert.throws(() => normalizeDashboardState(input), /run|workflow|phase|objective/i, `[데이터 검증] ${name} 오류를 거부해야 함`);
+  }
+  for (const [phase,state] of [["CREATED","RUN_CREATED"],["CANDIDATE_CAPTURE","VERIFYING"],
+    ["REPORT_REPAIR","REVIEW_RUNNING"],["EVIDENCE_SUPPLEMENT","REVIEW_RUNNING"]]) {
+    assert.equal(normalizeDashboardState({...valid,workflow:{...valid.workflow,state},run:{...valid.run,phase}}).run.phase,phase);
+  }
+});
+
+test("[데이터 검증] preparation pointers require the matching object and positive version even during START", () => {
+  const valid={workflow:{stage:"START",state:"WAITING_WEB_RESPONSE",preparationId:"P",preparationVersion:2},
+    preparation:{preparationId:"P",version:2}};
+  for(const change of [s=>{s.preparation=null;},s=>{s.workflow.preparationVersion=0;s.preparation.version=0;},
+    s=>{s.workflow.preparationId=null;},s=>{s.preparation.preparationId="Q";}]) {
+    const input=structuredClone(valid);change(input);
+    assert.throws(()=>normalizeDashboardState(input),/preparation/i);
+  }
+});
+
+test("[데이터 검증] accepted run phases use the actual server workflowForRun projection", () => {
+  const phases = new Set([...Object.values(RunPhase), "PROVISIONING", "WORKER_RUNNING", "CANDIDATE_CAPTURE", "VERIFYING",
+    "REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK", "APPLYING", "STOPPING", "HOLD", "AWAITING_APPLY", "APPLIED", "INCONCLUSIVE"]);
+  for (const phase of phases) {
+    const run = {runId:"A",version:3,phase,objective:"Server projection contract"};
+    const workflow = workflowForRun(run), normalized = normalizeDashboardState({run,workflow});
+    assert.equal(normalized.workflow.state, workflow.state, phase);
+    assert.equal(normalized.workflow.stage, workflow.stage, phase);
+  }
 });
 
 test("contract: invalid workflow stage/state combinations fail closed", () => {

@@ -165,10 +165,18 @@ function normalizeRun(value) {
   if (!Number.isSafeInteger(run.version) || run.version < 1) {
     throw new TypeError("run.version must be a positive safe integer.");
   }
+  const phase = run.phase ?? run.status;
+  const legacyPhases = ["STARTING_SESSIONS", "CODEX_TURN_PENDING", "CODEX_TURN_RUNNING", "CODEX_RESPONSE_STORED",
+    "CODEX_TO_WEB_PENDING", "WEB_TURN_RUNNING", "WEB_RESPONSE_STORED", "WEB_TO_CODEX_PENDING", "CONSENSUS_CHECK", "HUMAN_GATE"];
+  if (typeof phase !== "string" || !(WORKFLOW_STATES.WORK.has(phase) || WORKFLOW_STATES.RESULT.has(phase)
+    || ["CREATED", "CANDIDATE_CAPTURE", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", ...legacyPhases].includes(phase))) {
+    throw new TypeError("run.phase is invalid.");
+  }
+  if (typeof run.objective !== "string") throw new TypeError("run.objective must be a string.");
   return Object.freeze({
     ...run,
     runId,
-    phase: String(run.phase ?? run.status ?? "UNKNOWN"),
+    phase,
     currentTurn: Number.isSafeInteger(run.currentTurn) ? run.currentTurn : 0,
     maxTurns: Number.isSafeInteger(run.maxTurns) ? run.maxTurns : 0,
     activeActor: ACTORS.includes(run.activeActor) ? run.activeActor : null,
@@ -190,7 +198,7 @@ function normalizeSessions(value) {
   return sessions;
 }
 
-export function normalizeDashboardState(value) {
+export function normalizeDashboardState(value, expectedRunId = null) {
   if (value == null) {
     return Object.freeze({
       run: null,
@@ -211,8 +219,25 @@ export function normalizeDashboardState(value) {
   const capabilities = optionalArray(value.commandCapabilities, "commandCapabilities");
   const workflow = normalizeWorkflow(value.workflow);
   const preparation = optionalObject(value.preparation, "preparation");
-  if (preparation && workflow.preparationId && (preparation.preparationId !== workflow.preparationId || preparation.version !== workflow.preparationVersion)) {
+  if ((preparation || workflow.preparationId !== null || workflow.preparationVersion !== null)
+    && (!preparation || typeof preparation.preparationId !== "string" || !preparation.preparationId
+      || !Number.isSafeInteger(preparation.version) || preparation.version < 1
+      || preparation.preparationId !== workflow.preparationId || preparation.version !== workflow.preparationVersion)) {
     throw new TypeError("preparation identity/version does not match workflow.");
+  }
+  const run = normalizeRun(value.run);
+  if (expectedRunId && run?.runId !== expectedRunId) throw new TypeError("Requested runId does not match run.runId.");
+  if (["WORK", "RESULT"].includes(workflow.stage)) {
+    if (!run || workflow.runId !== run.runId) throw new TypeError("workflow.runId does not match run.runId.");
+    if (workflow.runVersion !== run.version) throw new TypeError("workflow.runVersion does not match run.version.");
+    // workflowForRun projects capture/repair phases and legacy discussion states.
+    const state = ({CREATED:"RUN_CREATED", CANDIDATE_CAPTURE:"VERIFYING", REPORT_REPAIR:"REVIEW_RUNNING",
+      EVIDENCE_SUPPLEMENT:"REVIEW_RUNNING"})[run.phase]
+      ?? (WORKFLOW_STATES.WORK.has(run.phase) || WORKFLOW_STATES.RESULT.has(run.phase) ? run.phase : "RECOVERY_REQUIRED");
+    const stage = WORKFLOW_STATES.RESULT.has(state) ? "RESULT" : "WORK";
+    if (workflow.state !== state || workflow.stage !== stage) throw new TypeError("workflow state/stage does not match run.phase.");
+  } else if (run || workflow.runId !== null || workflow.runVersion !== null) {
+    throw new TypeError("workflow cannot expose a run outside WORK or RESULT.");
   }
   let sequence = 0;
   const turnIds = new Set();
@@ -229,7 +254,7 @@ export function normalizeDashboardState(value) {
     workflow,
     preparation,
     preflight: optionalObject(value.preflight, "preflight"),
-    run: normalizeRun(value.run),
+    run,
     sessions: normalizeSessions(value.sessions),
     messages: optionalArray(value.messages, "messages"),
     deliveries: optionalArray(value.deliveries, "deliveries"),
