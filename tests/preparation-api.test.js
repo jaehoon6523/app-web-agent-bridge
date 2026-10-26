@@ -8,6 +8,7 @@ import { createBridgeServer } from "../src/server.js";
 import { CodeChangeService } from "../src/orchestration/code-change-service.js";
 import { computeWebChallengeHmac } from "../src/runtime/web/auth.js";
 import { GitChangeWorkspace } from "../src/repository/git-change-workspace.js";
+import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
 
 test("HTTP canonical preparation, real Git approval, durable Run and RESULT projection", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "preparation-api-"));
@@ -25,7 +26,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     return { store: { listRuns: () => [], getRun: () => null }, codeChanges: service, close: () => service.close() };
   } });
   let bridge = create();
-  t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await bridge.close(); await removeOwnedFixture(root); });
   let binding, active = null, count = 0, release, dropAck = false;
   class Socket extends EventEmitter {
     readyState = 1;

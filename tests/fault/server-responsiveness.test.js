@@ -149,14 +149,49 @@ for(const fault of ["cpu"]) {
     ]);
     assert.ok(attempts.every(item=>item.status==="rejected"),"same-thread stall must be observed by an independent client");
     assert.equal(await state,true);
-    await wait("watchdog.resumed",8000,event=>event.loopDelayMs>=faultDuration(fault));
+    await wait("watchdog.resumed",8000,event=>event.loopDelayMs>=faultDuration(fault)
+      &&runtimeStallEpisode(events.slice(incidentStart),faultDuration(fault))?.resumed===event);
     const incidentEvents=events.slice(incidentStart);
-    const warning=incidentEvents.find(event=>event.type==="watchdog.unresponsive" && event.lastStage==="runtime.initialization.started");
+    const episode=runtimeStallEpisode(incidentEvents,faultDuration(fault));
+    const warning=episode?.warning;
     assert.ok(warning, "watchdog must observe the injected runtime stall");
-    assert.equal(warning.lastStage,fault==="cpu"?"runtime.initialization.started":"preparation.initialization.started");
-    const resumed=incidentEvents.find(event=>event.type==="watchdog.resumed" && event.loopDelayMs>=faultDuration(fault));
+    assert.equal(episode.runtimeStart.type,"runtime.initialization.started");
+    assert.ok(episode.runtimeEnd.elapsedMs>=faultDuration(fault),"the injected runtime interval must actually be observed");
+    const resumed=episode?.resumed;
     assert.ok(resumed.loopDelayMs>=faultDuration(fault));
     assert.equal((await read(config,"/api/preflight")).status,200);
   });
 }
 function faultDuration(fault){return fault==="cpu"?2000:4000;}
+
+function runtimeStallEpisode(events,duration) {
+  const start=events.findIndex(event=>event.type==='runtime.initialization.started');
+  const end=events.findIndex((event,index)=>index>start&&event.type==='state.snapshot.runtime.failed'&&event.elapsedMs>=duration);
+  if(start<0||end<0)return null;
+  for(let index=end+1;index<events.length;index++) {
+    const resumed=events[index];
+    if(resumed.type!=='watchdog.resumed'||resumed.loopDelayMs<duration)continue;
+    const warning=events.findLastIndex((event,position)=>position<index&&event.type==='watchdog.unresponsive');
+    if(warning<0||warning>=end||events.slice(warning+1,end+1).some(event=>event.type==='heartbeat'))continue;
+    return {warning:events[warning],resumed,runtimeStart:events[start],runtimeEnd:events[end]};
+  }
+  return null;
+}
+
+test('watchdog attribution includes a runtime stall within one continuous preparation and runtime episode',()=>{
+  const warning={type:'watchdog.unresponsive',lastStage:'preparation.initialization.started'};
+  const resumed={type:'watchdog.resumed',loopDelayMs:3700};
+  const events=[{type:'heartbeat'},{type:'preparation.initialization.started'},warning,
+    {type:'preparation.initialization.completed',elapsedMs:1200},{type:'runtime.initialization.started'},
+    {type:'runtime.initialization.failed'},{type:'state.snapshot.runtime.failed',elapsedMs:2500},
+    {type:'heartbeat',loopDelayMs:3700},resumed];
+  const episode=runtimeStallEpisode(events,2000);
+  assert.ok(episode,'a continuous unresponsive episode must retain the actual runtime interval');
+  assert.equal(episode.warning,warning);assert.equal(episode.resumed,resumed);
+});
+
+test('watchdog attribution rejects a stage label without an observed runtime stall interval',()=>{
+  const events=[{type:'watchdog.unresponsive',lastStage:'runtime.initialization.started'},
+    {type:'heartbeat',loopDelayMs:3000},{type:'watchdog.resumed',loopDelayMs:3000}];
+  assert.equal(runtimeStallEpisode(events,2000),null,'a label and unrelated delay cannot prove runtime execution');
+});
