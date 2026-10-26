@@ -242,11 +242,20 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
       const contended = observed.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(observed.state);
       if (error.code === 'EPERM' && !contended) { error.lockState = observed; throw error; }
       if (observed.state === 'DEAD' && await reclaimDeadWriter(lock,observed,event)) {
-        try { fd = await step('lock.open',() => io.open(lock,'wx',0o600)); }
-        catch (retry) {
-          const current = await lockObservation(lock);
-          if (retry.code === 'EEXIST' || retry.code === 'EPERM' && current.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(current.state)) throw busy(retry,current);
-          retry.lockState = current; throw retry;
+        let denied;
+        for (let attempt = 0; ; attempt++) {
+          try { fd = await step('lock.open',() => io.open(lock,'wx',0o600)); break; }
+          catch (retry) {
+            const current = await lockObservation(lock);
+            if (retry.code === 'EEXIST' || retry.code === 'EPERM' && current.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(current.state)) throw busy(retry,current);
+            // Only OUR confirmed unlink permits a bounded retry of a missing lock.
+            if (retry.code === 'EPERM' && retry.syscall === 'open' && current.state === 'MISSING') {
+              denied ??= retry;
+              if (attempt < 4) { await wait(20); await recoveryAvailable(lock+'.recovery',event); continue; }
+              denied.lockState = current; throw denied;
+            }
+            retry.lockState = current; throw retry;
+          }
         }
       } else throw busy(error,observed);
     }

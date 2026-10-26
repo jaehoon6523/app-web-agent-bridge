@@ -289,6 +289,42 @@ async function heldRecovery(t,root,stage) {
   return {child,closed,held};
 }
 
+test('a transient exclusive reopen denial after owned dead-lock recovery preserves every report section',async t=>{
+  const {root,lock,previous}=await deadWriterFixture(t), open=io.open.bind(io);
+  const denied=Object.assign(new Error('Transient owned recovery reopen denial'),{code:'EPERM',syscall:'open',path:lock});
+  let attempts=0;
+  const mocked=t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock&&++attempts===2) {
+      assert.equal(fs.existsSync(lock),false,'the observed dead lock must already be reclaimed');throw denied;
+    }
+    return open(filename,...args);
+  });
+  try {
+    await enqueueAgentReport(root,'repair',{code:'RECOVERED_AFTER_REOPEN'},{onDiagnostic:t.evidence.event});
+    assert.ok(attempts>=3,'the same exclusive open must be attempted after the injected denial');
+    assert.deepEqual(readAgentReport(root).server,previous);
+    assert.equal(readAgentReport(root).repair.code,'RECOVERED_AFTER_REOPEN');
+    assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+  } finally {mocked.mock.restore();}
+});
+
+test('a permanent exclusive reopen denial after owned recovery preserves the original error and report',async t=>{
+  const {root,lock}=await deadWriterFixture(t), before=fs.readFileSync(path.join(root,'runtime-latest.json'));
+  const open=io.open.bind(io),denied=Object.assign(new Error('Permanent owned recovery reopen denial'),
+    {code:'EPERM',syscall:'open',path:lock});let attempts=0;
+  const mocked=t.mock.method(io,'open',async(filename,...args)=>{
+    if(filename===lock&&++attempts>1) {assert.equal(fs.existsSync(lock),false);throw denied;}
+    return open(filename,...args);
+  });
+  try {
+    await assert.rejects(enqueueAgentReport(root,'repair',{code:'MUST_NOT_STORE'},{onDiagnostic:t.evidence.event}),
+      error=>error===denied&&error.lockState.state==='MISSING');
+    assert.ok(attempts>1&&attempts<=6,'post-recovery denial must remain bounded');
+    assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+    assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+  } finally {mocked.mock.restore();}
+});
+
 test('transient Windows recovery publication EPERM retries only the owned staging guard',async t=>{
   const {root,recovery,previous}=await deadWriterFixture(t), rename=io.rename.bind(io);
   const denied=Object.assign(new Error('Transient Windows recovery publication'),{code:'EPERM',syscall:'rename',dest:recovery});
