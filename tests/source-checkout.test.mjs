@@ -132,7 +132,7 @@ test('file setup and cleanup failures cannot leave a PASS evidence result', t =>
 
 const verificationFileBudget = fileTimeoutMs(path.resolve('tests/verification-command.test.js'));
 // Two full files, one selected case, and the independent source fixture setup.
-test('a failing first verification scenario retains its details after seven successes, then a new invocation replaces the run',
+test('a failing first verification scenario retains its details after eight successes, then a new invocation replaces the run',
   {timeout:2*verificationFileBudget+2*60000+15000}, t => {
   const {base} = fixture(t), checkout = path.join(base,'verification');
   const source = path.resolve('.');
@@ -151,12 +151,12 @@ test('a failing first verification scenario retains its details after seven succ
     } catch (error) { return {stdout:error.stdout,stderr:error.stderr,code:error.status}; }
   };
   const failed = invoke();
-  assert.equal(failed.code,1); assert.match(failed.stdout,/# pass 7\b/u); assert.match(failed.stdout,/# fail 1\b/u);
+  assert.equal(failed.code,1); assert.match(failed.stdout,/# pass 8\b/u); assert.match(failed.stdout,/# fail 1\b/u);
   const directory = path.join(checkout,'.agent-controller/latest-verification-command');
   const saved = JSON.parse(fs.readFileSync(path.join(directory,'result.json'),'utf8'));
   assert.equal(saved.status,'FAIL'); assert.equal(saved.terminal,true);
   assert.equal(saved.setup.status,'PASS'); assert.equal(fs.existsSync(saved.setup.checkout),false);
-  assert.equal(saved.scenarios.length,8);
+  assert.equal(saved.scenarios.length,9);
   assert.equal(saved.scenarios[0].status,'FAIL'); assert.equal(saved.scenarios.at(-1).status,'PASS');
   assert.ok(saved.scenarios.every(item => item.terminal));
   const firstDirectory = path.join(directory,saved.scenarios[0].directory);
@@ -175,7 +175,7 @@ test('a failing first verification scenario retains its details after seven succ
   assert.match(detail.snapshot.sourceSha256,/^[a-f0-9]{64}$/u);
   assert.match(fs.readFileSync(path.join(firstDirectory,'latest-verification.log'),'utf8'),/VERIFICATION FAIL/u);
   assert.equal(JSON.parse(fs.readFileSync(path.join(firstDirectory,'latest-verification.json'),'utf8')).source.sourceSha256,detail.snapshot.sourceSha256);
-  t.diagnostic('Failure retained: '+JSON.stringify({runId:saved.runId,exitCode:failed.code,passed:7,failed:1,
+  t.diagnostic('Failure retained: '+JSON.stringify({runId:saved.runId,exitCode:failed.code,passed:8,failed:1,
     status:saved.status,first:saved.scenarios[0].status,last:saved.scenarios.at(-1).status,
     failure:detail.failure.message,sourceSha256:detail.snapshot.sourceSha256}));
   // Registration must also retain a test failure that precedes CLI invocation.
@@ -190,13 +190,13 @@ test('a failing first verification scenario retains its details after seven succ
   t.diagnostic('Pre-command failure retained: '+JSON.stringify({runId:earlyRun.runId,exitCode:early.code,status:earlyRun.status}));
   fs.writeFileSync(path.join(directory,'previous-run-marker'),'old run');
   fs.writeFileSync(filename,original);
-  const passed = invoke(); assert.equal(passed.code,0); assert.match(passed.stdout,/# pass 8\b/u);
+  const passed = invoke(); assert.equal(passed.code,0); assert.match(passed.stdout,/# pass 9\b/u);
   const current = JSON.parse(fs.readFileSync(path.join(directory,'result.json'),'utf8'));
   assert.notEqual(current.runId,saved.runId); assert.notEqual(current.runId,earlyRun.runId);
   assert.equal(current.status,'PASS'); assert.equal(current.terminal,true);
-  assert.equal(current.scenarios.length,8); assert.ok(current.scenarios.every(item => item.status === 'PASS'));
+  assert.equal(current.scenarios.length,9); assert.ok(current.scenarios.every(item => item.status === 'PASS'));
   assert.equal(fs.existsSync(path.join(directory,'previous-run-marker')),false);
-  assert.equal(fs.readdirSync(path.join(directory,'scenarios')).length,8);
+  assert.equal(fs.readdirSync(path.join(directory,'scenarios')).length,9);
   assert.ok(!fs.readFileSync(path.join(directory,current.scenarios[0].directory,'result.json'),'utf8').includes('FIRST_SCENARIO_FAILURE'));
   t.diagnostic('Next invocation: '+JSON.stringify({runId:current.runId,exitCode:passed.code,status:current.status,
     scenarios:current.scenarios.length,previousMarkerExists:false}));
