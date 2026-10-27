@@ -1,5 +1,5 @@
 // AUTO-GENERATED — 직접 수정 금지
-// spec: B-APPLY-RESTART.discovery.json
+// spec: B-APPLY-RESTART.transitions.json
 
 import test from "node:test";
 import assert from "node:assert/strict";

@@ -27,7 +27,7 @@
       "boundaryId": "B-APPLY-RESTART",
       "specRevision": 1,
       "evidenceType": "partial-integration",
-      "specPath": "docs/spec/contracts/apply/B-APPLY-RESTART.discovery.json",
+      "specPath": "docs/spec/contracts/apply/B-APPLY-RESTART.transitions.json",
       "setupPath": "tests/generated/apply/B-APPLY-RESTART.setups.mjs",
       "testPath": "tests/generated/apply/B-APPLY-RESTART.gen.test.js",
       "transitionIds": [
