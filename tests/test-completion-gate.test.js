@@ -73,10 +73,23 @@ function failReceiptClose(t) {
   });
 }
 
+// Adapted from e643752 for the 06e5e30 test; Windows constraint: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
 test('completion receipt survives its directory moving before the reporter finishes', async t => {
-  const filename = fixture(t, `import test from 'node:test'; import fs from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
-    test('finished after move', () => fs.renameSync(path.dirname(process.env.BRIDGE_TEST_RECEIPT),
-      path.join(path.dirname(fileURLToPath(import.meta.url)),'moved-receipt')));`);
+  const filename = fixture(t, `import test from 'node:test'; import fs from 'node:fs'; import path from 'node:path'; import assert from 'node:assert/strict'; import {fileURLToPath} from 'node:url';
+    test('finished after move', () => {
+      const root=path.dirname(fileURLToPath(import.meta.url));
+      const physical=path.dirname(process.env.BRIDGE_TEST_RECEIPT);
+      // Windows cannot rename a physical directory containing an open file.
+      // Rename its junction namespace instead: the advertised receipt path still disappears.
+      if(process.platform==='win32') {
+        const alias=path.join(root,'receipt-alias');fs.symlinkSync(physical,alias,'junction');
+        process.env.BRIDGE_TEST_RECEIPT=path.join(alias,'completion.json');
+      }
+      const advertised=process.env.BRIDGE_TEST_RECEIPT, moved=path.join(root,'moved-receipt');
+      fs.renameSync(path.dirname(advertised),moved);
+      assert.equal(fs.existsSync(advertised),false);
+      assert.equal(fs.statSync(path.join(moved,'completion.json')).ino,fs.fstatSync(3).ino);
+    });`);
   let transcript = '';
   const result = await runFile(filename, {output:chunk=>{transcript+=chunk;}});
   assert.equal(result.pass, true, transcript);
