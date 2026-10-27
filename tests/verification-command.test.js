@@ -75,13 +75,25 @@ async function execute(t, mode) {
   const command = path.join(checkout,'scripts/verify-all.mjs');
   const peer = path.join(root,'npm-peer.cjs');
   fs.writeFileSync(peer, `const fs=require('node:fs'),path=require('node:path');
-    const root=process.env.BRIDGE_VERIFICATION_OUTPUT;
+    const stageOutput=process.env.BRIDGE_VERIFICATION_OUTPUT;
+    const root=fs.existsSync(path.join(stageOutput,'latest-verification.json'))?stageOutput:path.resolve(stageOutput,'../../..');
     const parent=JSON.parse(fs.readFileSync(path.join(root,'latest-verification.json')));
     const spec=parent.stages.find(s=>process.env.BRIDGE_VERIFICATION_RUN_ID===parent.runId+'-'+s.id);
     const stage=spec.command || spec.id;
     const binding={verificationRunId:process.env.BRIDGE_VERIFICATION_RUN_ID,source:parent.source,sourceAfter:parent.source,candidateUnchanged:true};
     console.log('peer '+stage);
     if (${JSON.stringify(mode)} === 'large') process.stdout.write('x'.repeat(500000)+'\\n');
+    if(stage==='verify:spec') {
+      if(${JSON.stringify(mode)}!=='missing') {
+        fs.writeFileSync(path.join(stageOutput,'spec-result.json'),JSON.stringify({schemaVersion:1,
+          runId:binding.verificationRunId,source:binding.source,sourceAfter:binding.sourceAfter,
+          status:'PASS',exitCode:0,errors:[],finishedAt:new Date().toISOString()}));
+        if(${JSON.stringify(mode)}!=='missing-spec') fs.writeFileSync(path.join(stageOutput,'latest-test-result.json'),
+          JSON.stringify({...binding,status:'PASS',terminal:true,scheduled:spec.expectedFiles,
+            results:spec.expectedFiles.map(file=>({file,pass:true,summary:{completed:true}}))}));
+      }
+      return;
+    }
     if (${JSON.stringify(mode)} !== 'missing' || stage==='verify:browser-install') {
       const uf=stage==='test:e2e:ci',native=stage==='test:extension:native',browser=stage==='verify:browser-install';
       const receiptRoot=(native||browser)?root:path.join(process.cwd(),'.agent-controller');
@@ -144,7 +156,16 @@ verificationTest('missing','verification command rejects exit zero without fresh
   assert.equal(code,1);assert.equal(result.status,'FAIL');
   assert.ok(result.stages.some(stage=>stage.status==='FAIL'));
   assert.equal(result.stages.find(s=>s.id==='discovery').failurePhase,'EVIDENCE');
+  assert.equal(result.stages.find(s=>s.id==='spec').failurePhase,'EVIDENCE');
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
+});
+verificationTest('missing-spec','verification command binds spec stage output and refuses exit zero without its internal proof', {timeout:15000}, async t=>{
+  const {code,result}=await execute(t,'missing-spec');
+  assert.equal(code,1);assert.equal(result.stages.find(s=>s.id==='spec').failurePhase,'EVIDENCE');
+  assert.ok(result.stages.filter(s=>s.applicable&&s.id!=='spec').every(s=>s.status==='PASS'));
+  const stage=result.stages.find(s=>s.id==='spec');
+  assert.equal(stage.receipt.runId,result.runId+'-spec');
+  assert.equal(path.relative(result.evidenceRoot,stage.receiptPath).split(path.sep).join('/'),'spec/spec-result.json');
 });
 verificationTest('first-fails','verification command retains earlier failure after later successful stages', {timeout:15000}, async t=>{
   const {code,result,log}=await execute(t,'first-fails');

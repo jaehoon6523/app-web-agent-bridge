@@ -13,6 +13,7 @@ export const verificationCatalog = [
   stage('browser-install', 'verify:browser-install', {receipt:'browser',
     phase:'PREPARATION',browser:true}),
   stage('lint','lint'), stage('architecture','architecture:check'), stage('types','typecheck'),
+  stage('spec','verify:spec',{receipt:'spec'}),
   stage('discovery','test',{receipt:'gate',evidencePaths:['latest-test.log','latest-agent-diagnostics-complete','latest-server-response-deadline','latest-server-responsiveness','latest-verification-lifecycle','latest-verification-command','latest-source-checkout']}),
   stage('integration','test:integration'),
   stage('platform','test:platform',{receipt:'gate'}),
@@ -32,14 +33,20 @@ export const verificationCatalog = [
 ];
 export function verificationPlan({scope='full',platform=process.platform}={}) {
   if (!['full','minimum'].includes(scope)) throw Error('Unknown verification scope: '+scope);
+  const discovered=scope==='full'?discoverTests(path.join(root,'tests')).map(file=>path.relative(root,file).split(path.sep).join('/')):[];
+  const specFiles=scope==='full'?JSON.parse(fs.readFileSync(path.join(root,'docs/spec/registry.json'),'utf8')).boundaries.map(entry=>entry.testPath):[];
+  if(scope==='full' && (!specFiles.length || specFiles.some(file=>typeof file!=='string' || !discovered.includes(file))
+    || new Set(specFiles).size!==specFiles.length)) throw Error('INVALID_SPEC_FILE_SET');
+  const discoveryFiles=discovered.filter(file=>!specFiles.includes(file));
   // #154 exhausted the discovery stage budget while completing files normally.
   // Split Windows discovery into bounded, sequential groups. File deadlines,
   // the complete test inventory and OS policy stay unchanged. Each group keeps
   // 25 minutes: their combined allowance grows from 25 to 100 minutes, while
   // the CI job still has 90 minutes. Actual Windows elapsed time needs measurement.
   const catalog=verificationCatalog.filter(item=>item.scopes.includes(scope)).flatMap(item=>{
-    if(item.id!=='discovery' || platform!=='win32') return [item];
-    const files=discoverTests(path.join(root,'tests')).map(file=>path.relative(root,file).split(path.sep).join('/'));
+    if(item.id!=='discovery' || item.nodeArgs) return [item];
+    const files=discoveryFiles;
+    if(platform!=='win32') return [{...item,command:null,nodeArgs:['scripts/run-tests.mjs',...files]}];
     const groups=Array.from({length:Math.min(4,files.length)},()=>[]);
     files.forEach((file,index)=>groups[index%groups.length].push(file));
     return groups.map((files,index)=>({...item,id:index===0?'discovery':`discovery-${index+1}`,
@@ -49,7 +56,7 @@ export function verificationPlan({scope='full',platform=process.platform}={}) {
     const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
     const args=item.nodeArgs || (pkg.scripts[item.command] || '').split(/\s+/u);
     const gateIndex=args.findIndex(arg=>arg==='scripts/run-tests.mjs');
-    const expectedFiles=item.receipt==='gate' ? (item.command==='test'
+    const expectedFiles=item.receipt==='spec'?specFiles:item.receipt==='gate' ? (item.command==='test'
       ?discoverTests(path.join(root,'tests')).map(file=>path.relative(root,file).split(path.sep).join('/'))
       :args.slice(gateIndex+1)) : undefined;
     if(item.receipt==='gate' && item.command!=='test' && gateIndex<0) throw Error('UNRESOLVED_GATE_SCOPE: '+item.id);

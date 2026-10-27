@@ -29,9 +29,9 @@ export function checkGeneratedFiles(repositoryRoot, entries) {
   return errors;
 }
 
-export async function verifySpec() {
-  const runId = randomUUID();
-  const directory = path.join(root, '.agent-controller', 'spec-runs', runId);
+export async function verifySpec({runId = randomUUID(), outputDir} = {}) {
+  if(typeof runId!=='string' || !/^[a-zA-Z0-9_-]{1,100}$/u.test(runId)) throw Error('INVALID_RUN_ID');
+  const directory = outputDir === undefined ? path.join(root, '.agent-controller', 'spec-runs', runId) : path.resolve(outputDir);
   fs.mkdirSync(directory, {recursive:true});
   const resultPath = path.join(directory, 'spec-result.json');
   const result = {schemaVersion:1, runId, status:'RUNNING', startedAt:new Date().toISOString(),
@@ -72,6 +72,7 @@ export async function verifySpec() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { process.exitCode = (await verifySpec()).exitCode; }
+  try { process.exitCode = (await verifySpec({runId:process.env.BRIDGE_VERIFICATION_RUN_ID,
+    outputDir:process.env.BRIDGE_VERIFICATION_OUTPUT})).exitCode; }
   catch (error) { console.error(error); process.exitCode = 1; }
 }

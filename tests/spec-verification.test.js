@@ -5,10 +5,32 @@ import path from 'node:path';
 import os from 'node:os';
 import {fileURLToPath} from 'node:url';
 import {validateRegistryAgainstSpecs, validateBoundaryRun} from '../scripts/spec-validation.mjs';
-import {checkGeneratedFiles} from '../scripts/verify-spec.mjs';
+import {checkGeneratedFiles,verifySpec} from '../scripts/verify-spec.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const registry = JSON.parse(fs.readFileSync(path.join(root, 'docs/spec/registry.json'), 'utf8'));
+
+test('verifySpec defaults to fresh standalone IDs and honors an explicit managed directory',async t=>{
+  const read=fs.readFileSync;
+  t.mock.method(fs,'readFileSync',(file,...args)=>path.resolve(String(file))===path.join(root,'docs/spec/registry.json')
+    ? '{"schemaVersion":1,"boundaries":[]}' : read(file,...args));
+  const first=await verifySpec(), second=await verifySpec();
+  for(const result of [first,second]) {
+    const directory=path.join(root,'.agent-controller/spec-runs',result.runId);
+    t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+    assert.match(result.runId,/^[a-f0-9-]{36}$/u);assert.equal(result.status,'FAIL');
+    assert.equal(JSON.parse(read(path.join(directory,'spec-result.json'),'utf8')).runId,result.runId);
+    assert.equal(fs.existsSync(path.join(directory,'latest-test-result.json')),false);
+  }
+  assert.notEqual(first.runId,second.runId);
+  const outputDir=fs.mkdtempSync(path.join(os.tmpdir(),'spec-managed-'));
+  t.after(()=>fs.rmSync(outputDir,{recursive:true,force:true}));
+  const managed=await verifySpec({runId:'managed-spec-test',outputDir});
+  assert.equal(managed.runId,'managed-spec-test');
+  assert.equal(JSON.parse(read(path.join(outputDir,'spec-result.json'),'utf8')).runId,managed.runId);
+  assert.equal(fs.existsSync(path.join(root,'.agent-controller/spec-runs',managed.runId)),false);
+  await assert.rejects(verifySpec({runId:'../escape',outputDir}),/INVALID_RUN_ID/u);
+});
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'spec-validation-'));
   t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
