@@ -21,3 +21,4 @@ db_temp/
 /.history-http-closure-*/
 /evidence/runtime-cleanup/
 /test-latest.log
+run-*.log
