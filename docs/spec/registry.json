@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "boundaries": [
+    {
+      "boundaryId": "B-APPLY-INPUT",
+      "specRevision": 3,
+      "evidenceType": "partial-integration",
+      "specPath": "docs/spec/contracts/apply/B-APPLY-INPUT.transitions.json",
+      "setupPath": "tests/generated/apply/B-APPLY-INPUT.setups.mjs",
+      "testPath": "tests/generated/apply/B-APPLY-INPUT.gen.test.js",
+      "transitionIds": [
+        "A-STAGE",
+        "A-JOB",
+        "A-STOP",
+        "B-SCHEMA",
+        "B-AUDIT",
+        "C-CANDIDATE",
+        "C-REVIEW",
+        "C-ARTIFACT",
+        "C-BASE",
+        "C-VERSION",
+        "D-PASS",
+        "E-IDEMPOTENT"
+      ]
+    },
+    {
+      "boundaryId": "B-APPLY-RESTART",
+      "specRevision": 1,
+      "evidenceType": "partial-integration",
+      "specPath": "docs/spec/contracts/apply/B-APPLY-RESTART.discovery.json",
+      "setupPath": "tests/generated/apply/B-APPLY-RESTART.setups.mjs",
+      "testPath": "tests/generated/apply/B-APPLY-RESTART.gen.test.js",
+      "transitionIds": [
+        "RESTART-AFTER-APPLYING",
+        "RESTART-WORKER-RUNNING",
+        "RESTART-AWAITING-APPLY",
+        "RESTART-APPLIED"
+      ]
+    }
+  ]
+}

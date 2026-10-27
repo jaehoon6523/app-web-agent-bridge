@@ -33,7 +33,7 @@ test('generated receipts cover setup failures without duplicating discovery rece
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'spec-generator-'));
   t.after(() => fs.rmSync(dir, {recursive:true, force:true}));
   const spec = path.join(dir, 'spec.json'), setups = path.join(dir, 'setups.mjs'), out = path.join(dir, 'generated.mjs');
-  fs.writeFileSync(spec, JSON.stringify({boundaryId:'FIXTURE', evidenceType:'isolated-contract', transitions:[
+  fs.writeFileSync(spec, JSON.stringify({boundaryId:'FIXTURE', boundaryRevision:1, evidenceType:'isolated-contract', transitions:[
     {transitionId:'PASS', expected:{throws:false}},
     {transitionId:'ASSERT-FAIL', expected:{throws:true}},
     {transitionId:'SETUP-FAIL', expected:{throws:false}},
@@ -49,6 +49,10 @@ export const setups = {'PASS':ok, 'ASSERT-FAIL':ok, 'SETUP-FAIL':fail, 'DISCOVER
   assert.equal(run.status, 1, run.stdout + run.stderr);
   const rows = receipts(run.stdout);
   assert.equal(rows.length, 5, run.stdout);
+  for (const row of rows) {
+    assert.equal(row.receiptSchemaVersion, 1);
+    assert.equal(row.boundaryRevision, 1);
+  }
   assert.deepEqual(rows.map(row => row.result), ['PASS', 'FAIL', 'FAIL', 'FAIL', 'SPEC_TODO']);
   for (const row of rows.slice(2, 4)) {
     assert.equal(row.observation, null);
@@ -73,6 +77,8 @@ test('restored Git discovery spec regenerates and captures all six API observati
   assert.equal(rows.length, 6, run.stdout);
   assert.deepEqual(rows.map(row => row.transitionId), spec.transitions.map(item => item.transitionId));
   for (const row of rows) {
+    assert.equal(row.receiptSchemaVersion, 1);
+    assert.equal(row.boundaryRevision, spec.boundaryRevision);
     assert.equal(row.result, 'SPEC_TODO');
     assert.equal(row.observation.discovery, 'API_SHAPE_CAPTURED');
     assert.ok(row.observation.instanceMethods.includes('apply'));

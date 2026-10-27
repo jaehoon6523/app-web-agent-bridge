@@ -149,7 +149,7 @@ async function withHeartbeat(t, testId, fn) {
   try { return await fn(); } finally { clearInterval(iv); }
 }
 function emitReceipt(t, { testId, transitionId, observed, expected, result, note }) {
-  t.diagnostic("__RECEIPT__:" + JSON.stringify({ testId, boundaryId: SPEC.boundaryId, transitionId, evidenceType: SPEC.evidenceType, observation: observed, expectation: expected, result, note: note ?? null }));
+  t.diagnostic("__RECEIPT__:" + JSON.stringify({ receiptSchemaVersion: 1, testId, boundaryId: SPEC.boundaryId, boundaryRevision: SPEC.boundaryRevision, transitionId, evidenceType: SPEC.evidenceType, observation: observed, expectation: expected, result, note: note ?? null }));
 }
 async function checkTransition(t, spec, testId, runFn) {
   return withHeartbeat(t, testId, async () => {

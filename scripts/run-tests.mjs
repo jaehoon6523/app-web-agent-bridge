@@ -77,11 +77,13 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
       ? ['certification command runner launches npm on Windows'] : [];
     const summaryStatus = receiptError ? 'INVALID' : !summary ? 'MISSING' : summary.completed === true ? 'COMPLETE' : 'INCOMPLETE';
     const unexpectedSkips = summary?.skipped?.filter(name => !allowedSkip.includes(name)) ?? [];
+    const boundaryReceiptInvalid = (summary?.boundaryReceiptErrors?.length ?? 0) > 0;
     const pass = !error && !receiptError && closure?.code === 0 && closure?.signal === null && summaryStatus === 'COMPLETE'
-      && summary.failed === 0 && summary.todo.length === 0 && unexpectedSkips.length === 0;
+      && summary.failed === 0 && summary.todo.length === 0 && unexpectedSkips.length === 0 && !boundaryReceiptInvalid;
     const reason = pass ? 'COMPLETE' : deadline || errorCode === 'CHILD_CLOSE_DEADLINE' ? 'FILE_TIMEOUT'
       : error ? 'PROCESS_ERROR' : receiptError ? 'INVALID_RECEIPT'
       : summaryStatus === 'MISSING' ? 'MISSING_RECEIPT' : summaryStatus === 'INCOMPLETE' ? 'INCOMPLETE_TEST_RUN'
+      : boundaryReceiptInvalid ? 'INVALID_BOUNDARY_RECEIPT'
       : summary?.failed > 0 || summary?.todo?.length > 0 || unexpectedSkips.length > 0 ? 'TEST_FAILURE'
       : closure?.code !== 0 || closure?.signal !== null ? 'CHILD_EXIT_NONZERO' : 'TEST_FAILURE';
     item = {file:path.relative(root,filename).split(path.sep).join('/'), pass, closure, error, errorCode,

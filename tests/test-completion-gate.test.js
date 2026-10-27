@@ -18,6 +18,47 @@ function fixture(t, source) {
 }
 const quiet = {output:()=>{}};
 
+test('boundary diagnostics are collected before TAP escaping and survive in completion summaries', async t => {
+  const receipt = {receiptSchemaVersion:1, testId:'T-B-X', boundaryId:'B', boundaryRevision:1,
+    transitionId:'X', evidenceType:'partial-integration', observation:{text:'quote " and slash \\ and newline\n'},
+    expectation:{throws:false}, result:'PASS', note:null};
+  const filename = fixture(t, `import test from 'node:test';
+    test('receipt', t => t.diagnostic(${JSON.stringify('__RECEIPT__:' + JSON.stringify(receipt))}));`);
+  const result = await runFile(filename, quiet);
+  assert.equal(result.pass, true);
+  assert.deepEqual(result.summary.boundaryReceipts, [receipt]);
+  assert.deepEqual(result.summary.boundaryReceiptErrors, []);
+  const directory = path.join(path.dirname(filename), 'output');
+  const run = await runFiles([filename], {...quiet, directory, verificationRunId:'boundary-storage-test'});
+  assert.equal(run.status, 'PASS');
+  const stored = JSON.parse(fs.readFileSync(path.join(directory, 'latest-test-result.json'), 'utf8'));
+  assert.equal(stored.verificationRunId, 'boundary-storage-test');
+  assert.deepEqual(stored.results[0].summary.boundaryReceipts, [receipt]);
+});
+
+test('malformed boundary diagnostics fail the file without losing its completion summary', async t => {
+  for (const [message, code] of [['{broken','BOUNDARY_RECEIPT_JSON_INVALID'], ['{}','BOUNDARY_RECEIPT_SCHEMA_INVALID']]) {
+    const filename = fixture(t, `import test from 'node:test';
+      test('malformed', t => t.diagnostic(${JSON.stringify('__RECEIPT__:' + message)}));`);
+    const result = await runFile(filename, quiet);
+    assert.equal(result.pass, false);
+    assert.equal(result.reason, 'INVALID_BOUNDARY_RECEIPT');
+    assert.equal(result.summary.completed, true);
+    assert.equal(result.summary.boundaryReceiptErrors[0].code, code);
+  }
+});
+
+test('setup failure receipt is preserved alongside the failed test result', async t => {
+  const receipt = {receiptSchemaVersion:1, testId:'T-B-X', boundaryId:'B', boundaryRevision:1,
+    transitionId:'X', evidenceType:'partial-integration', observation:null,
+    expectation:{throws:false}, result:'FAIL', note:'setup failed'};
+  const filename = fixture(t, `import test from 'node:test';
+    test('setup failure', t => {t.diagnostic(${JSON.stringify('__RECEIPT__:' + JSON.stringify(receipt))}); throw Error('setup failed');});`);
+  const result = await runFile(filename, quiet);
+  assert.equal(result.pass, false);
+  assert.deepEqual(result.summary.boundaryReceipts, [receipt]);
+});
+
 function failReceiptClose(t) {
   const open = fs.openSync, close = fs.closeSync;
   let descriptor;
