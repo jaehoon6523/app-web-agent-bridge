@@ -76,3 +76,21 @@ Unrelated dashboard/UI changes and other untracked work remain outside this comm
 The recorded development history reports two spec -> discovery -> observed -> revised spec -> PASS cycles. This local review independently reproduced the final 16 PASS results; it did not replay both historical discovery cycles.
 
 Do not generalize to all boundaries until less clearly observable review/UI boundaries are tested and existing tests are at least partially mapped. Runtime discovery inclusion already exists; semantic boundary integration remains incomplete.
+
+## MILESTONE-2 Phase A Follow-up (2026-10-27)
+
+The sections above describe the original preservation checkpoint. Phase A repairs its four known defects:
+
+- DISCOVERY specs now generate .discovery.js files. The former Git .gen.test.js is removed. Both discoverTests('tests') and the Windows full verification plan exclude Git discovery while retaining INPUT and RESTART. npm run discover runs discovery separately.
+- Generated files use relative ESM setup imports. Setups must be beside their generated files; the generator regression fixture now copies its setup into the temporary output directory.
+- The Git spec is valid JSON restored from the previously generated SPEC, and regenerates successfully.
+- Normal and discovery setup exceptions emit one FAIL receipt before rethrowing, with null observation when setup did not produce one. Intentional discovery failures retain SPEC_TODO without a duplicate FAIL receipt.
+
+Validation on local Windows, Node v22.14.0:
+
+- run-regression-4.log: INPUT and RESTART only, 16 ok, pass 16, fail 0, exit 0.
+- run-gen-test.log: generator regressions pass 2, fail 0; the six-observation assertion is retained.
+- run-discovery-phase-a.log: npm run discover exits 1 intentionally; all six receipts contain SPEC_TODO and API_SHAPE_CAPTURED.
+- Runner inventory: 194 unique discovered test files. Windows plan expectedFiles total: 228 scheduled entries, including repeated files across stages; this is not a unique-file count or proof of full execution.
+
+Logs remain local and ignored. Existing first-load/UI changes remain outside the commit. Structured boundary receipt collection, registry, verify:spec, and existing-test boundary mapping remain unimplemented (0 existing tests mapped by this work). Full verify:all, remote CI, Linux, Node 24, real browser, and Windows native extension verification were not run for Phase A. Git discovery still observes API shape only, not Git behavior.

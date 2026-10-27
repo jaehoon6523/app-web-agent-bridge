@@ -3,9 +3,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
-const require = createRequire(import.meta.url);
-const { setups } = require("C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\tests\\generated\\apply\\B-APPLY-INPUT.setups.mjs");
+import { setups } from "./B-APPLY-INPUT.setups.mjs";
 
 const SPEC = {
   "schemaVersion": 3,
@@ -155,9 +153,10 @@ function emitReceipt(t, { testId, transitionId, observed, expected, result, note
 }
 async function checkTransition(t, spec, testId, runFn) {
   return withHeartbeat(t, testId, async () => {
-    const { observed } = await runFn(t, spec);
+    let observed = null;
     const expected = spec.expected;
     try {
+      ({ observed } = await runFn(t, spec));
       if (expected.throws !== undefined) assert.equal(observed.threw, expected.throws);
       if (expected.errorCode) assert.equal(observed.errorCode, expected.errorCode);
       if (expected.errorMessage) assert.equal(observed.errorMessage, expected.errorMessage);
