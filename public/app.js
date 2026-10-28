@@ -243,7 +243,8 @@ async function refresh() {
     const canonical = normalizeDashboardState(result);
     connectionState = markStateReadReady(connectionState);
     connected = dashboardStateReady(connectionState);
-    snapshot = result; workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
+    snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]};
+    workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     const runtimeUnavailable = result.runtimeAvailability?.ready === false;
@@ -334,6 +335,7 @@ function disabledWebReason(action) {
 function render() {
   renderPreparation();
   const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
+  $("runPanel").dataset.runId = run?.runId ?? "";
   if (!$("proposalWaiting")) {
     const waiting = node("p", "ChatGPT 응답을 기다리고 있습니다", "proposal-waiting");
     const spinner = node("span", "", "spinner"), dots = node("span", "...", "waiting-dots");
