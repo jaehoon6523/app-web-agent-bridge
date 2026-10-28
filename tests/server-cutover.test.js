@@ -245,6 +245,10 @@ test("server boots without optional live credentials and local browser session r
   const { port } = bridge.server.address();
   const baseHttp = `http://127.0.0.1:${port}`;
 
+  const favicon = await fetch(`${baseHttp}/favicon.ico`);
+  assert.equal(favicon.status, 204);
+  assert.equal(await favicon.text(), "");
+  assert.equal((await fetch(`${baseHttp}/favicon.ico`, { method: "HEAD" })).status, 204);
   const preflight = await (await fetch(`${baseHttp}/api/preflight`)).json();
   assert.equal(preflight.checks.commandAuthenticationConfigured, true);
   assert.equal(preflight.checks.staticDashboardTokenConfigured, false);
