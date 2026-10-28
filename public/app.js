@@ -1,5 +1,5 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
-import { createPreparationTabChoice, renderPreparationTransmission } from "./preparation-tab-choice.js";
+import { createPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
@@ -35,6 +35,7 @@ let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
 let historyScope = sessionStorage.getItem("bridge.history.scope") || "ALL";
 const tabChoiceFailures = new Map();
 const tabChoice = createPreparationTabChoice();
+let tabFocusViewState = { key:null };
 let latestRunDiagnostic = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
@@ -971,15 +972,19 @@ function renderPreparation() {
     bindingConfirmed ? "recovery-guidance ok" : "recovery-guidance error"));
   const tabCandidates = tabChoice.candidates(preparation);
   if (!tabCandidates.length) tabChoice.reset();
+  tabFocusViewState = nextTabFocusState(tabFocusViewState, preparation);
   if (tabCandidates.length) summary.prepend(tabChoice.render({
+    ...createTabFocusActions(() => preparation, request),
+    focusState:tabFocusViewState,
     candidates: tabCandidates, operation: operations.webTurn, allowed: capabilities().has("web.rebind"),
     preparation,
     hint: new URLSearchParams(location.search).get("prepareTab"),
     rejection: tabChoiceFailures.get(session.activeDeliveryId) ?? "",
     onSubmit: selectedTabId => webSessionCommand("web.rebind", { selectedTabId }),
-    onRefresh: async () => { tabChoiceFailures.delete(session.activeDeliveryId); preparationSignature = ""; await refresh(); },
-    onView: tabId => request("/api/preparations/tab-focus", { method:"POST", body:JSON.stringify({
-      preparationId:preparation.preparationId, deliveryId:session.activeDeliveryId, tabId }) }),
+    onRefresh: async () => {
+      tabChoiceFailures.delete(session.activeDeliveryId); preparationSignature = ""; await refresh();
+      if (!dashboardStateReady(connectionState)) throw new Error("최신 서버 상태를 확인하지 못했습니다.");
+    },
   }));
   const deliveries = preparation.deliveries ?? [];
   const displayedDelivery = deliveries.find(item => item.deliveryId === session?.activeDeliveryId) ?? deliveries.at(-1);

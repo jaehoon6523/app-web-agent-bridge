@@ -40,7 +40,7 @@ test('tab diagnosis handles receiver failure and does not claim readiness across
 });
 
 test('opening an inspected tab only focuses it and rejects closed, changed, or unsupported targets', async () => {
-  const focused = [], tabs = { get: async id => ({ id, url: 'https://chatgpt.com/' }),
+  const focused = [], tabs = { get: async id => ({ id, url: 'https://chatgpt.com/', active:focused.length > 0 }),
     update: async (...args) => focused.push(args) };
   await openInspectedChatGptTab(tabs, { tabId: 2, url: 'https://chatgpt.com/' });
   assert.deepEqual(focused, [[2, { active: true }]]);

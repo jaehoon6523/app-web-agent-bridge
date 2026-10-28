@@ -19,7 +19,7 @@ import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./r
 import { createReconnectController } from "./runtime/reconnect.js";
 import { validControllerChallenge } from "./runtime/auth-challenge.js";
 import { matchExactWebConversationTabs, resolveStoredWebTargetProvider, resolveWebTargetProvider } from "./runtime/provider-target.js";
-import { inspectChatGptTabs, openInspectedChatGptTab, replyToTabFocus, replyToSelectorDiagnostics } from "./runtime/tab-diagnostics.js";
+import { inspectChatGptTabs, openInspectedChatGptTab, replyToConnectedTabFocus, replyToSelectorDiagnostics } from "./runtime/tab-diagnostics.js";
 const PROTOCOL_VERSION = 2;
 const CHATGPT_URL_PATTERNS = Object.freeze(["https://chatgpt.com/*"]);
 const store = createExtensionStateStore(chrome.storage.local);
@@ -256,7 +256,7 @@ async function handleControllerMessage(raw) {
     case "web.delivery.stop":
       await handleDeliveryStop(message);
       break;
-    case "web.tab.focus": await replyToTabFocus(chrome, send, message); break;
+    case "web.tab.focus": await replyToConnectedTabFocus(chrome, send, message, () => socket, () => authenticated, turnGate); break;
     case "web.delivery.focus":
       try {
         const state = await store.read();

@@ -749,11 +749,21 @@ export class PreparationService {
     const context = this.current;
     const candidate = context?.error?.code === "WEB_TAB_SELECTION_REQUIRED"
       ? context.error.details?.candidates?.find(tab => tab.tabId === input.tabId) : null;
-    if (!context || context.preparationId !== input.preparationId || !candidate
+    if (this.closed || !context || context.lifecycle !== "ACTIVE" || context.preparationId !== input.preparationId || !candidate
+      || (input.preparationVersion !== undefined && input.preparationVersion !== context.version)
       || context.webSession?.activeDeliveryId !== input.deliveryId || this.jobs.has(context.preparationId)) {
       fail("후보가 바뀌었습니다. 최신 상태를 확인하세요.", "TAB_CHANGED");
     }
-    return this.web.focusCandidateTab({ tabId: candidate.tabId, url: candidate.url });
+    const expected = { tabId:candidate.tabId, url:candidate.url }, state = context.state, version = context.version;
+    const result = await this.web.focusCandidateTab(expected);
+    const latest = this.current;
+    if (this.closed || latest !== context || latest.lifecycle !== "ACTIVE" || latest.state !== state || latest.version !== version
+      || latest.webSession?.activeDeliveryId !== input.deliveryId
+      || this.jobs.has(context.preparationId) || latest.error?.code !== "WEB_TAB_SELECTION_REQUIRED"
+      || !latest.error.details?.candidates?.some(tab => tab.tabId === expected.tabId && tab.url === expected.url)) {
+      fail("탭 이동은 확인됐지만 현재 준비에 적용하지 않았습니다.", "TAB_FOCUS_STALE", {executionOutcome:"SUCCEEDED", applicable:false});
+    }
+    return result;
   }
   async webCommand(context, type, input) {
     const session = context.webSession;

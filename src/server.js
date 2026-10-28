@@ -498,8 +498,16 @@ export function createBridgeServer({
   };
   app.post("/api/preparations", requireDashboardMutation, preparationRoute("preparation.start"));
   app.post("/api/preparations/tab-focus", requireDashboardMutation, async (req, res) => {
-    try { res.json(await preparations().focusCandidateTab(req.body ?? {})); }
-    catch (error) { res.status(409).json({ code:error.code ?? "TAB_FOCUS_FAILED", message:redactForEvidence(error.message) }); }
+    diagnostics.stage(req, "tab-focus.started");
+    try {
+      const result = await preparations().focusCandidateTab(req.body ?? {});
+      diagnostics.stage(req, "tab-focus.completed"); res.json(result);
+    } catch (error) {
+      diagnostics.stage(req, "tab-focus.failed", {code:diagnosticErrorCode(error)});
+      res.status(409).json({ code:error.code ?? "TAB_FOCUS_FAILED", message:redactForEvidence(error.message),
+        ...(error.code === "TAB_FOCUS_STALE" && error.details?.executionOutcome === "SUCCEEDED"
+          ? {executionOutcome:"SUCCEEDED", applicable:false} : {}) });
+    }
   });
   app.post("/api/preparations/web", requireDashboardMutation, preparationRoute("web"));
   for (const action of ["reply", "approve", "cancel", "discard"]) {

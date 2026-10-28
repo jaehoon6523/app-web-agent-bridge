@@ -1,3 +1,4 @@
+import { requestCandidateFocus, traceTabFocus, webMessageError } from "./tab-focus-request.js";
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import { validateRuntimeEventType } from "../runtime-events.js";
@@ -101,7 +102,10 @@ export class WebExtensionTransport extends EventEmitter {
       if (this.authenticated) {
         this.emit("diagnostic", Object.freeze({ type: "STALE_EXTENSION_CONNECTION_REPLACED" }));
       }
-      this.#closeSocket(this.#socket, 4001, "Replaced by a newer extension connection");
+      const previousSocket = this.#socket;
+      // End old requests before selecting a new peer; close events are asynchronous.
+      this.#onClose(previousSocket);
+      this.#closeSocket(previousSocket, 4001, "Replaced by a newer extension connection");
     }
     this.#socket = socket;
     this.#clearActivityTimer();
@@ -741,9 +745,8 @@ export class WebSessionAdapter {
   }
 
   async focusCandidateTab(expected) {
-    const message = await this.#request({ type: "web.tab.focus", payload: expected }, new Set(["web.tab.focused", "web.session.error"]), 10_000);
-    if (message.type === "web.session.error") throw this.#messageError(message);
-    return message.payload;
+    return requestCandidateFocus(expected, this.#activeTurnId !== null || this.#sessionOperation !== null
+      || [...this.#pending.values()].some(entry => entry.requestType === "web.tab.focus"), (...args) => this.#request(...args));
   }
   async focusDelivery(expected) {
     const message = await this.#request({ type: "web.delivery.focus", payload: expected },
@@ -869,6 +872,7 @@ export class WebSessionAdapter {
     });
     const timer = setTimeout(() => {
       this.#pending.delete(requestId);
+      traceTabFocus(message, requestId, "timeout");
       if (message.type === "web.prompt") {
         this.#ambiguousTurnId = requestId;
         rejectRequest(new WebProtocolError(
@@ -887,7 +891,9 @@ export class WebSessionAdapter {
       timer,
     });
     try {
+      traceTabFocus(message, requestId, "dispatch");
       this.#transport.send({ ...message, requestId });
+      traceTabFocus(message, requestId, "socket-send-returned");
     } catch (error) {
       clearTimeout(timer);
       this.#pending.delete(requestId);
@@ -931,17 +937,11 @@ export class WebSessionAdapter {
       this.#settleInterrupt(message.requestId, false, "INTERRUPT_NOT_CONFIRMED");
     }
 
+    traceTabFocus({ type:pending.requestType }, message.requestId, "response-matched");
     pending.resolve(message);
   }
 
-  #messageError(message) {
-    return new WebProtocolError(
-      message.payload?.message || "ChatGPT Web extension operation failed",
-      message.payload?.code || "WEB_EXTENSION_ERROR",
-      message.payload?.details ?? null,
-    );
-  }
-
+  #messageError(message) { return webMessageError(message); }
   #runtimeEvent(type, turnId, payload) {
     return Object.freeze({
       type,
