@@ -32,7 +32,25 @@ function rail(step) {
   });
   return list;
 }
-export function renderPreparationTabChoice({ candidates, hint, operation, allowed, onSubmit, onRefresh, onView, rejection = "" }) {
+export function createPreparationTabChoice() {
+  let key = "", selectedTabId = null;
+  return {
+    candidates(preparation) {
+      return preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED" && Array.isArray(preparation.error?.details?.candidates)
+        ? preparation.error.details.candidates : [];
+    },
+    reset() { key = ""; selectedTabId = null; },
+    render({ preparation, ...options }) {
+      const session = preparation.webSession;
+      const nextKey = JSON.stringify([preparation.preparationId, session?.sessionId, session?.activeDeliveryId, options.candidates]);
+      // Polling preserves an explicit choice only for the same request and candidate set.
+      if (nextKey !== key || options.operation !== "IDLE" || options.rejection) selectedTabId = null;
+      key = nextKey;
+      return renderPreparationTabChoice({ ...options, selectedTabId, onSelect: tabId => { selectedTabId = tabId; } });
+    },
+  };
+}
+export function renderPreparationTabChoice({ candidates, hint, operation, allowed, onSubmit, onRefresh, onView, selectedTabId = null, onSelect, rejection = "" }) {
   const model = choiceAvailability({ candidates, hint, operation, allowed });
   const { root, body } = shell(operation === "IDLE" ? 2 : 3);
   const content = el("div"), overview = el("div"); overview.hidden = true;
@@ -70,10 +88,11 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
     copy.append(el("strong", `탭 ${candidate.tabId}`), el("small", candidate.url === "https://chatgpt.com/" ? "ChatGPT 시작 화면" : "기존 ChatGPT 대화"), el("small", candidate.url));
     const hinted = !model.mismatch && model.hinted === candidate.tabId;
     if (hinted) { card.classList.add("hinted"); status.textContent = "팝업에서 확인한 탭"; }
-    states.push({ card, status, hinted });
+    states.push({ card, status, hinted, radio, candidate });
     radio.addEventListener("change", () => {
       if (!model.enabled || submitted || rejection) return;
       selected = candidate.tabId;
+      onSelect?.(selected);
       for (const sibling of states) {
         sibling.card.classList.toggle("selected", sibling.card === card);
         sibling.status.textContent = sibling.card === card ? "✓ 선택됨" : sibling.hinted ? "팝업에서 확인한 탭" : "눌러서 선택";
@@ -91,6 +110,14 @@ export function renderPreparationTabChoice({ candidates, hint, operation, allowe
       view.disabled = operation !== "IDLE"; card.append(view);
     }
     group.append(card);
+  }
+  const restored = states.find(item => item.candidate.tabId === selectedTabId);
+  if (restored && operation === "IDLE" && !rejection) {
+    selected = selectedTabId;
+    restored.radio.checked = true;
+    restored.card.classList.add("selected"); restored.status.textContent = "✓ 선택됨";
+    send.disabled = !model.enabled;
+    reason.textContent = model.enabled ? `선택한 탭 ${selected}. 아래 버튼을 누르면 다시 검사한 뒤 보류된 요청을 전송합니다.` : model.reason;
   }
   const dock = el("div", "", "tab-choice-dock"), actions = el("div", "", "tab-choice-actions");
   const back = button("뒤로", "tab-choice-back", () => {

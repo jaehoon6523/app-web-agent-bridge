@@ -71,6 +71,7 @@ export function registerTabSelectionTests({ dashboard, prepared }) {
     assert.doesNotMatch(ui.elements.get("startReason").textContent, /실패했습니다/u);
     assert.doesNotMatch(ui.elements.get("newRunReason").textContent, /응답.*확인 중/u);
     assert.equal(ui.elements.get("planRun").disabled, true);
+    await initialChoice.querySelectorAll("input")[0].listeners.change();
     for (let refresh = 0; refresh < 2; refresh++) {
       const host = ui.elements.get("startRecovery");
       assert.equal(host.hidden, false);
@@ -80,9 +81,29 @@ export function registerTabSelectionTests({ dashboard, prepared }) {
       assert.equal(choices[0].querySelectorAll("input").length, 1);
       state.preparation.version++;
       state.workflow.preparationVersion = state.preparation.version;
-      await ui.run("refresh()");
+      const pending = ui.run("refresh()");
+      const loadingChoice = host.children.find(item => item.className === "preparation-tab-choice");
+      const loadingSend = loadingChoice.querySelectorAll("button").find(item => item.className === "tab-choice-send");
+      assert.equal(loadingSend.disabled, true, "state reads must still block sending");
+      await loadingSend.listeners.click();
+      await pending;
+      const restored = host.children.find(item => item.className === "preparation-tab-choice");
+      assert.equal(restored.querySelectorAll("input")[0].checked, true, "polling must preserve explicit selection");
+      assert.equal(restored.querySelectorAll("button").find(item => item.className === "tab-choice-send").disabled, false);
     }
     assert.equal(ui.calls.some(item => item.url === "/api/preparations/web"), false);
+    for (const change of [
+      () => { state.preparation.error.details.candidates[0].url = "https://chatgpt.com/c/changed"; },
+      () => { state.preparation.webSession.sessionId = "s2"; },
+      () => { state.preparation.webSession.activeDeliveryId = "d2"; },
+    ]) {
+      change();
+      await ui.run("refresh()");
+      const reset = ui.elements.get("startRecovery").children.find(item => item.className === "preparation-tab-choice");
+      assert.equal(reset.querySelectorAll("input")[0].checked, false);
+      assert.equal(reset.querySelectorAll("button").find(item => item.className === "tab-choice-send").disabled, true);
+      await reset.querySelectorAll("input")[0].listeners.change();
+    }
     const choice = ui.elements.get("startRecovery").children.find(item => item.className === "preparation-tab-choice");
     await choice.querySelectorAll("input")[0].listeners.change();
     const send = choice.querySelectorAll("button").find(item => item.textContent === "이 탭에서 요청 전송 계속");
@@ -92,7 +113,7 @@ export function registerTabSelectionTests({ dashboard, prepared }) {
     assert.equal(mutations.length, 1);
     assert.equal(mutations[0].body.command, "web.rebind");
     assert.equal(mutations[0].body.selectedTabId, 12);
-    assert.equal(mutations[0].body.deliveryId, "d1");
-    assert.equal(mutations[0].body.sessionId, "s1");
+    assert.equal(mutations[0].body.deliveryId, "d2");
+    assert.equal(mutations[0].body.sessionId, "s2");
   });
 }

@@ -1,5 +1,5 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
-import { renderPreparationTabChoice, renderPreparationTransmission } from "./preparation-tab-choice.js";
+import { createPreparationTabChoice, renderPreparationTransmission } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
@@ -34,6 +34,7 @@ let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
 let historyScope = sessionStorage.getItem("bridge.history.scope") || "ALL";
 const tabChoiceFailures = new Map();
+const tabChoice = createPreparationTabChoice();
 let latestRunDiagnostic = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
@@ -220,7 +221,9 @@ async function request(url, options = {}) {
 async function refresh() {
   const current = ++sequence, target = selected;
   let phase = token ? "STATE" : "SESSION";
+  connected = false;
   updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed });
+  if (snapshot) render();
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
@@ -916,7 +919,7 @@ function proposalControls() {
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
 }
 function renderPreparation() {
-  if (!preparation) { preparationSignature = ""; return; }
+  if (!preparation) { preparationSignature = ""; tabChoice.reset(); return; }
   const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
@@ -964,12 +967,11 @@ function renderPreparation() {
   recovery.append(node("p", bindingConfirmed ? "사용할 대화 탭이 확인됐습니다."
     : "대화 탭 연결을 확인해야 합니다. 아래 상태 확인 또는 탭 선택을 이용하세요.",
     bindingConfirmed ? "recovery-guidance ok" : "recovery-guidance error"));
-  const tabCandidates = preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED"
-    && Array.isArray(preparation.error?.details?.candidates)
-    ? preparation.error.details.candidates
-    : [];
-  if (tabCandidates.length) summary.prepend(renderPreparationTabChoice({
+  const tabCandidates = tabChoice.candidates(preparation);
+  if (!tabCandidates.length) tabChoice.reset();
+  if (tabCandidates.length) summary.prepend(tabChoice.render({
     candidates: tabCandidates, operation: operations.webTurn, allowed: capabilities().has("web.rebind"),
+    preparation,
     hint: new URLSearchParams(location.search).get("prepareTab"),
     rejection: tabChoiceFailures.get(session.activeDeliveryId) ?? "",
     onSubmit: selectedTabId => webSessionCommand("web.rebind", { selectedTabId }),
