@@ -11,6 +11,24 @@ function fixture(){return {
   runs:[],run:null,preflight:{checks:{extensionAuthenticated:true}},commandCapabilities:['web.rebind','preparation.cancel']};}
 
 export function registerCandidateSelectionTests(dashboard) {
+test('session replacement invalidates old selection handlers while keeping new candidates usable',async()=>{
+  const state=fixture();
+  const ui=await dashboard(state,async()=>({}));
+  const choice=()=>ui.elements.get('proposalSummary').children.find(x=>x.className==='preparation-tab-choice');
+  const send=()=>choice().querySelectorAll('button').find(x=>x.className==='tab-choice-send');
+  const oldRadio=choice().querySelectorAll('input')[0],oldSend=send();
+  oldRadio.listeners.change();
+  state.preparation.webSession.sessionId='s2';await ui.run('refresh()');
+  assert.equal(choice().querySelectorAll('input')[0].checked,false);
+  oldRadio.listeners.change();oldSend.disabled=false;await oldSend.listeners.click();
+  assert.equal(ui.calls.filter(x=>x.url==='/api/preparations/web').length,0);
+  choice().querySelectorAll('input')[1].listeners.change();await send().listeners.click();
+  const requests=ui.calls.filter(x=>x.url==='/api/preparations/web');
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].body.sessionId,'s2');
+  assert.equal(requests[0].body.selectedTabId,8);
+});
+
 for (const rerender of [false,true]) test(`selected unconfirmed candidate stays blocked across recovery (rerender=${rerender})`,async()=>{
   const state=fixture();let inspected=false;
   const ui=await dashboard(state,async url=>{

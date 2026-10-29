@@ -8,6 +8,7 @@ import { createBridgeServer } from "../src/server.js";
 import { CodeChangeService } from "../src/orchestration/code-change-service.js";
 import { computeWebChallengeHmac } from "../src/runtime/web/auth.js";
 import { GitChangeWorkspace } from "../src/repository/git-change-workspace.js";
+import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
 
 test("HTTP canonical preparation, real Git approval, durable Run and RESULT projection", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "preparation-api-"));
@@ -25,7 +26,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     return { store: { listRuns: () => [], getRun: () => null }, codeChanges: service, close: () => service.close() };
   } });
   let bridge = create();
-  t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
+  t.after(async () => { await bridge.close(); await removeOwnedFixture(root); });
   let binding, active = null, count = 0, release, dropAck = false;
   class Socket extends EventEmitter {
     readyState = 1;
@@ -76,9 +77,16 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     base = "http://127.0.0.1:" + (await bridge.listen()).port;
   };
   const headers = { authorization: "Bearer " + token, origin: config.baseUrl, "content-type": "application/json" };
-  const post = (url, body) => fetch(base + url, { method: "POST", headers, body: JSON.stringify(body) });
+  const request = async (url, options) => {
+    try { return await fetch(base + url, options); }
+    catch (error) {
+      console.error("[preparation-api fetch]", JSON.stringify({method:options.method ?? "GET", path:url.split("?")[0], causeCode:error.cause?.code ?? null}));
+      throw error;
+    }
+  };
+  const post = (url, body) => request(url, { method: "POST", headers, body: JSON.stringify(body) });
   const state = async (query = "") => {
-    const response = await fetch(base + "/api/state" + query, { headers });
+    const response = await request("/api/state" + query, { headers });
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };

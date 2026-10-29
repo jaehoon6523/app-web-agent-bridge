@@ -64,13 +64,15 @@ export function registerTabFocusUiContract({dashboard, prepared}) {
     assert.doesNotMatch(reason(ui),/미확인/);
   });
 
-  test('delayed view success cannot unlock a new preparation version',async()=>{
+  for (const changed of ['version','session']) test(`delayed view success cannot unlock a new preparation ${changed}`,async()=>{
     const current=state();let release;
     const ui=await dashboard(current,async()=>new Promise(resolve=>{release=resolve;}));
     const pending=view(ui).listeners.click();await new Promise(setImmediate);
-    current.preparation.version=4;await ui.run('refresh()');
+    if(changed==='version')current.preparation.version=4;
+    else current.preparation.webSession.sessionId='s2';
+    await ui.run('refresh()');
     release({opened:true,tabId:7});await pending;
-    assert.equal(view(ui).disabled,true,'new version needs its own observation');
+    assert.equal(view(ui).disabled,true,'new context needs its own observation');
     assert.doesNotMatch(reason(ui),/탭 화면만 열었습니다/);
   });
 

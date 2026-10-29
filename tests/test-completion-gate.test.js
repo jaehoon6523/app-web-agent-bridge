@@ -18,6 +18,47 @@ function fixture(t, source) {
 }
 const quiet = {output:()=>{}};
 
+test('boundary diagnostics are collected before TAP escaping and survive in completion summaries', async t => {
+  const receipt = {receiptSchemaVersion:1, testId:'T-B-X', boundaryId:'B', boundaryRevision:1,
+    transitionId:'X', evidenceType:'partial-integration', observation:{text:'quote " and slash \\ and newline\n'},
+    expectation:{throws:false}, result:'PASS', note:null};
+  const filename = fixture(t, `import test from 'node:test';
+    test('receipt', t => t.diagnostic(${JSON.stringify('__RECEIPT__:' + JSON.stringify(receipt))}));`);
+  const result = await runFile(filename, quiet);
+  assert.equal(result.pass, true);
+  assert.deepEqual(result.summary.boundaryReceipts, [receipt]);
+  assert.deepEqual(result.summary.boundaryReceiptErrors, []);
+  const directory = path.join(path.dirname(filename), 'output');
+  const run = await runFiles([filename], {...quiet, directory, verificationRunId:'boundary-storage-test'});
+  assert.equal(run.status, 'PASS');
+  const stored = JSON.parse(fs.readFileSync(path.join(directory, 'latest-test-result.json'), 'utf8'));
+  assert.equal(stored.verificationRunId, 'boundary-storage-test');
+  assert.deepEqual(stored.results[0].summary.boundaryReceipts, [receipt]);
+});
+
+test('malformed boundary diagnostics fail the file without losing its completion summary', async t => {
+  for (const [message, code] of [['{broken','BOUNDARY_RECEIPT_JSON_INVALID'], ['{}','BOUNDARY_RECEIPT_SCHEMA_INVALID']]) {
+    const filename = fixture(t, `import test from 'node:test';
+      test('malformed', t => t.diagnostic(${JSON.stringify('__RECEIPT__:' + message)}));`);
+    const result = await runFile(filename, quiet);
+    assert.equal(result.pass, false);
+    assert.equal(result.reason, 'INVALID_BOUNDARY_RECEIPT');
+    assert.equal(result.summary.completed, true);
+    assert.equal(result.summary.boundaryReceiptErrors[0].code, code);
+  }
+});
+
+test('setup failure receipt is preserved alongside the failed test result', async t => {
+  const receipt = {receiptSchemaVersion:1, testId:'T-B-X', boundaryId:'B', boundaryRevision:1,
+    transitionId:'X', evidenceType:'partial-integration', observation:null,
+    expectation:{throws:false}, result:'FAIL', note:'setup failed'};
+  const filename = fixture(t, `import test from 'node:test';
+    test('setup failure', t => {t.diagnostic(${JSON.stringify('__RECEIPT__:' + JSON.stringify(receipt))}); throw Error('setup failed');});`);
+  const result = await runFile(filename, quiet);
+  assert.equal(result.pass, false);
+  assert.deepEqual(result.summary.boundaryReceipts, [receipt]);
+});
+
 function failReceiptClose(t) {
   const open = fs.openSync, close = fs.closeSync;
   let descriptor;
@@ -32,10 +73,23 @@ function failReceiptClose(t) {
   });
 }
 
+// Adapted from e643752 for the 06e5e30 test; Windows constraint: https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/ntifs/ns-ntifs-_file_rename_information
 test('completion receipt survives its directory moving before the reporter finishes', async t => {
-  const filename = fixture(t, `import test from 'node:test'; import fs from 'node:fs'; import path from 'node:path'; import {fileURLToPath} from 'node:url';
-    test('finished after move', () => fs.renameSync(path.dirname(process.env.BRIDGE_TEST_RECEIPT),
-      path.join(path.dirname(fileURLToPath(import.meta.url)),'moved-receipt')));`);
+  const filename = fixture(t, `import test from 'node:test'; import fs from 'node:fs'; import path from 'node:path'; import assert from 'node:assert/strict'; import {fileURLToPath} from 'node:url';
+    test('finished after move', () => {
+      const root=path.dirname(fileURLToPath(import.meta.url));
+      const physical=path.dirname(process.env.BRIDGE_TEST_RECEIPT);
+      // Windows cannot rename a physical directory containing an open file.
+      // Rename its junction namespace instead: the advertised receipt path still disappears.
+      if(process.platform==='win32') {
+        const alias=path.join(root,'receipt-alias');fs.symlinkSync(physical,alias,'junction');
+        process.env.BRIDGE_TEST_RECEIPT=path.join(alias,'completion.json');
+      }
+      const advertised=process.env.BRIDGE_TEST_RECEIPT, moved=path.join(root,'moved-receipt');
+      fs.renameSync(path.dirname(advertised),moved);
+      assert.equal(fs.existsSync(advertised),false);
+      assert.equal(fs.statSync(path.join(moved,'completion.json')).ino,fs.fstatSync(3).ino);
+    });`);
   let transcript = '';
   const result = await runFile(filename, {output:chunk=>{transcript+=chunk;}});
   assert.equal(result.pass, true, transcript);

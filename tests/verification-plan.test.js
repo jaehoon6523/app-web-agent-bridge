@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {verificationPlan} from '../scripts/verification-plan.mjs';
+import {discoverTests} from '../scripts/run-tests.mjs';
 import {executeVerification,receiptComplete} from '../scripts/verification-engine.mjs';
 const source={head:'candidate',sourceSha256:'source'};
 const item=(id,extra={})=>({id,required:true,applicable:true,status:'NOT_RUN',reason:'PENDING',needs:[],...extra});
@@ -44,6 +46,110 @@ test('Windows discovery groups cover exactly the Linux discovery inventory with 
   assert.deepEqual([...scheduled].sort(),[...linux.expectedFiles].sort(),'No missing or additional tests');
   assert.ok(groups.every(stage=>stage.timeoutMs===linux.timeoutMs && stage.receipt==='gate'));
   assert.ok(Math.max(...groups.map(stage=>stage.expectedFiles.length))-Math.min(...groups.map(stage=>stage.expectedFiles.length))<=1);
+});
+
+test('spec and discovery partition the full inventory on both platforms without changing minimum',()=>{
+  const registry=JSON.parse(fs.readFileSync(new URL('../docs/spec/registry.json',import.meta.url),'utf8'));
+  const registered=registry.boundaries.map(entry=>entry.testPath);
+  const root=fileURLToPath(new URL('../',import.meta.url));
+  const discovered=discoverTests(path.join(root,'tests')).map(file=>path.relative(root,file).split(path.sep).join('/'));
+  for(const platform of ['win32','linux']) {
+    const plan=verificationPlan({platform});
+    const spec=plan.find(s=>s.id==='spec');
+    const discovery=plan.filter(s=>/^discovery(?:-\d+)?$/u.test(s.id));
+    const rest=discovery.flatMap(s=>s.expectedFiles);
+    assert.deepEqual(spec.expectedFiles,registered);
+    assert.equal(spec.command,'verify:spec');assert.equal(spec.receipt,'spec');
+    assert.equal(plan.indexOf(spec),plan.findIndex(s=>s.id==='types')+1);
+    assert.equal(new Set(registered).size,registered.length);
+    assert.equal(new Set(rest).size,rest.length);
+    assert.ok(registered.every(file=>discovered.includes(file)&&!rest.includes(file)));
+    assert.deepEqual([...rest,...registered].sort(),discovered.sort());
+    assert.ok(discovery.every(s=>s.timeoutMs===25*60*1000));
+    assert.equal(discovery.length,platform==='win32'?4:1);
+    assert.deepEqual(verificationPlan({scope:'minimum',platform}).map(s=>s.id),['minimum-dependencies','minimum-sqlite']);
+  }
+});
+test('plan rejects duplicate and undiscovered registry paths before exclusion',t=>{
+  const read=fs.readFileSync, registryPath=fileURLToPath(new URL('../docs/spec/registry.json',import.meta.url));
+  const registry=JSON.parse(read(registryPath,'utf8'));
+  let paths;
+  t.mock.method(fs,'readFileSync',(file,...args)=>String(file)===registryPath
+    ? JSON.stringify({...registry,boundaries:paths.map(testPath=>({testPath}))}) : read(file,...args));
+  for(paths of [[registry.boundaries[0].testPath,registry.boundaries[0].testPath],['tests/not-discovered.gen.test.js']])
+    assert.throws(()=>verificationPlan(),/INVALID_SPEC_FILE_SET/u);
+});
+
+function specEvidence(runId, baseline=source) {
+  return {schemaVersion:1,runId,status:'PASS',exitCode:0,finishedAt:new Date().toISOString(),errors:[],
+    source:baseline,sourceAfter:baseline};
+}
+function specRun(runId, baseline=source) {
+  return {verificationRunId:runId,source:baseline,sourceAfter:baseline,candidateUnchanged:true,
+    terminal:true,status:'PASS',scheduled:['a'],results:[{file:'a',pass:true,summary:{completed:true}}]};
+}
+test('spec receipt accepts current proof and rejects mismatched IDs and either source snapshot',()=>{
+  const context={runId:'current-spec',source,expectedFiles:['a'],testRun:specRun('current-spec')};
+  const good=specEvidence(context.runId);
+  assert.equal(receiptComplete('spec',good,context),true);
+  for(const change of [{runId:'previous-spec'},{source:{...source,head:'other'}},
+    {source:{...source,sourceSha256:'changed'}},{sourceAfter:{...source,sourceSha256:'changed'}}])
+    assert.equal(receiptComplete('spec',{...good,...change},context),false);
+});
+test('spec receipt rejects incomplete or unsuccessful summaries and internal gate evidence',()=>{
+  const context={runId:'current-spec',source,expectedFiles:['a'],testRun:specRun('current-spec')};
+  const good=specEvidence(context.runId);
+  for(const change of [{schemaVersion:2},{status:'RUNNING'},{status:'FAIL'},{exitCode:1},{finishedAt:null},{errors:[{code:'FAIL'}]}])
+    assert.equal(receiptComplete('spec',{...good,...change},context),false);
+  for(const testRun of [undefined,specRun('old'),{...context.testRun,scheduled:['other']},
+    {...context.testRun,sourceAfter:{...source,head:'other'}}])
+    assert.equal(receiptComplete('spec',good,{...context,testRun}),false);
+});
+async function specScenario(t, mode) {
+  const seen=[];
+  const result=await scenario(t,[item('spec',{receipt:'spec',expectedFiles:['a']}),item('next')],(stage,{stageRunId,stageDirectory})=>{
+    seen.push(stage.id);
+    if(stage.id==='spec') {
+      const proof=specEvidence(stageRunId), internal=specRun(stageRunId);
+      if(mode==='preflight') {proof.status='FAIL';proof.exitCode=1;proof.errors=[{code:'SPEC_SCHEMA_INVALID'}];}
+      if(mode.startsWith('cleanup')) internal.results[0].receiptCleanupError='still owned';
+      if(mode==='wrong-source') {proof.source={...source,head:'later'};proof.sourceAfter=proof.source;internal.source=proof.source;internal.sourceAfter=proof.source;}
+      fs.writeFileSync(path.join(stageDirectory,'spec-result.json'),mode==='cleanup-malformed-proof'?'{broken':JSON.stringify(proof));
+      if(!['missing','preflight'].includes(mode)) fs.writeFileSync(path.join(stageDirectory,'latest-test-result.json'),mode==='malformed'?'{broken':JSON.stringify(internal));
+      return {code:mode==='preflight'?1:0,signal:null,forced:false};
+    }
+  });
+  return {result,seen};
+}
+test('spec engine reads stage-local files and keeps their original proof path',async t=>{
+  const {result,seen}=await specScenario(t,'pass');
+  assert.equal(result.status,'PASS');assert.deepEqual(seen,['spec','next']);
+  assert.equal(path.basename(result.stages[0].receiptPath),'spec-result.json');
+  assert.equal(fs.existsSync(path.join(path.dirname(result.stages[0].receiptPath),'receipt.json')),false);
+});
+test('spec PASS without readable internal evidence fails while independent checks continue',async t=>{
+  for(const mode of ['missing','malformed']) {
+    const {result,seen}=await specScenario(t,mode);
+    assert.equal(result.status,'FAIL');assert.equal(result.stages[0].failurePhase,'EVIDENCE');
+    assert.deepEqual(seen,['spec','next']);
+  }
+});
+test('spec preflight failure needs no internal run and remains an ordinary failure',async t=>{
+  const {result,seen}=await specScenario(t,'preflight');
+  assert.equal(result.status,'FAIL');assert.equal(result.stages[0].failurePhase,'EXECUTION');
+  assert.deepEqual(seen,['spec','next']);assert.equal(result.stages[0].receipt.errors[0].code,'SPEC_SCHEMA_INVALID');
+});
+test('spec internal cleanup uncertainty blocks later stages despite outer exit zero',async t=>{
+  for(const mode of ['cleanup','cleanup-malformed-proof']) {
+    const {result,seen}=await specScenario(t,mode);
+    assert.equal(result.status,'FAIL');assert.equal(result.stages[0].failurePhase,'CLEANUP');
+    assert.deepEqual(seen,['spec']);assert.equal(result.stages[1].reason,'RESOURCE_CLOSURE_UNCONFIRMED');
+  }
+});
+test('spec engine never promotes a later child source to the parent baseline',async t=>{
+  const {result,seen}=await specScenario(t,'wrong-source');
+  assert.equal(result.status,'FAIL');assert.equal(result.stages[0].failurePhase,'EVIDENCE');
+  assert.equal(result.source.head,source.head);assert.deepEqual(seen,['spec','next']);
 });
 test('ordinary first assertion failure preserves later independent observations',async t=>{
   const result=await scenario(t,[item('first'),item('last')],s=>({code:s.id==='first'?7:0,signal:null,forced:false}));

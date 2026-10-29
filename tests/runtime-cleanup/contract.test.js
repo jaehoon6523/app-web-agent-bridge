@@ -14,6 +14,7 @@ import {SqliteStore} from '../../src/persistence/sqlite-store.js';
 import {observeChildClose, waitChildClose} from '../../src/runtime/child-close.js';
 import {seedHistory} from '../helpers/code-history-fixture.js';
 import {assertSourceCopies} from '../helpers/source-copy-identity.js';
+import {removeOwnedFixture} from '../../scripts/e2e/helpers/owned-fixture.mjs';
 
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const identity = {
@@ -239,7 +240,9 @@ async function serverProbe(context, config) {
   const child = runDiagnosticServer({runtimeConfig:context.runtimeConfig, outputFile:path.join(context.work,'server.jsonl'),
     onEvent:event => { events.push(event); changed.emit('event',event); }});
   const observation = observeChildClose(child); let stopped;
-  const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {if(child.connected) child.send({type:'bridge.shutdown'});}});
+  const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {if(child.connected) child.send({type:'bridge.shutdown'});}})
+    .then(async closure => { await child.diagnosticsClosed; context.resourcesClosed=true; return closure; });
+  context.resourcesClosed=false;
   async function until(type) {
     if (events.some(e => e.type === type)) return;
     let timer, listener;
@@ -281,6 +284,8 @@ const selected = process.env.RUNTIME_CLEANUP_IDS?.split(',');
 for (const config of definitions.filter(c => !selected || selected.includes(c.id))) {
   test(config.id+' '+config.paths.join(' → '), {timeout:30000}, async t => {
     const root = fs.mkdtempSync(path.join(repository,'.runtime-cleanup-contract-'));
+    let server;
+    let bodyError;
     const evidenceRoot = path.resolve(process.env.RUNTIME_CLEANUP_EVIDENCE ?? path.join(repository,'evidence/runtime-cleanup'));
     fs.mkdirSync(evidenceRoot, {recursive:true});
     const evidence = {id:config.id, paths:config.paths, ...identity, injection:config,
@@ -292,7 +297,7 @@ for (const config of definitions.filter(c => !selected || selected.includes(c.id
       evidence.operation = errorGraph(result.operation); evidence.closure = errorGraph(result.closure);
       evidence.attemptErrors = result.attemptErrors?.map(error => errorGraph(error));
       evidence.directEvents = result.events; evidence.directInjection = readInjection(direct); evidence.directSourceHashes = direct.copies;
-      const server = prepare(root, config, 'server');
+      server = prepare(root, config, 'server');
       const observed = await serverProbe(server, config);
       evidence.pendingHttpError = observed.pendingError; evidence.http = observed.http; evidence.ready = observed.state?.runtimeAvailability?.ready;
       evidence.knowledge = observed.state?.dataKnowledge?.runs?.status;
@@ -383,11 +388,14 @@ for (const config of definitions.filter(c => !selected || selected.includes(c.id
       if (!config.ready) assert.equal(observed.events.some(e => e.type === 'persistence.code-store.history-background.completed') && !config.setup,false);
       if (config.pending) assert.deepEqual(evidence.forced,[config.id === 'T18']);
       evidence.verdict = 'PASS';
-    } catch (error) { evidence.verdict = 'FAIL'; evidence.assertion = errorGraph(error); throw error; }
+    } catch (error) { bodyError=error;evidence.verdict = 'FAIL'; evidence.assertion = errorGraph(error); }
     finally {
-      fs.writeFileSync(path.join(evidenceRoot,config.id+'.json'),JSON.stringify(evidence,null,2)+'\n');
-      t.diagnostic(JSON.stringify({id:config.id,verdict:evidence.verdict,childClosure:evidence.childClosure,log:path.join(evidenceRoot,config.id+'.json')}));
-      fs.rmSync(root,{recursive:true,force:true});
+      const errors=bodyError?[bodyError]:[];
+      try {fs.writeFileSync(path.join(evidenceRoot,config.id+'.json'),JSON.stringify(evidence,null,2)+'\n');}catch(error){errors.push(error);}
+      try {t.diagnostic(JSON.stringify({id:config.id,verdict:evidence.verdict,childClosure:evidence.childClosure,log:path.join(evidenceRoot,config.id+'.json')}));}catch(error){errors.push(error);}
+      if(server?.resourcesClosed===true)try{await removeOwnedFixture(root);}catch(error){errors.push(error);}
+      if(errors.length===1)throw errors[0];
+      if(errors.length)throw new AggregateError(errors,errors.map(error=>`${error.code??error.name}: ${error.message}`).join('\n'),{cause:errors[0]});
     }
   });
 }
@@ -396,6 +404,7 @@ for (const owner of ['Controller','Code']) {
   for (const failed of [false,true]) {
     test(`C08 ${owner} Store repeated close preserves ${failed ? 'failure' : 'success'}`, async () => {
       const root = fs.mkdtempSync(path.join(repository,'.runtime-cleanup-store-'));
+      let bodyError;
       try {
         const context = prepare(root,{close:failed ? [owner] : []},'store');
         const {SqliteStore} = await import(pathToFileURL(path.join(context.program,'src/persistence/sqlite-store.js')));
@@ -413,7 +422,14 @@ for (const owner of ['Controller','Code']) {
           await assert.rejects(close(), error => error === first);
         } else {await Promise.all([close(),close()]); await close();}
         assert.equal(readInjection(context).filter(event => event.owner === owner && event.stage === 'native-close-attempt').length,1);
-      } finally {fs.rmSync(root,{recursive:true,force:true});}
+      } catch(error) {bodyError=error;}
+      finally {
+        try {if(!bodyError)await removeOwnedFixture(root);} catch(error) {
+          if(bodyError)throw new AggregateError([bodyError,error],[bodyError,error].map(cause=>`${cause.code??cause.name}: ${cause.message}`).join('\n'),{cause:bodyError});
+          throw error;
+        }
+        if(bodyError)throw bodyError;
+      }
     });
   }
 }

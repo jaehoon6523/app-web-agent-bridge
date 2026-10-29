@@ -8,6 +8,8 @@
     "node": ">=22.5"
   },
   "scripts": {
+    "discover": "node --test tests/generated/**/*.discovery.js",
+    "verify:spec": "node --experimental-sqlite scripts/verify-spec.mjs",
     "start": "node --experimental-sqlite src/server.js",
     "dev": "node --experimental-sqlite --watch src/server.js",
     "demo": "DEMO_MODE=true node --experimental-sqlite src/server.js",

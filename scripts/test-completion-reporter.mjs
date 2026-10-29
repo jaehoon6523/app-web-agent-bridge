@@ -1,14 +1,26 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {tap} from 'node:test/reporters';
+import {schemaErrors} from './spec-validation.mjs';
 
 // A receipt is written only after the runner stream, including its plan, ends.
 // An exit code alone cannot establish that the scheduled tests finished.
 export default async function* reporter(source) {
-  const result = {completed:false, plan:null, topLevel:0, passed:0, failed:0, skipped:[], todo:[], synthetic:0};
+  const result = {completed:false, plan:null, topLevel:0, passed:0, failed:0, skipped:[], todo:[], synthetic:0,
+    boundaryReceiptSchemaVersion:1, boundaryReceipts:[], boundaryReceiptErrors:[]};
   async function* observe() {
     for await (const event of source) {
       const {type, data} = event;
+      if (type === 'test:diagnostic' && data.message.startsWith('__RECEIPT__:')) {
+        try {
+          const receipt = JSON.parse(data.message.slice('__RECEIPT__:'.length));
+          const errors = schemaErrors('boundary-receipt', receipt);
+          if (errors.length) result.boundaryReceiptErrors.push({code:'BOUNDARY_RECEIPT_SCHEMA_INVALID', details:errors});
+          else result.boundaryReceipts.push(receipt);
+        } catch (error) {
+          result.boundaryReceiptErrors.push({code:'BOUNDARY_RECEIPT_JSON_INVALID', message:error.message});
+        }
+      }
       if (type === 'test:plan' && data.nesting === 0) result.plan = data.count;
       if (type === 'test:pass' || type === 'test:fail') {
         if (data.nesting === 0) result.topLevel++;

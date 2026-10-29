@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receiptSchemaVersion",
+    "testId",
+    "boundaryId",
+    "transitionId",
+    "boundaryRevision",
+    "evidenceType",
+    "observation",
+    "expectation",
+    "result",
+    "note"
+  ],
+  "properties": {
+    "receiptSchemaVersion": {
+      "const": 1
+    },
+    "testId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "boundaryId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "transitionId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "boundaryRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "evidenceType": {
+      "enum": [
+        "partial-integration",
+        "isolated-contract"
+      ]
+    },
+    "observation": {
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "expectation": {
+      "type": "object"
+    },
+    "result": {
+      "enum": [
+        "PASS",
+        "FAIL",
+        "SPEC_TODO"
+      ]
+    },
+    "note": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "PASS"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "observation": {
+            "type": "object"
+          },
+          "boundaryRevision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        }
+      }
+    }
+  ]
+}

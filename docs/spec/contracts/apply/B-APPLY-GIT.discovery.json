@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "boundaryId": "B-APPLY-GIT",
+  "boundaryRevision": 0,
+  "status": "DISCOVERY",
+  "boundaryDefinition": "GitChangeWorkspace.apply({capture, targetRoot}) — 실제 대상 Git에 patch 적용. 상태 판정은 targetApplicationState가 담당.",
+  "evidenceType": "partial-integration",
+  "entryPoint": "GitChangeWorkspace.apply",
+  "transitions": [
+    {
+      "transitionId": "GIT-APPLY-NORMAL",
+      "setupId": "GIT-APPLY-NORMAL",
+      "expected": {
+        "discovery": true
+      }
+    },
+    {
+      "transitionId": "GIT-APPLY-BASE-DRIFT",
+      "setupId": "GIT-APPLY-BASE-DRIFT",
+      "expected": {
+        "discovery": true
+      }
+    },
+    {
+      "transitionId": "GIT-APPLY-DIRTY-TARGET",
+      "setupId": "GIT-APPLY-DIRTY-TARGET",
+      "expected": {
+        "discovery": true
+      }
+    },
+    {
+      "transitionId": "GIT-STATE-APPLIED",
+      "setupId": "GIT-STATE-APPLIED",
+      "expected": {
+        "discovery": true
+      }
+    },
+    {
+      "transitionId": "GIT-STATE-NOT-APPLIED",
+      "setupId": "GIT-STATE-NOT-APPLIED",
+      "expected": {
+        "discovery": true
+      }
+    },
+    {
+      "transitionId": "GIT-STATE-AMBIGUOUS",
+      "setupId": "GIT-STATE-AMBIGUOUS",
+      "expected": {
+        "discovery": true
+      }
+    }
+  ]
+}

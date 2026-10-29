@@ -12,6 +12,7 @@ import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { observeChildClose, waitChildClose } from "../../src/runtime/child-close.js";
 import { runDiagnosticServer } from "../../scripts/diagnose-server.mjs";
 import { seedHistory, appendHistory } from "../helpers/code-history-fixture.js";
+import { removeOwnedFixture } from "../../scripts/e2e/helpers/owned-fixture.mjs";
 
 async function serverFixture(t, {corrupt = false} = {}) {
   const fixtureStarted=performance.now(), timing={phases:[]};
@@ -39,16 +40,19 @@ async function serverFixture(t, {corrupt = false} = {}) {
   let stopped, pendingAppend;
   const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {
     if (child.connected) child.send({type:"bridge.shutdown"});
-  }});
+  }}).then(async closure => { await child.diagnosticsClosed; return closure; });
   t.after(async () => {
     const closeStarted=performance.now();
+    const errors=[];
+    let resourcesClosed=false;
     try {
       // Abort cancels fixture work too. Observe its worker exit before removing
       // the database, including when node:test has already ended the test body.
       await pendingAppend?.catch(() => {});
-      assert.deepEqual(await stop(), {code:0,signal:null});
-    }
-    finally {
+      const closure=await stop();resourcesClosed=true;
+      assert.deepEqual(closure, {code:0,signal:null});
+    } catch(error) {errors.push(error);}
+    try {
       timing.closeMs=performance.now()-closeStarted;
       timing.totalMs=performance.now()-fixtureStarted;
       t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,timing,
@@ -57,10 +61,12 @@ async function serverFixture(t, {corrupt = false} = {}) {
         lastCheckpoints:events.filter(event=>/history|runtime.initialization/u.test(event.type)).slice(-12)
           .map(({type,elapsedMs,errorCode})=>({type,elapsedMs,errorCode}))}));
       t.evidence.preserve(root);t.evidence.copy(path.join(root,"events.jsonl"),"server-events.jsonl");
-      fs.rmSync(root, {recursive:true,force:true});
-    }
+    } catch(error) {errors.push(error);}
+    if(resourcesClosed)try {await removeOwnedFixture(root);} catch(error) {errors.push(error);}
+    if(errors.length===1)throw errors[0];
+    if(errors.length)throw new AggregateError(errors,errors.map(error=>`${error.code??error.name}: ${error.message}`).join('\n'),{cause:errors[0]});
   });
-  async function until(predicate, after = 0) {
+  async function until(predicate, after = 0, timeoutMs = 12000) {
     const found = events.slice(after).find(predicate);
     if (found) return found;
     let listener, timer;
@@ -69,7 +75,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
         listener = event => { if (predicate(event)) resolve(event); };
         changed.on("event", listener);
         timer = setTimeout(() => reject(new Error("Missing history checkpoint "+predicate.toString()+": "+JSON.stringify(
-          events.slice(after).filter(event => /history|runtime|snapshot/u.test(event.type)).slice(-20)))), 12000);
+          events.slice(after).filter(event => /history|runtime|snapshot/u.test(event.type)).slice(-20)))), timeoutMs);
       });
     } finally { changed.off("event", listener); clearTimeout(timer); }
   }
@@ -115,7 +121,8 @@ test("cold and invalidated real history verification keep independent HTTP respo
       assert.equal(first.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
     }
     phaseTiming.stage='waiting for verification completion';
-    const completed = await server.until(event => event.type === "persistence.code-store.history-background.completed", checkpoint);
+    // History verification has a 60s production budget; keep short waits for other checkpoints.
+    const completed = await server.until(event => event.type === "persistence.code-store.history-background.completed", checkpoint, 60000);
     const ready = await server.read(); assert.equal(ready.status, 200);
     const state = await ready.json();
     assert.equal(state.runtimeAvailability.ready, true);

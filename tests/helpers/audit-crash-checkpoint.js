@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {setTimeout as wait} from 'node:timers/promises';
 import {ownedSpawn, forceProcessTree} from '../../scripts/e2e/platform/process.mjs';
+import {removeOwnedFixture} from '../../scripts/e2e/helpers/owned-fixture.mjs';
 import {observeChildClose, waitChildClose} from '../../src/runtime/child-close.js';
 
 const directoryKey = 'BRIDGE_AUDIT_CRASH_DIRECTORY';
@@ -30,8 +31,13 @@ function readCheckpoint(directory, kind, token, pid) {
   let text;
   try { text = fs.readFileSync(path.join(directory, `${kind}.json`), 'utf8'); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
-  const record = JSON.parse(text);
-  if (record.kind !== kind || record.token !== token || record.pid !== pid) {
+  let record;
+  try { record = JSON.parse(text); }
+  catch (cause) {
+    throw Object.assign(failure('AUDIT_CRASH_CHECKPOINT_INVALID_JSON', 'Crash checkpoint is not valid JSON.'),
+      {cause, checkpointKind:kind, checkpointBytes:Buffer.byteLength(text, 'utf8')});
+  }
+  if (record?.kind !== kind || record?.token !== token || record?.pid !== pid) {
     throw failure('AUDIT_CRASH_CHECKPOINT_MISMATCH', 'Crash checkpoint belongs to another child or invocation.');
   }
   return record;
@@ -82,20 +88,39 @@ export async function killAtBoundary(t, args = [], {childFile = defaultChild,
         }
       }, forceClose:() => forceProcessTree(child)});
   } catch (cause) {
-    if (error) error.cleanupError = {code:cause.code, message:cause.message, cause:cause.cleanupError ?? null};
+    if (error) {
+      (error.cleanupErrors ??= []).push(cause);
+      error.cleanupError ??= cause;
+    }
     else error = cause;
     child.stdout.destroy(); child.stderr.destroy(); child.unref();
   }
   if (!error && closure.code === 0 && closure.signal === null) {
     error = failure('AUDIT_CRASH_NORMAL_EXIT', 'Expected an actual abrupt termination, received a successful exit.');
   }
-  t.diagnostic?.(JSON.stringify({event:'AUDIT_CRASH_CLOSE', childPid:child.pid,
-    closed:Boolean(observation.result), code:closure?.code ?? null, signal:closure?.signal ?? null,
-    errorCode:error?.code ?? null}));
-  if (observation.result) fs.rmSync(directory, {recursive:true, force:true});
+  let checkpointDirectory = directory;
+  if (observation.result) {
+    try { await removeOwnedFixture(directory); checkpointDirectory = null; }
+    catch (cause) {
+      if (error) {
+        (error.cleanupErrors ??= []).push(cause);
+        error.cleanupError ??= cause;
+      } else error = cause;
+    }
+  }
+  try {
+    t.diagnostic?.(JSON.stringify({event:'AUDIT_CRASH_CLOSE', childPid:child.pid,
+      closed:Boolean(observation.result), code:closure?.code ?? null, signal:closure?.signal ?? null,
+      errorCode:error?.code ?? null, errorName:error?.name ?? null, errorMessage:error?.message ?? null,
+      causeName:error?.cause?.name ?? null,
+      checkpointKind:error?.checkpointKind ?? null, checkpointBytes:error?.checkpointBytes ?? null,
+      checkpointDirectory}));
+  } catch (cause) {
+    if (error) error.diagnosticError = cause;
+    else error = cause;
+  }
   if (error) {
-    Object.assign(error, {childPid:child.pid, closure, stderr,
-      checkpointDirectory:observation.result ? null : directory});
+    Object.assign(error, {childPid:child.pid, closure, stderr, checkpointDirectory});
     throw error;
   }
   return {metadata, boundary, closure};

@@ -6,7 +6,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { CodeChangeStore } from "../../src/persistence/code-change-store.js";
-import { seedHistory } from "../helpers/code-history-fixture.js";
+import { seedHistory, appendHistory } from "../helpers/code-history-fixture.js";
 import { resources } from "../../scripts/e2e/helpers/resources.mjs";
 
 function fixture(t, options) {
@@ -32,6 +32,34 @@ function canonical(value) {
   return JSON.stringify(value);
 }
 const hash = value => "sha256:" + createHash("sha256").update(canonical(value)).digest("hex");
+
+test("seeded and worker-appended fixture rows retain independent canonical bytes and the full hash chain", async t => {
+  const {filename, writer, record, headHash} = fixture(t, {versions:3});
+  const appended = {...record, version:4, objective:"한글 fixture append",
+    events:[...record.events, {type:"STATE_CHANGED", detail:"추가 이벤트", version:4}]};
+  await appendHistory(filename, appended);
+  const rows = writer.prepare("SELECT * FROM code_change_history ORDER BY version").all();
+  assert.equal(rows.length, 4);
+  let previous = null;
+  for (let index = 0; index < rows.length; index++) {
+    const row = rows[index], version = index+1;
+    const expected = version === 4 ? appended : {...record, version, events:record.events.slice(0, version)};
+    const recordHash = hash(expected);
+    const entryHash = hash({kind:"CODE_CHANGE_HISTORY",runId:record.runId,version,recordHash,previousHash:previous});
+    assert.equal(row.version, version);
+    assert.equal(row.run_id, record.runId);
+    assert.equal(row.record_json, canonical(expected));
+    assert.equal(row.record_hash, recordHash);
+    assert.equal(row.previous_hash, previous);
+    assert.equal(row.entry_hash, entryHash);
+    if (version === 3) assert.equal(headHash, entryHash);
+    previous = entryHash;
+  }
+  const current = writer.prepare("SELECT * FROM code_change_runs WHERE run_id=?").get(record.runId);
+  assert.equal(current.version, 4);
+  assert.equal(current.record_json, canonical(appended));
+  assert.equal(current.record_hash, hash(appended));
+});
 
 for (const legacy of [false, true]) {
   test(`same-version independent runs reject corruption in a ${legacy ? "legacy" : "chained"} sibling before any proof adoption`, async t => {

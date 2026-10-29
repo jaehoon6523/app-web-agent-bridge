@@ -635,6 +635,7 @@ export function createBridgeServer({
   app.use(["/runs", "/approvals"], (_req, res) => {
     res.status(503).json({ error: LIVE_ORCHESTRATION_UNAVAILABLE });
   });
+  app.get("/favicon.ico", (_req, res) => res.status(204).end());
   app.use(express.static(publicDir));
   app.use((req, res) => {
     if (req.method !== "GET" && req.method !== "HEAD") {

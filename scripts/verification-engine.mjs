@@ -12,6 +12,14 @@ export function receiptLocation(kind, root, directory) {
 }
 export function receiptComplete(kind, receipt, context) {
   if(!kind) return true;
+  if(kind==='spec') {
+    const sameSource=value=>value?.head===context.source.head && value?.sourceSha256===context.source.sourceSha256;
+    return receipt?.schemaVersion===1 && receipt.status==='PASS' && receipt.exitCode===0
+      && receipt.runId===context.runId && typeof receipt.finishedAt==='string' && Number.isFinite(Date.parse(receipt.finishedAt))
+      && Array.isArray(receipt.errors) && receipt.errors.length===0
+      && sameSource(receipt.source) && sameSource(receipt.sourceAfter)
+      && !resourceClosureUnconfirmed(receipt) && receiptComplete('gate',context.testRun,context);
+  }
   if(!identityMatches(receipt,context) || resourceClosureUnconfirmed(receipt)) return false;
   if(kind==='browser') return receipt.status==='PASS' && typeof receipt.version==='string' && typeof receipt.executable==='string';
   if(kind==='gate') return receipt.terminal===true && receipt.status==='PASS'
@@ -83,7 +91,8 @@ export async function executeVerification({root,directory,plan,source,readSource
       fs.writeFileSync(stage.logPath,'');save();log('\nSTAGE '+stage.id+'\n');
       const write=chunk=>{fs.appendFileSync(stage.logPath,chunk);log(chunk);};
       const receiptKind=stage.receipt; delete stage.receipt;
-      const receiptPath=receiptLocation(receiptKind,root,directory);
+      const receiptPath=stage.receiptKind==='spec'?path.join(stageDirectory,'spec-result.json'):receiptLocation(receiptKind,root,directory);
+      let testRun;
       try {
         if(receiptPath) fs.rmSync(receiptPath,{force:true});
         for(const name of stage.evidencePaths || []) fs.rmSync(evidencePath(root,name),{recursive:true,force:true});
@@ -91,31 +100,39 @@ export async function executeVerification({root,directory,plan,source,readSource
         // being accepted when a producer accidentally stops writing evidence.
         const stageRunId=runId+'-'+stage.id;
         stage.verificationRunId=stageRunId;
-        stage.closure=await run(stage,{write,stageRunId,signal});
+        stage.closure=await run(stage,{write,stageRunId,signal,stageDirectory});
+
+        if(stage.receiptKind==='spec') {
+          const testPath=path.join(stageDirectory,'latest-test-result.json');
+          if(fs.existsSync(testPath)) {
+            try {testRun=JSON.parse(fs.readFileSync(testPath,'utf8'));}
+            catch(error) {stage.testResultError=error.message;}
+          }
+        }
 
         if(receiptPath && fs.existsSync(receiptPath)) {
           stage.receipt=JSON.parse(fs.readFileSync(receiptPath,'utf8'));
-          stage.receiptPath=path.join(stageDirectory,'receipt.json');
-          fs.copyFileSync(receiptPath,stage.receiptPath);
+          stage.receiptPath=stage.receiptKind==='spec'?receiptPath:path.join(stageDirectory,'receipt.json');
+          if(stage.receiptKind!=='spec') fs.copyFileSync(receiptPath,stage.receiptPath);
         }
         if(receiptKind==='browser') result.browser=stage.receipt;
         const closed=stage.closure;
-        const complete=receiptComplete(receiptKind,stage.receipt,{runId:stageRunId,source,expectedFiles:stage.expectedFiles,expectedProfiles:stage.expectedProfiles,expectedScenarios:stage.expectedScenarios});
+        const complete=receiptComplete(receiptKind,stage.receipt,{runId:stageRunId,source,testRun,expectedFiles:stage.expectedFiles,expectedProfiles:stage.expectedProfiles,expectedScenarios:stage.expectedScenarios});
         stage.status=closed.code===0 && closed.signal===null && !closed.forced && complete?'PASS':'FAIL';
-        if(stage.status==='FAIL') stage.failurePhase=resourceClosureUnconfirmed(stage.receipt)?'CLEANUP':closed.code!==0?'EXECUTION':!complete?'EVIDENCE':'CLEANUP';
+        if(stage.status==='FAIL') stage.failurePhase=resourceClosureUnconfirmed(stage.receipt) || resourceClosureUnconfirmed(testRun)?'CLEANUP':closed.code!==0?'EXECUTION':!complete?'EVIDENCE':'CLEANUP';
         if(receiptKind==='native' && closed.code===2 && closed.signal===null && !closed.forced
           && stage.receipt?.status==='UNVERIFIED' && stage.receipt.completed===true
           && identityMatches(stage.receipt,{runId:stageRunId,source}) && !resourceClosureUnconfirmed(stage.receipt)) {
           stage.status='NOT_RUN';stage.reason='NATIVE_BOUNDARY_UNVERIFIED';stage.failurePhase='ENVIRONMENT';
         }
         if(closed.forced || closed.signal!==null) unsafe=true;
-        if(resourceClosureUnconfirmed(stage.receipt) || stage.receipt?.results?.some(item=>item.receiptCleanupError)) unsafe=true;
+        if(resourceClosureUnconfirmed(stage.receipt) || resourceClosureUnconfirmed(testRun) || stage.receipt?.results?.some(item=>item.receiptCleanupError)) unsafe=true;
       } catch(error) {
         stage.status='FAIL';stage.error=error.message;stage.cleanupError=error.cleanupError;
-        stage.failurePhase=error.cleanupError?'CLEANUP':error.code==='E2E_RUNNER_DEADLINE'?'TIMEOUT':'EXECUTION';
+        stage.failurePhase=error.cleanupError || resourceClosureUnconfirmed(testRun)?'CLEANUP':error.code==='E2E_RUNNER_DEADLINE'?'TIMEOUT':'EXECUTION';
         // A deadline/cleanup error leaves resource ownership uncertain. Ordinary
         // assertion/evidence failures are independent and do not block siblings.
-        if(error.cleanupError || error.code==='E2E_RUNNER_DEADLINE') unsafe=true;
+        if(error.cleanupError || resourceClosureUnconfirmed(testRun) || error.code==='E2E_RUNNER_DEADLINE') unsafe=true;
       }
       try {
         const collected=path.join(stageDirectory,'evidence');fs.mkdirSync(collected);
