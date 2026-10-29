@@ -3,10 +3,11 @@ import test from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath, pathToFileURL} from 'node:url';
 import {setTimeout as wait} from 'node:timers/promises';
 import {reporter, fileTimeoutMs, runFile, runFiles} from '../../scripts/run-tests.mjs';
 import {removeOwnedPipeFixture} from '../helpers/inherited-pipes-fixture.js';
+import {runOwnedNode} from '../../scripts/e2e/platform/process.mjs';
 
 test('file gate distinguishes process timeout, exit and missing completion receipt', {timeout:30000}, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'bridge-gate-contract-'));
@@ -105,4 +106,50 @@ test('cleanup contract has a separate file budget from ordinary tests', () => {
   const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
   assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/runtime-cleanup/contract.test.js')),720000);
   assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/test-completion-gate.test.js')),180000);
+});
+
+test('diagnostic fixture callers close logs and retry transient locks across snapshot, history and runtime contracts', {timeout:160000}, async t => {
+  const repository=fileURLToPath(new URL('../../',import.meta.url));
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'bridge-fixture-callers-'));
+  const evidence=path.join(root,'locks.jsonl'), preload=path.join(root,'locks.mjs');
+  fs.writeFileSync(preload,`
+import fs from 'node:fs';import path from 'node:path';
+const owned=/^(?:bridge-(?:snapshot-diagnostic|history-http)-|\\.runtime-cleanup-contract-)/u;
+const logs=new Map(), attempts=new Map(), codes=['EBUSY','EPERM','ENOTEMPTY','EACCES'];
+const open=fs.openSync, close=fs.closeSync, remove=fs.promises.rm;
+fs.openSync=function(file,...args){
+ const fd=open.call(this,file,...args), name=String(file);
+ if(['events.jsonl','server.jsonl'].includes(path.basename(name))&&name.split(path.sep).some(part=>owned.test(part)))logs.set(fd,name);
+ return fd;
+};
+fs.closeSync=function(fd){const result=close.call(this,fd);logs.delete(fd);return result;};
+fs.promises.rm=async function(directory,options){
+ const target=String(directory), name=path.basename(target);
+ if(owned.test(name)){
+  if([...logs.values()].some(file=>file.startsWith(target+path.sep)))throw Object.assign(new Error('fixture deletion preceded diagnostic log closure'),{code:'FIXTURE_LOG_STILL_OPEN'});
+  const attempt=(attempts.get(target)??0)+1;attempts.set(target,attempt);
+  const code=codes[attempt-1];
+  fs.appendFileSync(${JSON.stringify(evidence)},JSON.stringify({name,attempt,code:code??null})+'\\n');
+  if(code)throw Object.assign(new Error('controlled transient lock'),{code});
+ }
+ return remove.call(this,directory,options);
+};
+`);
+  let output='';
+  try {
+    const options=[process.env.NODE_OPTIONS,'--import='+pathToFileURL(preload).href].filter(Boolean).join(' ');
+    const env={...process.env,NODE_OPTIONS:options};delete env.NODE_TEST_CONTEXT;
+    const result=await runOwnedNode(['--experimental-sqlite','--test','--test-reporter=tap','--test-concurrency=1',
+      '--test-name-pattern=real controller SQLite contention|cold and invalidated real history|^T00 ',
+      'tests/dashboard-snapshot-diagnostics.test.js','tests/platform/code-history-http.test.js','tests/runtime-cleanup/contract.test.js'],
+      {cwd:repository,env,timeoutMs:150000,onStdout:chunk=>{output=(output+chunk).slice(-12000);},onStderr:chunk=>{output=(output+chunk).slice(-12000);}});
+    assert.deepEqual(result,{code:0,signal:null,forced:false},output);
+    const records=fs.readFileSync(evidence,'utf8').trim().split('\n').map(line=>JSON.parse(line));
+    for(const prefix of ['bridge-snapshot-diagnostic-','bridge-history-http-','.runtime-cleanup-contract-']){
+      const observations=records.filter(record=>record.name.startsWith(prefix));
+      assert.deepEqual([...new Set(observations.map(record=>record.code).filter(Boolean))].sort(),['EACCES','EBUSY','ENOTEMPTY','EPERM']);
+      assert.ok(observations.some(record=>record.code===null),'caller must reach actual removal after bounded retries');
+    }
+    t.diagnostic('All three diagnostic fixture families closed logs and recovered from four injected lock errors.');
+  } finally {await removeOwnedPipeFixture(root);}
 });

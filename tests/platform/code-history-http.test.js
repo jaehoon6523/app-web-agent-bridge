@@ -12,6 +12,7 @@ import { SqliteStore } from "../../src/persistence/sqlite-store.js";
 import { observeChildClose, waitChildClose } from "../../src/runtime/child-close.js";
 import { runDiagnosticServer } from "../../scripts/diagnose-server.mjs";
 import { seedHistory, appendHistory } from "../helpers/code-history-fixture.js";
+import { removeOwnedFixture } from "../../scripts/e2e/helpers/owned-fixture.mjs";
 
 async function serverFixture(t, {corrupt = false} = {}) {
   const fixtureStarted=performance.now(), timing={phases:[]};
@@ -42,6 +43,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
   }}).then(async closure => { await child.diagnosticsClosed; return closure; });
   t.after(async () => {
     const closeStarted=performance.now();
+    const errors=[];
     let resourcesClosed=false;
     try {
       // Abort cancels fixture work too. Observe its worker exit before removing
@@ -49,8 +51,8 @@ async function serverFixture(t, {corrupt = false} = {}) {
       await pendingAppend?.catch(() => {});
       const closure=await stop();resourcesClosed=true;
       assert.deepEqual(closure, {code:0,signal:null});
-    }
-    finally {
+    } catch(error) {errors.push(error);}
+    try {
       timing.closeMs=performance.now()-closeStarted;
       timing.totalMs=performance.now()-fixtureStarted;
       t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,timing,
@@ -59,8 +61,10 @@ async function serverFixture(t, {corrupt = false} = {}) {
         lastCheckpoints:events.filter(event=>/history|runtime.initialization/u.test(event.type)).slice(-12)
           .map(({type,elapsedMs,errorCode})=>({type,elapsedMs,errorCode}))}));
       t.evidence.preserve(root);t.evidence.copy(path.join(root,"events.jsonl"),"server-events.jsonl");
-      if(resourcesClosed)fs.rmSync(root, {recursive:true,force:true});
-    }
+    } catch(error) {errors.push(error);}
+    if(resourcesClosed)try {await removeOwnedFixture(root);} catch(error) {errors.push(error);}
+    if(errors.length===1)throw errors[0];
+    if(errors.length)throw new AggregateError(errors,errors.map(error=>`${error.code??error.name}: ${error.message}`).join('\n'),{cause:errors[0]});
   });
   async function until(predicate, after = 0) {
     const found = events.slice(after).find(predicate);

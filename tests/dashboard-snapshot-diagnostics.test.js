@@ -12,6 +12,7 @@ import { CodeChangeStore } from "../src/persistence/code-change-store.js";
 import { loadConfig } from "../src/config.js";
 import { observeChildClose, waitChildClose } from "../src/runtime/child-close.js";
 import { runDiagnosticServer } from "../scripts/diagnose-server.mjs";
+import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
 
 function codeRuntime(calls, fail = null) {
   const runs = ["private-first-run", "private-second-run"].map((runId, index) => ({
@@ -102,17 +103,27 @@ test("real controller SQLite contention preserves independent HTTP responses and
   const child = runDiagnosticServer({runtimeConfig, outputFile:path.join(root, "events.jsonl"),
     onEvent:event => { events.push(event); changed.emit("event", event); }});
   const observation = observeChildClose(child);
-  let locker, locked = false;
+  let locker, bodyError, locked = false;
   t.after(async () => {
-    if (locked) locker.exec("ROLLBACK");
-    locker?.close();
-    const result = await waitChildClose(child, observation, {timeoutMs:8000, request:() => {
-      if (child.connected) child.send({type:"bridge.shutdown"});
-    }});
-    await child.diagnosticsClosed;
-    assert.deepEqual(result, {code:0,signal:null});
-    fs.rmSync(root, {recursive:true,force:true});
+    const errors=[];
+    let storageClosed=false, childClosed=false;
+    try { if (locked) locker.exec("ROLLBACK"); } catch(error) {errors.push(error);}
+    try { locker?.close();storageClosed=true; } catch(error) {errors.push(error);}
+    try {
+      const result = await waitChildClose(child, observation, {timeoutMs:8000, request:() => {
+        if (child.connected) child.send({type:"bridge.shutdown"});
+      }});
+      await child.diagnosticsClosed;childClosed=true;
+      assert.deepEqual(result, {code:0,signal:null});
+    } catch(error) {errors.push(error);}
+    if(storageClosed && childClosed)try {await removeOwnedFixture(root);} catch(error) {errors.push(error);}
+    if(errors.length){
+      if(bodyError)errors.unshift(bodyError);
+      if(errors.length===1)throw errors[0];
+      throw new AggregateError(errors,errors.map(error=>`${error.code??error.name}: ${error.message}`).join('\n'),{cause:errors[0]});
+    }
   });
+  try {
   async function until(predicate) {
     const found = events.find(predicate);
     if (found) return found;
@@ -156,4 +167,5 @@ test("real controller SQLite contention preserves independent HTTP responses and
   const completed = await until(event => event.type === "state.snapshot.runtime.completed" && event.snapshotId > start.snapshotId);
   assert.doesNotMatch(fs.readFileSync(path.join(root, "events.jsonl"), "utf8"), new RegExp(token));
   t.diagnostic(JSON.stringify({snapshot:start, independentHttp:probes, unavailable:unavailable.runtimeAvailability, completed}));
+  } catch(error) {bodyError=error;throw error;}
 });

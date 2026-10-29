@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { ChildProcess } from 'node:child_process';
 import { skippedTests, summarizeRun } from '../../scripts/e2e/summary.mjs';
+import { productionProcess } from '../../scripts/e2e/helpers/process.mjs';
+import { removeOwnedFixture } from '../../scripts/e2e/helpers/owned-fixture.mjs';
+import { observeChildClose, waitChildClose } from '../../src/runtime/child-close.js';
 const profiles = [
   { id:'UF-01A', specWave:'W1-4 COMPLETE', execution:'RUNNABLE' },
   { id:'UF-05', specWave:'W1-4 COMPLETE', execution:'BLOCKED', gap:'H-EXT + H-PREP: missing transport' },
@@ -52,4 +58,57 @@ test('full observed closure has a bounded full-profile verdict without blocked c
   const summary=summarizeRun([profiles[0]],new Map([['UF-01A',{outcome:'PASS'}]]),[]);
   assert.equal(summary.continuationBlocked,0);
   assert.equal(summary.verdict,'FULL_PROFILE_PASS_CONTROLLED_EXTERNAL_BOUNDARIES');
+});
+
+test('production disposal preserves its workspace while an observed active Worker is still alive', {timeout:20000}, async t => {
+  const fixture = await productionProcess({worker:'active'});
+  const observed = path.join(fixture.workspace,'worker-observed.json');
+  t.after(async () => {
+    fs.rmSync(observed,{force:true});
+    await fixture.dispose();
+  });
+  await fixture.ready();
+  // This liveness marker is the test process; disposal must observe it without killing it.
+  fs.writeFileSync(observed,JSON.stringify({pid:process.pid}));
+  await assert.rejects(fixture.dispose(),error => {
+    assert.ok(error instanceof AggregateError);
+    assert.ok(error.errors.some(cause => /active Worker child must exit/u.test(cause.message)));
+    return true;
+  });
+  assert.ok(fs.existsSync(observed),'unconfirmed Worker ownership keeps the entire fixture');
+  fixture.assertShutdown(fixture.logs().shutdown);
+});
+
+test('production disposal preserves closure errors and its workspace after a child shutdown deadline', {timeout:20000}, async t => {
+  const spawn = ChildProcess.prototype.spawn;
+  let child, observation;
+  t.mock.method(ChildProcess.prototype,'spawn',function(...args) {
+    const result=spawn.apply(this,args);
+    if(this.connected) {
+      child=this;observation=observeChildClose(child);
+      const send=child.send;
+      t.mock.method(child,'send',function(message,...rest) {
+        if(message?.type==='bridge.shutdown')return true;
+        return send.call(this,message,...rest);
+      });
+    }
+    return result;
+  });
+  const fixture = await productionProcess();
+  t.after(async () => {
+    if(child && !observation.result) {
+      child.kill('SIGKILL');
+      await waitChildClose(child,observation,{timeoutMs:3000});
+    }
+    if(observation?.result)await removeOwnedFixture(fixture.workspace);
+  });
+  await fixture.ready();
+  await assert.rejects(fixture.dispose(),error => {
+    assert.ok(error instanceof AggregateError);
+    assert.ok(error.errors.some(cause => cause.code==='CHILD_CLOSE_DEADLINE'));
+    return true;
+  });
+  assert.equal(fixture.logs().shutdown.closureError,'CHILD_CLOSE_DEADLINE');
+  assert.ok(fs.existsSync(fixture.workspace),'a closure failure preserves the owned workspace');
+  assert.ok(observation.result,'containment must close the real child before test cleanup');
 });

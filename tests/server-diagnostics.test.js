@@ -118,7 +118,7 @@ test("a failing diagnostic sink cannot change authentication or HTTP results",as
   const config={...loadConfig({env:{CONTROLLER_DATA_DIR:root}}),port:0};
   const bridge=createBridgeServer({runtimeConfig:config,onDiagnostic:()=>{throw Error("sink failed")}});
   await bridge.listen();
-  t.after(async()=>{await bridge.close();fs.rmSync(root,{recursive:true,force:true})});
+  t.after(async()=>{await bridge.close();await removeOwnedFixture(root);});
   const base=`http://127.0.0.1:${bridge.server.address().port}`;
   const preflight=await fetch(base+"/api/preflight",{signal:AbortSignal.timeout(1000)});assert.equal(preflight.status,200);await preflight.text();
   const unauthorized=await fetch(base+"/api/state",{signal:AbortSignal.timeout(1000)});assert.equal(unauthorized.status,401);await unauthorized.text();
@@ -128,6 +128,6 @@ test("a failing diagnostic sink cannot change authentication or HTTP results",as
 test("successful preparation initialization keeps native SQLite calls fail-fast",t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"bridge-preparation-lock-policy-"));
   const service=new PreparationService({filename:path.join(root,"preparation.sqlite"),web:null,available:()=>false,assertStart:async()=>{},approve:async()=>{},findRun:async()=>null});
-  t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true})});
+  t.after(async()=>{service.close();await removeOwnedFixture(root);});
   assert.equal(service.db.prepare("PRAGMA busy_timeout").get().timeout,0);
 });
