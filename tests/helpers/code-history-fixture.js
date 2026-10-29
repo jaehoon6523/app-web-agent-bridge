@@ -1,7 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { Worker, isMainThread, workerData } from "node:worker_threads";
 import { CodeChangeStore } from "../../src/persistence/code-change-store.js";
-import { canonicalJson, sha256CanonicalJson } from "../../src/domain/canonical-json.js";
+import { canonicalJson, sha256CanonicalJson, sha256Text } from "../../src/domain/canonical-json.js";
 
 // Actual cumulative records and canonical hash chain, independently written in
 // one transaction. No delayed response, fake verifier or mocked SQLite handle.
@@ -17,7 +17,7 @@ export function seedHistory(filename, {versions = 8, eventBytes = 32, legacy = f
       events.push({type:"STATE_CHANGED", detail:"x".repeat(eventBytes), version});
       record = {runId, version, schemaVersion:3, stage:"CANCELLED", events, objective:"history contract",
         createdAt:"2026-10-05T00:00:00.000Z", updatedAt:"2026-10-05T00:00:00.000Z"};
-      json = canonicalJson(record); hash = sha256CanonicalJson(record);
+      json = canonicalJson(record); hash = sha256Text(json);
       const headHash = sha256CanonicalJson({kind:"CODE_CHANGE_HISTORY",runId,version,recordHash:hash,previousHash});
       insert.run(runId, version, json, hash, legacy ? null : previousHash, legacy ? null : headHash);
       previousHash = headHash;
@@ -53,7 +53,7 @@ if (!isMainThread && workerData?.appendHistory) {
   const {filename,record} = workerData.appendHistory;
   const writer = new DatabaseSync(filename);
   try {
-    const json = canonicalJson(record), hash = sha256CanonicalJson(record);
+    const json = canonicalJson(record), hash = sha256Text(json);
     const previousHash = writer.prepare("SELECT entry_hash FROM code_change_history ORDER BY version DESC LIMIT 1").get().entry_hash;
     const headHash = sha256CanonicalJson({kind:"CODE_CHANGE_HISTORY",runId:record.runId,version:record.version,recordHash:hash,previousHash});
     writer.exec("BEGIN IMMEDIATE");
