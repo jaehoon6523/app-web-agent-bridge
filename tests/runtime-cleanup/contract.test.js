@@ -239,7 +239,9 @@ async function serverProbe(context, config) {
   const child = runDiagnosticServer({runtimeConfig:context.runtimeConfig, outputFile:path.join(context.work,'server.jsonl'),
     onEvent:event => { events.push(event); changed.emit('event',event); }});
   const observation = observeChildClose(child); let stopped;
-  const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {if(child.connected) child.send({type:'bridge.shutdown'});}});
+  const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {if(child.connected) child.send({type:'bridge.shutdown'});}})
+    .then(async closure => { await child.diagnosticsClosed; context.resourcesClosed=true; return closure; });
+  context.resourcesClosed=false;
   async function until(type) {
     if (events.some(e => e.type === type)) return;
     let timer, listener;
@@ -281,6 +283,7 @@ const selected = process.env.RUNTIME_CLEANUP_IDS?.split(',');
 for (const config of definitions.filter(c => !selected || selected.includes(c.id))) {
   test(config.id+' '+config.paths.join(' → '), {timeout:30000}, async t => {
     const root = fs.mkdtempSync(path.join(repository,'.runtime-cleanup-contract-'));
+    let server;
     const evidenceRoot = path.resolve(process.env.RUNTIME_CLEANUP_EVIDENCE ?? path.join(repository,'evidence/runtime-cleanup'));
     fs.mkdirSync(evidenceRoot, {recursive:true});
     const evidence = {id:config.id, paths:config.paths, ...identity, injection:config,
@@ -292,7 +295,7 @@ for (const config of definitions.filter(c => !selected || selected.includes(c.id
       evidence.operation = errorGraph(result.operation); evidence.closure = errorGraph(result.closure);
       evidence.attemptErrors = result.attemptErrors?.map(error => errorGraph(error));
       evidence.directEvents = result.events; evidence.directInjection = readInjection(direct); evidence.directSourceHashes = direct.copies;
-      const server = prepare(root, config, 'server');
+      server = prepare(root, config, 'server');
       const observed = await serverProbe(server, config);
       evidence.pendingHttpError = observed.pendingError; evidence.http = observed.http; evidence.ready = observed.state?.runtimeAvailability?.ready;
       evidence.knowledge = observed.state?.dataKnowledge?.runs?.status;
@@ -387,7 +390,7 @@ for (const config of definitions.filter(c => !selected || selected.includes(c.id
     finally {
       fs.writeFileSync(path.join(evidenceRoot,config.id+'.json'),JSON.stringify(evidence,null,2)+'\n');
       t.diagnostic(JSON.stringify({id:config.id,verdict:evidence.verdict,childClosure:evidence.childClosure,log:path.join(evidenceRoot,config.id+'.json')}));
-      fs.rmSync(root,{recursive:true,force:true});
+      if(server?.resourcesClosed!==false)fs.rmSync(root,{recursive:true,force:true});
     }
   });
 }

@@ -5,6 +5,7 @@ import { fork } from "node:child_process";
 import { performance } from "node:perf_hooks";
 import { loadConfig } from "../src/config.js";
 import { watchServerProcess } from "./server-watchdog.mjs";
+import { observeChildClose } from "../src/runtime/child-close.js";
 
 export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {}, recordHeartbeats=false }) {
   fs.mkdirSync(path.dirname(outputFile), {recursive:true});
@@ -31,6 +32,7 @@ export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {
   const stopWatchdog = watchServerProcess(child, record, {onHeartbeat:recordHeartbeats ? record : undefined});
   let stopped = false;
   let probing = false;
+  let probeBatch = Promise.resolve();
   const aborts = new Set();
   async function probe(route) {
     const started = performance.now();
@@ -46,23 +48,35 @@ export function runDiagnosticServer({ runtimeConfig, outputFile, onEvent=() => {
     } finally { clearTimeout(deadline); aborts.delete(abort); }
   }
   // Probe only reads. No automatic retries of a mutation or token issuance.
-  const probes = setInterval(async () => {
+  const probes = setInterval(() => {
     if (probing || stopped) return;
     probing = true;
-    try { await Promise.all([probe("/api/preflight"), probe("/api/health")]); }
-    finally { probing = false; }
+    probeBatch = Promise.allSettled([probe("/api/preflight"), probe("/api/health")])
+      .then(results => {
+        const errors = results.filter(result => result.status === "rejected").map(result => result.reason);
+        if (errors.length) throw new AggregateError(errors, "Diagnostic probes failed");
+        probing = false;
+      });
+    probeBatch.catch(() => {});
   }, 1000);
-  child.once("close", (code, signal) => {
-    record({ type:"process.exited", code, signal });
+  const diagnosticsClosed = observeChildClose(child).promise.then(async closure => {
     stopped = true;
     clearInterval(probes);
     stopWatchdog();
     for (const abort of aborts) abort.abort();
-    fs.closeSync(fd);
+    const errors = [];
+    try { record({ type:"process.exited", ...closure }); } catch (error) { errors.push(error); }
+    try { await probeBatch; } catch (error) { errors.push(error); }
+    try { fs.closeSync(fd); } catch (error) { errors.push(error); }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, "Diagnostic resource cleanup failed");
+    return closure;
   });
-  child.once("error", () => record({type:"process.error"}));
+  // Owners await the original promise; an early child exit must not race their handler registration.
+  diagnosticsClosed.catch(() => {});
+  child.once("error", () => { if (!stopped) record({type:"process.error"}); });
   child.send({ runtimeConfig });
-  return child;
+  return Object.assign(child, { diagnosticsClosed });
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
@@ -70,6 +84,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (args.length && (args.length !== 2 || args[0] !== "--output")) throw new Error("Usage: npm run diagnose:server -- [--output new-file.jsonl]");
   const outputFile = path.resolve(args[1] ?? path.join(".agent-controller", "diagnostics", `server-${Date.now()}.jsonl`));
   const child = runDiagnosticServer({runtimeConfig:loadConfig(),outputFile});
+  child.diagnosticsClosed.catch(error => { console.error("Diagnostic cleanup failed:", error); process.exitCode = 1; });
   console.log(`Diagnostic log: ${outputFile}`);
   for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => {
     child.kill(signal);

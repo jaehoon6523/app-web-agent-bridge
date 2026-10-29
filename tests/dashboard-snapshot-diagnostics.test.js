@@ -109,6 +109,7 @@ test("real controller SQLite contention preserves independent HTTP responses and
     const result = await waitChildClose(child, observation, {timeoutMs:8000, request:() => {
       if (child.connected) child.send({type:"bridge.shutdown"});
     }});
+    await child.diagnosticsClosed;
     assert.deepEqual(result, {code:0,signal:null});
     fs.rmSync(root, {recursive:true,force:true});
   });

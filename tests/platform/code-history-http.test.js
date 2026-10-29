@@ -39,14 +39,16 @@ async function serverFixture(t, {corrupt = false} = {}) {
   let stopped, pendingAppend;
   const stop = () => stopped ??= waitChildClose(child, observation, {timeoutMs:8000, request:() => {
     if (child.connected) child.send({type:"bridge.shutdown"});
-  }});
+  }}).then(async closure => { await child.diagnosticsClosed; return closure; });
   t.after(async () => {
     const closeStarted=performance.now();
+    let resourcesClosed=false;
     try {
       // Abort cancels fixture work too. Observe its worker exit before removing
       // the database, including when node:test has already ended the test body.
       await pendingAppend?.catch(() => {});
-      assert.deepEqual(await stop(), {code:0,signal:null});
+      const closure=await stop();resourcesClosed=true;
+      assert.deepEqual(closure, {code:0,signal:null});
     }
     finally {
       timing.closeMs=performance.now()-closeStarted;
@@ -57,7 +59,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
         lastCheckpoints:events.filter(event=>/history|runtime.initialization/u.test(event.type)).slice(-12)
           .map(({type,elapsedMs,errorCode})=>({type,elapsedMs,errorCode}))}));
       t.evidence.preserve(root);t.evidence.copy(path.join(root,"events.jsonl"),"server-events.jsonl");
-      fs.rmSync(root, {recursive:true,force:true});
+      if(resourcesClosed)fs.rmSync(root, {recursive:true,force:true});
     }
   });
   async function until(predicate, after = 0) {

@@ -10,6 +10,7 @@ import {loadConfig} from '../../src/config.js';
 import {SqliteStore} from '../../src/persistence/sqlite-store.js';
 import {observeChildClose,waitChildClose} from '../../src/runtime/child-close.js';
 import {seedHistory} from '../helpers/code-history-fixture.js';
+import {removeOwnedFixture} from '../../scripts/e2e/helpers/owned-fixture.mjs';
 
 const repository=fileURLToPath(new URL('../../',import.meta.url));
 const cases=[
@@ -25,7 +26,8 @@ for(const config of cases){
     // Repository ancestor resolves installed dependencies on both platforms;
     // no POSIX symlinks, shell processes or Windows symlink privileges needed.
     const root=fs.mkdtempSync(path.join(repository,'.history-http-closure-'));
-    let stop;
+    let stop, bodyCompleted=false;
+    const failures=[];
     try{
       const program=path.join(root,'program');fs.mkdirSync(program);
       fs.cpSync(path.join(repository,'src'),path.join(program,'src'),{recursive:true});
@@ -52,7 +54,8 @@ for(const config of cases){
       const {runDiagnosticServer}=await import(pathToFileURL(path.join(program,'scripts/diagnose-server.mjs')));
       const child=runDiagnosticServer({runtimeConfig,outputFile:path.join(root,'events.jsonl'),onEvent:event=>{events.push(event);changed.emit('event',event);}});
       const observation=observeChildClose(child);let stopped;
-      stop=()=>stopped??=waitChildClose(child,observation,{timeoutMs:8000,request:()=>{if(child.connected)child.send({type:'bridge.shutdown'});}});
+      stop=()=>stopped??=waitChildClose(child,observation,{timeoutMs:8000,request:()=>{if(child.connected)child.send({type:'bridge.shutdown'});}})
+        .then(async closure=>{await child.diagnosticsClosed;return closure;});
       async function until(type){
         if(events.some(event=>event.type===type))return;
         let listener,timer;
@@ -85,8 +88,17 @@ for(const config of cases){
       assert.ok(events.some(event=>event.type==='shutdown.ipc.start'));
       assert.ok(events.some(event=>event.type==='shutdown.stage.done' && event.stage==='HTTP server close'));
       fs.unlinkSync(runtimeConfig.persistence.databasePath);
+      bodyCompleted=true;
+    }catch(error){
+      failures.push(error);
     }finally{
-      try{if(stop)await stop();}finally{fs.rmSync(root,{recursive:true,force:true});}
+      let resourcesClosed=!stop;
+      try{if(stop)await stop();resourcesClosed=true;}catch(error){if(!failures.includes(error))failures.push(error);}
+      t.diagnostic(JSON.stringify({case:config.id,bodyCompleted,resourcesClosed}));
+      // Preserve a fixture whose owned resources did not confirm closure.
+      if(resourcesClosed)try{await removeOwnedFixture(root);}catch(error){failures.push(error);}
     }
+    if(failures.length===1)throw failures[0];
+    if(failures.length)throw new AggregateError(failures,'HTTP closure body and cleanup failed');
   });
 }
