@@ -142,7 +142,7 @@ fs.promises.rm=async function(directory,options){
     const result=await runOwnedNode(['--experimental-sqlite','--test','--test-reporter=tap','--test-concurrency=1',
       '--test-name-pattern=real controller SQLite contention|cold and invalidated real history|^T00 ',
       'tests/dashboard-snapshot-diagnostics.test.js','tests/platform/code-history-http.test.js','tests/runtime-cleanup/contract.test.js'],
-      {cwd:repository,env,timeoutMs:150000,onStdout:chunk=>{output=(output+chunk).slice(-12000);},onStderr:chunk=>{output=(output+chunk).slice(-12000);}});
+      {cwd:repository,env,timeoutMs:150000,onStdout:chunk=>{output+=chunk;},onStderr:chunk=>{output+=chunk;}});
     assert.deepEqual(result,{code:0,signal:null,forced:false},output);
     const records=fs.readFileSync(evidence,'utf8').trim().split('\n').map(line=>JSON.parse(line));
     for(const prefix of ['bridge-snapshot-diagnostic-','bridge-history-http-','.runtime-cleanup-contract-']){
