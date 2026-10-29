@@ -77,9 +77,16 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     base = "http://127.0.0.1:" + (await bridge.listen()).port;
   };
   const headers = { authorization: "Bearer " + token, origin: config.baseUrl, "content-type": "application/json" };
-  const post = (url, body) => fetch(base + url, { method: "POST", headers, body: JSON.stringify(body) });
+  const request = async (url, options) => {
+    try { return await fetch(base + url, options); }
+    catch (error) {
+      console.error("[preparation-api fetch]", JSON.stringify({method:options.method ?? "GET", path:url.split("?")[0], causeCode:error.cause?.code ?? null}));
+      throw error;
+    }
+  };
+  const post = (url, body) => request(url, { method: "POST", headers, body: JSON.stringify(body) });
   const state = async (query = "") => {
-    const response = await fetch(base + "/api/state" + query, { headers });
+    const response = await request("/api/state" + query, { headers });
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
