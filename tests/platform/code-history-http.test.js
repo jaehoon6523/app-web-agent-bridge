@@ -66,7 +66,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
     if(errors.length===1)throw errors[0];
     if(errors.length)throw new AggregateError(errors,errors.map(error=>`${error.code??error.name}: ${error.message}`).join('\n'),{cause:errors[0]});
   });
-  async function until(predicate, after = 0) {
+  async function until(predicate, after = 0, timeoutMs = 12000) {
     const found = events.slice(after).find(predicate);
     if (found) return found;
     let listener, timer;
@@ -75,7 +75,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
         listener = event => { if (predicate(event)) resolve(event); };
         changed.on("event", listener);
         timer = setTimeout(() => reject(new Error("Missing history checkpoint "+predicate.toString()+": "+JSON.stringify(
-          events.slice(after).filter(event => /history|runtime|snapshot/u.test(event.type)).slice(-20)))), 12000);
+          events.slice(after).filter(event => /history|runtime|snapshot/u.test(event.type)).slice(-20)))), timeoutMs);
       });
     } finally { changed.off("event", listener); clearTimeout(timer); }
   }
@@ -121,7 +121,8 @@ test("cold and invalidated real history verification keep independent HTTP respo
       assert.equal(first.runtimeAvailability.code, "LIVE_RUNTIME_READ_TIMEOUT");
     }
     phaseTiming.stage='waiting for verification completion';
-    const completed = await server.until(event => event.type === "persistence.code-store.history-background.completed", checkpoint);
+    // History verification has a 60s production budget; keep short waits for other checkpoints.
+    const completed = await server.until(event => event.type === "persistence.code-store.history-background.completed", checkpoint, 60000);
     const ready = await server.read(); assert.equal(ready.status, 200);
     const state = await ready.json();
     assert.equal(state.runtimeAvailability.ready, true);
