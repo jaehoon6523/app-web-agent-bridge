@@ -5,6 +5,8 @@ function send(event) {
   if (process.connected) process.send(event, () => {});
 }
 let previous = performance.now();
+// End bootstrap silence before any server stage can inherit its heartbeat gap.
+send({ type:"heartbeat", at:new Date().toISOString(),monotonicMs:performance.timeOrigin+previous,loopDelayMs:0 });
 const heartbeat = setInterval(() => {
   const now = performance.now();
   send({ type:"heartbeat", at:new Date().toISOString(),monotonicMs:performance.timeOrigin+now,loopDelayMs:Math.max(0, now-previous-250) });

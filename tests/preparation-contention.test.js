@@ -5,6 +5,7 @@ import path from 'node:path';
 import net from 'node:net';
 import { Worker } from 'node:worker_threads';
 import { EventEmitter } from 'node:events';
+import { performance } from 'node:perf_hooks';
 import test from 'node:test';
 import { PreparationService } from '../src/orchestration/preparation-service.js';
 import { spawn } from 'node:child_process';
@@ -69,6 +70,23 @@ test('watchdog reports the current mutation request instead of an old state proj
   assert.equal(stall.requestId,'diagnostic-request');
 });
 
+test('watchdog does not call its own delayed timer a server stall',{timeout:30000},async t=>{
+  const child=new EventEmitter();const events=[];
+  let resolveObserved;
+  const observed=new Promise(resolve=>{resolveObserved=resolve});
+  const stop=watchServerProcess(child,event=>{
+    events.push(event);
+    if(event.type==='watchdog.observerDelayed') {
+      child.emit('message',{type:'heartbeat',loopDelayMs:0});
+      resolveObserved();
+    }
+  },{intervalMs:10,staleMs:30});t.after(stop);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,60);
+  await observed;
+  assert.ok(events.some(event=>event.type==='watchdog.observerDelayed'));
+  assert.equal(events.some(event=>event.type==='watchdog.unresponsive'),false);
+});
+
 for (const releaseMs of [1200,null]) test(`HTTP independent endpoints remain responsive during ${releaseMs ?? 'expired'} mutation lock`,{timeout:20000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'preparation-http-contention-'));
   const token='preparation-http-contention-token-0123456789';
@@ -81,10 +99,37 @@ for (const releaseMs of [1200,null]) test(`HTTP independent endpoints remain res
   const coldStartMs=releaseMs===1200 ? 1200 : 0;
   const script=`import {createBridgeServer} from ${JSON.stringify(serverUrl)};const bridge=createBridgeServer({runtimeConfig:${JSON.stringify(config)},onDiagnostic:e=>process.send(e),createLiveRuntime:async()=>{await new Promise(r=>setTimeout(r,${coldStartMs}));return {store:{listRuns:()=>[]},composition:{},codeChanges:{list:()=>[]},close:async()=>{}}}});await bridge.listen();process.send({type:'test.listening'});`;
   const child=spawn(process.execPath,['--input-type=module','-e',script],{env:{PATH:process.env.PATH,SystemRoot:process.env.SystemRoot},stdio:['ignore','ignore','pipe','ipc']});
+  const startupAt=performance.now();
+  let stderrBytes=0,stderrTail='',messageCount=0,lastMessageType=null,exit=null;
+  child.stderr.on('data',chunk=>{
+    stderrBytes+=chunk.length;
+    stderrTail=(stderrTail+chunk.toString()).slice(-2048);
+  });
+  child.once('exit',(code,signal)=>{exit={code,signal}});
   const exited=new Promise(resolve=>child.once('close',resolve));
   t.after(async()=>{await closeLocks(t);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await exited;await removeOwnedFixture(root)});
   child.on('message',e=>events.push(e));
-  await new Promise((resolve,reject)=>{const deadline=setTimeout(()=>reject(Error('HTTP fixture startup deadline')),5000);child.on('message',e=>{if(e.type==='test.listening'){clearTimeout(deadline);resolve()}});child.once('error',reject)});
+  const startupEvidence=(event,error=null)=>({event,elapsedMs:Math.round(performance.now()-startupAt),pid:child.pid ?? null,
+    exit,exitCode:child.exitCode,signalCode:child.signalCode,messageCount,lastMessageType,
+    stderrBytes,stderrTail:stderrTail.replaceAll(token,'[REDACTED]').replaceAll('contention-fixture-secret-0123456789','[REDACTED]'),
+    error:error?.message ?? null});
+  await new Promise((resolve,reject)=>{
+    const finish=(event,error=null)=>{
+      clearTimeout(deadline);
+      child.off('message',onMessage);child.off('close',onClose);child.off('error',onError);
+      const evidence=startupEvidence(event,error);
+      t.diagnostic(JSON.stringify(evidence));
+      if(error)reject(Error(`${error.message}: ${JSON.stringify(evidence)}`,{cause:error}));else resolve();
+    };
+    const onMessage=message=>{
+      messageCount++;lastMessageType=message?.type ?? null;
+      if(message?.type==='test.listening')finish('fixture.ready');
+    };
+    const onClose=(code,signal)=>finish('fixture.closed',Error(`HTTP fixture closed before listening (code=${code}, signal=${signal})`));
+    const onError=error=>finish('fixture.error',error);
+    const deadline=setTimeout(()=>finish('fixture.deadline',Error('HTTP fixture startup deadline')),5000);
+    child.on('message',onMessage);child.once('close',onClose);child.once('error',onError);
+  });
   const base=config.baseUrl;
   const headers={authorization:`Bearer ${token}`,origin:config.baseUrl,'content-type':'application/json'};
   // First state includes lazy runtime/storage initialization. Its setup budget
@@ -160,4 +205,36 @@ test('read recovery publishes a completed approval receipt only after its recove
   assert.equal(f.service.receipt('approval').status,'PROCESSING');
   await release();await f.service.project(snapshot);
   assert.equal(f.service.receipt('approval').status,'COMPLETED');
+});
+
+test('diagnostic child publishes its first heartbeat before server initialization after a slow bootstrap',{timeout:15000},async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'diagnostic-bootstrap-'));
+  const probe=net.createServer();
+  await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
+  const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
+  const config=loadConfig({cwd:root,env:{WORKSPACE:root,CONTROLLER_DATA_DIR:root,PORT:String(port),
+    DASHBOARD_TOKEN:'bootstrap-dashboard-token-0123456789abcdef'}});
+  const {fileURLToPath}=await import('node:url');
+  const child=spawn(process.execPath,['--experimental-sqlite','--import',
+    'data:text/javascript,Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1700)',
+    fileURLToPath(new URL('../scripts/diagnose-server-child.mjs',import.meta.url))],
+    {stdio:['ignore','ignore','pipe','ipc'],windowsHide:true});
+  const messages=[],events=[];let stderr='';
+  child.stderr.on('data',chunk=>{stderr+=chunk});
+  child.on('message',event=>messages.push(event));
+  const stop=watchServerProcess(child,event=>events.push(event));
+  const closed=new Promise(resolve=>child.once('close',(code,signal)=>resolve({code,signal})));
+  t.after(async()=>{
+    stop();if(child.exitCode===null&&child.signalCode===null)child.kill();
+    await closed;await removeOwnedFixture(root);
+  });
+  child.send({runtimeConfig:config});
+  const deadline=Date.now()+10000;
+  while(!messages.some(event=>event.type==='server.listening') || !messages.some(event=>event.type==='heartbeat')) {
+    assert.ok(Date.now()<deadline,'Missing startup/heartbeat: '+stderr);
+    assert.equal(child.exitCode,null,stderr);
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  assert.equal(messages[0].type,'heartbeat','Bootstrap time must end before server stages can be attributed a heartbeat gap');
+  assert.equal(events.some(event=>event.type==='watchdog.unresponsive' && event.lastStage!=='process.starting'),false);
 });

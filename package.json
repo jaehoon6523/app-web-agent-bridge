@@ -48,6 +48,8 @@
     "test:history:budget": "node --test tests/platform/history-budget.contract.mjs",
     "verify:delivery-recovery": "node scripts/verify-delivery-recovery.mjs",
     "verify:all": "node --experimental-sqlite scripts/verify-all.mjs",
+    "verify:p1": "node --experimental-sqlite scripts/verify-all.mjs --scope=p1 --discovery-concurrency=2",
+    "verify:p1:repeat": "node scripts/repeat-verify-p1.mjs",
     "diagnose:windows": "node scripts/windows-diagnostics.mjs",
     "test:browser:core": "node scripts/run-tests.mjs scripts/browser-extension-suite.mjs scripts/content-lifecycle-browser-suite.mjs scripts/delivery-terminal-browser-suite.mjs scripts/preparation-critical-suite.mjs",
     "verify:browser-install": "node scripts/verification-browser.mjs"

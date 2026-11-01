@@ -71,3 +71,36 @@ are directly inspected separately. Registration does not close a defect.
 The tab UX plan declares eight stable required scenario IDs in verification-gui-contract.mjs. The producer records scheduledScenarios, scenarioResults and scenarioId on each assertion. Starting a scenario and completing it are separate events: completion requires at least one successful assertion. The consumer requires exact unique scheduled/result sets, PASS on every scenario, and successful observations for every required ID. Missing, duplicate, RUNNING/NOT_RUN, unobserved or other-source scenarios cannot authorize PASS. Assertion count 85 is observational, not an approval threshold. This proves declared behavioral boundary coverage, not immunity to deliberately weakened assertions within a boundary.
 
 Managed Linux Chromium preparation uses install --with-deps, including when a cached executable exists. Explicit UI_BROWSER_EXECUTABLE uses an external executable and records EXTERNAL_EXECUTABLE_LAUNCH_ONLY; it does not certify the managed Playwright dependency set. Browser launch/close is still required.
+
+
+## Reproducing the P1 stabilization candidate
+
+Use Node >=22.5, Git and npm. Preserve the candidate's working-tree bytes as
+well as its HEAD: HEAD alone does not identify an uncommitted candidate.
+The handoff bundle supplies changes.patch and all nonignored new source files;
+apply the patch at its recorded base HEAD, then extract the new files. Verify
+the resulting verificationSource sourceSha256 against the bundle receipt before
+running. The runner, verification-temp.mjs, diagnostics and failure reporter
+must accompany the existing tracked changes; copying only the runner is incomplete.
+
+Run `npm ci`, then `npm run verify:p1:repeat`. To preserve older results, set
+BRIDGE_P1_REPEAT_OUTPUT to a new directory outside the source inventory (for
+example a new directory under .agent-controller). Do not reuse a populated run
+directory. Five rounds are scheduled 30 minutes apart, with discovery concurrency
+2, at least 1 GiB available memory and 2 GiB disk; resource waiting is bounded at
+12 hours per round. A valid same-source test FAIL is retained while the remaining rounds run. A changed source, invalid result, abnormal termination or resource expiry stops collection. Rounds execute sequentially; a round exceeding 30 minutes delays the next start without overlap. Five
+same-source PASS rounds automatically invoke `npm run verify:all` once; the
+official result must also be PASS and candidateUnchanged=true.
+
+verify-all configures a fresh external temporary directory before testing.
+BRIDGE_VERIFICATION_TEMP_ROOT may select a writable external base; no particular
+PC path is required. An override inside the checkout fails before tests. Real
+Git checkout/worktree path probes and a child Node tmpdir probe must succeed.
+TEMP, TMP and TMPDIR are inherited by stage processes. The chosen path is recorded
+in resource-diagnostics/environment.json. Recreated checkouts must pass these
+same probes; a locally successful TEMP value is not a portable guarantee.
+
+Keep source bytes frozen until the five rounds and official Gate finish.
+Inspect plan.json, schedule.jsonl, each round's latest-verification.json and the
+official result. Expected OS exclusions remain explicit exclusions, never PASS.
+Local private logs can contain absolute paths; do not publish them as public logs.

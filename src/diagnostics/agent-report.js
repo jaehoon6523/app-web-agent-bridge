@@ -16,7 +16,9 @@ const deliveryId = uuid;
 const array = value => Array.isArray(value) ? value : [];
 /** @param {string} root @param {any} [options] */
 export async function repositoryObservation(root, {signal,onDiagnostic,execute = execFile} = {}) {
-  const read = args => new Promise(resolve => {
+  const read = args => new Promise((resolve,reject) => {
+    if(signal?.aborted){resolve(null);return;}
+    const windows=process.platform === "win32";
     // A read-only observation must not invoke repository/global fsmonitor hooks
     // or start a daemon whose lifetime is outside this report's owned child.
     const started = performance.now(), command = ['--no-optional-locks','-c','core.fsmonitor=false','-C',root,...args];
@@ -26,17 +28,44 @@ export async function repositoryObservation(root, {signal,onDiagnostic,execute =
     };
     event('agent.report.git.started');
     let outcome, childClosed = false, exitCode = null, exitSignal = null;
+    let timer, stopping=false, stopped=true, stopError, timedOut=false;
     const complete = () => {
-      if (!outcome || !childClosed) return;
+      if (!outcome || !childClosed || !stopped) return;
+      clearTimeout(timer);signal?.removeEventListener('abort',stop);
+      // Git for Windows' launcher can exit while its real Git still owns cwd.
+      // Only a successful tree kill or a natural Git exit confirms cancellation.
+      if(stopError && (exitSignal !== null || ![0,128].includes(exitCode))) {
+        event('agent.report.git.cleanup.failed',{pid:child.pid,code:stopError.code,terminationConfirmed:false});
+        reject(Object.assign(new Error('Git process tree cleanup failed',{cause:stopError}),{code:'GIT_TREE_CLEANUP_FAILED'}));return;
+      }
       const {error,stdout} = outcome;
       event('agent.report.git.completed',{elapsedMs:performance.now()-started,exitCode,errorCode:error?.code ?? null,
-        signal:exitSignal,timedOut:Boolean(error?.killed && !signal?.aborted),aborted:Boolean(signal?.aborted),terminationConfirmed:true});
-      resolve(error ? null : stdout);
+        signal:exitSignal,pid:child.pid,timedOut:timedOut || Boolean(error?.killed && !signal?.aborted),aborted:Boolean(signal?.aborted),terminationConfirmed:true});
+      resolve(error || signal?.aborted || timedOut ? null : stdout);
     };
-    // Abort can invoke the callback before close. Wait for both before releasing ownership.
-    const child = execute('git',command,{encoding:'utf8',timeout:1500,maxBuffer:1024*1024,windowsHide:true,signal},
+    const stop=()=>{
+      if(childClosed || stopping)return;
+      stopping=true;stopped=false;clearTimeout(timer);
+      execFile('taskkill.exe',['/PID',String(child.pid),'/T','/F'],{windowsHide:true,timeout:5000},error=>{
+        stopError=error;stopped=true;
+        if(error && child.exitCode === null && child.signalCode === null){
+          event('agent.report.git.cleanup.failed',{pid:child.pid,code:error.code,terminationConfirmed:false});
+          reject(Object.assign(new Error('Git process tree cleanup failed',{cause:error}),{code:'GIT_TREE_CLEANUP_FAILED'}));return;
+        }
+        complete();
+      });
+    };
+    // Windows cancellation must kill the tree before releasing the launcher.
+    // POSIX still waits for both the callback and close after AbortSignal.
+
+    const child = execute('git',command,{encoding:'utf8',timeout:windows?0:1500,maxBuffer:1024*1024,windowsHide:true,...(!windows?{signal}:{})},
       (error,stdout) => {outcome = {error,stdout};complete();});
-    child.once('close',(code,signal) => {childClosed = true;exitCode = code;exitSignal = signal;complete();});
+    child.once('close',(code,signal) => {childClosed = true;exitCode = code;exitSignal = signal;clearTimeout(timer);complete();});
+    if(windows){
+      timer=setTimeout(()=>{timedOut=true;stop();},1500);
+      signal?.addEventListener('abort',stop,{once:true});
+      if(signal?.aborted)stop();
+    }
   });
   const head = await read(['rev-parse','HEAD']);
   const status = signal?.aborted ? null : await read(['status','--porcelain','--untracked-files=normal']);

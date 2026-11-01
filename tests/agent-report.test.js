@@ -4,8 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { EventEmitter } from "node:events";
-import { execFileSync } from "node:child_process";
-import { createAutomaticAgentReport, summarizeTabs, summarizeDelivery, safeFailure, writeAgentReport } from "../src/diagnostics/agent-report.js";
+import { execFile, execFileSync } from "node:child_process";
+import { createAutomaticAgentReport, repositoryObservation, summarizeTabs, summarizeDelivery, safeFailure, writeAgentReport } from "../src/diagnostics/agent-report.js";
 import { collectSelectorDiagnostics, cancelSelectorDiagnostics } from "../src/orchestration/selector-diagnostics.js";
 
 function fixture(t) {
@@ -157,4 +157,23 @@ test('a connection change during collection remains unavailable instead of certi
   const result=await report.export();
   assert.equal(result.server.tabs,null);
   assert.equal(result.server.collection.code,'DIAGNOSTIC_CONNECTION_CHANGED');
+});
+
+for(const cancellation of ['abort','timeout']) test(`repository observation ${cancellation} terminates a Windows launcher's directory-owning child`, {skip:process.platform !== 'win32',timeout:15000}, async t => {
+  const root=fixture(t), marker=path.join(root,'owner.json'), controller=new AbortController();
+  execFileSync("git",["init","-q",root],{windowsHide:true});
+  let owner;
+  t.after(()=>{if(owner){try{process.kill(owner);}catch(error){if(error.code!=='ESRCH')throw error;}}});
+  const childCode=`require('node:fs').writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid}));setInterval(()=>{},1000);`;
+  fs.writeFileSync(path.join(root,'owner.cjs'),childCode);
+  const observed=repositoryObservation(root,{signal:controller.signal,
+    execute:(_file,_args,options,callback)=>execFile('git', ['-C',root,'-c','alias.bridge=!node owner.cjs','bridge'],options,callback)});
+  const deadline=Date.now()+5000;
+  while(!fs.existsSync(marker) && Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,10));
+  assert.ok(fs.existsSync(marker),'directory owner must start');
+  owner=JSON.parse(fs.readFileSync(marker,'utf8')).pid;
+  if(cancellation==='abort')controller.abort();
+  await observed;
+  assert.throws(()=>process.kill(owner,0),{code:'ESRCH'},'launcher closure must include its directory-owning child');
+  fs.rmSync(root,{recursive:true,force:true});
 });

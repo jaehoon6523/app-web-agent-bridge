@@ -91,8 +91,9 @@ export function ownedSpawn(args, { cwd, env = process.env, ipc = false, extraStd
 }
 
 export async function runOwnedNode(args, { cwd, env, timeoutMs, isComplete = () => false,
-  drainMs = 10000, signal, onStdout = () => {}, onStderr = () => {}, onDeadline = () => {}, containDescendants=false } = {}) {
+  drainMs = 10000, signal, onStdout = () => {}, onStderr = () => {}, onDeadline = () => {}, onSpawn = () => {}, containDescendants=false } = {}) {
   const child = ownedSpawn(args, { cwd, env });
+  onSpawn(child);
   const observation = observeChildClose(child);
   let descendants,timer,drainTimer,abort;
   const deadline = new Promise((_, reject) => {

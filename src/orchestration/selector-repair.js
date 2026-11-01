@@ -155,7 +155,7 @@ export async function generateSelectorRepair(options) {
     journal.append(phase, { jobId, baseCommit:state.baseCommit, diagnosticHash:state.diagnosticHash, ...metadata });
     state.stage = phase; save(directory, state);notify(phase,metadata);
   };
-  let worker, unsubscribe, workspace;
+  let worker, unsubscribe, workspace, primaryFailure;
   const control = new AbortController();
   const abort = () => control.abort();
   signal?.addEventListener("abort", abort, { once:true });
@@ -216,18 +216,39 @@ export async function generateSelectorRepair(options) {
     return { jobId, stage:state.stage, patchHash:capture.artifact.sha256, files:capture.changedFiles,
       patchFile:path.join(directory, "artifacts", capture.artifact.sha256.slice(7)), logFile:journal.filename };
   } catch (error) {
-    move("FAILED", { code:/^[A-Z_]+$/u.test(error.code ?? "") ? error.code : "REPAIR_FAILED" });
-    throw Object.assign(fail(error.code ?? "REPAIR_FAILED"), { jobId, logFile:journal.filename });
+    const code = error.code ?? (workspace === undefined && /^Git worktree failed:[\s\S]*Filename too long/u.test(error.message ?? "")
+      ? "REPAIR_WORKTREE_PATH_TOO_LONG" : "REPAIR_FAILED");
+    const failure = Object.assign(fail(code), { cause:error, jobId, logFile:journal.filename });
+    try { move("FAILED", { code:/^[A-Z_]+$/u.test(code) ? code : "REPAIR_FAILED" }); }
+    catch (recordError) {
+      primaryFailure = Object.assign(new AggregateError([failure, recordError], "REPAIR_FAILURE_RECORDING_FAILED", { cause:failure }),
+        { code:"REPAIR_FAILURE_RECORDING_FAILED", jobId, logFile:journal.filename });
+      throw primaryFailure;
+    }
+    primaryFailure = failure;
+    throw failure;
   } finally {
     clearTimeout(timer); signal?.removeEventListener("abort", abort); control.signal.removeEventListener("abort", rejectAbort);
     unsubscribe?.();
-    let safeToRelease = true;
-    try {
-      if (worker) {
-        try { await worker.close(); journal.append("WORKER_CLOSED", {jobId}); }
-        catch { safeToRelease = false; move("CLEANUP_FAILED", { code:"WORKER_CLEANUP_FAILED" }); throw Object.assign(fail("WORKER_CLEANUP_FAILED"), {jobId, logFile:journal.filename}); }
+    let cleanupError = null, safeToRelease = true;
+    if (worker) {
+      try { await worker.close(); journal.append("WORKER_CLOSED", {jobId}); }
+      catch (error) {
+        safeToRelease = false;
+        cleanupError = error;
+        try { move("CLEANUP_FAILED", { code:"WORKER_CLEANUP_FAILED" }); }
+        catch (recordError) { cleanupError = new AggregateError([error, recordError], "WORKER_CLEANUP_RECORDING_FAILED", { cause:error }); }
       }
-    } finally { if (safeToRelease) release(); }
+    }
+    if (safeToRelease) {
+      try { release(); }
+      catch (error) { cleanupError = error; }
+    }
+    if (cleanupError) {
+      const code = safeToRelease ? "REPAIR_LOCK_RELEASE_FAILED" : "WORKER_CLEANUP_FAILED";
+      throw Object.assign(new AggregateError(primaryFailure ? [primaryFailure, cleanupError] : [cleanupError], code,
+        { cause:primaryFailure ?? cleanupError }), { code, jobId, logFile:journal.filename });
+    }
   }
 }
 

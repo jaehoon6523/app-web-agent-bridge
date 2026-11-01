@@ -11,7 +11,11 @@ export async function waitForPreflight(url, { timeoutMs = 15000, checkAlive = ()
         checksPresent:Boolean(body?.checks && typeof body.checks === 'object' && !Array.isArray(body.checks)) };
       if (response.status === 200 && lastObservation.checksPresent) return { preflight:body, lastObservation };
     } catch (error) {
-      lastObservation = { kind:'READ_FAILURE', errorName:error.name };
+      const cause = error.cause;
+      lastObservation = { kind:'READ_FAILURE', errorName:error.name,
+        errorCode:error.code ?? null, causeCode:cause?.code ?? null,
+        causeSyscall:['connect','read','write','getaddrinfo'].includes(cause?.syscall) ? cause.syscall : null,
+        nestedCauseCodes:Array.isArray(cause?.errors) ? cause.errors.slice(0,4).map(item=>item?.code ?? null) : [] };
     }
     const remaining = deadline - Date.now();
     if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(50, remaining)));

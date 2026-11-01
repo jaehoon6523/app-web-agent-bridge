@@ -8,6 +8,7 @@ import { ownedSpawn, forceProcessTree } from '../platform/process.mjs';
 import { fileURLToPath } from 'node:url';
 import { waitForPreflight } from '../preflight-readiness.mjs';
 import { removeOwnedFixture } from './owned-fixture.mjs';
+import { recordProcess } from '../diagnostics.mjs';
 
 export const repository = fileURLToPath(new URL('../../../', import.meta.url));
 export const extensionCredentials = Object.freeze({ sharedSecret:'e2e-only-extension-secret-0123456789', extensionIdentity:'e2e-extension' });
@@ -49,6 +50,10 @@ export async function productionProcess({ configured = false, fault = null, work
     const baseUrl = `http://127.0.0.1:${port}`;
     const env = { PATH:process.env.PATH, HOST:'127.0.0.1', PORT:String(port), WORKSPACE:workspace, DEMO_MODE:'false', WEB_RESPONSE_TIMEOUT_MS:'10000' };
     for (const key of ['SystemRoot', 'WINDIR', 'TEMP', 'TMP']) if (process.env[key]) env[key] = process.env[key];
+    if (process.env.BRIDGE_E2E_DIAGNOSTICS_DIR) {
+      env.BRIDGE_E2E_DIAGNOSTICS_DIR = process.env.BRIDGE_E2E_DIAGNOSTICS_DIR;
+      env.NODE_OPTIONS = process.env.NODE_OPTIONS;
+    }
     if (configured) Object.assign(env, {
       WEB_EXTENSION_SHARED_SECRET:extensionCredentials.sharedSecret,
       WEB_EXTENSION_EXPECTED_IDENTITY:extensionCredentials.extensionIdentity,
@@ -78,6 +83,7 @@ export async function productionProcess({ configured = false, fault = null, work
     const launch = () => {
       spawnError = null; forced = false; sendError = null; stopping = null; closeError = null;
       child = ownedSpawn([path.join(repository, 'src/server.js')], { cwd:workspace, env, ipc:true });
+      recordProcess('server',child.pid);
       observation = observeChildClose(child);
       child.stdout.on('data', chunk => { stdout += chunk; });
       child.stderr.on('data', chunk => { stderr += chunk; });

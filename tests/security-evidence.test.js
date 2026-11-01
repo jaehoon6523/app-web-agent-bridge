@@ -28,8 +28,9 @@ test("redaction removes secret fields, authorization values, and configured path
   assert.equal(input.nested.apiKey, "super-secret");
 });
 
-test("artifact store is content-addressed and detects tampering", () => {
+test("artifact store is content-addressed and detects tampering", (t) => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "agent-artifacts-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const store = new ArtifactStore(directory);
   const receipt = store.put("redacted output", { mimeType: "text/plain", redacted: true });
   assert.equal(receipt.size, Buffer.byteLength("redacted output"));

@@ -14,9 +14,11 @@ import {
 import { RunService, RunServiceError } from "../src/orchestration/run-service.js";
 import { SqliteStore } from "../src/persistence/sqlite-store.js";
 
-function fixture() {
+function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "run-service-"));
-  const store = new SqliteStore(path.join(directory, "controller.sqlite"));
+  let store;
+  t.after(() => { try { store?.close(); } finally { fs.rmSync(directory, { recursive: true, force: true }); } });
+  store = new SqliteStore(path.join(directory, "controller.sqlite"));
   let tick = 0;
   const service = new RunService({
     store,
@@ -26,8 +28,8 @@ function fixture() {
   return { store, service };
 }
 
-test("RunService is the versioned single writer for state and event projection", () => {
-  const { store, service } = fixture();
+test("RunService is the versioned single writer for state and event projection", (t) => {
+  const { store, service } = fixture(t);
   const policy = createDiscussionRunPolicy({ maxTurns: 4 });
   const created = service.createRun({
     runId: "run-service-1",
@@ -53,11 +55,10 @@ test("RunService is the versioned single writer for state and event projection",
     }),
     (error) => error instanceof RunServiceError && error.code === "RUN_VERSION_CONFLICT",
   );
-  store.close();
 });
 
-test("pause and resume persist without changing the Controller-owned phase", () => {
-  const { store, service } = fixture();
+test("pause and resume persist without changing the Controller-owned phase", (t) => {
+  const { store, service } = fixture(t);
   const run = service.createRun({
     runId: "run-service-pause",
     objective: "pause semantics",
@@ -69,11 +70,10 @@ test("pause and resume persist without changing the Controller-owned phase", () 
   const resumed = service.resume({ runId: run.runId, expectedVersion: paused.version });
   assert.equal(resumed.paused, false);
   assert.equal(resumed.phase, RunPhase.CREATED);
-  store.close();
 });
 
-test("RunService exposes no evidence-free phase, blocker, or completion mutation", () => {
-  const { store, service } = fixture();
+test("RunService exposes no evidence-free phase, blocker, or completion mutation", (t) => {
+  const { store, service } = fixture(t);
   service.createRun({
     runId: "run-completion-guard",
     objective: "Reach evidence-backed consensus",
@@ -84,11 +84,10 @@ test("RunService exposes no evidence-free phase, blocker, or completion mutation
   assert.equal(service.enforceMaxTurns, undefined);
   assert.equal(service.startProtocolRepair, undefined);
   assert.equal(service.adoptRecoveredResponse, undefined);
-  store.close();
 });
 
-test("runtime approval blocker and its pending record are created atomically", () => {
-  const { store, service } = fixture();
+test("runtime approval blocker and its pending record are created atomically", (t) => {
+  const { store, service } = fixture(t);
   const created = service.createRun({
     runId: "run-backed-approval",
     objective: "Preserve an exact runtime approval gate",
@@ -115,7 +114,6 @@ test("runtime approval blocker and its pending record are created atomically", (
     scope: { operationId: "operation-replacement" },
   }), (error) => error.code === "RUN_BLOCKER_ALREADY_PRESENT");
   assert.equal(store.getApproval("approval-replacement"), null);
-  store.close();
 });
 
 test("runtime approval request rolls back its side record when the blocker event fails", (t) => {
@@ -187,8 +185,8 @@ test("run creation rolls back when the frozen RunLimits insert fails", (t) => {
   store.close();
 });
 
-test("RunService rejects caller-owned policy hashes and freezes policy limits", () => {
-  const { store, service } = fixture();
+test("RunService rejects caller-owned policy hashes and freezes policy limits", (t) => {
+  const { store, service } = fixture(t);
   const policy = structuredClone(createDiscussionRunPolicy({ maxTurns: 6 }));
   const created = service.createRun({
     runId: "run-policy-owner",
@@ -206,5 +204,4 @@ test("RunService rejects caller-owned policy hashes and freezes policy limits", 
     policy: createDiscussionRunPolicy(),
     policyHash: created.policyHash,
   }), /unsupported property "policyHash"/u);
-  store.close();
 });
