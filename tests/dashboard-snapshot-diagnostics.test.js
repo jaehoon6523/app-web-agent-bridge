@@ -99,9 +99,14 @@ test("real controller SQLite contention preserves independent HTTP responses and
     WEB_EXTENSION_SHARED_SECRET:"snapshot-extension-secret-0123456789abcdef",WEB_EXTENSION_EXPECTED_IDENTITY:"snapshot-extension"}});
   new SqliteStore(runtimeConfig.persistence.databasePath).close();
   new CodeChangeStore(runtimeConfig.persistence.databasePath).close();
-  const events = [], changed = new EventEmitter();
-  const child = runDiagnosticServer({runtimeConfig, outputFile:path.join(root, "events.jsonl"),
-    onEvent:event => { events.push(event); changed.emit("event", event); }});
+  const events = [], changed = new EventEmitter(), diagnosticStartedAt = Date.now();
+  const timeline = () => events.filter(event => event.type === "heartbeat" || event.type === "server.listening"
+    || event.type.startsWith("watchdog.") || event.type.startsWith("state.snapshot.")).slice(-100)
+    .map(event => Object.fromEntries(["type","at","receivedAfterMs","monotonicMs","requestId","snapshotId","stepId",
+      "silenceMs","lastStage","elapsedMs","loopDelayMs","deliveryLagMs","watchdogTickDelayMs"]
+      .filter(key => event[key] !== undefined).map(key => [key,event[key]])));
+  const child = runDiagnosticServer({runtimeConfig, outputFile:path.join(root, "events.jsonl"), recordHeartbeats:true,
+    onEvent:event => { events.push({...event,receivedAfterMs:Date.now()-diagnosticStartedAt}); changed.emit("event", event); }});
   const observation = observeChildClose(child);
   let locker, bodyError, locked = false;
   t.after(async () => {
@@ -116,7 +121,11 @@ test("real controller SQLite contention preserves independent HTTP responses and
       await child.diagnosticsClosed;childClosed=true;
       assert.deepEqual(result, {code:0,signal:null});
     } catch(error) {errors.push(error);}
-    if(storageClosed && childClosed)try {await removeOwnedFixture(root);} catch(error) {errors.push(error);}
+    // Failed startup may publish its first IPC only during cleanup; retain that evidence.
+    if(storageClosed && childClosed && !bodyError && !errors.length)try {await removeOwnedFixture(root);} catch(error) {errors.push(error);}
+    if(bodyError || errors.length)t.diagnostic(JSON.stringify({phase:"after-cleanup",retainedFixture:root,
+      storageClosed,childClosed,childExitCode:child.exitCode,childSignalCode:child.signalCode,
+      cleanupErrors:errors.map(error => ({code:error.code ?? error.name,message:error.message})),events:timeline()}));
     if(errors.length){
       if(bodyError)errors.unshift(bodyError);
       if(errors.length===1)throw errors[0];
@@ -124,7 +133,7 @@ test("real controller SQLite contention preserves independent HTTP responses and
     }
   });
   try {
-  async function until(predicate) {
+  async function until(checkpoint, predicate, timeoutMs = 6000) {
     const found = events.find(predicate);
     if (found) return found;
     let listener, timer;
@@ -132,12 +141,17 @@ test("real controller SQLite contention preserves independent HTTP responses and
       return await new Promise((resolve, reject) => {
         listener = event => { if (predicate(event)) resolve(event); };
         changed.on("event", listener);
-        timer = setTimeout(() => reject(new Error("Missing snapshot diagnostic checkpoint: "+JSON.stringify(
-          events.filter(event => event.type.startsWith("state.snapshot.") || event.type.startsWith("watchdog.")).slice(-20)))), 6000);
+        timer = setTimeout(() => reject(new Error("Missing snapshot diagnostic checkpoint: "+JSON.stringify({
+          checkpoint, timeoutMs, childExitCode:child.exitCode, childSignalCode:child.signalCode, childConnected:child.connected,
+          events:events.filter(event => event.type === "server.listening" || event.type.startsWith("state.snapshot.")
+            || event.type.startsWith("watchdog.")).slice(-20),
+        }))), timeoutMs);
       });
     } finally { changed.off("event", listener); clearTimeout(timer); }
   }
-  await until(event => event.type === "server.listening");
+  // Process startup can share a busy Windows runner with another discovery group.
+  // The 1 s HTTP responsiveness and 7 s state-request deadlines below stay fixed.
+  await until("server.listening", event => event.type === "server.listening", 6000);
   const read = () => fetch(runtimeConfig.baseUrl+"/api/state?private="+token, {
     headers:{authorization:`Bearer ${token}`}, signal:AbortSignal.timeout(7000),
   });
@@ -147,7 +161,7 @@ test("real controller SQLite contention preserves independent HTTP responses and
   // requests a writer transaction; observe that existing wait, without changing
   // journal mode, server deadlines or persistence implementation.
   const pending = read(); pending.catch(() => {});
-  const start = await until(event => event.type === "state.snapshot.runtime.started");
+  const start = await until("state.snapshot.runtime.started", event => event.type === "state.snapshot.runtime.started");
   const probes = await Promise.all(["/api/preflight", "/api/health"].map(async route => {
     const response = await fetch(runtimeConfig.baseUrl+route, {signal:AbortSignal.timeout(1000)});
     await response.arrayBuffer();
@@ -164,8 +178,11 @@ test("real controller SQLite contention preserves independent HTTP responses and
   locker.exec("COMMIT"); locked = false;
   const recovered = await read(); assert.equal(recovered.status, 200);
   assert.equal((await recovered.json()).runtimeAvailability.ready, true);
-  const completed = await until(event => event.type === "state.snapshot.runtime.completed" && event.snapshotId > start.snapshotId);
+  const completed = await until("state.snapshot.runtime.completed", event => event.type === "state.snapshot.runtime.completed" && event.snapshotId > start.snapshotId);
   assert.doesNotMatch(fs.readFileSync(path.join(root, "events.jsonl"), "utf8"), new RegExp(token));
   t.diagnostic(JSON.stringify({snapshot:start, independentHttp:probes, unavailable:unavailable.runtimeAvailability, completed}));
-  } catch(error) {bodyError=error;throw error;}
+  } catch(error) {
+    t.diagnostic(JSON.stringify({failure:error.message,events:events.filter(event=>event.type==='server.listening' || event.type.startsWith('state.snapshot.') || event.type.startsWith('watchdog.')).map(event=>Object.fromEntries(['type','at','monotonicMs','requestId','snapshotId','stepId','silenceMs','lastStage','elapsedMs'].filter(key=>event[key]!==undefined).map(key=>[key,event[key]])))}));
+    bodyError=error;throw error;
+  }
 });

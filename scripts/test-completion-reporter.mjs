@@ -2,12 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {tap} from 'node:test/reporters';
 import {schemaErrors} from './spec-validation.mjs';
+import {failureCollector} from './test-failure-details.mjs';
 
 // A receipt is written only after the runner stream, including its plan, ends.
 // An exit code alone cannot establish that the scheduled tests finished.
 export default async function* reporter(source) {
   const result = {completed:false, plan:null, topLevel:0, passed:0, failed:0, skipped:[], todo:[], synthetic:0,
     boundaryReceiptSchemaVersion:1, boundaryReceipts:[], boundaryReceiptErrors:[]};
+  const collectFailure = failureCollector(result);
   async function* observe() {
     for await (const event of source) {
       const {type, data} = event;
@@ -25,7 +27,7 @@ export default async function* reporter(source) {
       if (type === 'test:pass' || type === 'test:fail') {
         if (data.nesting === 0) result.topLevel++;
         if (path.resolve(data.name) === path.resolve(process.env.BRIDGE_TEST_FILE ?? data.file ?? '.')) result.synthetic++;
-        if (type === 'test:fail') result.failed++;
+        if (type === 'test:fail') collectFailure(data);
         else if (data.skip) result.skipped.push(data.name);
         else if (data.todo) result.todo.push(data.name);
         else if (data.details?.type !== 'suite') result.passed++;

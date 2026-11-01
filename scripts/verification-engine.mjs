@@ -50,7 +50,7 @@ function evidencePath(root,name) {
 // Process closure and evidence validation are separate. Failures never disappear
 // when a later independent stage succeeds. Callers inject execution for fault tests.
 export async function executeVerification({root,directory,plan,source,readSource,run,
-  signal,runId=randomUUID(),output=()=>{}}) {
+  signal,runId=randomUUID(),output=()=>{},maxDiscoveryConcurrency=1}) {
   fs.mkdirSync(directory,{recursive:true});
   const runsRoot=path.join(directory,'verification-runs');
   if(fs.existsSync(runsRoot)) for(const name of fs.readdirSync(runsRoot)) {
@@ -64,6 +64,7 @@ export async function executeVerification({root,directory,plan,source,readSource
   const evidenceRoot=path.join(runsRoot,runId);
   fs.mkdirSync(evidenceRoot,{recursive:true});
   const result={runId,status:'RUNNING',startedAt:new Date().toISOString(),node:process.version,
+    maxDiscoveryConcurrency,
     platform:process.platform,source,stages:structuredClone(plan),evidenceRoot,
     liveChatGpt:'UNVERIFIED: controlled external boundaries do not prove real ChatGPT delivery'};
   const resultPath=path.join(directory,'latest-verification.json'), logPath=path.join(directory,'latest-verification.log');
@@ -77,30 +78,28 @@ export async function executeVerification({root,directory,plan,source,readSource
   const log=chunk=>{const data=Buffer.from(chunk);fs.appendFileSync(logPath,data);bytes+=data.length;output(data);};
   save(); // The complete plan exists even if no child can start.
   let unsafe=false;
-  try {
-    for(const stage of result.stages) {
-      if(!stage.applicable) {save();continue;}
-      if(signal?.aborted || unsafe) {
-        stage.reason=signal?.aborted?'CANCELLED':'RESOURCE_CLOSURE_UNCONFIRMED';save();continue;
-      }
-      const blocked=stage.needs.filter(id=>result.stages.find(item=>item.id===id)?.status!=='PASS');
-      if(blocked.length) {stage.reason='PREPARATION_FAILED: '+blocked.join(',');save();continue;}
+  const runStage=async(stage,stageSignal=signal)=>{
+      let stageUnsafe=false;
       const stageDirectory=path.join(evidenceRoot,stage.id);fs.mkdirSync(stageDirectory);
       stage.status='RUNNING';stage.reason=null;stage.startedAt=new Date().toISOString();
       stage.receiptKind=stage.receipt;stage.classification='UNKNOWN';stage.causeConfirmed=false;stage.logPath=path.join(stageDirectory,'output.log');
       fs.writeFileSync(stage.logPath,'');save();log('\nSTAGE '+stage.id+'\n');
       const write=chunk=>{fs.appendFileSync(stage.logPath,chunk);log(chunk);};
       const receiptKind=stage.receipt; delete stage.receipt;
-      const receiptPath=stage.receiptKind==='spec'?path.join(stageDirectory,'spec-result.json'):receiptLocation(receiptKind,root,directory);
+      const receiptPath=stage.receiptKind==='spec'?path.join(stageDirectory,'spec-result.json')
+        :stage.isolatedGateOutput?path.join(stageDirectory,'latest-test-result.json'):receiptLocation(receiptKind,root,directory);
       let testRun;
       try {
         if(receiptPath) fs.rmSync(receiptPath,{force:true});
-        for(const name of stage.evidencePaths || []) fs.rmSync(evidencePath(root,name),{recursive:true,force:true});
+        for(const name of stage.evidencePaths || []) {
+          if(stage.isolatedGateOutput && name==='latest-test.log') continue;
+          fs.rmSync(evidencePath(root,name),{recursive:true,force:true});
+        }
         // Per-stage identity also prevents a different stage's gate receipt from
         // being accepted when a producer accidentally stops writing evidence.
         const stageRunId=runId+'-'+stage.id;
         stage.verificationRunId=stageRunId;
-        stage.closure=await run(stage,{write,stageRunId,signal,stageDirectory});
+        stage.closure=await run(stage,{write,stageRunId,signal:stageSignal,stageDirectory});
 
         if(stage.receiptKind==='spec') {
           const testPath=path.join(stageDirectory,'latest-test-result.json');
@@ -125,20 +124,21 @@ export async function executeVerification({root,directory,plan,source,readSource
           && identityMatches(stage.receipt,{runId:stageRunId,source}) && !resourceClosureUnconfirmed(stage.receipt)) {
           stage.status='NOT_RUN';stage.reason='NATIVE_BOUNDARY_UNVERIFIED';stage.failurePhase='ENVIRONMENT';
         }
-        if(closed.forced || closed.signal!==null) unsafe=true;
-        if(resourceClosureUnconfirmed(stage.receipt) || resourceClosureUnconfirmed(testRun) || stage.receipt?.results?.some(item=>item.receiptCleanupError)) unsafe=true;
+        if(closed.forced || closed.signal!==null) stageUnsafe=true;
+        if(resourceClosureUnconfirmed(stage.receipt) || resourceClosureUnconfirmed(testRun) || stage.receipt?.results?.some(item=>item.receiptCleanupError)) stageUnsafe=true;
       } catch(error) {
         stage.status='FAIL';stage.error=error.message;stage.cleanupError=error.cleanupError;
         stage.failurePhase=error.cleanupError || resourceClosureUnconfirmed(testRun)?'CLEANUP':error.code==='E2E_RUNNER_DEADLINE'?'TIMEOUT':'EXECUTION';
         // A deadline/cleanup error leaves resource ownership uncertain. Ordinary
         // assertion/evidence failures are independent and do not block siblings.
-        if(error.cleanupError || resourceClosureUnconfirmed(testRun) || error.code==='E2E_RUNNER_DEADLINE') unsafe=true;
+        if(error.cleanupError || resourceClosureUnconfirmed(testRun) || error.code==='E2E_RUNNER_DEADLINE') stageUnsafe=true;
       }
       try {
         const collected=path.join(stageDirectory,'evidence');fs.mkdirSync(collected);
         stage.collectedEvidence=[];
         for(const name of stage.evidencePaths || []) {
-          const from=evidencePath(root,name);
+          const from=stage.isolatedGateOutput && name==='latest-test.log'
+            ?path.join(stageDirectory,name):evidencePath(root,name);
           if(!fs.existsSync(from)) continue;
           const to=path.join(collected,name);
           fs.mkdirSync(path.dirname(to),{recursive:true});
@@ -151,6 +151,43 @@ export async function executeVerification({root,directory,plan,source,readSource
       } catch(error) {stage.status='FAIL';stage.evidenceError=error.message;stage.failurePhase='EVIDENCE';}
       stage.finishedAt=new Date().toISOString();save();
       log('STAGE_RESULT '+JSON.stringify({id:stage.id,status:stage.status,reason:stage.reason,failurePhase:stage.failurePhase})+'\n');
+      return stageUnsafe;
+  };
+  try {
+    for(let index=0;index<result.stages.length;) {
+      const stage=result.stages[index];
+      if(!stage.applicable) {save();index++;continue;}
+      if(signal?.aborted || unsafe) {
+        stage.reason=signal?.aborted?'CANCELLED':'RESOURCE_CLOSURE_UNCONFIRMED';save();index++;continue;
+      }
+      const blocked=stage.needs.filter(id=>result.stages.find(item=>item.id===id)?.status!=='PASS');
+      if(blocked.length) {stage.reason='PREPARATION_FAILED: '+blocked.join(',');save();index++;continue;}
+      const batch=[];
+      if(stage.parallelEligible && stage.isolatedGateOutput && !stage.browser && maxDiscoveryConcurrency>1)
+        for(const item of result.stages.slice(index,index+maxDiscoveryConcurrency)) {
+          if(!item.parallelEligible || !item.isolatedGateOutput || item.browser || !item.applicable
+            || !item.needs.every(id=>result.stages.find(previous=>previous.id===id)?.status==='PASS')) break;
+          batch.push(item);
+        }
+      if(batch.length>1) {
+        const controller=new AbortController();
+        const abort=()=>controller.abort();signal?.addEventListener('abort',abort,{once:true});
+        if(signal?.aborted) abort();
+        try {
+          const outcomes=await Promise.allSettled(batch.map(item=>runStage(item,controller.signal).then(value=>{
+            if(value) controller.abort();return value;
+          },error=>{controller.abort();throw error})));
+          for(let offset=0;offset<outcomes.length;offset++) {
+            const outcome=outcomes[offset];
+            if(outcome.status==='rejected') {
+              batch[offset].status='FAIL';batch[offset].error=outcome.reason?.message ?? String(outcome.reason);
+              batch[offset].failurePhase='EXECUTION';unsafe=true;
+            } else if(outcome.value) unsafe=true;
+          }
+          save();
+        } finally {signal?.removeEventListener('abort',abort);}
+        index+=batch.length;
+      } else {unsafe=await runStage(stage) || unsafe;index++;}
     }
   } catch(error) {result.error=error.message;}
   finally {

@@ -21,7 +21,7 @@ function controlledPlan() {
   // Exercise Windows' generated direct-Node groups on every test host. Keep
   // process.platform intact: this models the plan, not a Windows OS runtime.
   if (process.platform !== 'win32') {
-    const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-[234])?$/u.test(stage.id));
+    const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-serial|-[234])?$/u.test(stage.id));
     const index=verificationCatalog.findIndex(stage=>stage.id==='discovery');
     verificationCatalog.splice(index,1,...groups);
   }
@@ -96,7 +96,7 @@ async function execute(t, mode) {
     }
     if (${JSON.stringify(mode)} !== 'missing' || stage==='verify:browser-install') {
       const uf=stage==='test:e2e:ci',native=stage==='test:extension:native',browser=stage==='verify:browser-install';
-      const receiptRoot=(native||browser)?root:path.join(process.cwd(),'.agent-controller');
+      const receiptRoot=(native||browser)?root:spec.isolatedGateOutput?process.env.BRIDGE_TEST_GATE_OUTPUT:path.join(process.cwd(),'.agent-controller');
       const target=path.join(receiptRoot,browser?'latest-browser-preparation.json':uf?'ui-qa/e2e-summary.json':native?'latest-native-extension.json':'latest-test-result.json');
       fs.mkdirSync(path.dirname(target),{recursive:true});
       const ids=${JSON.stringify(nativeExtensionSteps)};
@@ -131,8 +131,8 @@ async function execute(t, mode) {
   }
   const closed = evidence.record.commands.at(-1);
   assert.equal(closed.timedOut,false);
-  assert.deepEqual(closed.stdout.match(/^peer discovery(?:-[234])?$/gmu),
-    ['discovery','discovery-2','discovery-3','discovery-4'].map(id=>'peer '+id));
+  assert.deepEqual(closed.stdout.match(/^peer discovery(?:-serial|-[234])?$/gmu),
+    ['discovery-serial','discovery','discovery-2','discovery-3','discovery-4'].map(id=>'peer '+id));
   assert.doesNotMatch(closed.stdout,/^FILE tests[\\/]/mu);
   assert.match(closed.stdout,/^peer windows-focused$/mu);
   const code = closed.exitCode, signal = closed.signal;

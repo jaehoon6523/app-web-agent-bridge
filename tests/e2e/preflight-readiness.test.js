@@ -29,3 +29,17 @@ test('startup driver identifies response read failure without storing an arbitra
     return true;
   });
 });
+test('startup driver retains only transport error codes from nested causes', async () => {
+  await assert.rejects(waitForPreflight('unused',{timeoutMs:30,fetchResponse:async () => {
+    const cause=Object.assign(new Error('private cause'),{code:'ECONNREFUSED',syscall:'connect',errors:[
+      Object.assign(new Error('private nested'),{code:'EACCES'})]});
+    throw Object.assign(new TypeError('private message',{cause}),{code:'ERR_FETCH'});
+  }}),error => {
+    assert.equal(error.lastObservation.errorCode,'ERR_FETCH');
+    assert.equal(error.lastObservation.causeCode,'ECONNREFUSED');
+    assert.equal(error.lastObservation.causeSyscall,'connect');
+    assert.deepEqual(error.lastObservation.nestedCauseCodes,['EACCES']);
+    assert.doesNotMatch(error.message,/private/u);
+    return true;
+  });
+});

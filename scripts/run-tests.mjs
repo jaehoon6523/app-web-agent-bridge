@@ -8,6 +8,7 @@ import {fileURLToPath} from 'node:url';
 import {observeChildClose, waitChildClose} from '../src/runtime/child-close.js';
 import {atomicWrite} from './mv3-reload-core.mjs';
 import {resourceClosureUnconfirmed} from './verification-identity.mjs';
+import {failureDetailsIntegrity} from './test-failure-details.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 // Node treats a Windows drive letter as a URL scheme if passed as a reporter path.
@@ -17,6 +18,9 @@ export const reporter = new URL('./test-completion-reporter.mjs', import.meta.ur
 // separate wall-clock budget for an entire file and its completion receipt.
 const DEFAULT_FILE_TIMEOUT_MS = 180000;
 const fileTimeouts = new Map([
+  // This real recovery suite has taken about 170 s alone on Windows. Its file
+  // watchdog must allow scheduling variance; each assertion keeps its contract.
+  ['tests/audit-ack-recovery.test.js', 5 * 60 * 1000],
   ['tests/runtime-cleanup/contract.test.js', 12 * 60 * 1000],
   // One bounded setup plus eight 15-second cases and source cleanup.
   ['tests/verification-command.test.js', 4 * 60 * 1000],
@@ -41,6 +45,9 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
   let child, descriptor, failure;
   let closure, error, errorCode, cleanupError, summary, receiptError, item, deadline = false;
   const childEnv = {...process.env, BRIDGE_TEST_RECEIPT:receipt, BRIDGE_TEST_RECEIPT_FD:'3', BRIDGE_TEST_FILE:path.resolve(filename)};
+  // A nested runner owns its own output; it must not overwrite its parent's
+  // stage-local completion receipt.
+  delete childEnv.BRIDGE_TEST_GATE_OUTPUT;
   // A gate regression may itself execute inside node:test. Do not let that
   // worker's private context suppress the nested file's completion reporter.
   delete childEnv.NODE_TEST_CONTEXT;
@@ -78,17 +85,21 @@ export async function runFile(filename, {output = chunk => process.stdout.write(
     const summaryStatus = receiptError ? 'INVALID' : !summary ? 'MISSING' : summary.completed === true ? 'COMPLETE' : 'INCOMPLETE';
     const unexpectedSkips = summary?.skipped?.filter(name => !allowedSkip.includes(name)) ?? [];
     const boundaryReceiptInvalid = (summary?.boundaryReceiptErrors?.length ?? 0) > 0;
+    const collectionIntegrity = summary ? failureDetailsIntegrity(summary) : null;
+    const failureDetailsError = collectionIntegrity === 'INVALID' ? 'INVALID_FAILURE_DETAILS'
+      : collectionIntegrity === 'PARTIAL' ? 'FAILURE_DETAILS_COLLECTION_ERROR' : null;
     const pass = !error && !receiptError && closure?.code === 0 && closure?.signal === null && summaryStatus === 'COMPLETE'
-      && summary.failed === 0 && summary.todo.length === 0 && unexpectedSkips.length === 0 && !boundaryReceiptInvalid;
+      && summary.failed === 0 && summary.todo.length === 0 && unexpectedSkips.length === 0 && !boundaryReceiptInvalid && !failureDetailsError;
     const reason = pass ? 'COMPLETE' : deadline || errorCode === 'CHILD_CLOSE_DEADLINE' ? 'FILE_TIMEOUT'
       : error ? 'PROCESS_ERROR' : receiptError ? 'INVALID_RECEIPT'
       : summaryStatus === 'MISSING' ? 'MISSING_RECEIPT' : summaryStatus === 'INCOMPLETE' ? 'INCOMPLETE_TEST_RUN'
       : boundaryReceiptInvalid ? 'INVALID_BOUNDARY_RECEIPT'
       : summary?.failed > 0 || summary?.todo?.length > 0 || unexpectedSkips.length > 0 ? 'TEST_FAILURE'
-      : closure?.code !== 0 || closure?.signal !== null ? 'CHILD_EXIT_NONZERO' : 'TEST_FAILURE';
+      : closure?.code !== 0 || closure?.signal !== null ? 'CHILD_EXIT_NONZERO' : failureDetailsError ?? 'TEST_FAILURE';
     item = {file:path.relative(root,filename).split(path.sep).join('/'), pass, closure, error, errorCode,
       cleanupError, timeoutMs:budgetMs, deadline, childPid:child.pid, childExitCode:child.exitCode,
-      childSignal:child.signalCode, summaryStatus, receiptError, unexpectedSkips, reason, summary};
+      childSignal:child.signalCode, summaryStatus, receiptError, unexpectedSkips, reason, summary,
+      collectionIntegrity, failureDetailsError};
   } catch (cause) { failure = cause; throw cause; }
   finally {
     const errors = [];
@@ -138,6 +149,7 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
       const item = await runFile(file,{output:write,timeoutMs:budgetMs});
       result.results.push(item);
       write('FILE_RESULT '+JSON.stringify({file:item.file,reason:item.reason,pass:item.pass,
+        collectionIntegrity:item.collectionIntegrity,failureDetailsError:item.failureDetailsError,
         timeoutMs:item.timeoutMs,deadline:item.deadline,childPid:item.childPid,
         childExitCode:item.childExitCode,childSignal:item.childSignal,
         closure:item.closure,error:item.error,errorCode:item.errorCode,cleanupError:item.cleanupError,receiptCleanupError:item.receiptCleanupError,
@@ -172,7 +184,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const args = process.argv.slice(2);
     const files = args.length ? args.map(file => path.resolve(file)) : discoverTests(path.join(root,'tests'));
-    const result = await runFiles(files);
+    const result = await runFiles(files,{directory:process.env.BRIDGE_TEST_GATE_OUTPUT || path.join(root,'.agent-controller')});
     process.exitCode = result.status === 'PASS' ? 0 : 1;
   } catch (error) {console.error(error); process.exitCode = 1;}
 }

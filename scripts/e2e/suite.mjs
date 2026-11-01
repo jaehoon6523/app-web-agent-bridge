@@ -5,6 +5,9 @@ import { runOwnedNode } from './platform/process.mjs';
 import { repository } from './helpers/process.mjs';
 import { skippedTests, summarizeRun } from './summary.mjs';
 import { createProgress } from './progress.mjs';
+import { recordProcess } from './diagnostics.mjs';
+
+recordProcess('suite-self',process.pid,process.ppid);
 
 const waveOnly = process.argv.includes('--wave-only');
 const requested = process.argv.filter(arg => arg.startsWith('--flow=')).flatMap(arg => arg.slice(7).split(','));
@@ -38,6 +41,7 @@ async function execute(args, { startup = false, tap = false } = {}) {
       timeoutMs:startup ? 120000 : waveIds.length === 1 ? 260000 : 20 * 60 * 1000, isComplete:() => tap && progress.finished,
       onStdout:chunk => { lastOutput = Date.now(); log += chunk; process.stdout.write(chunk); if (tap) progress.consume(chunk); },
       onStderr:chunk => { lastOutput = Date.now(); log += chunk; process.stderr.write(chunk); },
+      onSpawn:child => recordProcess(startup ? 'startup' : 'wave-runner',child.pid),
       onDeadline:detail => console.error('[E2E watchdog]', JSON.stringify(detail)),
     });
     code = result.code ?? 1;

@@ -7,6 +7,7 @@ import { execFileSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { generateSelectorRepair, applySelectorRepair, inspectSelectorRepair, SelectorRepairJournal } from '../src/orchestration/selector-repair.js';
 import { collectSelectorDiagnostics } from '../src/orchestration/selector-diagnostics.js';
+import { GitChangeWorkspace } from '../src/repository/git-change-workspace.js';
 
 const snapshot = { tabs:[{ tabId:7, runtimeVersion:"0.2.11", extensionVersion:"0.2.11", url:"https://chatgpt.com/", pageUrl:"https://chatgpt.com/", composerPresent:false, busy:false, generating:false,
   pageStatus:'UI_CONTRACT_CHANGED', diagnostics:{ editableCandidates:[{ selector:"[contenteditable='true']", visible:1, samples:[{
@@ -65,6 +66,59 @@ test('failed verification preserves the target and blocks application', async t 
   assert.equal(inspectSelectorRepair(f.targetRoot, failure.jobId).stage, 'FAILED');
   assert.throws(() => applySelectorRepair(f.targetRoot, failure.jobId, 'wrong'), {code:'REPAIR_APPROVAL_REQUIRED'});
   assert.doesNotMatch(fs.readFileSync(failure.logFile, 'utf8'), /PRIVATE_BODY/u);
+});
+
+test('uncoded repair failures preserve their cause without writing its message to the journal', async t => {
+  const f = fixture(t);
+  const original = new Error('UNSAFE_SOURCE_PATH');
+  let failure;
+  try { await generateSelectorRepair({ ...f, snapshot, tabId:7, createWorker:async () => { throw original; } }); }
+  catch (error) { failure = error; }
+  assert.equal(failure.code, 'REPAIR_FAILED');
+  assert.equal(failure.cause, original);
+  assert.doesNotMatch(fs.readFileSync(failure.logFile, 'utf8'), /UNSAFE_SOURCE_PATH/u);
+});
+
+test('Git worktree path length failures retain a specific safe code and original cause', async t => {
+  const f = fixture(t);
+  const original = new Error('Git worktree failed: error: Filename too long');
+  const create = GitChangeWorkspace.create;
+  GitChangeWorkspace.create = () => { throw original; };
+  try {
+    await assert.rejects(generateSelectorRepair({ ...f, snapshot, tabId:7 }), error => {
+      assert.equal(error.code, 'REPAIR_WORKTREE_PATH_TOO_LONG');
+      assert.equal(error.cause, original);
+      assert.match(fs.readFileSync(error.logFile, 'utf8'), /REPAIR_WORKTREE_PATH_TOO_LONG/u);
+      assert.doesNotMatch(fs.readFileSync(error.logFile, 'utf8'), /Filename too long/u);
+      return true;
+    });
+    const denied = new Error('Git worktree failed: Permission denied');
+    GitChangeWorkspace.create = () => { throw denied; };
+    await assert.rejects(generateSelectorRepair({ ...f, snapshot, tabId:7 }), error => {
+      assert.equal(error.code, 'REPAIR_FAILED');
+      assert.equal(error.cause, denied);
+      return true;
+    });
+  } finally { GitChangeWorkspace.create = create; }
+});
+
+test('a worker failure and cleanup failure both remain inspectable', async t => {
+  const f = fixture(t);
+  const original = new Error('ORIGINAL_FAILURE');
+  const cleanup = new Error('CLEANUP_FAILURE');
+  await assert.rejects(generateSelectorRepair({ ...f, snapshot, tabId:7, createWorker:async options => {
+    const worker = await f.createWorker(options);
+    worker.start = async () => { throw original; };
+    worker.close = async () => { throw cleanup; };
+    return worker;
+  } }), error => {
+    assert.equal(error.code, 'WORKER_CLEANUP_FAILED');
+    assert.equal(error.errors[0].cause, original);
+    assert.equal(error.errors[1], cleanup);
+    assert.equal(error.cause, error.errors[0]);
+    assert.equal(inspectSelectorRepair(f.targetRoot, error.jobId).stage, 'CLEANUP_FAILED');
+    return true;
+  });
 });
 
 test('a persisted repair root alias remains inspectable and requires its exact approval', async t => {

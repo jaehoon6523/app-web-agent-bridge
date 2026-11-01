@@ -1,3 +1,4 @@
+import {EventEmitter} from 'node:events';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -40,12 +41,17 @@ test('preparation failure blocks dependents and still executes an independent ch
 test('Windows discovery groups cover exactly the Linux discovery inventory with unchanged deadlines',()=>{
   const linux=verificationPlan({platform:'linux'}).find(stage=>stage.id==='discovery');
   const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-\d+)?$/u.test(stage.id));
+  const exclusive=verificationPlan({platform:'win32'}).find(stage=>stage.id==='discovery-serial');
   assert.equal(groups.length,4);
-  const scheduled=groups.flatMap(stage=>stage.expectedFiles);
+  assert.deepEqual(exclusive.expectedFiles,['tests/audit-ack-recovery.test.js']);
+  assert.equal(exclusive.parallelEligible,false);
+  const scheduled=[...exclusive.expectedFiles,...groups.flatMap(stage=>stage.expectedFiles)];
   assert.equal(new Set(scheduled).size,scheduled.length,'No duplicate scheduling');
   assert.deepEqual([...scheduled].sort(),[...linux.expectedFiles].sort(),'No missing or additional tests');
   assert.ok(groups.every(stage=>stage.timeoutMs===linux.timeoutMs && stage.receipt==='gate'));
   assert.ok(Math.max(...groups.map(stage=>stage.expectedFiles.length))-Math.min(...groups.map(stage=>stage.expectedFiles.length))<=1);
+  assert.ok(groups[0].expectedFiles.includes('tests/prepared-session-target.test.js'));
+  assert.ok(groups[3].expectedFiles.includes('tests/runtime-cleanup/contract.test.js'));
 });
 
 test('spec and discovery partition the full inventory on both platforms without changing minimum',()=>{
@@ -56,7 +62,7 @@ test('spec and discovery partition the full inventory on both platforms without 
   for(const platform of ['win32','linux']) {
     const plan=verificationPlan({platform});
     const spec=plan.find(s=>s.id==='spec');
-    const discovery=plan.filter(s=>/^discovery(?:-\d+)?$/u.test(s.id));
+    const discovery=plan.filter(s=>/^discovery(?:-serial|-\d+)?$/u.test(s.id));
     const rest=discovery.flatMap(s=>s.expectedFiles);
     assert.deepEqual(spec.expectedFiles,registered);
     assert.equal(spec.command,'verify:spec');assert.equal(spec.receipt,'spec');
@@ -66,7 +72,7 @@ test('spec and discovery partition the full inventory on both platforms without 
     assert.ok(registered.every(file=>discovered.includes(file)&&!rest.includes(file)));
     assert.deepEqual([...rest,...registered].sort(),discovered.sort());
     assert.ok(discovery.every(s=>s.timeoutMs===25*60*1000));
-    assert.equal(discovery.length,platform==='win32'?4:1);
+    assert.equal(discovery.length,platform==='win32'?5:1);
     assert.deepEqual(verificationPlan({scope:'minimum',platform}).map(s=>s.id),['minimum-dependencies','minimum-sqlite']);
   }
 });
@@ -155,6 +161,60 @@ test('ordinary first assertion failure preserves later independent observations'
   const result=await scenario(t,[item('first'),item('last')],s=>({code:s.id==='first'?7:0,signal:null,forced:false}));
   assert.deepEqual(result.stages.map(s=>s.status),['FAIL','PASS']);assert.equal(result.status,'FAIL');
   assert.ok(fs.readFileSync(result.stages[1].logPath,'utf8').includes('observed last'));
+});
+for(const concurrency of [2,4]) test(`${concurrency} parallel discovery stages keep separate receipts and logs`,async t=>{
+  const ids=Array.from({length:concurrency},(_,index)=>index===0?'discovery':`discovery-${index+1}`),started=[];
+  let release,timer;
+  const bothStarted=new Promise((resolve,reject)=>{
+    release=()=>{clearTimeout(timer);resolve()};
+    timer=setTimeout(()=>reject(Error('Discovery stages did not overlap')),3000);
+  });
+  t.after(()=>clearTimeout(timer));
+  const plan=ids.map(id=>item(id,{receipt:'gate',isolatedGateOutput:true,parallelEligible:true,expectedFiles:[id],evidencePaths:['latest-test.log']}));
+  const result=await scenario(t,plan,async(stage,{stageRunId,stageDirectory})=>{
+    started.push(stage.id);
+    if(started.length===concurrency) release();
+    await bothStarted;
+    fs.writeFileSync(path.join(stageDirectory,'latest-test.log'),stage.id);
+    fs.writeFileSync(path.join(stageDirectory,'latest-test-result.json'),JSON.stringify({
+      verificationRunId:stageRunId,source,sourceAfter:source,candidateUnchanged:true,
+      status:'PASS',terminal:true,scheduled:[stage.id],results:[{file:stage.id,pass:true,summary:{completed:true}}],
+    }));
+    return {code:0,signal:null,forced:false};
+  },{maxDiscoveryConcurrency:concurrency});
+  assert.equal(result.status,'PASS');assert.deepEqual(started,ids);
+  for(const stage of result.stages) {
+    assert.equal(stage.receipt.verificationRunId,result.runId+'-'+stage.id);
+    assert.equal(fs.readFileSync(path.join(path.dirname(stage.logPath),'evidence/latest-test.log'),'utf8'),stage.id);
+  }
+  assert.equal(fs.existsSync(path.join(path.dirname(result.evidenceRoot),'latest-test-result.json')),false);
+});
+test('uncertain closure in a parallel group cancels its peer and blocks later stages',async t=>{
+  const plan=[item('discovery',{isolatedGateOutput:true,parallelEligible:true}),
+    item('discovery-2',{isolatedGateOutput:true,parallelEligible:true}),item('later')];
+  const started=[];
+  const result=await scenario(t,plan,(stage,{signal})=>{
+    started.push(stage.id);
+    if(stage.id==='discovery') return new Promise(resolve=>setTimeout(()=>resolve({code:1,signal:'SIGKILL',forced:true}),10));
+    if(stage.id==='discovery-2') return new Promise(resolve=>signal.addEventListener('abort',()=>resolve({code:1,signal:'SIGTERM',forced:true}),{once:true}));
+  },{maxDiscoveryConcurrency:2});
+  assert.deepEqual(started,['discovery','discovery-2']);
+  assert.deepEqual(result.stages.map(stage=>stage.status),['FAIL','FAIL','NOT_RUN']);
+  assert.equal(result.stages[2].reason,'RESOURCE_CLOSURE_UNCONFIRMED');
+});
+test('exclusive discovery finishes before the parallel group starts',async t=>{
+  const started=[];
+  const plan=[item('discovery-serial',{isolatedGateOutput:true,parallelEligible:false}),
+    item('discovery',{isolatedGateOutput:true,parallelEligible:true}),
+    item('discovery-2',{isolatedGateOutput:true,parallelEligible:true})];
+  const result=await scenario(t,plan,async stage=>{
+    started.push(stage.id);
+    if(stage.id==='discovery-serial') await new Promise(resolve=>setTimeout(resolve,10));
+    return {code:0,signal:null,forced:false};
+  },{maxDiscoveryConcurrency:2});
+  assert.equal(result.status,'PASS');
+  assert.deepEqual(started,['discovery-serial','discovery','discovery-2']);
+  assert.ok(Date.parse(result.stages[0].finishedAt)<=Date.parse(result.stages[1].startedAt));
 });
 test('missing, previous-stage and other-source completion receipts are refused',()=>{
   const receipt={verificationRunId:'current',source,sourceAfter:source,terminal:true,candidateUnchanged:true,status:'PASS',
@@ -264,4 +324,63 @@ for(const [name,change] of [
 ]) test('GUI refuses '+name,()=>{
   assert.equal(receiptComplete('gui',guiGood,guiContext),true);
   assert.equal(receiptComplete('gui',{...guiGood,...change},guiContext),false);
+});
+
+
+async function schedule(failRound,{durationMs=0,invalidRound,changeRound,signalRound}={}) {
+  const script=fs.readFileSync(new URL('../scripts/repeat-verify-p1.mjs',import.meta.url),'utf8')
+    .replace(/^import .*;\r?$/gm,'').replace(/^const root=.*;\r?$/m,"const root='C:/fixture';");
+  const events=[],launches=[],starts=[];let round=0,clock=0,plan,active=0,maxActive=0;
+  const source={head:'candidate',sourceSha256:'bytes'};
+  const fakeFs={mkdirSync(){},writeFileSync(file,text){if(file.endsWith('plan.json'))plan=JSON.parse(text);},openSync(){return 1;},closeSync(){},
+    appendFileSync(_file,line){events.push(JSON.parse(line));},statfsSync(){return {bavail:4*1024**3,bsize:1};},
+    readFileSync(){if(round===invalidRound)throw Error('controlled missing result');return JSON.stringify({source,candidateUnchanged:true,status:round===failRound?'FAIL':'PASS'});}};
+  const spawn=(_exe,args)=>{
+    launches.push(args);if(args.includes('--scope=p1')){round++;starts.push(clock);}
+    active++;maxActive=Math.max(maxActive,active);
+    const child=new EventEmitter();child.pid=round+1;
+    queueMicrotask(()=>{clock+=durationMs;active--;child.emit('close',round===failRound?1:0,round===signalRound?'SIGTERM':null);});return child;
+  };
+  const process={env:{npm_execpath:'npm-cli.js'},execPath:'node',exitCode:undefined};
+  const FastDate=class extends Date {static now(){return clock;}};
+  const readSource=()=>round>=changeRound?{...source,sourceSha256:'changed'}:source;
+  const run=new (Object.getPrototypeOf(async function(){}).constructor)('fs','os','path','spawn','verificationSource','process','Date','setTimeout',script);
+  await run(fakeFs,{freemem:()=>2*1024**3},path,spawn,readSource,process,FastDate,(callback,ms)=>{clock+=ms;queueMicrotask(callback);});
+  return {events,launches,process,plan,starts,maxActive};
+}
+
+test('P1 scheduler uses 30-minute starts and invokes official Gate after five unchanged passing rounds',async()=>{
+  const result=await schedule();
+  assert.equal(result.plan.intervalMinutes,30);
+  assert.deepEqual(result.starts,[0,30,60,90,120].map(minutes=>minutes*60000));
+  assert.equal(result.events.filter(event=>event.event==='RUN_CLOSED').length,5);
+  assert.deepEqual(result.launches.at(-1),['npm-cli.js','run','verify:all']);
+  assert.equal(result.events.find(event=>event.event==='OFFICIAL_CLOSED').valid,true);
+  assert.equal(result.events.at(-1).exitCode,0);
+});
+
+test('P1 scheduler collects all rounds after a valid test FAIL without invoking official Gate',async()=>{
+  const result=await schedule(2);
+  assert.equal(result.launches.length,5);
+  assert.ok(result.events.some(event=>event.event==='RUN_FAILED' && event.round===2));
+  assert.equal(result.events.filter(event=>event.event==='RUN_CLOSED').length,5);
+  assert.equal(result.events.some(event=>event.event==='OFFICIAL_STARTED'),false);
+  assert.equal(result.process.exitCode,1);
+});
+
+test('P1 scheduler never overlaps rounds exceeding the 30-minute start interval',async()=>{
+  const result=await schedule(undefined,{durationMs:35*60000});
+  assert.deepEqual(result.starts,[0,35,70,105,140].map(minutes=>minutes*60000));
+  assert.equal(result.maxActive,1);
+});
+for(const [name,options,event] of [
+  ['missing result',{invalidRound:2},'STOP_INVALID_RESULT'],
+  ['source change',{changeRound:2},'STOP_SOURCE_CHANGED'],
+  ['abnormal termination',{signalRound:2},'STOP_EXECUTION'],
+]) test('P1 scheduler stops collection on '+name,async()=>{
+  const result=await schedule(undefined,options);
+  assert.equal(result.launches.length,2);
+  assert.ok(result.events.some(item=>item.event===event && item.round===2));
+  assert.equal(result.events.some(item=>item.event==='OFFICIAL_STARTED'),false);
+  assert.equal(result.process.exitCode,1);
 });

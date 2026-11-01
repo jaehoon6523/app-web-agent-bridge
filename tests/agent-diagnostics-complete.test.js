@@ -599,3 +599,26 @@ test('a first scenario failure and cleanup failure retain their timelines, and t
   assert.equal(second.scenarios.length,2);
   assert.doesNotMatch(fs.readFileSync(new URL(second.scenarios[0].directory+'/timeline.jsonl',latest),'utf8'),/FIRST_FAILURE/u);
 });
+
+
+test('writer release detaches its own lock before deletion and preserves the next owner',async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
+  const unlink=io.unlink.bind(io), nextOwner={pid:process.pid,token:randomUUID()};
+  let detached=false;
+  const removed=t.mock.method(io,'unlink',async filename=>{
+    assert.notEqual(filename,lock,'Deleting the shared lock name races a concurrent Windows wx open');
+    if(String(filename).startsWith(lock+'.') && String(filename).endsWith('.released')){
+      assert.equal(fs.existsSync(lock),false);
+      await io.writeFile(lock,JSON.stringify(nextOwner),{flag:'wx'});
+      detached=true;
+    }
+    return unlink(filename);
+  });
+  await writeAgentReport(root,'server',{source:'COMMITTED'});
+  removed.mock.restore();
+  assert.equal(detached,true);
+  assert.equal(readAgentReport(root).server.source,'COMMITTED');
+  assert.deepEqual(JSON.parse(fs.readFileSync(lock,'utf8')),nextOwner);
+  await io.unlink(lock);
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});

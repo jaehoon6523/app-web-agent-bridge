@@ -277,7 +277,12 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
     if (fd) {
       if (temporary) await cleanup('output.remove',async () => { try { await io.unlink(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } });
       await cleanup('lock.close',() => fd.close());
-      await cleanup('lock.remove',() => io.unlink(lock));
+      // Windows unlink can race wx open with EPERM after the shared name disappears.
+      // Detach only our lock, then delete the private name without touching a new owner.
+      const released = lock+'.'+operationId+'.released';
+      let detached = false;
+      await cleanup('lock.detach',async () => {await io.rename(lock,released);detached=true;});
+      if (detached) await cleanup('lock.remove',() => io.unlink(released));
     }
     if (failure && cleanupErrors.length) failure.cleanupErrors = [...failure.cleanupErrors ?? [],...cleanupErrors];
     event('agent.report.write.completed',{elapsedMs:performance.now()-started,status:failure ? 'FAIL' : 'PASS',code:failure?.code,cleanupErrors});

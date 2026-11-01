@@ -286,6 +286,8 @@ test('C → D: real WebSocket CDP transport records call interruption, owned eve
   assert.equal(r.functionalRecovery, 'PASS'); assert.equal(r.reloadResult, 'UNVERIFIED');
 });
 
+function heartbeatSource(marker) {return `const fs=require('node:fs');let tick=0;const beat=()=>{const file=${JSON.stringify(marker)},next=file+'.tmp';fs.writeFileSync(next,JSON.stringify({pid:process.pid,tick:++tick}));fs.renameSync(next,file);};beat();setInterval(beat,40);`;}
+
 test('A: a live descendant without a profile argument is collected after its parent exits normally', async t => {
   const scratch = temp(t), signals = temp(t), marker = path.join(signals, 'heartbeat.json');
   t.after(() => {
@@ -293,7 +295,7 @@ test('A: a live descendant without a profile argument is collected after its par
     try { process.kill(JSON.parse(fs.readFileSync(marker)).pid,'SIGKILL'); }
     catch (error) { if (error.code !== 'ESRCH') throw error; }
   });
-  const child = `const fs=require('node:fs');let tick=0;const beat=()=>fs.writeFileSync(${JSON.stringify(marker)},JSON.stringify({pid:process.pid,tick:++tick}));beat();setInterval(beat,40);`;
+  const child = heartbeatSource(marker);
   // A Windows child must be independent of the collector parent's console.
   // POSIX retains the inherited group so supervision can discover the orphan.
   const parent = `const fs=require('node:fs');const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore',detached:process.platform==='win32',windowsHide:true});child.unref();const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(marker)})){clearInterval(timer);process.exit(0)}},20);`;
@@ -351,4 +353,20 @@ test('A: tracked paths below a directory link are attributed to the link without
   assert.match(result.files['linked-directory'],/^[a-f0-9]{64}$/u);
   assert.equal(result.files['linked-directory/outside.txt'],undefined);
   assert.equal(result.fileKinds['linked-directory/outside.txt'],undefined);
+});
+
+test('heartbeat remains valid when its writer is killed before publication completes', async t => {
+  const scratch=temp(t),signals=temp(t),marker=path.join(signals,'heartbeat.json'),ready=path.join(signals,'ready.json');
+  const previous={pid:1,tick:7};fs.writeFileSync(marker,JSON.stringify(previous));
+  const intercept=`(()=>{const fs=require('node:fs'),write=fs.writeFileSync,rename=fs.renameSync;
+    const pause=()=>{write(${JSON.stringify(ready)},JSON.stringify({pid:process.pid}));Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);};
+    fs.writeFileSync=(file,...args)=>{if(file===${JSON.stringify(marker)}){fs.openSync(file,'w');pause();}return write(file,...args);};
+    fs.renameSync=(from,to)=>{if(to===${JSON.stringify(marker)})pause();return rename(from,to);};})();`;
+  const child=intercept+heartbeatSource(marker);
+  const parent=`const fs=require('node:fs');const child=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore',detached:process.platform==='win32',windowsHide:true});child.unref();const timer=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(timer);process.exit(0)}},20);`;
+  const result=await superviseTrial({command:process.execPath,args:['-e',parent],scratch,
+    profile:path.join(scratch,'profile'),snapshotFile:path.join(scratch,'missing.json'),limitMs:4000});
+  assert.equal(result.watchdog.timedOut,false);assert.equal(result.childExit.code,0);
+  assert.equal(result.cleanup.status,'FORCED_TERMINATED');
+  assert.deepEqual(JSON.parse(fs.readFileSync(marker,'utf8')),previous);
 });

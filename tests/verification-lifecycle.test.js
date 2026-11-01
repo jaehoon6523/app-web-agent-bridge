@@ -50,7 +50,7 @@ test('verification refuses an aliased cwd outside the candidate before dispatch'
   assert.equal(fs.existsSync(marker), false);
 });
 
-function inheritedVerification(t, startupDelayMs = 0) {
+function inheritedVerification(t, startupDelayMs = 0, onPhase = () => {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-verification-close-"));
   const pidFile = path.join(root, "descendant.pid");
   const markerFile=path.join(root,'heartbeat');
@@ -58,6 +58,7 @@ function inheritedVerification(t, startupDelayMs = 0) {
   const args = ['-e',source], spawn = childProcess.spawn;
   let child, observation, startedCwd, startupElapsedMs, dispatched = false;
   t.after(async () => {
+    onPhase('cleanup.start');
     const deadline = performance.now()+5000;
     const remaining = () => {
       const ms = Math.ceil(deadline-performance.now());
@@ -72,10 +73,14 @@ function inheritedVerification(t, startupDelayMs = 0) {
         if (running) child.kill('SIGKILL');
         // A kill request cannot prove the parent has stopped publishing descendant ownership.
         await exited;
+        onPhase('cleanup.parent-exited');
         await stopPipeHolder(pidFile,{timeoutMs:remaining()});
+        onPhase('cleanup.descendant-stopped');
         await waitChildClose(child,observation,{timeoutMs:remaining()});
+        onPhase('cleanup.pipes-closed');
       }
       await removeOwnedPipeFixture(root,{timeoutMs:remaining()});
+      onPhase('cleanup.done');
     } catch (error) {
       // Contain failed fixture observation without converting uncertain closure into PASS.
       child?.stdin?.destroy(); child?.stdout?.destroy(); child?.stderr?.destroy(); child?.unref();
@@ -181,15 +186,22 @@ test("verification timeout remains bounded after slow startup when an exited par
 });
 
 test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:10000}, async t => {
-  const fixture=inheritedVerification(t);
+  const started=performance.now();
+  const mark=phase=>t.diagnostic(JSON.stringify({phase,elapsedMs:performance.now()-started}));
+  mark('setup');
+  const fixture=inheritedVerification(t,0,mark);
   const f = setupAudit(t, {configure(project) {
     project.verifications = [{verificationId:"pipes",executable:process.execPath,args:fixture.args,
       cwd:".",timeoutMs:1500,purpose:"lifetime",environmentId:"controlled-node",resultFiles:[]}];
   }, async worker({workspace}) {
     fs.writeFileSync(path.join(workspace.root,'file.txt'),'revision 1\n');
+    mark('fixture.start');
     await fixture.start(workspace.root);
+    mark('fixture.ready');
   }, review() {throw new Error("uncertain verification must not reach reviewer");}});
+  mark('audit.run');
   const run = await fixture.run(() => f.run());
+  mark('audit.done');
   assert.equal(run.stage, "RECOVERY_REQUIRED");
   assert.equal(f.reviews(), 0);
   assert.equal(run.application, null);
@@ -197,11 +209,14 @@ test("unconfirmed verification closure persists recovery and never dispatches an
   assert.equal(execution.result.exitCode,0);
   assert.equal(fixture.child.exitCode,0);
   const heartbeat=await assertPipeHolderAlive(fixture.markerFile);
+  mark('pipe-holder.confirmed');
   t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,parentPid:fixture.child.pid,
     parentExitCode:fixture.child.exitCode,heartbeat}));
   assert.equal(execution.result.terminationConfirmed, false);
   assert.equal(execution.result.timedOut, true);
   await f.reopen();
+  mark('reopen.done');
   assert.equal(f.service.get(run.runId).stage, "RECOVERY_REQUIRED");
   assert.equal(f.reviews(), 0);
+  mark('assertions.done');
 });
