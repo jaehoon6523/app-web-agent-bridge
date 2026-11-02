@@ -1,10 +1,10 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
 import { createPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
-import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation, userFacingError, userFacingStoredError } from "./dashboard-status-view.js";
+import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation, userFacingError, userFacingStoredError, runCommandSuccessMessage, phaseReasons } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
-import { filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
+import { filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks } from "./dashboard-model.js";
 import { createRunActionLayout } from "./run-action-layout.js";
 import { projectRunListKnowledge } from "./dashboard-run-list-knowledge.js";
 import { projectDashboardStartActions } from "./dashboard-start-actions.js";
@@ -42,7 +42,30 @@ const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "I
 let preparationSignature = "";
 let requestedView = "";
 const unknownRequests = new Map();
-
+const runCommands = new Map();
+const independentRunCommands = new Set(["run.note.add", "run.archive", "run.unarchive"]);
+const runRecoveryKey = "bridge.run-command-recovery";
+let runRecoveryScope = null, runRecoveryToken = null;
+function runCommandBlocked(type) {
+  return runCommands.has(snapshot?.run?.runId)
+    || (operations.runCommand !== "IDLE" && !independentRunCommands.has(type));
+}
+function updateRunCommandStatus() {
+  operations.runCommand = [...runCommands.values()].some(item => item.status === "RUNNING") ? "RUNNING"
+    : runCommands.size ? "UNKNOWN_RESULT" : "IDLE";
+}
+function saveRunCommands() {
+  sessionStorage.setItem(runRecoveryKey, JSON.stringify({ scope:runRecoveryScope, requests:[...runCommands.values()] }));
+}
+async function restoreRunCommands() {
+  if (runRecoveryToken === token || snapshot.runtimeAvailability?.ready === false) return;
+  const scope = await runCommandRecoveryScope(token);
+  if (runRecoveryScope === scope) return;
+  runRecoveryScope = scope; runRecoveryToken = token; runCommands.clear();
+  for (const item of recoverRunCommandLinks(sessionStorage.getItem(runRecoveryKey), scope, window.location.origin, snapshot.runs))
+    runCommands.set(item.runId, item);
+  updateRunCommandStatus(); saveRunCommands();
+}
 const openFindings = new Set();
 const { bindHealthInteractions, health, signal, runAppearance, workerRuntimeStatus } = createDashboardHealthPresentation({
   $, text, time, getConnectionState:() => connectionState, getConnected:() => connected,
@@ -55,18 +78,6 @@ const { renderAudit, renderLog } = createDashboardAuditPresentation({
 });
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
 const labels = { CREATED:"접수됨", PROVISIONING:"작업 환경 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"변경사항 고정 중", VERIFYING:"검증 중", REVIEW_RUNNING:"독립 검토 중", REPORT_REPAIR:"검토 응답 확인 중", EVIDENCE_SUPPLEMENT:"검토 근거 보완 중", REWORK:"수정 대기", HOLD:"확인 필요", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 상태로 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"이전 작업 기록" };
-const phaseReasons = {
-  CREATED:"작업이 접수되었습니다.",
-  PROVISIONING:"격리된 작업 환경을 준비하고 있습니다.",
-  WORKER_RUNNING:"Worker가 승인된 요구사항을 구현하고 있습니다.",
-  CANDIDATE_CAPTURE:"구현 결과를 검토할 변경사항으로 고정하고 있습니다.",
-  VERIFYING:"고정된 변경사항의 검증 근거를 확인하고 있습니다.",
-  REVIEW_RUNNING:"Judge와 Critic이 현재 변경사항을 독립적으로 검토하고 있습니다.",
-  REPORT_REPAIR:"검토 응답을 확인하고 있습니다.",
-  EVIDENCE_SUPPLEMENT:"현재 변경사항의 검토 근거를 보완하고 있습니다.",
-  REWORK:"검토 지적을 반영하기 위한 수정 절차를 진행합니다.",
-  APPLYING:"검토를 통과한 변경사항을 프로젝트에 적용하고 있습니다.",
-};
 const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상태를 확인하고 실행을 폐기했습니다. 감사 기록과 작업 사본은 보존됩니다.", ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
 function text(id, value) { $(id).textContent = value ?? ""; }
 function folderName(targetRoot) {
@@ -141,7 +152,6 @@ function ensureOperatorNoteControls() {
   $("runSecondaryContent")?.append(panel);
 }
 ensureOperatorNoteControls();
-
 const syncRunInformationArchitecture = createRunActionLayout({ $, text });
 
 function selectProject(root) { if (root !== projectViewRoot) viewGeneration++; if (root) { pendingProjectDraft?.cancel(); followUpSource = null; } projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
@@ -234,6 +244,23 @@ async function refresh() {
       ? "서버·대시보드 정상 · 실행 런타임 준비 필요"
       : !extensionNeedsPreparation || result.preflight?.checks?.extensionAuthenticated === true ? ""
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
+    await restoreRunCommands();
+    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    for (const [runId, item] of runCommands) {
+      if (item.status !== "UNKNOWN_RESULT") continue;
+      const observed = await request("/api/state?requestId=" + encodeURIComponent(item.requestId));
+      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+      const receipt = observed.requestResult;
+      if (receipt?.requestId !== item.requestId) continue;
+      if (["COMPLETED", "FAILED"].includes(receipt.status)) {
+        runCommands.delete(runId); updateRunCommandStatus(); saveRunCommands();
+        lastCommandResult = {runId, requestId:item.requestId,
+          message:"요청 " + item.requestId + ": " + receipt.status + (receipt.error?.message ? " · " + receipt.error.message : "")};
+      } else if (snapshot?.run?.runId === runId) {
+        lastCommandResult = {runId, requestId:item.requestId,
+          message:"요청 " + item.requestId + ": " + receipt.status + " · 같은 요청을 자동으로 다시 보내지 않습니다."};
+      }
+    }
     for (const [operation, requestId] of unknownRequests) {
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
       if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
@@ -630,7 +657,7 @@ function render() {
     $("operatorNoteText").value = "";
   }
   const noteText = $("operatorNoteText").value.trim();
-  $("addOperatorNote").disabled = operations.runCommand !== "IDLE"
+  $("addOperatorNote").disabled = runCommandBlocked("run.note.add")
     || !runActions.operatorNote || !noteText;
   text("operatorNoteStatus", run
     ? "메모와 결정은 append-only 작업 기록입니다. 에이전트에게 전달하려면 위 전용 대화·개입 기능을 사용하세요."
@@ -726,7 +753,7 @@ function render() {
     $(id).disabled = operations.runCommand !== "IDLE" || !allowed;
   }
   $("archiveRun").textContent = run?.archivedAt ? "보관 해제" : "기록 보관";
-  $("archiveRun").disabled = operations.runCommand !== "IDLE" || !runActions.archiveRun;
+  $("archiveRun").disabled = runCommandBlocked(run?.archivedAt ? "run.unarchive" : "run.archive") || !runActions.archiveRun;
   if (!run) return;
   $("continueProject").hidden = run.phase !== "APPLIED" || Boolean(run.archivedAt);
   $("continueProject").disabled = $("newRun").disabled;
@@ -825,38 +852,25 @@ function render() {
   if (renderedRecords !== signature) { renderedRecords = signature; renderConversation(run, $("conversationTimeline"), node, time); renderAudit(); renderLog(); }
 }
 async function command(type, payload = {}) {
-  if (operations.runCommand !== "IDLE" || !capabilities().has(type)) return;
+  if (runCommandBlocked(type) || !capabilities().has(type)) return;
   const run = snapshot?.run, target = run?.runId, generation = viewGeneration;
   const currentView = () => viewGeneration === generation && snapshot?.run?.runId === target
     && (!selected || selected === target) && projectViewRoot === null;
   let responsePayload;
   const body = { type, requestId:crypto.randomUUID(), payload:{ ...payload, runId:workflow.runId, expectedVersion:workflow.runVersion } };
-  operations.runCommand = "RUNNING"; lastCommandResult = null; render();
+  runCommands.set(target, {runId:target, requestId:body.requestId, status:"RUNNING",
+    targetRoot:run.projectRef?.targetRoot ?? run.targetRoot ?? null, origin:window.location.origin});
+  updateRunCommandStatus(); saveRunCommands(); lastCommandResult = null; render();
   try {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
-    const successMessage = {
-        "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
-        "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
-        "code.review.discuss": "감사자 답변을 기록했습니다. 현재 감사 판정과 적용 권한은 변경되지 않았습니다.",
-        "code.review.discuss.discard": "미확정 감사 대화 전송을 폐기했습니다. 자동 재전송하지 않습니다.",
-        "code.review.rebind": "감사자 대화 탭을 다시 연결했습니다. 같은 후보의 감사를 재개하려면 ‘웹 감사 다시 시도’를 누르세요.",
-        "run.note.add": "작업 메모를 기록했습니다. 실행 상태와 감사 판정은 변경되지 않았습니다.",
-        "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
-        "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
-        "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
-        "code.apply": "적용 요청을 처리했습니다. 최신 적용 상태를 확인하세요.",
-        "evidence.export": "감사 기록 요청을 처리했습니다.",
-        "run.archive": "종료된 실행을 보관했습니다. 기록과 감사 근거는 유지됩니다.",
-        "run.unarchive": "보관된 실행을 기본 기록으로 복원했습니다.",
-        "run.delete": "종료된 작업 기록을 삭제했습니다.",
-      }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
+    const successMessage = runCommandSuccessMessage(type);
     lastCommandResult = {runId:target, requestId:body.requestId, message:successMessage};
     if (type === "run.delete" && currentView()) { selected = null; requestedView = "start"; viewGeneration++; }
     responsePayload = result.payload;
   } catch (error) {
-    if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
+    if (error.code === "UNKNOWN_RESULT") { runCommands.get(target).status = "UNKNOWN_RESULT"; updateRunCommandStatus(); saveRunCommands(); }
     lastCommandResult = {runId:target, requestId:body.requestId, message:userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.")};
-  } finally { if (operations.runCommand !== "UNKNOWN_RESULT") operations.runCommand = "IDLE"; await refresh(); }
+  } finally { if (runCommands.get(target)?.status !== "UNKNOWN_RESULT") runCommands.delete(target); updateRunCommandStatus(); saveRunCommands(); await refresh(); }
   return currentView() ? responsePayload : undefined;
 }
 async function openEvidence(id, startLine = 1) {

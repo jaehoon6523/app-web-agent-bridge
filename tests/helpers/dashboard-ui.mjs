@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import * as dashboardActionCapabilities from "../../public/dashboard-action-capabilities.js";
 import * as dashboardConnectionState from "../../public/dashboard-connection-state.js";
-import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
+import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks } from "../../public/dashboard-model.js";
 import * as dashboardRunListKnowledge from "../../public/dashboard-run-list-knowledge.js";
 import * as dashboardStartActions from "../../public/dashboard-start-actions.js";
 import { renderProjectOverview } from "../../public/project-overview-view.js";
@@ -116,7 +116,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     ...dashboardRunListKnowledge,
     ...dashboardStartActions,
     ...runContextView, redactDiagnosticLog,
-    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
+    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},

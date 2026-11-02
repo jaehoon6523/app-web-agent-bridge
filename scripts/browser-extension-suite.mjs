@@ -443,3 +443,53 @@ test('browser fixture: mixed-provider audit uses ChatGPT Judge and Claude Critic
   assert.equal(web.contentResults.filter(entry => entry.request.type === 'agent.prompt').length, 2);
   assert.deepEqual(web.errors, []);
 });
+
+import {asyncBoundaryFixture} from '../tests/helpers/async-boundary-regressions.js';
+for (const id of ['A-01','B-01','B-02']) test(`async boundary browser ${id}`,{timeout:25000},async t=>{
+  const f=await asyncBoundaryFixture(t),owner=resources(t),browser=await launchBrowser();
+  owner.add('AB browser',()=>browser.close(),20);
+  const page=await browser.newPage(),errors=[],posts=[],queries=[];let pending,requestId;
+  page.on('pageerror',error=>errors.push(error.message));
+  await page.route('**/api/**',async route=>{
+    const req=route.request(),url=new URL(req.url());
+    if(url.pathname==='/api/dashboard/session')return json(route,200,{token:'ab-test-token-0123456789abcdef-0123456789'});
+    if(url.pathname==='/api/state'){
+      if(url.searchParams.has('requestId'))queries.push(url.searchParams.get('requestId'));
+      if(!url.searchParams.has('runId'))url.searchParams.set('runId','A');
+    }
+    const options={method:req.method(),...(req.postData()?{body:req.postData()}: {})};
+    if(url.pathname==='/api/commands'){
+      const body=req.postDataJSON();posts.push(body);
+      if(body.payload.runId==='A'){
+        requestId=body.requestId;pending=f.api(url.pathname,options);await f.entered.promise;
+        if(id!=='B-01')return route.abort('failed');
+        const result=await pending;return json(route,result.status,result.body);
+      }
+    }
+    const result=await f.api(url.pathname+url.search,options);return json(route,result.status,result.body);
+  });
+  await page.goto(f.base);await page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='A');
+  await page.evaluate(()=>{for(const e of document.querySelectorAll('details'))e.open=true;});
+  await page.locator('#operatorNoteText').fill('A note');await page.locator('#addOperatorNote').click();await f.entered.promise;
+  if(id!=='B-01')await page.waitForFunction(()=>document.getElementById('commandResult').textContent.includes('같은 요청을 자동으로 다시 보내지 않습니다'));
+  if(id==='A-01'){
+    await page.reload();await page.waitForFunction(()=>document.getElementById('commandResult').textContent.includes('PROCESSING'));
+    assert.ok(queries.includes(requestId));assert.equal(posts.length,1);
+    f.release.resolve();await pending;await page.waitForFunction(()=>document.getElementById('commandResult').textContent.includes('COMPLETED'));
+    assert.equal(f.service.get('A').operatorNotes.length,1);assert.equal(posts.length,1);
+  }else{
+    await page.locator('#runList .run-item').filter({hasText:'B'}).click();
+    await page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='B');
+    await page.evaluate(()=>{for(const e of document.querySelectorAll('details'))e.open=true;});
+    await page.locator('#operatorNoteText').fill('B note');await page.locator('#addOperatorNote').click();
+    await page.waitForFunction(()=>document.getElementById('operatorNoteText').value==='');
+    await page.locator('#archiveRun').click();await page.waitForFunction(()=>document.getElementById('archiveRun').textContent==='보관 해제');
+    await page.locator('#archiveRun').click();await page.waitForFunction(()=>document.getElementById('archiveRun').textContent==='기록 보관');
+    await page.locator('#operatorNoteText').fill('B draft');f.release.resolve();await pending;
+    await page.waitForResponse(response=>new URL(response.url()).pathname==='/api/state');
+    assert.equal(await page.locator('#runPanel').getAttribute('data-run-id'),'B');
+    assert.equal(await page.locator('#operatorNoteText').inputValue(),'B draft');
+    assert.equal(f.service.get('B').operatorNotes.length,1);assert.equal(f.service.get('B').archivedAt,null);
+  }
+  assert.deepEqual(errors,[]);t.diagnostic(JSON.stringify({id,posts:posts.map(x=>({runId:x.payload.runId,requestId:x.requestId,type:x.type})),queries}));
+});
