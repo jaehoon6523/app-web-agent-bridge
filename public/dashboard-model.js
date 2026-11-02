@@ -369,3 +369,21 @@ export function sessionFieldRows(actor, session) {
     ["last message ID", session.lastObservedAssistantMessageId ?? session.lastObservedMessageId ?? "—"],
   ];
 }
+
+export async function runCommandRecoveryScope(token) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(token));
+  return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, "0")).join("");
+}
+export function recoverRunCommandLinks(serialized, scope, origin, runs) {
+  try {
+    const saved = JSON.parse(serialized || "null");
+    if (saved?.scope !== scope || !Array.isArray(saved.requests)) return [];
+    return saved.requests.flatMap(item => {
+      const run = runs.find(run => run.runId === item?.runId);
+      const root = run?.targetRoot ?? run?.projectRef?.targetRoot;
+      if (item.origin !== origin || !root || root !== item.targetRoot
+        || typeof item.requestId !== "string" || !item.requestId || item.requestId.length > 200) return [];
+      return [{runId:item.runId, requestId:item.requestId, targetRoot:root, origin, status:"UNKNOWN_RESULT"}];
+    });
+  } catch { return []; }
+}

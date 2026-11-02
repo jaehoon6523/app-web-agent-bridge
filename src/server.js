@@ -611,9 +611,11 @@ export function createBridgeServer({
             const live = await getLiveRuntime();
             const receipt = live.codeChanges?.store?.receipt(req.query.requestId);
             if (receipt) {
+              const result = receipt.status === "COMPLETED" ? JSON.parse(String(receipt.result_json)) : null;
               snapshot.requestResult = {
                 requestId:req.query.requestId,
-                status:receipt.status === "COMPLETED" ? "COMPLETED" : "PROCESSING",
+                status:result?.error ? "FAILED" : receipt.status === "COMPLETED" ? "COMPLETED" : "PROCESSING",
+                ...(result?.error ? { error:result.error } : {}),
               };
             }
           }
