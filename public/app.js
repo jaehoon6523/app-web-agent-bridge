@@ -1,6 +1,6 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
 import { createPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
-import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
+import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation, userFacingError, userFacingStoredError } from "./dashboard-status-view.js";
 import { renderInitialRequest } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
@@ -23,7 +23,8 @@ let token = "", snapshot = null, selected = "", connected = false;
 let connectionState = initialDashboardConnectionState();
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
 let sequence = 0, lastConfirmed = null, evidencePage = null;
-let renderedRecords = "", lastCommandError = "", recoveryRunId = null, readinessSignature = "";
+let viewGeneration = 0, lastCommandResult = null;
+let renderedRecords = "", recoveryRunId = null;
 let decisionSignature = "", interventionRunId = null;
 let agreement = null, preparation = null;
 let projectConversationRoot = null, reviewDiscussionRunId = null;
@@ -66,31 +67,6 @@ const phaseReasons = {
   REWORK:"검토 지적을 반영하기 위한 수정 절차를 진행합니다.",
   APPLYING:"검토를 통과한 변경사항을 프로젝트에 적용하고 있습니다.",
 };
-const errorCopy = Object.freeze({
-  UNKNOWN_RESULT:"진행 중이던 요청의 결과를 확인할 수 없습니다. 같은 요청을 자동으로 다시 보내지 않습니다. 연결을 복구한 뒤 상태를 확인하세요.",
-  RUN_VERSION_CONFLICT:"작업 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 시도하세요.",
-  RUN_BUSY:"다른 작업이 진행 중입니다. 현재 작업을 확인한 뒤 다시 시도하세요.",
-  WEB_BLOCKED:"브라우저 확장 연결을 확인한 뒤 다시 시도하세요.",
-  RECOVERY_REQUIRED:"현재 작업 상태를 먼저 확인해야 합니다. 복구 안내에 따라 상태를 확인하세요.",
-  WORKER_TURN_CHANGED:"Worker 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 보내세요.",
-  WORKER_INTERVENTION_UNAVAILABLE:"현재 Worker에 메시지를 전달할 수 있는 상태가 아닙니다. Worker 실행 상태를 확인하세요.",
-  REVIEW_DISCUSSION_RECOVERY_REQUIRED:"이전 감사자 요청의 결과가 확인되지 않았습니다. 기존 요청을 먼저 확인하거나 정리하세요.",
-  REVIEW_DISCUSSION_BINDING_REQUIRED:"감사자의 기존 대화 연결을 확인한 뒤 다시 시도하세요.",
-  WEB_SESSION_PROVIDER_MISMATCH:"설정한 감사 서비스와 실제 연결이 다릅니다. 감사자 대화 연결을 다시 확인하세요.",
-  INVALID_INPUT:"입력 내용을 확인하세요.",
-});
-function userFacingError(error, fallback = "요청을 처리하지 못했습니다. 최신 상태를 확인하고 필요하면 진단 로그를 내보내세요.") {
-  const code = typeof error?.code === "string" ? error.code : null;
-  if (code && errorCopy[code]) return errorCopy[code];
-  const message = typeof error?.message === "string" ? error.message.trim() : "";
-  if (message && /[가-힣]/u.test(message)) return message;
-  return fallback;
-}
-function userFacingStoredError(value, fallback) {
-  const message = typeof value === "string" ? value.trim() : "";
-  if (!message) return fallback;
-  return /[가-힣]/u.test(message) ? message : fallback;
-}
 const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상태를 확인하고 실행을 폐기했습니다. 감사 기록과 작업 사본은 보존됩니다.", ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
 function text(id, value) { $(id).textContent = value ?? ""; }
 function folderName(targetRoot) {
@@ -168,8 +144,8 @@ ensureOperatorNoteControls();
 
 const syncRunInformationArchitecture = createRunActionLayout({ $, text });
 
-function selectProject(root) { if (root) { pendingProjectDraft?.cancel(); followUpSource = null; } projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
-function openRun(runId) { pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
+function selectProject(root) { if (root !== projectViewRoot) viewGeneration++; if (root) { pendingProjectDraft?.cancel(); followUpSource = null; } projectViewRoot = root; sessionStorage.setItem("bridge.project.view", root ?? ""); render(); }
+function openRun(runId) { viewGeneration++; pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); selected = runId; text("commandResult", ""); refresh(); }
 function actionState(id, disabled, disabledReason = "", enabledReason = "") {
   const element = $(id);
   element.disabled = Boolean(disabled);
@@ -220,28 +196,32 @@ async function request(url, options = {}) {
   }
 }
 async function refresh() {
+  if (!$("dashboardPageError").hidden) return;
   const current = ++sequence, target = selected;
   let phase = token ? "STATE" : "SESSION";
   connected = false;
-  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed });
+  connectionState = markStateReadStarted(connectionState);
+  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
   if (snapshot) render();
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
       const session = await request("/api/dashboard/session", { method:"POST", body:"{}" });
+      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
       if (typeof session?.token !== "string" || !session.token.trim()) throw Object.assign(new Error("대시보드 인증 응답에 토큰이 없습니다."), { code:"DASHBOARD_SESSION_INVALID", status:200, responseReceived:true });
       token = session.token;
       connectionState = markDashboardSessionAuthenticated(connectionState);
     }
     phase = "STATE";
-    connectionState = markStateReadStarted(connectionState);
     const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
-    if (current !== sequence || target !== selected) return;
+    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     projectRunListKnowledge(result);
     const canonical = normalizeDashboardState(result);
+    if (target && canonical.run?.runId !== target) throw Object.assign(new Error("조회한 작업과 응답 작업이 일치하지 않습니다."),
+      {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = markStateReadReady(connectionState);
     connected = dashboardStateReady(connectionState);
     snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]};
@@ -256,7 +236,7 @@ async function refresh() {
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
     for (const [operation, requestId] of unknownRequests) {
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
-      if (current !== sequence || target !== selected) return;
+      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
       const receipt = observed.requestResult;
       if (receipt?.requestId !== requestId) continue;
       if (["COMPLETED", "FAILED", "NOT_FOUND"].includes(receipt.status)) {
@@ -265,11 +245,13 @@ async function refresh() {
       }
     }
   } catch (error) {
-    if (current !== sequence || target !== selected) return;
-    connectionState = classifyDashboardFailure(connectionState, phase, error);
+    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    if (phase === "PROJECTION" && !error.code) Object.assign(error, {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
+    connectionState = classifyDashboardFailure(connectionState, phase, {...error, message:userFacingError(error)});
     connected = dashboardStateReady(connectionState);
     if (phase === "STATE" && [401, 403].includes(error.status)) token = "";
-    text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음"));
+    text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음")
+      + (snapshot?.run && (!target || snapshot.run.runId === target) ? " · 마지막 확인 데이터 표시 중입니다." : ""));
   }
   render();
   pendingProjectDraft?.complete();
@@ -334,9 +316,13 @@ function disabledWebReason(action) {
   return "";
 }
 function render() {
+  if (!$("dashboardPageError").hidden) return;
   renderPreparation();
-  const run = snapshot?.run, preflight = snapshot?.preflight, caps = capabilities();
+  const run = selected && snapshot?.run?.runId !== selected ? null : snapshot?.run;
+  const preflight = snapshot?.preflight, caps = capabilities();
   $("runPanel").dataset.runId = run?.runId ?? "";
+  text("commandResult", run && lastCommandResult?.runId === run.runId ? lastCommandResult.message : "");
+  if (!run) { text("runObjective", ""); text("runStatus", ""); }
   if (!$("proposalWaiting")) {
     const waiting = node("p", "ChatGPT 응답을 기다리고 있습니다", "proposal-waiting");
     const spinner = node("span", "", "spinner"), dots = node("span", "...", "waiting-dots");
@@ -348,8 +334,6 @@ function render() {
   $("proposalWaiting").hidden = workflow.stage !== "PREPARE" || !["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(workflow.state);
   proposalControls();
   renderPreparationPersistence();
-  const readiness = JSON.stringify([connected, preflight, [...caps], snapshot?.runs]);
-  if (readiness !== readinessSignature) { lastCommandError = ""; readinessSignature = readiness; }
   const checks = preflight?.checks;
   const knowledge = projectDashboardKnowledge(connectionState);
   health("apiHealth", "서버", knowledge.transport.currentlyReachable ? "ok" : "unknown",
@@ -842,13 +826,15 @@ function render() {
 }
 async function command(type, payload = {}) {
   if (operations.runCommand !== "IDLE" || !capabilities().has(type)) return;
-  const run = snapshot?.run, target = run?.runId;
+  const run = snapshot?.run, target = run?.runId, generation = viewGeneration;
+  const currentView = () => viewGeneration === generation && snapshot?.run?.runId === target
+    && (!selected || selected === target) && projectViewRoot === null;
+  let responsePayload;
   const body = { type, requestId:crypto.randomUUID(), payload:{ ...payload, runId:workflow.runId, expectedVersion:workflow.runVersion } };
-  operations.runCommand = "RUNNING"; lastCommandError = ""; render();
+  operations.runCommand = "RUNNING"; lastCommandResult = null; render();
   try {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
-    if (snapshot?.run?.runId === target) {
-      const successMessage = {
+    const successMessage = {
         "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
         "code.review.discuss": "감사자 답변을 기록했습니다. 현재 감사 판정과 적용 권한은 변경되지 않았습니다.",
@@ -864,15 +850,14 @@ async function command(type, payload = {}) {
         "run.unarchive": "보관된 실행을 기본 기록으로 복원했습니다.",
         "run.delete": "종료된 작업 기록을 삭제했습니다.",
       }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
-      text("commandResult", successMessage);
-    }
-    if (type === "run.delete") { selected = null; requestedView = "start"; }
-    return result.payload;
+    lastCommandResult = {runId:target, requestId:body.requestId, message:successMessage};
+    if (type === "run.delete" && currentView()) { selected = null; requestedView = "start"; viewGeneration++; }
+    responsePayload = result.payload;
   } catch (error) {
     if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
-    lastCommandError = userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.");
-    text("commandResult", lastCommandError);
+    lastCommandResult = {runId:target, requestId:body.requestId, message:userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요.")};
   } finally { if (operations.runCommand !== "UNKNOWN_RESULT") operations.runCommand = "IDLE"; await refresh(); }
+  return currentView() ? responsePayload : undefined;
 }
 async function openEvidence(id, startLine = 1) {
   const target = snapshot?.run?.runId;
@@ -1185,8 +1170,9 @@ $("chooseFolder").addEventListener("click", async () => {
   } catch (error) { text("folderStatus", userFacingError(error)); }
   finally { operations.folderPicker = "IDLE"; render(); }
 });
-$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
+$("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { viewGeneration++; pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
 async function startProjectDraft(root, source) {
+  viewGeneration++;
   pendingProjectDraft?.cancel();
   const fields = ["startRoot", "objective", "conversationUrl", "judgeReviewerProvider", "criticReviewerProvider"];
   const previous = fields.map(id => $(id).value);

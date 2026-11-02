@@ -95,7 +95,6 @@ async function connect({ explicit = false } = {}) {
   broadcastPopupState();
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket) return;
-    lastError = null;
     // No identity or state is sent until the controller challenge is authenticated.
     broadcastPopupState();
   });
@@ -110,17 +109,14 @@ async function connect({ explicit = false } = {}) {
     pendingChallengeId = null;
     if (event.code !== 1000) agentDiagnostics.failure({code:event.code === 4409 ? "AUTHENTICATED_EXTENSION_ALREADY_CONNECTED" : "WEB_SOCKET_CLOSED"},"CONNECT",event.code);lastError = event.code === 4409
       ? "컨트롤러에 이미 인증된 확장이 연결되어 있습니다 (4409). 다른 Chrome 프로필·브라우저·중복 설치를 확인한 후 Reconnect를 누르세요. 자동 재접속을 중단했습니다."
-      : event.code === 4403 && lastError
-      ? lastError
-      : event.code === 1000
-      ? null
-      : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`;
+      : lastError ?? (event.code === 1000 ? null
+        : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`);
     broadcastPopupState();
     if (event.code === 4403 && lastError?.includes("AUTH_IDENTITY_MISMATCH")) reconnect.schedulePairing(); else reconnect.schedule(event.code);
   });
   nextSocket.addEventListener("error", () => {
     if (socket !== nextSocket) return;
-    lastError = "Could not connect to the local controller.";agentDiagnostics.failure({code:"WEB_SOCKET_ERROR"},"CONNECT");
+    lastError ??= "Could not connect to the local controller.";agentDiagnostics.failure({code:"WEB_SOCKET_ERROR"},"CONNECT");
     broadcastPopupState();
   });
 }
