@@ -210,6 +210,10 @@ export function normalizeDashboardState(value) {
   }
   const capabilities = optionalArray(value.commandCapabilities, "commandCapabilities");
   const workflow = normalizeWorkflow(value.workflow);
+  const run = normalizeRun(value.run);
+  if (["WORK", "RESULT"].includes(workflow.stage) && (!run || run.runId !== workflow.runId || run.version !== workflow.runVersion)) {
+    throw new TypeError("run identity/version does not match workflow.");
+  }
   const preparation = optionalObject(value.preparation, "preparation");
   if (preparation && workflow.preparationId && (preparation.preparationId !== workflow.preparationId || preparation.version !== workflow.preparationVersion)) {
     throw new TypeError("preparation identity/version does not match workflow.");
@@ -229,7 +233,7 @@ export function normalizeDashboardState(value) {
     workflow,
     preparation,
     preflight: optionalObject(value.preflight, "preflight"),
-    run: normalizeRun(value.run),
+    run,
     sessions: normalizeSessions(value.sessions),
     messages: optionalArray(value.messages, "messages"),
     deliveries: optionalArray(value.deliveries, "deliveries"),

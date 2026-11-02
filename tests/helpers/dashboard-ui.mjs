@@ -8,6 +8,7 @@ import * as dashboardStartActions from "../../public/dashboard-start-actions.js"
 import { renderProjectOverview } from "../../public/project-overview-view.js";
 import { createRunActionLayout } from "../../public/run-action-layout.js";
 import * as runContextView from "../../public/run-context-view.js";
+import { redactDiagnosticLog } from "../../public/diagnostic-export.js";
 
 function inlineModule(source) {
   const lines = [];
@@ -105,13 +106,16 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     removeEventListener(key, callback) { if (this.listeners[key] === callback) delete this.listeners[key]; }
     contains() { return false; }
   }
-  for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
+  for (const match of html.matchAll(/<[a-z][^>]*\bid="([^"]+)"[^>]*>/gi)) {
+    const element = new Element(); element.id = match[1];
+    element.hidden = /\shidden(?:\s|=|>)/u.test(match[0]);
+  }
   const context = vm.createContext({ location:{search:""},
     ...dashboardActionCapabilities,
     ...dashboardConnectionState,
     ...dashboardRunListKnowledge,
     ...dashboardStartActions,
-    ...runContextView,
+    ...runContextView, redactDiagnosticLog,
     externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },

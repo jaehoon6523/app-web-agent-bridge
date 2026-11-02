@@ -226,6 +226,7 @@ button.primary:hover:enabled { background:#68e4b3; }
 .tab-choice-rail li:first-child::before { display:none; }
 .rail-number { position:relative; z-index:1; display:grid; place-items:center; width:30px; height:30px; margin:0 auto 6px; border:2px solid var(--edge); border-radius:50%; background:var(--paper); }
 .tab-choice-rail .done .rail-number { background:var(--accent); color:#fff; border-color:var(--accent); }
+#dashboardLastError { white-space:pre-line; overflow-wrap:anywhere; }
 .tab-choice-rail .done::before { background:var(--accent); }
 .preparation-tab-choice :focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
 @media(prefers-color-scheme:dark) { .preparation-tab-choice { --paper:#1a212b; --sunk:#141a22; --ink:#e7ebf0; --mute:#a4b0bf; --edge:#374353; --accent:#8c91ff; --tint:#23264a; --amber:#9a5208; --amber-bg:#3a2d18; color-scheme:dark; } .preparation-tab-choice .tab-choice-reason,.preparation-tab-choice .tab-choice-note { color:#f0b45e!important; } .preparation-tab-choice .tab-choice-note.rejected { background:#3e201d; color:#ff8f85!important; } .preparation-tab-choice .tab-choice-note.success { background:#18301f; color:#6dd39a!important; } }

@@ -6,6 +6,183 @@ import path from 'node:path';
 import { setupAudit, assertionsFor } from '../tests/helpers/audit-fixtures.js';
 import { createFixtureCodexWorker } from '../tests/helpers/codex-worker-fixture.js';
 
+
+import { productionProcess } from './e2e/helpers/process.mjs';
+import { launchBrowser } from './e2e/helpers/browser.mjs';
+import { resources } from './e2e/helpers/resources.mjs';
+const STATE='/api/state';
+const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
+const json=(route,status,body)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
+const expectDashboardCode=(page,code)=>page.waitForFunction(code=>document.getElementById('dashboardErrorCode').textContent.includes(code),code);
+async function errorDashboardBrowser(t,{intercept,expectedMutations=[]}) {
+  const owner=resources(t),server=await productionProcess();
+  owner.add('error fixture server',async()=>server.assertShutdown(await server.stop()),30,15000);
+  owner.add('error fixture workspace',()=>server.dispose(),40);
+  await server.ready();
+  const browser=await launchBrowser();owner.add('error fixture browser',()=>browser.close(),20);
+  const context=await browser.newContext(),page=await context.newPage(),errors=[],routeErrors=[],mutations=[];
+  page.on('pageerror',e=>errors.push(e.message));
+  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/') && !['GET','HEAD'].includes(request.method()) && url.pathname!=='/api/dashboard/session')mutations.push(url.pathname);});
+  await context.route('**/api/**',async route=>{
+    try {if(!await intercept({route,pathname:new URL(route.request().url()).pathname}))await route.continue();}
+    catch(error){if(page.isClosed())return;routeErrors.push(error.message);await route.abort();}
+  });
+  owner.add('error fixture negative checks',()=>{assert.deepEqual(errors,[]);assert.deepEqual(routeErrors,[]);assert.deepEqual(mutations,expectedMutations);},10);
+  return {owner,page,open:()=>page.goto(server.baseUrl),ready:async()=>{
+    await page.waitForFunction(()=>document.getElementById('dashboardPhase').textContent==='최신 상태 확인 완료');
+    assert.equal(await page.locator('#dashboardErrorCode').textContent(),'없음');
+  }};
+}
+
+function loadedRunState(base, id, phase = 'WORKER_RUNNING', aliases = false) {
+  const run = {runId:id, phase, version:3, objective:`작업 ${id}`, requirements:{items:[]}, extensionField:{retained:true}};
+  const state = {...base,run:{...run},preparation:null,
+    workflow:{stage:phase === 'APPLIED' ? 'RESULT' : 'WORK',state:phase,runId:id,runVersion:3},
+    runs:[run,{...run,runId:id === 'A' ? 'B' : 'A',objective:`작업 ${id === 'A' ? 'B' : 'A'}`}],
+    dataKnowledge:{runs:{status:'AVAILABLE_NONEMPTY'}},commandCapabilities:['run.stop'],extensionField:{retained:true}};
+  if (aliases) {state.run.id=id;state.run.status=phase;delete state.run.runId;delete state.run.phase;}
+  return state;
+}
+
+test('an ID mismatch remains visible during automatic retry and in history after confirmed recovery',{timeout:25000},async t=>{
+  let mode='ready';const held=deferred(),release=deferred(),delivered=deferred();
+  const f=await errorDashboardBrowser(t,{intercept:async({route,pathname})=>{
+    if(pathname!==STATE)return false;
+    const base=await(await route.fetch()).json();
+    const id=new URL(route.request().url()).searchParams.get('runId')||'A';
+    if(mode==='held'){held.resolve();await release.promise;await json(route,200,loadedRunState(base,id));delivered.resolve();}
+    else await json(route,200,loadedRunState(base,mode==='wrong'?'A':id));
+    return true;
+  }});
+  f.owner.add('release ID recovery',()=>release.resolve(),0);
+  await f.open();await f.ready();mode='wrong';
+  await f.page.locator('#runList .run-item').filter({hasText:'작업 B'}).click();
+  await expectDashboardCode(f.page,'DASHBOARD_STATE_INVALID');
+  assert.match(await f.page.locator('#connectionNotice').innerText(),/조회한 작업과 응답 작업이 일치하지 않습니다/u);
+  const notice=await f.page.locator('#connectionNotice').innerText();
+  mode='held';await held.promise;
+  assert.match(await f.page.locator('#dashboardErrorCode').textContent(),/DASHBOARD_STATE_INVALID/u);
+  assert.equal(await f.page.locator('#connectionNotice').innerText(),notice);
+  assert.equal(await f.page.locator('#runPanel').getAttribute('data-load-state'),'ERROR');
+  assert.equal(await f.page.locator('#stopRun').isDisabled(),true);
+  mode='ready';release.resolve();await delivered.promise;await f.ready();
+  assert.equal(await f.page.locator('#runPanel').getAttribute('data-run-id'),'B');
+  assert.match(await f.page.locator('#dashboardLastError').innerText(),/DASHBOARD_STATE_INVALID/u);
+  assert.match(await f.page.locator('#dashboardLastError').innerText(),/일치하지 않습니다/u);
+  assert.match(await f.page.locator('#dashboardLastError').innerText(),/복구됐습니다/u);
+});
+
+test('a fatal page error survives a pending successful response and keeps mutation controls blocked',{timeout:25000},async t=>{
+  let hold=false;const held=deferred(),release=deferred(),delivered=deferred();
+  const f=await errorDashboardBrowser(t,{intercept:async({route,pathname})=>{
+    if(pathname!==STATE)return false;
+    const base=await(await route.fetch()).json();
+    if(hold){held.resolve();await release.promise;}
+    await json(route,200,loadedRunState(base,'A'));if(hold)delivered.resolve();return true;
+  }});
+  f.owner.add('release post-fatal state',()=>release.resolve(),0);
+  await f.open();await f.ready();
+  assert.equal(await f.page.locator('#stopRun').isEnabled(),true);
+  hold=true;await f.page.locator('#refreshDashboard').click();await held.promise;
+  await f.page.evaluate(()=>window.dispatchEvent(new ErrorEvent('error',{error:new Error('Controlled error while state is pending')})));
+  await expectDashboardCode(f.page,'DASHBOARD_RENDER_FAILED');
+  release.resolve();await delivered.promise;
+  await f.page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+  assert.equal(await f.page.locator('#dashboardPhase').textContent(),'화면 오류');
+  assert.equal(await f.page.locator('#dashboardErrorCode').textContent(),'DASHBOARD_RENDER_FAILED');
+  assert.equal(await f.page.locator('#dashboardPageError').isVisible(),true);
+  assert.equal(await f.page.locator('#stopRun').isDisabled(),true);
+  assert.equal(await f.page.locator('#refreshDashboard').textContent(),'페이지 새로고침');
+});
+
+
+
+for (const variant of ['identity','version']) {
+  test(`fixed scope browser 1: rejects initial workflow/run ${variant} mismatch`,{timeout:25000},async t=>{
+    const f=await errorDashboardBrowser(t,{intercept:async({route,pathname})=>{
+      if(pathname!==STATE)return false;
+      const state=loadedRunState(await(await route.fetch()).json(),'A');
+      if(variant==='identity')state.run.runId='B';else state.run.version++;
+      await json(route,200,state);return true;
+    }});
+    await f.open();await expectDashboardCode(f.page,'DASHBOARD_STATE_INVALID');
+    assert.equal(await f.page.locator('#stopRun').isDisabled(),true);
+    assert.equal(await f.page.locator('#dashboardPageError').isVisible(),false);
+  });
+}
+
+test('fixed scope browser 2: late A command error never contaminates B and remains attributable to A',{timeout:25000},async t=>{
+  const sent=deferred(),release=deferred(),delivered=deferred();let body;
+  const f=await errorDashboardBrowser(t,{expectedMutations:['/api/commands'],intercept:async({route,pathname})=>{
+    if(pathname==='/api/commands'){
+      body=route.request().postDataJSON();sent.resolve();await release.promise;
+      await json(route,409,{error:{code:'RUN_BUSY',message:'Controlled late A failure'}});delivered.resolve();return true;
+    }
+    if(pathname!==STATE)return false;
+    const id=new URL(route.request().url()).searchParams.get('runId')||'A';
+    await json(route,200,loadedRunState(await(await route.fetch()).json(),id));return true;
+  }});
+  f.owner.add('release late command',()=>release.resolve(),0);
+  await f.open();await f.ready();
+  assert.equal(await f.page.locator('#stopRun').isVisible(),false);
+  await f.page.locator('#runSecondaryTier > summary').click();
+  assert.equal(await f.page.locator('#stopRun').isVisible(),true);
+  t.diagnostic('Opened the existing collapsed action panel before issuing the command.');
+  await f.page.locator('#stopRun').click();await sent.promise;
+  assert.equal(body.payload.runId,'A');assert.equal(body.payload.expectedVersion,3);
+  await f.page.locator('#runList .run-item').filter({hasText:'\uC791\uC5C5 B'}).click();
+  await f.page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='B');
+  release.resolve();await delivered.promise;await f.ready();
+  assert.equal(await f.page.locator('#runPanel').getAttribute('data-run-id'),'B');
+  assert.equal(await f.page.locator('#commandResult').textContent(),'');
+  await f.page.locator('#runList .run-item').filter({hasText:'\uC791\uC5C5 A'}).click();
+  await f.page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='A' && document.getElementById('commandResult').textContent.length>0);
+});
+
+
+test('identity rejection stays visible through an open socket until matching authentication is accepted', {timeout:25000}, async t=>{
+  const f=await extensionBrowser(t,{autoConnect:false});
+  f.transport.acceptPairedIdentity('different-controller-identity');
+  await f.background.addInitScript(()=>{
+    const Socket=globalThis.WebSocket;
+    globalThis.WebSocket=class extends Socket {
+      constructor(...args){super(...args);globalThis.identityTestSocket=this;}
+      addEventListener(type,listener,options){
+        if(type!=='message')return super.addEventListener(type,listener,options);
+        return super.addEventListener(type,event=>{
+          if(globalThis.holdAuthentication && JSON.parse(event.data).type==='controller.auth.challenge'){
+            globalThis.releaseAuthentication=()=>listener(event);return;
+          }
+          listener(event);
+        },options);
+      }
+    };
+  });
+  const url=new URL(f.readStorage().controllerUrl);url.protocol='http:';url.pathname='/';
+  await f.background.goto(url.href);
+  await f.background.waitForFunction(()=>globalThis.fixturePopupState?.lastError?.includes('AUTH_IDENTITY_MISMATCH'));
+  f.transport.acceptPairedIdentity(f.readStorage().extensionIdentity);
+  await f.background.evaluate(async()=>{
+    globalThis.holdAuthentication=true;
+    await new Promise(resolve=>globalThis.fixtureBackgroundListener({type:'bridge.reconnect'},{},resolve));
+  });
+  await f.background.waitForFunction(()=>typeof globalThis.releaseAuthentication==='function');
+  await f.background.waitForFunction(()=>globalThis.fixturePopupState?.transportConnected===true);
+  const pending=await f.background.evaluate(async()=>
+    (await new Promise(resolve=>globalThis.fixtureBackgroundListener({type:'bridge.getState'},{},resolve))).state);
+  assert.equal(pending.connected,false);
+  assert.equal(pending.transportConnected,true);
+  assert.match(pending.lastError,/AUTH_IDENTITY_MISMATCH/u);
+  await f.background.evaluate(()=>globalThis.identityTestSocket.dispatchEvent(new Event('error')));
+  const afterTransportError=await f.background.evaluate(async()=>
+    (await new Promise(resolve=>globalThis.fixtureBackgroundListener({type:'bridge.getState'},{},resolve))).state);
+  assert.match(afterTransportError.lastError,/AUTH_IDENTITY_MISMATCH/u);
+  await f.background.evaluate(()=>{globalThis.holdAuthentication=false;globalThis.releaseAuthentication();});
+  await f.background.waitForFunction(()=>globalThis.fixturePopupState?.connected===true);
+  assert.equal(await f.background.evaluate(()=>globalThis.fixturePopupState.lastError),null);
+  assert.deepEqual(f.errors,[]);
+});
+
 for (const variant of ['roles', 'classes', 'headings']) {
   test(`browser fixture: full extension + Web adapter sends once and reads ${variant} DOM`, { timeout: 25_000 }, async t => {
     const f = await extensionBrowser(t, { variant });

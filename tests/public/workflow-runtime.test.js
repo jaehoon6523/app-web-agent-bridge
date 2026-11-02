@@ -1,3 +1,4 @@
+import { registerFixedScopeTests } from '../helpers/fixed-scope-regressions.js';
 import { registerTabSelectionTests } from "../helpers/preparation-tab-regressions.js";
 import { registerTabFocusUiContract } from "../helpers/tab-focus-ui-contract.js";
 import { registerCandidateSelectionTests } from "../helpers/tab-focus-selection.js";
@@ -14,6 +15,7 @@ import * as dashboardStartActions from "../../public/dashboard-start-actions.js"
 import { renderProjectOverview } from "../../public/project-overview-view.js";
 import { createRunActionLayout } from "../../public/run-action-layout.js";
 import * as runContextView from "../../public/run-context-view.js";
+import { redactDiagnosticLog } from "../../public/diagnostic-export.js";
 import { workflowForRun } from "../../src/orchestration/preparation-service.js";
 
 function inlineModule(source) {
@@ -112,13 +114,16 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     removeEventListener(key, callback) { if (this.listeners[key] === callback) delete this.listeners[key]; }
     contains() { return false; }
   }
-  for (const match of html.matchAll(/id="([^"]+)"/g)) { const element = new Element(); element.id = match[1]; }
+  for (const match of html.matchAll(/<[a-z][^>]*\bid="([^"]+)"[^>]*>/gi)) {
+    const element = new Element(); element.id = match[1];
+    element.hidden = /\shidden(?:\s|=|>)/u.test(match[0]);
+  }
   const context = vm.createContext({ location:{search:""},
     ...dashboardActionCapabilities,
     ...dashboardConnectionState,
     ...dashboardRunListKnowledge,
     ...dashboardStartActions,
-    ...runContextView,
+    ...runContextView, redactDiagnosticLog,
     externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
@@ -760,6 +765,7 @@ test("selected run exposes child tasks and archived applied runs cannot start a 
   await ui.elements.get("runLineageChildren").children[0].listeners.click();
   assert.equal(ui.run("selected"),"second");
 
+  await ui.run('selected = "first"');
   state.run={...run,archivedAt:"2026-09-26T00:00:00Z"};
   await ui.run("refresh()");
   assert.equal(ui.elements.get("continueProject").hidden,true);
@@ -976,3 +982,6 @@ test("uncertain audit retry is not sent twice without a settled receipt", async 
   assert.ok(ui.calls.some(({ url }) => url === "/api/state?requestId=request-1"), JSON.stringify({ calls: ui.calls, connected: ui.run("connected"), state: ui.run("operations.runCommand") }));
   assert.match(ui.elements.get("commandResult").textContent, /같은 요청을 자동으로 다시 보내지 않습니다/u);
 });
+
+
+registerFixedScopeTests({dashboard,stateFor});

@@ -267,3 +267,21 @@ test("contract: preparation capabilities remain separate from run capabilities",
   assert.equal(value.commandCapabilities.has("web.reconcile"), true);
   assert.equal(value.commandCapabilities.has("run.start"), false);
 });
+
+
+for (const variant of ['identity', 'version']) {
+  test(`fixed scope 1: rejects workflow/run ${variant} mismatch before projection`, () => {
+    const run = {runId:variant === 'identity' ? 'B' : 'A', version:variant === 'version' ? 4 : 3, phase:'WORKER_RUNNING'};
+    assert.throws(() => normalizeDashboardState({
+      workflow:{stage:'WORK',state:'WORKER_RUNNING',runId:'A',runVersion:3}, run,
+    }), /run identity\/version does not match workflow/);
+  });
+}
+test('fixed scope 1: matching workflow/run identities and versions remain usable', () => {
+  for (const [stage,state] of [['WORK','WORKER_RUNNING'],['RESULT','APPLIED']]) {
+    const value = normalizeDashboardState({workflow:{stage,state,runId:'A',runVersion:3},
+      run:{runId:'A',version:3,phase:state}});
+    assert.equal(value.run.runId,value.workflow.runId);
+    assert.equal(value.run.version,value.workflow.runVersion);
+  }
+});
