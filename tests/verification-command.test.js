@@ -200,3 +200,21 @@ verificationTest('source-changed','verification refuses a source change despite 
   assert.ok(result.stages.filter(s=>s.applicable).every(stage => stage.status === 'PASS'));
   assert.match(result.error,/Source changed/u); assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
+
+
+test('diagnostic report options require every safe report flag and preserve inherited options', () => {
+  const source=fs.readFileSync(path.join(repository,'scripts/verify-all.mjs'),'utf8');
+  const block=source.match(/if\(!stage\.isolatedGateOutput\) delete env\.BRIDGE_TEST_GATE_OUTPUT;\r?\n([\s\S]*?)\s*delete env\.NODE_TEST_CONTEXT;/u)?.[1];
+  assert.ok(block,'inspect the actual stage environment construction');
+  const configure=new Function('env','stageDirectory','process',block+'return env.NODE_OPTIONS;');
+  const flags=['--report-on-fatalerror','--report-exclude-env','--report-exclude-network','--report-directory'];
+  for (const missing of flags) {
+    const allowedNodeEnvironmentFlags=new Set(flags.filter(flag=>flag!==missing));
+    assert.equal(configure({NODE_OPTIONS:' --no-warnings '},'report path with spaces',{allowedNodeEnvironmentFlags}),'--no-warnings');
+    assert.equal(configure({},'report path with spaces',{allowedNodeEnvironmentFlags}),'');
+  }
+  const options=configure({NODE_OPTIONS:'--no-warnings'},'report path with spaces',{allowedNodeEnvironmentFlags:new Set(flags)});
+  for (const flag of flags) assert.ok(options.includes(flag),flag);
+  assert.ok(options.startsWith('--no-warnings '));
+  assert.ok(options.includes('--report-directory="report path with spaces"'));
+});

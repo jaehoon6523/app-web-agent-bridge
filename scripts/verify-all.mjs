@@ -55,7 +55,10 @@ if(process.argv.includes('--list')) {
           ...(stage.isolatedGateOutput?{BRIDGE_TEST_GATE_OUTPUT:stageDirectory}:{}),
           ...(executable?{UI_BROWSER_EXECUTABLE:executable}:{})};
         if(!stage.isolatedGateOutput) delete env.BRIDGE_TEST_GATE_OUTPUT;
-        env.NODE_OPTIONS=`${env.NODE_OPTIONS || ''} --report-on-fatalerror --report-exclude-env --report-exclude-network --report-directory="${stageDirectory.replaceAll('\\','/')}"`;
+        const reportOptions=['--report-on-fatalerror','--report-exclude-env','--report-exclude-network','--report-directory']
+          .every(option=>process.allowedNodeEnvironmentFlags.has(option))
+          ? ` --report-on-fatalerror --report-exclude-env --report-exclude-network --report-directory="${stageDirectory.replaceAll('\\','/')}"` : '';
+        env.NODE_OPTIONS=`${env.NODE_OPTIONS || ''}${reportOptions}`.trim();
         delete env.NODE_TEST_CONTEXT;
         return runOwnedNode(stage.nodeArgs || [npmCli,...(stage.args || ['run',stage.command])],
           {cwd:root,env,timeoutMs:stage.timeoutMs,signal,onStdout:write,onStderr:write,
