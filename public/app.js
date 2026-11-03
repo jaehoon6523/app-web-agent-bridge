@@ -206,9 +206,9 @@ async function request(url, options = {}) {
   }
 }
 async function refresh() {
-  if (!$("dashboardPageError").hidden) return;
+  if (!$("dashboardPageError").hidden) return {status:"FAILED"};
   const current = ++sequence, target = selected;
-  let phase = token ? "STATE" : "SESSION";
+  let phase = token ? "STATE" : "SESSION", outcome = {status:"FAILED"};
   connected = false;
   connectionState = markStateReadStarted(connectionState);
   updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
@@ -217,14 +217,14 @@ async function refresh() {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
       const session = await request("/api/dashboard/session", { method:"POST", body:"{}" });
-      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return {status:"SUPERSEDED"};
       if (typeof session?.token !== "string" || !session.token.trim()) throw Object.assign(new Error("대시보드 인증 응답에 토큰이 없습니다."), { code:"DASHBOARD_SESSION_INVALID", status:200, responseReceived:true });
       token = session.token;
       connectionState = markDashboardSessionAuthenticated(connectionState);
     }
     phase = "STATE";
     const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
-    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return {status:"SUPERSEDED"};
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
@@ -236,6 +236,7 @@ async function refresh() {
     connected = dashboardStateReady(connectionState);
     snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]};
     workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
+    outcome = {status:"ACCEPTED", stage:canonical.workflow.stage};
     if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
     renderPreparation(); lastConfirmed = new Date().toISOString();
     const runtimeUnavailable = result.runtimeAvailability?.ready === false;
@@ -245,11 +246,11 @@ async function refresh() {
       : !extensionNeedsPreparation || result.preflight?.checks?.extensionAuthenticated === true ? ""
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
     await restoreRunCommands();
-    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return {status:"SUPERSEDED"};
     for (const [runId, item] of runCommands) {
       if (item.status !== "UNKNOWN_RESULT") continue;
       const observed = await request("/api/state?requestId=" + encodeURIComponent(item.requestId));
-      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return {status:"SUPERSEDED"};
       const receipt = observed.requestResult;
       if (receipt?.requestId !== item.requestId) continue;
       if (["COMPLETED", "FAILED"].includes(receipt.status)) {
@@ -263,7 +264,7 @@ async function refresh() {
     }
     for (const [operation, requestId] of unknownRequests) {
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
-      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return {status:"SUPERSEDED"};
       const receipt = observed.requestResult;
       if (receipt?.requestId !== requestId) continue;
       if (["COMPLETED", "FAILED", "NOT_FOUND"].includes(receipt.status)) {
@@ -272,7 +273,8 @@ async function refresh() {
       }
     }
   } catch (error) {
-    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return {status:"SUPERSEDED"};
+    outcome = {status:"FAILED"};
     if (phase === "PROJECTION" && !error.code) Object.assign(error, {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = classifyDashboardFailure(connectionState, phase, {...error, message:userFacingError(error)});
     connected = dashboardStateReady(connectionState);
@@ -281,7 +283,6 @@ async function refresh() {
       + (snapshot?.run && (!target || snapshot.run.runId === target) ? " · 마지막 확인 데이터 표시 중입니다." : ""));
   }
   render();
-  pendingProjectDraft?.complete();
   updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
@@ -298,6 +299,7 @@ async function refresh() {
     void preparationMutation("approval", "preparation.approve",
       "/api/preparations/" + encodeURIComponent(autoApprovalPreparationId) + "/approve");
   }
+  return outcome;
 }
 function capabilities() { return new Set(connected ? snapshot?.commandCapabilities ?? [] : []); }
 function webConnected() { return connected && snapshot?.preflight?.checks?.extensionAuthenticated === true; }
@@ -885,7 +887,6 @@ async function openEvidence(id, startLine = 1) {
     "다음 근거 구간을 불러옵니다.");
   if (!$("evidenceDialog").open) $("evidenceDialog").showModal();
 }
-
 function proposalControls() {
   const caps = capabilities();
   const actions = currentPreparationActions();
@@ -1209,10 +1210,11 @@ async function startProjectDraft(root, source) {
       $("startForm").removeEventListener("input", onEdit);
       if (pendingProjectDraft === draft) pendingProjectDraft = null;
     },
-    complete() {
+    complete(result) {
+      if (pendingProjectDraft !== draft) return;
       draft.cancel();
-      if (selected !== "" || projectViewRoot !== null || followUpSource !== source) return;
-      if (!connected || workflow.stage !== "START") {
+      if (result.status === "SUPERSEDED" || selected !== "" || projectViewRoot !== null || followUpSource !== source) return;
+      if (result.status !== "ACCEPTED" || result.stage !== "START") {
         if (!edited && fields.every((id, index) => $(id).value === initialized[index])) {
           fields.forEach((id, index) => { $(id).value = previous[index]; });
           followUpSource = previousSource; projectConversationRoot = previousConversationRoot;
@@ -1230,7 +1232,7 @@ async function startProjectDraft(root, source) {
     },
   };
   pendingProjectDraft = draft;
-  await refresh();
+  draft.complete(await refresh());
 }
 $("newProjectTask").addEventListener("click", () => {
   if ($("newProjectTask").disabled || !projectViewRoot) return;
@@ -1365,7 +1367,6 @@ async function poll() {
   catch (error) { connected = false; showDashboardPageError(error); }
   finally { if ($("dashboardPageError").hidden) setTimeout(poll, 2500); }
 }
-
 $("exportDiagnosticLog").addEventListener("click", async () => {
   const button = $("exportDiagnosticLog"), status = $("diagnosticExportStatus");
   button.disabled = true; status.textContent = "진단 로그를 수집하는 중입니다.";
@@ -1374,5 +1375,4 @@ $("exportDiagnosticLog").addEventListener("click", async () => {
   } catch { status.textContent = "로그 내보내기에 실패했습니다. 다시 시도하세요."; }
   finally { button.disabled = false; }
 });
-
 void poll();

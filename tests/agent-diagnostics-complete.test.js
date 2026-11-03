@@ -433,6 +433,42 @@ test('a late dead-guard reaper cannot remove a newly published live recovery gua
   assert.equal(readAgentReport(root).extension.status,'AFTER_RECOVERY');assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
 });
 
+
+test('recovery observation retries a disappearing directory after scandir EPERM',async t=>{
+  const {root,recovery,previous}=await deadWriterFixture(t), worker=await heldRecovery(t,root,'published');
+  worker.child.kill('SIGKILL');await worker.closed;
+  const readdir=io.readdir.bind(io);let denied=false;
+  t.mock.method(io,'readdir',async directory=>{
+    if(directory===recovery && !denied) {
+      denied=true;
+      const [marker]=await readdir(directory);
+      await io.rmdir(path.join(directory,marker));await io.rmdir(directory);
+      throw Object.assign(new Error('Recovery deletion pending'),{code:'EPERM',syscall:'scandir',path:directory});
+    }
+    return readdir(directory);
+  });
+  await enqueueAgentReport(root,'repair',{code:'AFTER_SCANDIR'},{onDiagnostic:t.evidence.event});
+  assert.equal(denied,true);assert.deepEqual(readAgentReport(root).server,previous);
+  assert.equal(readAgentReport(root).repair.code,'AFTER_SCANDIR');
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
+for (const code of ['EPERM','EACCES'])
+test('persistent recovery observation '+code+' preserves the denial, live owner and report',async t=>{
+  const {root,recovery}=await deadWriterFixture(t), worker=await heldRecovery(t,root,'published');
+  const before=fs.readFileSync(path.join(root,'runtime-latest.json')), names=fs.readdirSync(recovery);
+  const readdir=io.readdir.bind(io), denied=Object.assign(new Error('Recovery read denied'),{code,syscall:'scandir',path:recovery});
+  let attempts=0;
+  const mocked=t.mock.method(io,'readdir',async directory=>{
+    if(directory===recovery){attempts++;throw denied;}return readdir(directory);
+  });
+  await assert.rejects(enqueueAgentReport(root,'repair',{code:'NOT_STORED'}),error=>error===denied);
+  assert.equal(attempts,code==='EPERM'?5:1);
+  assert.deepEqual(fs.readdirSync(recovery),names);
+  assert.deepEqual(fs.readFileSync(path.join(root,'runtime-latest.json')),before);
+  mocked.mock.restore();worker.child.send({type:'release'});assert.deepEqual(await worker.closed,{code:0,signal:null});
+});
+
 test('concurrent restart writers retain every section after the recovery owner is killed', {timeout:15000},async t=>{
   for(const stage of ['published','preparing']) {
   const {root,previous}=await deadWriterFixture(t), worker=await heldRecovery(t,root,stage);
