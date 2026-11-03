@@ -169,8 +169,8 @@ test('real DOM fixture: controller collects bounded repair metadata without chan
 });
 
 for (const action of ['continueProject','newProjectTask']) {
-  const scenarios=['newer-start','other-project','read-failure','changed-focus'];
-  if (action==='newProjectTask') scenarios.push('other-project-failure','edited-read-failure','selection-read-failure','superseded-read-failure','new-run');
+  const scenarios=['newer-start','other-project','read-failure','poll-read-failure','superseded-read-success','changed-focus'];
+  if (action==='newProjectTask') scenarios.push('other-project-failure','edited-read-failure','selection-read-failure','superseded-read-failure','new-run','replacement-draft');
   else scenarios.push('other-run');
   for (const scenario of scenarios) {
     test(`project draft real DOM: ${action} ${scenario}`, {timeout:20000}, async t => {
@@ -189,11 +189,12 @@ for (const action of ['continueProject','newProjectTask']) {
       },action);
       const done={runId:'applied-1',version:4,phase:'APPLIED',objective:'Initial app',projectRef:{targetRoot:'C:/project'}};
       const other={...done,runId:'other',objective:'Other app',projectRef:{targetRoot:'C:/other'}};
+      const supersededSuccess=scenario==='superseded-read-success', replacement=scenario==='replacement-draft';
       const editableFailure=scenario==='edited-read-failure' || scenario==='selection-read-failure';
-      const idleFailure=editableFailure || scenario==='superseded-read-failure';
+      const idleFailure=editableFailure || scenario==='superseded-read-failure' || scenario==='new-run';
       const snapshot=url=>{
         const requested=new URL(url).searchParams;
-        const idle=idleFailure || requested.get('view')==='start';
+        const idle=idleFailure || supersededSuccess && action==='newProjectTask' || replacement || requested.get('view')==='start';
         const run=requested.get('runId')==='other' ? other : done;
         return {
         workflow:idle ? {stage:'START',state:'START_IDLE'} : {stage:'RESULT',state:'APPLIED',runId:run.runId,runVersion:run.version},
@@ -205,7 +206,7 @@ for (const action of ['continueProject','newProjectTask']) {
         projectConversations:[{targetRoot:'C:/project',conversationId:'saved',conversationUrl:'https://chatgpt.com/c/saved'}],
         messages:[],events:[],findings:[],assessments:[],evidence:[],
       }; };
-      let hold=false, paused;
+      let hold=false, paused, newRunRequested=false, replacementRequested=false;
       let release;
       const pending=new Promise(resolve=>{ release=resolve; });
       const started=new Promise(resolve=>{ paused=resolve; });
@@ -215,12 +216,18 @@ for (const action of ['continueProject','newProjectTask']) {
       await page.route('**/api/state*',async route=>{
         if (hold && new URL(route.request().url()).searchParams.get('view')==='start') {
           hold=false; paused(); await pending;
-          if (scenario==='read-failure' || scenario==='other-project-failure' || idleFailure) return route.abort();
+          if (supersededSuccess) return route.fulfill({json:snapshot(route.request().url())});
+          if (replacement) return route.abort();
+          if (scenario==='read-failure' || scenario==='poll-read-failure' || scenario==='other-project-failure' || idleFailure) return route.abort();
+        }
+        if ((supersededSuccess || replacementRequested) && new URL(route.request().url()).searchParams.get('view')==='start') {
+          latestPaused(); await latestPending; return route.fulfill({json:snapshot(route.request().url())});
         }
         if (scenario==='superseded-read-failure' && new URL(route.request().url()).searchParams.get('view')==='start') {
           latestPaused(); await latestPending; return route.abort();
         }
-        if (scenario==='new-run' && new URL(route.request().url()).searchParams.get('view')==='start') return route.abort();
+        if (scenario==='poll-read-failure' && new URL(route.request().url()).searchParams.get('view')==='start') return route.abort();
+        if (scenario==='new-run' && newRunRequested && new URL(route.request().url()).searchParams.get('view')==='start') return route.abort();
         return route.fulfill({json:snapshot(route.request().url())});
       });
       const mutations=[];
@@ -230,7 +237,7 @@ for (const action of ['continueProject','newProjectTask']) {
       await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
       if (action==='newProjectTask') await page.locator('.project-open[title="C:/project"]').click();
       const previous={startRoot:'C:/draft',objective:'Existing unsent draft',conversationUrl:'https://chatgpt.com/c/draft'};
-      if (scenario==='read-failure' || idleFailure) await page.evaluate(previous=>{
+      if (scenario==='read-failure' || scenario==='poll-read-failure' || supersededSuccess || replacement || idleFailure) await page.evaluate(previous=>{
         for (const [id,value] of Object.entries(previous)) document.getElementById(id).value=value;
       },previous);
       hold=true;
@@ -255,8 +262,31 @@ for (const action of ['continueProject','newProjectTask']) {
         } else if (scenario==='superseded-read-failure') {
           await latestStarted; release();
           await page.waitForFunction(()=>window.fixtureDraftCompleted===1);
+        } else if (supersededSuccess || replacement) {
+          if (replacement) {
+            await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
+            await page.locator('.project-open[title="C:/other"]').click();
+            replacementRequested=true;
+            await page.locator('#'+action).click();
+          }
+          await latestStarted; release();
+          await page.waitForFunction(()=>window.fixtureDraftCompleted===1);
+          assert.equal(await page.locator('#startRoot').inputValue(),replacement?'C:/other':'C:/project');
+          assert.equal(await page.locator('#projectOverview').isHidden(),true);
+        } else if (scenario==='poll-read-failure') {
+          await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('error'));
+          assert.equal(await page.evaluate(()=>window.fixtureDraftCompleted),0);
+          assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
+          assert.equal(await page.locator('#projectOverview').isHidden(),true);
         } else if (scenario==='new-run') {
+          // A successful poll makes New Run actionable before its own read fails.
+          await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
+          assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
+          newRunRequested=true;
           await page.locator('#newRun').click();
+          await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('error'));
+          assert.equal(await page.evaluate(()=>window.fixtureDraftCompleted),0);
+          assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
         } else if (editableFailure) {
           assert.equal(await page.locator('#startPanel').isVisible(),true);
           if (scenario==='edited-read-failure') await page.locator('#objective').fill('Typed while the failing read was pending');
@@ -269,8 +299,13 @@ for (const action of ['continueProject','newProjectTask']) {
           await page.locator('#historySearch').fill('project');
         }
       } finally { release(); releaseLatest(); }
-      await page.waitForFunction(()=>window.fixtureDraftCompleted===1);
-      if (scenario==='newer-start') {
+      await page.waitForFunction(count=>window.fixtureDraftCompleted===count,replacement?2:1);
+      if (supersededSuccess || replacement) {
+        await page.waitForFunction(()=>!document.getElementById('newRun').disabled);
+        assert.equal(await page.locator('#startRoot').inputValue(),replacement?'C:/other':'C:/project');
+        assert.equal(await page.locator('#startPanel').isVisible(),true);
+        assert.equal(await page.locator('#projectOverview').isHidden(),true);
+      } else if (scenario==='newer-start') {
         assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
         assert.equal(await page.locator('#objective').inputValue(),'Typed after the newer START');
         assert.equal(await page.locator('#conversationUrl').inputValue(),'https://chatgpt.com/c/manual-choice');
@@ -285,7 +320,12 @@ for (const action of ['continueProject','newProjectTask']) {
         await page.waitForFunction(()=>document.querySelector('.run-item.active')?.textContent.includes('Other app'));
         assert.equal(await page.locator('#followUpSource').evaluate(el=>el.hidden),true);
         assert.equal(await page.locator('#followUpSource').textContent(),'');
-      } else if (scenario==='new-run') {
+      } else if (scenario==='poll-read-failure') {
+        assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
+        assert.equal(await page.locator('#objective').inputValue(),'');
+        assert.equal(await page.locator('#projectOverview').isHidden(),true);
+        assert.equal(await page.locator('#planRun').isDisabled(),true);
+      } else if (scenario==='new-run' || scenario==='superseded-read-failure') {
         await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('error'));
         assert.equal(await page.locator('#projectOverview').isHidden(),true);
         assert.equal(await page.locator('#startRoot').inputValue(),'C:/project');
@@ -301,8 +341,7 @@ for (const action of ['continueProject','newProjectTask']) {
           assert.equal(await page.locator('#reuseProjectConversation').isChecked(),false);
           assert.equal(await page.locator('#conversationUrl').inputValue(),'https://chatgpt.com/c/saved');
         }
-      } else if (scenario==='read-failure' || scenario==='superseded-read-failure') {
-        if (scenario==='superseded-read-failure') await page.waitForFunction(()=>document.getElementById('apiHealth').classList.contains('error'));
+      } else if (scenario==='read-failure') {
         for (const [id,value] of Object.entries(previous)) assert.equal(await page.locator('#'+id).inputValue(),value,id);
         assert.equal(await page.locator('#planRun').isDisabled(),true);
         assert.equal(await page.locator('#startPanel').isHidden(),true);

@@ -159,7 +159,7 @@ test('a connection change during collection remains unavailable instead of certi
   assert.equal(result.server.collection.code,'DIAGNOSTIC_CONNECTION_CHANGED');
 });
 
-for(const cancellation of ['abort','timeout']) test(`repository observation ${cancellation} terminates a Windows launcher's directory-owning child`, {skip:process.platform !== 'win32',timeout:15000}, async t => {
+if (process.platform === 'win32') for(const cancellation of ['abort','timeout']) test(`repository observation ${cancellation} terminates a Windows launcher's directory-owning child`, {timeout:15000}, async t => {
   const root=fixture(t), marker=path.join(root,'owner.json'), controller=new AbortController();
   execFileSync("git",["init","-q",root],{windowsHide:true});
   let owner;

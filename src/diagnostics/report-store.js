@@ -50,17 +50,31 @@ function busy(cause, observation) {
   return Object.assign(new Error('Diagnostic writer busy.',{cause}),{code:'DIAGNOSTIC_WRITER_BUSY',lockState:observation});
 }
 const recoveryOwnerPattern = /^owner-([1-9][0-9]*)-([a-f0-9-]{36})$/u;
+async function readRecoveryDirectory(directory) {
+  let denied;
+  for (let attempt = 0; ; attempt++) {
+    try { return await io.readdir(directory); }
+    catch (error) {
+      // Windows may deny scandir while a competing reaper finishes deletion.
+      // Retry this read only; persistent denial retains its original cause.
+      if (error.code !== 'EPERM') throw error;
+      denied ??= error;
+      if (attempt >= 4) throw denied;
+      await wait(20);
+    }
+  }
+}
 async function recoveryObservation(recovery) {
   try {
     const stat = await io.lstat(recovery);
     // Legacy ownerless files and links cannot establish a dead owner.
     if (!stat.isDirectory() || stat.isSymbolicLink()) return {state:'UNVERIFIED',exists:true,identity:stat.ino};
-    const names = await io.readdir(recovery);
+    const names = await readRecoveryDirectory(recovery);
     if (names.length === 0) return {state:'EMPTY',exists:true,identity:stat.ino};
     const match = names.length === 1 && recoveryOwnerPattern.exec(names[0]);
     if (!match) return {state:'INVALID',exists:true,identity:stat.ino};
     const marker = path.join(recovery,names[0]), owner = await io.lstat(marker);
-    if (!owner.isDirectory() || owner.isSymbolicLink() || (await io.readdir(marker)).length !== 0)
+    if (!owner.isDirectory() || owner.isSymbolicLink() || (await readRecoveryDirectory(marker)).length !== 0)
       return {state:'INVALID',exists:true,identity:stat.ino};
     const pid = Number(match[1]);
     return {state:ownerState(pid),exists:true,pid,token:match[2],marker:names[0],identity:stat.ino,markerIdentity:owner.ino};
