@@ -1,11 +1,13 @@
 import { createExtensionAgentDiagnostics } from "./runtime/agent-diagnostics.js";
+import { replyToMessageDomInspection } from "./runtime/message-dom-inspection.js";
 import { discardExactDelivery } from "./runtime/delivery-discard.js";
 import { readDeliveryPage } from "./runtime/delivery-page.js";
 import { createCoalescedTask } from "./runtime/coalesced-task.js";
 import { projectPopupConnectionState } from "./runtime/popup-state.js";
 import { createDeliveryReview, createServerDeliveryInspector } from "./runtime/delivery-review.js";
 import { inspectBoundDocument, createSuccessTrace, diagnosticError, diagnosticMetadata, errorPayload } from "./runtime/document-binding.js";
-import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation } from "./runtime/bootstrap-recovery.js";
+import { classifyStoredAmbiguousRoot, recoverBootstrapAfterNavigation, inspectSubmittedRoot, closedBootstrapRootTabs,
+  refreshCompletedDelivery } from "./runtime/bootstrap-recovery.js";
 import { assertStrongExtensionSharedSecret, computeChallengeHmac } from "./runtime/hmac.js";
 import { canonicalChatGptUrl, conversationIdFromUrl, validateLocalControllerUrl } from "./runtime/conversation.js";
 import { createControlledPrompt } from "./runtime/markers.js";
@@ -95,7 +97,6 @@ async function connect({ explicit = false } = {}) {
   broadcastPopupState();
   nextSocket.addEventListener("open", () => {
     if (socket !== nextSocket) return;
-    lastError = null;
     // No identity or state is sent until the controller challenge is authenticated.
     broadcastPopupState();
   });
@@ -110,17 +111,14 @@ async function connect({ explicit = false } = {}) {
     pendingChallengeId = null;
     if (event.code !== 1000) agentDiagnostics.failure({code:event.code === 4409 ? "AUTHENTICATED_EXTENSION_ALREADY_CONNECTED" : "WEB_SOCKET_CLOSED"},"CONNECT",event.code);lastError = event.code === 4409
       ? "컨트롤러에 이미 인증된 확장이 연결되어 있습니다 (4409). 다른 Chrome 프로필·브라우저·중복 설치를 확인한 후 Reconnect를 누르세요. 자동 재접속을 중단했습니다."
-      : event.code === 4403 && lastError
-      ? lastError
-      : event.code === 1000
-      ? null
-      : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`;
+      : lastError ?? (event.code === 1000 ? null
+        : `Controller disconnected (${event.code}${event.reason ? `: ${event.reason}` : ""}).`);
     broadcastPopupState();
     if (event.code === 4403 && lastError?.includes("AUTH_IDENTITY_MISMATCH")) reconnect.schedulePairing(); else reconnect.schedule(event.code);
   });
   nextSocket.addEventListener("error", () => {
     if (socket !== nextSocket) return;
-    lastError = "Could not connect to the local controller.";agentDiagnostics.failure({code:"WEB_SOCKET_ERROR"},"CONNECT");
+    lastError ??= "Could not connect to the local controller.";agentDiagnostics.failure({code:"WEB_SOCKET_ERROR"},"CONNECT");
     broadcastPopupState();
   });
 }
@@ -178,6 +176,8 @@ async function handleControllerMessage(raw) {
   }
   if (agentDiagnostics.accept(message) || serverDeliveryInspector.accept(message)) return;
   switch (message.type) {
+    case "controller.message-dom.inspect":
+      return replyToMessageDomInspection(chrome, send, message);
     case "controller.diagnostics.inspect":
       await replyToSelectorDiagnostics(chrome.tabs, send, message.requestId, chrome.runtime.getManifest().version, await store.read());
       break;
@@ -203,53 +203,13 @@ async function handleControllerMessage(raw) {
       await handleDeliveryRecovery(message);
       break;
     case "web.delivery.inspect":
-      if (message.payload?.refreshCompleted) {
-        let recheckReservation;
-        try {
-          recheckReservation = turnGate.reserve(message.requestId);
-          const saved = await store.read();
-          const completed = saved.completedDelivery;
-          if (!completed || completed.turnId !== saved.currentDeliveryId || !saved.lastBoundRunId?.startsWith("prep_")) {
-            throw new ExtensionOperationError("RESPONSE_RECHECK_UNAVAILABLE", "다시 확인할 준비 응답이 없습니다.");
-          }
-          const result = await chrome.tabs.sendMessage(saved.tabId, { type: "agent.recheck", payload: {
-            expectedConversationUrl: saved.conversationUrl, expectedConversationId: saved.conversationId,
-            expectedDocumentId: saved.documentId, expectedFrameId: saved.frameId,
-            runId: saved.lastBoundRunId, controllerMessageId: completed.turnId,
-            userMessageId: completed.evidence?.userMessageId, assistantMessageId: completed.evidence?.assistantMessageId,
-            allowManualFollowup: message.payload?.adoptManualFollowup === true,
-          } });
-          if (!result?.ok) throw new ExtensionOperationError(result?.code ?? "RESPONSE_RECHECK_FAILED", result?.error ?? "응답 재확인에 실패했습니다.");
-          const current = await store.read();
-          if (current.currentDeliveryId !== completed.turnId || current.lastBoundSessionId !== saved.lastBoundSessionId) {
-            throw new ExtensionOperationError("DELIVERY_RECOVERY_MISMATCH", "재확인 중 전송 대상이 변경됐습니다.");
-          }
-          const adoptedManualFollowup = result.evidence?.responseAssociation === "EXPLICIT_MANUAL_FOLLOWUP";
-          await store.update({
-            ...(adoptedManualFollowup ? {
-              lastObservedUserMessageId: result.evidence.userMessageId,
-              lastObservedAssistantMessageId: result.evidence.assistantMessageId,
-            } : {}),
-            completedDelivery: {
-              ...completed,
-              rawText: result.text,
-              confidence: result.confidence,
-              confidenceReason: result.confidenceReason ?? null,
-              evidence: result.evidence,
-              ...(adoptedManualFollowup ? { adoption: {
-                type: "EXPLICIT_MANUAL_FOLLOWUP",
-                originalAssistantMessageId: result.evidence.originalAssistantMessageId,
-                userMessageId: result.evidence.userMessageId,
-                assistantMessageId: result.evidence.assistantMessageId,
-              } } : {}),
-            },
-          });
-        } catch (error) {
-          send({ type: "web.session.error", requestId: message.requestId, payload: errorPayload(error) });
-          break;
-        } finally {
-          if (recheckReservation) turnGate.release(recheckReservation);
-        }
+      if (message.payload?.recoverSubmitted) {
+        await inspectSubmittedRoot(message, { tabs:chrome.tabs, store, turnGate, send, errorPayload, deliveryDetails });
+        break;
+      } else if (message.payload?.refreshCompleted) {
+        await refreshCompletedDelivery(message, { chrome, store, turnGate, send, errorPayload,
+          ExtensionOperationError, deliveryDetails });
+        break;
       }
       send({ type: "web.delivery.inspected", requestId: message.requestId, payload: await deliveryDetails(await store.read()) });
       break;
@@ -574,7 +534,14 @@ async function rebindSession(payload) {
   if (!Number.isSafeInteger(payload.tabId)) {
     throw new ExtensionOperationError("REBIND_TAB_REQUIRED", "Explicit rebind requires a selected ChatGPT tab ID.");
   }
-  const tab = await chrome.tabs.get(payload.tabId);
+  let tab;
+  try { tab = await chrome.tabs.get(payload.tabId); }
+  catch (error) {
+    const rootTabs = await closedBootstrapRootTabs(error, { bootstrap:requested.bootstrap, tabId:payload.tabId,
+      tabs:chrome.tabs, provider });
+    throw rootBootstrapError("AMBIGUOUS", "The selected start tab closed. Select a current tab; no message has been sent.",
+      "SELECT", { originalCode:"TAB_CHANGED", browserDispatchStarted:false, rootTabs });
+  }
   if (requested.bootstrap) {
     if (
       provider.canonicalize(tab.url) !== provider.rootUrl

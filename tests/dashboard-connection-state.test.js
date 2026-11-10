@@ -10,7 +10,10 @@ import {
   dashboardStateReady,
   initialDashboardConnectionState,
   markDashboardSessionAuthenticated,
+  markDashboardSessionPending,
+  markStateReadStarted,
   markStateReadReady,
+  connectionNoticeFor,
   projectBrowserState,
   requestFailureCode,
 } from "../public/dashboard-connection-state.js";
@@ -18,6 +21,38 @@ import {
 function authenticated() {
   return markDashboardSessionAuthenticated(initialDashboardConnectionState());
 }
+
+test("retry and session renewal retain the failure until a valid state arrives, then retain its diagnostic history", () => {
+  const failed = classifyDashboardFailure(authenticated(), "PROJECTION", {
+    status:200, code:"DASHBOARD_STATE_INVALID", message:"조회한 작업과 응답 작업이 일치하지 않습니다.",
+  });
+  const retry = markDashboardSessionAuthenticated(markDashboardSessionPending(markStateReadStarted(failed)));
+  assert.equal(retry.lastError, failed.lastError);
+  assert.equal(retry.runtimeError, failed.runtimeError);
+  assert.match(connectionNoticeFor(retry), /조회한 작업과 응답 작업/u);
+  const recovered = markStateReadReady(retry);
+  assert.equal(recovered.lastError, null);
+  assert.equal(recovered.runtimeError, null);
+  assert.equal(recovered.failureHistory[0], failed.lastError);
+  assert.equal(connectionNoticeFor(recovered), "");
+});
+
+test("a repeated network error does not erase a different ID failure from bounded history", () => {
+  let state = classifyDashboardFailure(authenticated(), "PROJECTION", {code:"DASHBOARD_STATE_INVALID", message:"ID 불일치"});
+  for (let i = 0; i < 15; i++) state = classifyDashboardFailure(state, "STATE", {code:"REQUEST_UNREACHABLE"});
+  assert.equal(state.failureHistory.length, 2);
+  assert.equal(state.failureHistory[0].message, "ID 불일치");
+  assert.equal(markStateReadReady(state).failureHistory.length, 2);
+});
+
+test("error history redacts credentials and retains at most ten distinct failures", () => {
+  let state = classifyDashboardFailure(authenticated(), "STATE", {code:"READ_FAILED", message:"조회 실패 token=private-test-credential"});
+  assert.doesNotMatch(state.lastError.message, /private-test-credential/u);
+  assert.match(state.lastError.message, /REDACTED/u);
+  for (let i = 0; i < 12; i++) state = classifyDashboardFailure(state, "STATE", {code:`FAILURE_${i}`});
+  assert.equal(state.failureHistory.length, 10);
+  assert.equal(state.failureHistory.at(-1), state.lastError);
+});
 
 test("dashboard session 403 is reachable but rejected, not server-down", () => {
   const state = classifyDashboardFailure(initialDashboardConnectionState(), "SESSION", {

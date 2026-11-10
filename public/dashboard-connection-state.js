@@ -1,3 +1,5 @@
+import { redactDiagnosticLog } from "./diagnostic-export.js";
+
 export const TransportState = Object.freeze({
   UNKNOWN:"UNKNOWN",
   REACHABLE:"SERVER_REACHABLE",
@@ -38,11 +40,12 @@ export function initialDashboardConnectionState() {
     stateRead:StateReadState.IDLE,
     runtimeError:null,
     lastError:null,
+    failureHistory:Object.freeze([]),
   });
 }
 
 export function markDashboardSessionPending(previous) {
-  return Object.freeze({ ...previous, session:DashboardSessionState.PENDING, lastError:null });
+  return Object.freeze({ ...previous, session:DashboardSessionState.PENDING });
 }
 
 export function markDashboardSessionAuthenticated(previous) {
@@ -50,12 +53,11 @@ export function markDashboardSessionAuthenticated(previous) {
     ...previous,
     transport:TransportState.REACHABLE,
     session:DashboardSessionState.AUTHENTICATED,
-    lastError:null,
   });
 }
 
 export function markStateReadStarted(previous) {
-  return Object.freeze({ ...previous, stateRead:StateReadState.IN_FLIGHT, runtimeError:null, lastError:null });
+  return Object.freeze({ ...previous, stateRead:StateReadState.IN_FLIGHT });
 }
 
 export function markStateReadReady(previous) {
@@ -73,11 +75,18 @@ export function classifyDashboardFailure(previous, phase, error) {
   const status = Number.isInteger(error?.status) ? error.status : null;
   const code = typeof error?.code === "string" ? error.code : null;
   const responseReceived = error?.responseReceived === true || status !== null;
-  const lastError = Object.freeze({ status, code });
+  const lastError = Object.freeze({ status, code, phase,
+    message:typeof error?.message === "string" ? redactDiagnosticLog(error.message.trim()).slice(0, 500) : "",
+    at:new Date().toISOString(),
+  });
+  const sameFailure = entry => entry.phase === phase && entry.status === status && entry.code === code && entry.message === lastError.message;
+  const failed = { ...previous, failureHistory:Object.freeze([
+    ...(previous.failureHistory ?? []).filter(entry => !sameFailure(entry)), lastError,
+  ].slice(-10)) };
 
   if (phase === "PROJECTION") {
     return Object.freeze({
-      ...previous,
+      ...failed,
       transport:responseReceived ? TransportState.REACHABLE : previous.transport,
       stateRead:StateReadState.FAILED,
       runtimeError:code ?? "DASHBOARD_PROJECTION_FAILED",
@@ -88,7 +97,7 @@ export function classifyDashboardFailure(previous, phase, error) {
   if (phase === "SESSION") {
     if (!responseReceived) {
       return Object.freeze({
-        ...previous,
+        ...failed,
         transport:TransportState.UNREACHABLE,
         session:DashboardSessionState.UNKNOWN,
         lastError,
@@ -96,7 +105,7 @@ export function classifyDashboardFailure(previous, phase, error) {
     }
     const authInvalid = status === 401 || code === "DASHBOARD_AUTH_INVALID" || code === "DASHBOARD_AUTH_REQUIRED";
     return Object.freeze({
-      ...previous,
+      ...failed,
       transport:TransportState.REACHABLE,
       session:authInvalid ? DashboardSessionState.AUTH_INVALID : DashboardSessionState.REJECTED,
       stateRead:StateReadState.IDLE,
@@ -107,14 +116,14 @@ export function classifyDashboardFailure(previous, phase, error) {
   if (phase === "STATE") {
     if (!responseReceived) {
       return Object.freeze({
-        ...previous,
+        ...failed,
         transport:TransportState.UNREACHABLE,
         stateRead:StateReadState.FAILED,
         lastError,
       });
     }
     return Object.freeze({
-      ...previous,
+      ...failed,
       transport:TransportState.REACHABLE,
       session:[401, 403].includes(status) ? DashboardSessionState.AUTH_INVALID : previous.session,
       stateRead:StateReadState.FAILED,
@@ -122,7 +131,7 @@ export function classifyDashboardFailure(previous, phase, error) {
     });
   }
 
-  return Object.freeze({ ...previous, lastError });
+  return Object.freeze({ ...failed, lastError });
 }
 
 export function requestFailureCode({ uncertainOnFailure, responseReceived = false, url = "", method = "GET" } = {}) {
@@ -177,24 +186,26 @@ export function projectBrowserState(preflight) {
 }
 
 export function connectionNoticeFor(state, lastConfirmedLabel = "없음") {
-  const suffix = ` · 마지막 정상 상태 확인: ${lastConfirmedLabel}`;
+  const error = state?.lastError;
+  const suffix = `${error?.message ? " · " + error.message : ""} · 마지막 정상 상태 확인: ${lastConfirmedLabel}`;
   if (state?.transport === TransportState.UNREACHABLE) {
     return `서버 응답 없음 · 로컬 서버와 포트를 확인하세요.${suffix}`;
   }
-  if (state?.session === DashboardSessionState.REJECTED) {
+  const authInvalid = error?.status === 401 || ["DASHBOARD_AUTH_INVALID", "DASHBOARD_AUTH_REQUIRED"].includes(error?.code);
+  if (state?.session === DashboardSessionState.REJECTED || error?.phase === "SESSION" && !authInvalid) {
     const originProblem = ["LOCAL_BROWSER_REQUIRED", "DASHBOARD_ORIGIN_REQUIRED", "DASHBOARD_ORIGIN_INVALID", "DASHBOARD_ORIGIN_REJECTED"]
       .includes(state?.lastError?.code);
     return `${originProblem
       ? "대시보드 주소가 일치하지 않습니다. 설정된 로컬 서버 주소로 다시 여세요."
       : "대시보드 세션을 만들지 못했습니다. 기술 진단을 확인하세요."}${suffix}`;
   }
-  if (state?.session === DashboardSessionState.AUTH_INVALID) {
+  if (state?.session === DashboardSessionState.AUTH_INVALID || authInvalid || error?.phase === "STATE" && error.status === 403) {
     return `대시보드 인증 실패 · 인증 상태를 확인하세요.${suffix}`;
   }
   if (state?.runtimeError) {
     return `상태 응답 해석 실패 · 기술 진단을 확인하세요.${suffix}`;
   }
-  if (state?.stateRead === StateReadState.FAILED) {
+  if (state?.stateRead === StateReadState.FAILED || error?.phase === "STATE") {
     return `상태 조회 실패 · 다시 확인하세요.${suffix}`;
   }
   return "";

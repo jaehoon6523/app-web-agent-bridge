@@ -1,4 +1,4 @@
-import test from 'node:test';
+import nodeTest from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,6 +9,34 @@ import {parseFinalControllerPacketJsonEnvelope} from '../src/domain/controller-p
 import {redactControllerResponseText} from '../src/orchestration/web-delivery-receipts.js';
 import {DashboardController} from '../src/orchestration/dashboard-controller.js';
 import {fixture, reopen, stopAfterAck, assertRecovered} from './helpers/audit-recovery-fixtures.js';
+
+const diagnosticsEnabled = process.env.BRIDGE_PRIVATE_RECOVERY_DIAGNOSTICS === '1'
+  && Boolean(process.env.BRIDGE_PRIVATE_RECOVERY_TEST_LOG);
+function tracePrivateRecovery(event, fields = {}) {
+  if (!diagnosticsEnabled) return;
+  try {
+    fs.appendFileSync(process.env.BRIDGE_PRIVATE_RECOVERY_TEST_LOG, JSON.stringify({at:new Date().toISOString(),
+      runId:process.env.BRIDGE_TEST_RUN_ID, sourceSha256:process.env.BRIDGE_TEST_SOURCE_SHA,
+      pid:process.pid, event, ...fields})+'\n');
+  } catch {}
+}
+const test = (...args) => {
+  if (!diagnosticsEnabled) return nodeTest(...args);
+  const [name, optionsOrBody, maybeBody] = args;
+  const options = typeof optionsOrBody === 'function' ? undefined : optionsOrBody;
+  const body = typeof optionsOrBody === 'function' ? optionsOrBody : maybeBody;
+  const wrapped = t => {
+    tracePrivateRecovery('test.start', {testName:name});
+    const finish = () => tracePrivateRecovery('test.end', {testName:name});
+    try {
+      const result = body(t);
+      if (result && typeof result.then === 'function') return result.then(value => {finish(); return value;}, error => {finish(); throw error;});
+      finish();
+      return result;
+    } catch (error) {finish(); throw error;}
+  };
+  return options === undefined ? nodeTest(name, wrapped) : nodeTest(name, options, wrapped);
+};
 
 for (const boundary of ['acknowledged', 'received', 'processed']) {
   test(`redacted response survives ${boundary} interruption without retransmission or an invented PASS`, async t => {
@@ -23,8 +51,16 @@ for (const boundary of ['acknowledged', 'received', 'processed']) {
     });
     const update = f.service.update.bind(f.service);
     let interrupted = false;
+    const checkpoints = new Set();
     f.service.update = (runId, changes) => {
       const saved = update(runId, changes);
+      const checkpoint = changes.stage === 'CANDIDATE_CAPTURE' ? 'candidate.capture.persisted'
+        : changes.workerTurns?.some(turn => turn.status === 'completed') ? 'worker.turn.persisted'
+        : changes.stage === 'VERIFYING' && changes.candidate ? 'candidate.persisted' : null;
+      if (checkpoint && !checkpoints.has(checkpoint)) {
+        checkpoints.add(checkpoint);
+        tracePrivateRecovery(checkpoint, {serviceRunId:runId});
+      }
       if (!interrupted && ((boundary === 'acknowledged' && changes.webDeliveryReceipts?.at(-1)?.state === 'ACKNOWLEDGED')
         || (boundary === 'received' && changes.reviewArtifacts?.length)
         || (boundary === 'processed' && changes.requests?.some(item => item.status === 'PROCESSED')))) {

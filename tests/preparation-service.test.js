@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +9,34 @@ import { normalizeDashboardState } from "../public/dashboard-model.js";
 import { validateWebSessionBinding } from "../src/runtime/web/binding.js";
 
 const tick = () => new Promise(setImmediate);
+function createDirectoryAlias(target, alias) {
+  try { fs.symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir"); }
+  catch (error) {
+    if (process.platform !== "win32" || error.code !== "EPERM") throw error;
+    execFileSync(process.env.ComSpec || process.env.COMSPEC || "cmd.exe",
+      ["/d", "/v:off", "/s", "/c", "mklink /J %BRIDGE_JUNCTION_LINK% %BRIDGE_JUNCTION_TARGET%"],
+      { windowsHide:true, stdio:"pipe", env:{ ...process.env,
+        BRIDGE_JUNCTION_LINK:`"${alias}"`, BRIDGE_JUNCTION_TARGET:`"${target}"` } });
+  }
+  const canonicalPath = value => {
+    const resolved = path.normalize(fs.realpathSync.native(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  assert.equal(canonicalPath(alias), canonicalPath(target));
+}
+test("Windows EPERM junction fallback resolves an alias in a spaced path", { skip:process.platform !== "win32" }, t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "junction fallback with spaces-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const target = path.join(directory, "target directory");
+  const alias = path.join(directory, "project alias");
+  fs.mkdirSync(target);
+  const symlink = t.mock.method(fs, "symlinkSync", () => { throw Object.assign(new Error("forced EPERM"), { code:"EPERM" }); });
+
+  createDirectoryAlias(target, alias);
+
+  assert.equal(symlink.mock.callCount(), 1);
+  assert.equal(fs.statSync(alias).isDirectory(), true);
+});
 async function settled(service) {
   for (let i = 0; i < 50 && service.jobs.size; i++) await tick();
   assert.equal(service.jobs.size, 0);
@@ -100,7 +129,7 @@ test("follow-up accepts a saved project alias without inheriting prior approval"
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "follow-up-alias-"));
   t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
   const alias = path.join(directory, "project");
-  fs.symlinkSync(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  createDirectoryAlias(f.root, alias);
   f.runs.set("applied-alias", {runId:"applied-alias", stage:"APPLIED", projectRef:{targetRoot:alias},
     objective:"previous task", requirements:{items:[]}});
   await f.service.execute("preparation.start", {requestId:"follow-up-alias", objective:"next task",
@@ -536,6 +565,35 @@ test("ambiguous unsent binding waits for an explicit eligible tab and then sends
   assert.ok(f.calls.includes("rebind:12"));
 });
 
+test("closed selected tab refreshes the unsent candidate list without automatic resend", async (t) => {
+  const f = fixture(t);
+  f.web.resume = async () => { throw Object.assign(new Error("Select a tab."), {
+    code:"AMBIGUOUS", details:{rootTabs:[{tabId:11,windowId:2,url:"https://chatgpt.com/"}]},
+  }); };
+  await f.service.execute("preparation.start", {requestId:"start",objective:"test",targetRoot:f.root,conversationUrl:"https://chatgpt.com/"});
+  await settled(f.service);
+  const session=f.service.current.webSession, deliveryId=session.activeDeliveryId;
+  const rebind=f.web.rebind;
+  f.web.rebind=async()=>{throw Object.assign(new Error("Selected tab closed."),{
+    code:"AMBIGUOUS",details:{browserDispatchStarted:false,originalCode:"TAB_CHANGED",
+      rootTabs:[{tabId:12,windowId:2,url:"https://chatgpt.com/"},{tabId:13,url:"https://chatgpt.com/c/unrelated"}]},
+  });};
+  const input={sessionId:session.sessionId,conversationId:session.conversationId,
+    conversationUrl:session.conversationUrl,deliveryId};
+  await assert.rejects(f.command("web.rebind",{...input,selectedTabId:11}),{code:"AMBIGUOUS"});
+  assert.deepEqual(f.service.current.error.details.candidates.map(tab=>tab.tabId),[12]);
+  assert.equal(f.service.current.webSession.activeDeliveryId,deliveryId);
+  assert.equal(f.service.current.deliveries[0].state,"FAILED");
+  assert.equal(f.prompts.length,0);
+  f.restart();
+  assert.deepEqual(f.service.current.error.details.candidates.map(tab=>tab.tabId),[12]);
+  f.web.rebind=rebind;
+  await f.command("web.rebind",{...input,selectedTabId:12});
+  await settled(f.service);
+  assert.equal(f.prompts.length,1);
+  assert.equal(f.service.current.state,"DISCUSSING");
+});
+
 test("result projection never attaches an unrelated preparation or its commands", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   const run = { runId: "old-run", phase: "CANCELLED", version: 2 };
@@ -575,7 +633,7 @@ test("first response must be stored and acknowledged before preparation is shown
 test("run transitions preserve in-progress and terminal meaning across frontend validation", () => {
   for (const [phase, stage] of [["STOPPING", "WORK"], ["HOLD", "WORK"], ["RECOVERY_REQUIRED", "WORK"],
     ["COMPLETE", "RESULT"], ["CANCELLED", "RESULT"], ["APPLIED", "RESULT"], ["APPLYING", "WORK"]]) {
-    const run = { runId: "run-test", version: 1, phase };
+    const run = { runId: "run-test", version: 1, phase, objective:"Workflow transition contract" };
     const workflow = workflowForRun(run);
     assert.equal(workflow.stage, stage);
     assert.equal(workflow.state, phase);
@@ -685,6 +743,89 @@ test("explicit preparation reconcile allows one manual follow-up adoption", asyn
   await f.command("web.reconcile", identity);
   assert.deepEqual(options, { refreshCompleted:true, adoptManualFollowup:true });
 });
+
+test("failed reconcile diagnostics survive receipt persistence and restart", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
+  const session = f.service.current.webSession;
+  const identity = { sessionId:session.sessionId, conversationId:session.conversationId,
+    conversationUrl:session.conversationUrl, deliveryId:session.activeDeliveryId };
+  const requestId = "reconcile-diagnostic-receipt";
+  const diagnostics = { httpRequestId:requestId, extensionRequestId:"web_test-id", extensionRequestType:"web.delivery.inspect",
+    sendOutcome:"CALL_RETURNED", failureBoundary:"EXTENSION_ERROR_RESPONSE", responseType:"web.session.error",
+    extensionErrorCode:"WEB_EXTENSION_ERROR" };
+  f.web.inspectDelivery = async () => { throw Object.assign(new Error("Web operation failed."), {
+    code:"WEB_EXTENSION_ERROR", receiptDiagnostics:diagnostics }); };
+
+  await assert.rejects(f.command("web.reconcile", { ...identity, requestId }), { code:"WEB_EXTENSION_ERROR" });
+  assert.equal(f.service.data.receipts[requestId].status, "FAILED");
+  f.restart();
+  const receipt = f.service.data.receipts[requestId];
+  assert.equal(receipt.status, "FAILED");
+  assert.deepEqual(receipt.error.diagnostics, diagnostics);
+  assert.deepEqual({ code:receipt.error.code, message:receipt.error.message },
+    { code:"WEB_EXTENSION_ERROR", message:"Web operation failed." });
+});
+
+async function failedRootFixture(t,{plain=false,wrongRun=false,relocated=false}={}) {
+  const f=fixture(t);let submissions=0,acknowledged=false;
+  f.web.submitTurn=async()=>{submissions++;throw Object.assign(new Error('temporary ID changed'),{
+    code:'MANUAL_INTERVENTION_DETECTED',details:{browserDispatchStarted:true,
+      observedUrl:'https://chatgpt.com/c/recovered',observedId:'recovered'}});};
+  await f.service.execute('preparation.start',{requestId:'root',objective:'original request',targetRoot:f.root,conversationUrl:'https://chatgpt.com/'});
+  await settled(f.service);
+  const c=f.service.current,s=c.webSession,d=c.deliveries[0];
+  const binding={...s,sessionId:s.sessionId,runId:wrongRun?'other':c.preparationId,bindingStatus:'BOUND',
+    conversationUrl:'https://chatgpt.com/c/recovered',conversationId:'recovered',documentId:'new-document',
+    tabId:relocated?8:s.tabId,windowId:relocated?4:s.windowId,
+    lastObservedUserMessageId:'u1',lastObservedAssistantMessageId:'a1'};
+  const response={turnId:d.deliveryId,binding,rawText:plain?'방법 안내인가요, 기능 구현인가요?':
+    '<controller_packet>\n'+JSON.stringify({type:'REQUIREMENTS_PROPOSAL',summary:'범위 확인',questions:['방법 안내인가요?'],items:[]})+'\n</controller_packet>',
+    confidence:'CONFIRMED_BY_UI_STATE',evidence:{userMessageId:'u1',assistantMessageId:'a1',
+      conversationUrl:binding.conversationUrl,conversationId:binding.conversationId,documentId:binding.documentId,
+      frameId:binding.frameId,responseAssociation:'DIRECT_DOM_ORDER'},
+    trace:{requestId:d.deliveryId,actionId:d.deliveryId,bindingId:`${s.sessionId}:${c.preparationId}`,
+      tabId:binding.tabId,documentId:'new-document',frameId:0,result:'success'}};
+  const options=[];
+  f.web.inspect=async()=>({binding});
+  f.web.inspectDelivery=async o=>{if(o)options.push(o);return {currentDeliveryId:acknowledged?null:d.deliveryId,
+    sessionId:s.sessionId,runId:c.preparationId,conversationUrl:binding.conversationUrl,conversationId:binding.conversationId,
+    observedConversationUrl:binding.conversationUrl,tabId:binding.tabId,documentId:binding.documentId,
+    observedDocumentId:binding.documentId,frameId:binding.frameId,pageReachable:true,generating:false,pageBusy:false,extensionBusy:false,
+    lastObservedUserMessageId:'u1',lastObservedAssistantMessageId:'a1',completedDelivery:response};};
+  f.web.acknowledgeDelivery=async()=>{acknowledged=true;};
+  return {...f,get service(){return f.service;},identity:{sessionId:s.sessionId,conversationId:null,conversationUrl:'https://chatgpt.com/',deliveryId:d.deliveryId},
+    options,submissions:()=>submissions,acknowledged:()=>acknowledged};
+}
+
+test('explicit recovery imports the original root response and uses normal validation and ACK without resending',async t=>{
+  const f=await failedRootFixture(t);
+  assert.ok(f.service.capabilities().includes('web.reconcile'));
+  await f.command('web.reconcile',f.identity);
+  assert.equal(f.submissions(),1);assert.equal(f.acknowledged(),true);
+  assert.equal(f.service.current.state,'DISCUSSING');
+  assert.equal(f.service.current.deliveries[0].state,'ACKNOWLEDGED');
+  assert.equal(f.service.current.webSession.conversationId,'recovered');
+  assert.equal(f.options[0].recoverSubmitted.currentDeliveryId,f.identity.deliveryId);
+  assert.equal(f.runs.size,0);
+});
+
+test('recovered plain response is preserved but cannot bypass the existing proposal format contract',async t=>{
+  const f=await failedRootFixture(t,{plain:true});
+  await assert.rejects(f.command('web.reconcile',f.identity),{code:'INVALID_AGREEMENT'});
+  assert.equal(f.submissions(),1);assert.equal(f.acknowledged(),false);
+  assert.equal(f.service.current.deliveries[0].response.rawText,'방법 안내인가요, 기능 구현인가요?');
+  assert.equal(f.service.current.deliveries[0].validation.status,'CONFIRMED');
+  assert.equal(f.service.current.deliveries[0].validation.format,'INVALID');
+  f.restart();assert.equal(f.service.current.deliveries[0].response.rawText,'방법 안내인가요, 기능 구현인가요?');
+});
+
+test('recovery rejects another run before changing the durable root binding',async t=>{
+  const f=await failedRootFixture(t,{wrongRun:true});
+  await assert.rejects(f.command('web.reconcile',f.identity),{code:'DELIVERY_RECOVERY_MISMATCH'});
+  assert.equal(f.service.current.webSession.conversationId,null);
+  assert.equal(f.service.current.deliveries[0].response,null);
+  assert.equal(f.submissions(),1);assert.equal(f.acknowledged(),false);
+});
 test("preparation commands no longer require a version and request IDs remain idempotent", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   await assert.rejects(f.service.execute("preparation.start", { requestId: "start", objective: "different" }), /different command/);
@@ -729,3 +870,114 @@ for (const mismatch of [{ conversationId: "other" }, { deliveryId: "other" }]) {
     assert.equal(f.calls.length, 1);
   });
 }
+
+function failRecoveryWrite(service,{rollbackFails=false}={}) {
+  const real=service.db; let failed=false;
+  service.db=new Proxy(real,{
+    get(target,key) {
+      if(key==='prepare') return sql=>{
+        const statement=target.prepare(sql);
+        if(!sql.startsWith('INSERT INTO preparation_state')) return statement;
+        return {run:json=>{
+          const data=JSON.parse(json),context=data.contexts[data.currentId];
+          if(!failed && context?.deliveries.some(item=>item.response)) {
+            failed=true; throw new Error('injected recovery write failure');
+          }
+          return statement.run(json);
+        }};
+      };
+      if(key==='exec') return sql=>{
+        const result=target.exec(sql);
+        if(rollbackFails && failed && sql==='ROLLBACK') throw new Error('injected rollback failure');
+        return result;
+      };
+      const value=Reflect.get(target,key,target);
+      return typeof value==='function'?value.bind(target):value;
+    },
+  });
+  return {real,restore(){service.db=real;}};
+}
+
+test('failed recovery write preserves memory and receipt context, then rereads the same delivery',async t=>{
+  const f=await failedRootFixture(t,{plain:true,relocated:true});
+  const before=structuredClone(f.service.current),injected=failRecoveryWrite(f.service);
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'write-failed'}),/injected recovery write failure/);
+  assert.deepEqual(f.service.current,before);
+  const disk=JSON.parse(injected.real.prepare('SELECT json FROM preparation_state WHERE id=1').get().json);
+  assert.deepEqual(disk.contexts[before.preparationId],before);
+  assert.equal(disk.receipts['write-failed'].status,'FAILED');
+  injected.restore();
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'read-again'}),{code:'INVALID_AGREEMENT'});
+  assert.equal(f.submissions(),1); assert.equal(f.acknowledged(),false);
+  assert.equal(f.service.current.webSession.tabId,8);
+  assert.equal(f.service.current.deliveries[0].deliveryId,f.identity.deliveryId);
+  const response=structuredClone(f.service.current.deliveries[0].response);
+  assert.ok(response.rawText);
+  f.restart();
+  assert.equal(f.service.current.webSession.tabId,8);
+  assert.deepEqual(f.service.current.deliveries[0].response,response);
+});
+
+test('lost extension response is reread with a new request ID without resubmission',async t=>{
+  const f=await failedRootFixture(t,{plain:true,relocated:true});
+  const inspect=f.web.inspectDelivery,before=structuredClone(f.service.current);
+  let captured;
+  f.web.inspectDelivery=async options=>{
+    captured=await inspect(options);
+    throw Object.assign(new Error('lost response'),{code:'WEB_RESPONSE_TIMEOUT'});
+  };
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'lost'}),{code:'WEB_RESPONSE_TIMEOUT'});
+  assert.deepEqual(f.service.current,before);
+  f.web.inspectDelivery=async()=>structuredClone(captured);
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'reread'}),{code:'INVALID_AGREEMENT'});
+  assert.equal(f.submissions(),1);
+  assert.equal(f.service.current.deliveries[0].response.turnId,f.identity.deliveryId);
+  assert.equal(f.service.current.webSession.tabId,8);
+});
+
+test('unknown recovery transaction outcome blocks writes without a false failed receipt',async t=>{
+  const f=await failedRootFixture(t,{plain:true,relocated:true});
+  const before=structuredClone(f.service.current),injected=failRecoveryWrite(f.service,{rollbackFails:true});
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'uncertain'}),{code:'RECOVERY_PERSISTENCE_UNCERTAIN'});
+  assert.deepEqual(f.service.current,before); assert.equal(f.service.closed,true);
+  const disk=JSON.parse(injected.real.prepare('SELECT json FROM preparation_state WHERE id=1').get().json);
+  assert.equal(disk.receipts.uncertain.status,'PROCESSING');
+  assert.deepEqual(disk.contexts[before.preparationId],before);
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'blocked'}),/Server is closing/);
+  injected.restore();
+});
+
+test('context changes during inspection are not overwritten by recovery',async t=>{
+  const f=await failedRootFixture(t,{plain:true,relocated:true}),inspect=f.web.inspectDelivery;
+  f.web.inspectDelivery=async options=>{
+    const result=await inspect(options);
+    f.service.current.version++; f.service.current.objective='changed while inspecting';
+    return result;
+  };
+  await assert.rejects(f.command('web.reconcile',f.identity),{code:'DELIVERY_RECOVERY_MISMATCH'});
+  assert.equal(f.service.current.objective,'changed while inspecting');
+  assert.equal(f.service.current.webSession.conversationId,null);
+  assert.equal(f.service.current.deliveries[0].response,null);
+});
+
+test('committed recovery survives a final receipt write failure without replaying the request',async t=>{
+  const f=await failedRootFixture(t,{relocated:true});
+  const saveReceipt=f.service.saveReceipt.bind(f.service);
+  f.service.saveReceipt=async(requestId,receipt)=>{
+    if(requestId==='receipt-write-failed' && receipt.status==='COMPLETED') {
+      throw new Error('injected final receipt failure');
+    }
+    return saveReceipt(requestId,receipt);
+  };
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'receipt-write-failed'}),/injected final receipt failure/);
+  assert.equal(f.acknowledged(),true);assert.equal(f.submissions(),1);
+  const response=structuredClone(f.service.current.deliveries[0].response);
+  assert.ok(response.rawText);
+  assert.equal(f.service.current.webSession.tabId,8);
+  f.restart();
+  assert.equal(f.service.current.webSession.tabId,8);
+  assert.deepEqual(f.service.current.deliveries[0].response,response);
+  assert.equal(f.service.data.receipts['receipt-write-failed'].status,'PROCESSING');
+  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'receipt-write-failed'}),{code:'UNKNOWN_RESULT'});
+  assert.equal(f.submissions(),1);
+});

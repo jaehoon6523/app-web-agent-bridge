@@ -1,0 +1,3174 @@
+{
+  "schemaVersion": 1,
+  "reportDate": "2026-11-04",
+  "timeZone": "Asia/Seoul",
+  "repository": "jaehoon6523/app-web-agent-bridge",
+  "stopCondition": "B_CLEAR_BLOCK_APPROVAL_REQUIRED",
+  "target": {
+    "sourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+    "gitHead": "5ac8d982ec37e1ccf17334281b786214b375fd9a",
+    "manifestFiles": 626,
+    "changedPathsRelativeToGitHead": 25,
+    "trackedModifiedPaths": 16,
+    "untrackedPaths": 9,
+    "changedFiles": [
+      {
+        "gitStatus": " M",
+        "file": ".github/workflows/bridge-gates.yml"
+      },
+      {
+        "gitStatus": " M",
+        "file": "package.json"
+      },
+      {
+        "gitStatus": " M",
+        "file": "public/app.js"
+      },
+      {
+        "gitStatus": " M",
+        "file": "scripts/content-lifecycle-browser-suite.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "scripts/diagnose-server.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "scripts/run-tests.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "scripts/test-completion-reporter.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "scripts/verification-plan.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "src/diagnostics/report-store.js"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/agent-diagnostics-complete.test.js"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/agent-report.test.js"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/helpers/failure-evidence.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/platform/code-history-http.test.js"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/runtime-cleanup/contract.test.js"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/source-checkout.test.mjs"
+      },
+      {
+        "gitStatus": " M",
+        "file": "tests/verification-plan.test.js"
+      },
+      {
+        "gitStatus": "??",
+        "file": "scripts/history-shutdown-evidence.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/helpers/cleanup-child-observer.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/helpers/cleanup-execution-evidence.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/helpers/history-shutdown-owner.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/helpers/history-shutdown-seed.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/helpers/project-draft-receipt-contract.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/history-shutdown-contract.test.mjs"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/platform/code-history-shutdown.test.js"
+      },
+      {
+        "gitStatus": "??",
+        "file": "tests/runtime-cleanup/evidence.test.mjs"
+      }
+    ],
+    "identityNote": "Windows 보관 checkout Git status 기준; 일부는 줄바꿈 차이. 기준 소스 81c4fc90에서 E로의 manifest 변경은 tests/agent-diagnostics-complete.test.js 1개.",
+    "workspaceGitHead": "0791a19fe8b21274698784a404ac7bb5545ddc6e",
+    "workspaceIsTargetCandidate": false,
+    "lastObservedUbuntuCandidateSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200"
+  },
+  "summary": {
+    "ubuntuFull": {
+      "total": 17,
+      "pass": 6,
+      "fail": 1,
+      "blocked": 10,
+      "notRun": 0,
+      "policyExcluded": 1
+    },
+    "windowsFull": {
+      "total": 19,
+      "pass": 0,
+      "fail": 0,
+      "blocked": 0,
+      "notRun": 19,
+      "policyExcluded": 3
+    },
+    "minimum": {
+      "total": 2,
+      "pass": 0,
+      "fail": 0,
+      "blocked": 0,
+      "notRun": 2,
+      "policyExcluded": 0
+    },
+    "allRequired": {
+      "total": 38,
+      "pass": 6,
+      "fail": 1,
+      "blocked": 10,
+      "notRun": 21
+    }
+  },
+  "stages": [
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "dependencies",
+      "required": true,
+      "status": "PASS",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 10851.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": null,
+      "failurePhase": null,
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:17:53.917Z",
+      "finishedAt": "2026-11-04T07:18:04.768Z",
+      "closure": {
+        "code": 0,
+        "signal": null,
+        "forced": false
+      },
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/dependencies/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "browser-install",
+      "required": true,
+      "status": "PASS",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 15798.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": null,
+      "failurePhase": null,
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:18:04.787Z",
+      "finishedAt": "2026-11-04T07:18:20.585Z",
+      "closure": {
+        "code": 0,
+        "signal": null,
+        "forced": false
+      },
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/browser-install/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "lint",
+      "required": true,
+      "status": "PASS",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 1688.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": null,
+      "failurePhase": null,
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:18:20.607Z",
+      "finishedAt": "2026-11-04T07:18:22.295Z",
+      "closure": {
+        "code": 0,
+        "signal": null,
+        "forced": false
+      },
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/lint/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "architecture",
+      "required": true,
+      "status": "PASS",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 1195.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": null,
+      "failurePhase": null,
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:18:22.332Z",
+      "finishedAt": "2026-11-04T07:18:23.527Z",
+      "closure": {
+        "code": 0,
+        "signal": null,
+        "forced": false
+      },
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/architecture/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "types",
+      "required": true,
+      "status": "PASS",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 3191.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": null,
+      "failurePhase": null,
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:18:23.545Z",
+      "finishedAt": "2026-11-04T07:18:26.736Z",
+      "closure": {
+        "code": 0,
+        "signal": null,
+        "forced": false
+      },
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/types/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "spec",
+      "required": true,
+      "status": "PASS",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 94928.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": null,
+      "failurePhase": null,
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:18:26.756Z",
+      "finishedAt": "2026-11-04T07:20:01.684Z",
+      "closure": {
+        "code": 0,
+        "signal": null,
+        "forced": false
+      },
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/spec/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "discovery",
+      "required": true,
+      "status": "FAIL",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": 1394761.0,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "E2E runner resource closure failed: execution deadline",
+      "failurePhase": "TIMEOUT",
+      "executionSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": "2026-11-04T07:20:01.711Z",
+      "finishedAt": "2026-11-04T07:43:16.472Z",
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/discovery/output.log"
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "integration",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "platform",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "cleanup",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "windows-focused",
+      "required": false,
+      "status": "POLICY_EXCLUDED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "POLICY_EXCLUDED_OS",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "platform-browser",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "e2e",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "ui",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "browser",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "tab-ux",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "sabotage",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "full",
+      "id": "native",
+      "required": true,
+      "status": "BLOCKED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "durationNote": "UNKNOWN: 시각 역행으로 벽시계 차이는 실제 경과 시간이 아님",
+      "failureReason": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "failurePhase": null,
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "startedAt": null,
+      "finishedAt": null,
+      "closure": null,
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json"
+      ],
+      "originalLogPath": null
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "dependencies",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "browser-install",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "lint",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "architecture",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "types",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "spec",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "discovery-serial",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "discovery",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "discovery-2",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "discovery-3",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "discovery-4",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "integration",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "platform",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "cleanup",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "windows-focused",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "platform-browser",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "e2e",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "ui",
+      "required": false,
+      "status": "POLICY_EXCLUDED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "POLICY_EXCLUDED_OS",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "browser",
+      "required": false,
+      "status": "POLICY_EXCLUDED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "POLICY_EXCLUDED_OS",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "tab-ux",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "sabotage",
+      "required": false,
+      "status": "POLICY_EXCLUDED",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "POLICY_EXCLUDED_OS",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Windows",
+      "scope": "full",
+      "id": "native",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 공식 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "minimum",
+      "id": "minimum-dependencies",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    },
+    {
+      "os": "Ubuntu",
+      "scope": "minimum",
+      "id": "minimum-sqlite",
+      "required": true,
+      "status": "NOT_RUN",
+      "measuredElapsedMs": null,
+      "wallClockDeltaMs": null,
+      "failureReason": "후보 E 실행 영수증 없음",
+      "executionSourceSha256": null,
+      "targetSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "evidence": [
+        "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\checkout\\scripts\\verification-plan.mjs"
+      ]
+    }
+  ],
+  "discovery": {
+    "classification": "RUNNER_OR_CLOSURE_BOUNDARY",
+    "classificationMeaning": "확정된 실패 경계의 분류. 누적 예산을 포함한 근본 원인은 UNKNOWN.",
+    "rootCause": "UNKNOWN",
+    "cumulativeBudgetEvidence": "STRONG_BUT_NOT_CONCLUSIVE",
+    "scheduled": 201,
+    "completedPass": 158,
+    "completedFail": 0,
+    "incomplete": 43,
+    "stageStatus": "FAIL",
+    "innerReceiptStatus": "RUNNING",
+    "innerReceiptTerminal": false,
+    "innerReceiptFinishedAt": null,
+    "stageTimeoutMs": 1500000,
+    "defaultFileTimeoutMs": 180000,
+    "fileTimeoutExceptionsPreserved": {
+      "tests/audit-ack-recovery.test.js": 300000,
+      "tests/runtime-cleanup/contract.test.js": 720000,
+      "tests/verification-command.test.js": 240000,
+      "tests/source-checkout.test.mjs": 720000
+    },
+    "completedTapDurationSumMs": 1462360.437055,
+    "stageBudgetMinusTapSumMs": 37639.562944999896,
+    "fullMeasuredStageElapsedMs": null,
+    "wallClockDeltaMs": 1394761,
+    "wallClockUnsafeDueToReversals": true,
+    "perFileMeasurements": [
+      {
+        "file": "tests/ack-windows-result.test.mjs",
+        "tapDurationMs": 475.384466,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2279,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/agent-diagnostics-complete.test.js",
+        "tapDurationMs": 13785.672503,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2286,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/agent-diagnostics-http.test.js",
+        "tapDurationMs": 3473.94389,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2774,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/agent-packet-rejections-persistence.test.js",
+        "tapDurationMs": 2500.384033,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2810,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/agent-report-cli.test.js",
+        "tapDurationMs": 3021.853681,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2817,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/agent-report.test.js",
+        "tapDurationMs": 1473.196935,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2886,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/architecture-boundary.test.js",
+        "tapDurationMs": 450.667579,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2920,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-ack-crash-recovery.test.js",
+        "tapDurationMs": 11327.886315,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 2927,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-ack-private-recovery.test.js",
+        "tapDurationMs": 72939.079689,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 3121,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-ack-recovery.test.js",
+        "tapDurationMs": 72883.661418,
+        "pass": true,
+        "timeoutMs": 300000,
+        "pid": 4245,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-boundaries.test.js",
+        "tapDurationMs": 47193.597956,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 5706,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-crash-harness.test.js",
+        "tapDurationMs": 5675.964618,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 6293,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-delivery-owner.test.js",
+        "tapDurationMs": 25917.426497,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 6374,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-fixture-oracle.test.js",
+        "tapDurationMs": 27022.816057,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 6862,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-fuzz.test.js",
+        "tapDurationMs": 101080.967609,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 7134,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-gaps.test.js",
+        "tapDurationMs": 16644.83316,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 7945,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-known-regressions.test.js",
+        "tapDurationMs": 2773.645288,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8258,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-pre-dispatch.test.js",
+        "tapDurationMs": 12469.710883,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8302,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/audit-review-contract.test.js",
+        "tapDurationMs": 11299.534832,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8531,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/canonical-json.test.js",
+        "tapDurationMs": 429.202825,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8671,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/certify.test.js",
+        "tapDurationMs": 11917.188994,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8678,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/code-change-deletion.test.js",
+        "tapDurationMs": 1602.085863,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8799,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/code-change-e2e.test.js",
+        "tapDurationMs": 12348.432183,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 8806,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/code-change-review-prompt.test.js",
+        "tapDurationMs": 421.105815,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9028,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/code-change-service.test.js",
+        "tapDurationMs": 47463.45489,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9035,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/code-change-worker.test.js",
+        "tapDurationMs": 461.570734,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9709,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/code-review.test.js",
+        "tapDurationMs": 575.07206,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9716,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/codex-runtime.new.test.js",
+        "tapDurationMs": 96941.394286,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9723,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/composer-guarded-send.test.js",
+        "tapDurationMs": 707.792958,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9895,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/consensus.test.js",
+        "tapDurationMs": 496.709683,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9902,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/content-lifecycle.test.js",
+        "tapDurationMs": 4806.096448,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9909,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/dashboard-action-capabilities.contract.test.js",
+        "tapDurationMs": 452.115992,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9916,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/dashboard-data-knowledge.contract.test.js",
+        "tapDurationMs": 475.546268,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9923,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/dashboard-degraded-state.contract.test.js",
+        "tapDurationMs": 425.802168,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9930,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/network-lifecycle/http-headers.test.js",
+        "tapDurationMs": 518.279302,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9937,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/network-lifecycle/http-unrequested-shutdown.test.js",
+        "tapDurationMs": 2922.688773,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9944,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/network-lifecycle/socket-observation.test.js",
+        "tapDurationMs": 1546.156644,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9974,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/preparation-capabilities.contract.test.js",
+        "tapDurationMs": 600.619773,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9991,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/contract/web-dependency-state.contract.test.js",
+        "tapDurationMs": 420.004079,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 9998,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/controller-packet-rendering-contract.test.js",
+        "tapDurationMs": 462.062898,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10005,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/conversation-bootstrap-tab.test.js",
+        "tapDurationMs": 425.855911,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10012,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/conversation-view.test.js",
+        "tapDurationMs": 465.760485,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10019,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/dashboard-connection-state.test.js",
+        "tapDurationMs": 475.51383,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10026,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/dashboard-controller.test.js",
+        "tapDurationMs": 3538.271057,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10033,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/dashboard-read-policy.test.js",
+        "tapDurationMs": 505.339329,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10047,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/dashboard-snapshot-diagnostics.test.js",
+        "tapDurationMs": 4198.042076,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10054,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/delivery-ack-restart.test.js",
+        "tapDurationMs": 3006.577017,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10086,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/delivery-recovery-audit.test.js",
+        "tapDurationMs": 1377.978652,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10094,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/delivery-recovery-ui.test.js",
+        "tapDurationMs": 1293.78912,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10109,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/delivery-terminal-http.test.js",
+        "tapDurationMs": 2139.149685,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10120,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/delivery-terminal-reconciliation.test.js",
+        "tapDurationMs": 211.300487,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10136,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/diagnostic-export.test.js",
+        "tapDurationMs": 150.128385,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10143,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/diagnostic-modules.test.mjs",
+        "tapDurationMs": 2810.504495,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10150,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/diagnostic-safety.test.js",
+        "tapDurationMs": 1778.510797,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10227,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/direct-mv3-identity.test.mjs",
+        "tapDurationMs": 542.412671,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10234,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-actions.test.js",
+        "tapDurationMs": 467.270409,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10241,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-blocked.test.js",
+        "tapDurationMs": 6023.99514,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10248,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-dispatcher-integrity.test.js",
+        "tapDurationMs": 3004.138673,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10255,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-dispatcher.test.js",
+        "tapDurationMs": 4642.792718,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10262,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-loop.test.js",
+        "tapDurationMs": 7260.555364,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10269,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-protocol-failure.test.js",
+        "tapDurationMs": 5272.537361,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10276,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-response-atomicity.test.js",
+        "tapDurationMs": 1765.86387,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10283,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-response-links.test.js",
+        "tapDurationMs": 4998.687401,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10290,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-response.test.js",
+        "tapDurationMs": 560.439489,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10297,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/discussion-runtime-evidence.test.js",
+        "tapDurationMs": 441.955329,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10304,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/domain-contracts.test.js",
+        "tapDurationMs": 496.066235,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10311,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/active-worker-cleanup.test.js",
+        "tapDurationMs": 581.800328,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10318,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/execution-summary.test.js",
+        "tapDurationMs": 16197.262726,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10332,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/graceful-shutdown.test.js",
+        "tapDurationMs": 31253.354683,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10374,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/portability.test.js",
+        "tapDurationMs": 588.785377,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10482,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/preflight-readiness.test.js",
+        "tapDurationMs": 590.925633,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10489,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/progress.test.js",
+        "tapDurationMs": 414.715359,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10496,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/e2e/worker-workspace-identity.test.js",
+        "tapDurationMs": 2173.379045,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10503,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/exact-conversation-reopen.test.js",
+        "tapDurationMs": 395.793792,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10511,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/extension-auth-challenge.test.js",
+        "tapDurationMs": 400.924816,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10518,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/extension-delivery-review.test.js",
+        "tapDurationMs": 4133.278622,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10525,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/extension-pairing-http.test.js",
+        "tapDurationMs": 1759.476597,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10576,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/extension-pairing.test.js",
+        "tapDurationMs": 485.075399,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10593,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/extension-reconnect.test.js",
+        "tapDurationMs": 384.046674,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10600,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/extension-failure.test.js",
+        "tapDurationMs": 1463.739948,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10607,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/reviewer-provider-failure.test.js",
+        "tapDurationMs": 5468.173381,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10621,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/run-store-read-failure.test.js",
+        "tapDurationMs": 1499.580216,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10702,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/runtime-failure.test.js",
+        "tapDurationMs": 1401.248409,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10716,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/server-response-deadline.test.js",
+        "tapDurationMs": 14149.692962,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10730,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/server-responsiveness.test.js",
+        "tapDurationMs": 16254.015196,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10828,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/fault/state-projection-failure.test.js",
+        "tapDurationMs": 1699.759034,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10944,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/flexible-tab-recovery.test.js",
+        "tapDurationMs": 532.986814,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10958,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/git-change-workspace.test.js",
+        "tapDurationMs": 5422.080933,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 10965,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/history-shutdown-contract.test.mjs",
+        "tapDurationMs": 2153.443852,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 11206,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/live-discussion-composition.test.js",
+        "tapDurationMs": 1006.950535,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 11244,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/manual-followup-selection.test.js",
+        "tapDurationMs": 445.496249,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 11251,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/minimal-native-reload-matrix-v2.test.mjs",
+        "tapDurationMs": 17192.624093,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 11258,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/mixed-provider-audit.test.js",
+        "tapDurationMs": 4747.527719,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 11314,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/multi-agent-coordination.test.js",
+        "tapDurationMs": 54612.064485,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 11395,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/native-extension-gate.test.js",
+        "tapDurationMs": 414.17353,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12006,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/native-reload-control.test.mjs",
+        "tapDurationMs": 3707.261805,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12013,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/persistence-cleanup.test.js",
+        "tapDurationMs": 562.24868,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12060,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/planning-session-api.test.js",
+        "tapDurationMs": 1473.550458,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12067,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-change-history.test.js",
+        "tapDurationMs": 10427.752814,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12081,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-boundary.test.js",
+        "tapDurationMs": 9796.570018,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12114,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-error-contract.test.js",
+        "tapDurationMs": 3941.757704,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12153,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-http-closure.test.js",
+        "tapDurationMs": 14320.521047,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12168,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-http.test.js",
+        "tapDurationMs": 86753.438094,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12277,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-owner.test.js",
+        "tapDurationMs": 4397.844638,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12338,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-remaining.test.js",
+        "tapDurationMs": 7375.401161,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12349,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-shutdown.test.js",
+        "tapDurationMs": 42391.620692,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12384,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/code-history-worker-cleanup.test.js",
+        "tapDurationMs": 4145.041527,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12427,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/inherited-pipes.test.js",
+        "tapDurationMs": 2185.490272,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12447,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/lifecycle.test.js",
+        "tapDurationMs": 1434.304927,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12472,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/persistence.test.js",
+        "tapDurationMs": 2149.838881,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12485,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/runner.test.js",
+        "tapDurationMs": 10769.449618,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12500,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/sqlite-database.test.js",
+        "tapDurationMs": 407.411321,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12560,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/sqlite-startup.test.js",
+        "tapDurationMs": 2234.566353,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12567,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/platform/test-runner-gate.test.js",
+        "tapDurationMs": 92448.746163,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12593,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-api.test.js",
+        "tapDurationMs": 4404.563987,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12798,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-contention.test.js",
+        "tapDurationMs": 23785.508823,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12838,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-packet-incidents.test.js",
+        "tapDurationMs": 435.153003,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12902,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-service.test.js",
+        "tapDurationMs": 21053.082841,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12909,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-stale-tab-integration.test.js",
+        "tapDurationMs": 502.025926,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12916,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-tab-choice.test.js",
+        "tapDurationMs": 499.724835,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12923,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/preparation-tab-focus.test.js",
+        "tapDurationMs": 641.830004,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12930,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/prepared-session-target.test.js",
+        "tapDurationMs": 543.959653,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12937,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/private-web-response.test.js",
+        "tapDurationMs": 601.798207,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12944,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/project-activity.test.js",
+        "tapDurationMs": 499.193076,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12951,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/project-preparation.test.js",
+        "tapDurationMs": 1521.172373,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 12958,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/project-settings.test.js",
+        "tapDurationMs": 1908.452209,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13019,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/projection-rebuild-command.new.test.js",
+        "tapDurationMs": 889.521236,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13038,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/projection-rebuild.test.js",
+        "tapDurationMs": 1797.158324,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13049,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/proposal-persistence.test.js",
+        "tapDurationMs": 1595.633996,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13056,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/protocol-failure.test.js",
+        "tapDurationMs": 499.204027,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13063,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/public/audit-console.test.js",
+        "tapDurationMs": 514.53996,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13070,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/public/dashboard-io-depth.test.js",
+        "tapDurationMs": 692.749489,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13081,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/public/dashboard-model.test.js",
+        "tapDurationMs": 519.886696,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13092,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/public/dashboard-status-view.test.js",
+        "tapDurationMs": 444.431372,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13103,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/public/workflow-contract.test.js",
+        "tapDurationMs": 513.275323,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13110,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/public/workflow-runtime.test.js",
+        "tapDurationMs": 78702.812927,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13121,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/readiness-diagnostics.test.js",
+        "tapDurationMs": 1723.908691,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13151,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/recovery-reconcile.test.js",
+        "tapDurationMs": 1335.170663,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13158,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/recovery-scan.test.js",
+        "tapDurationMs": 475.578632,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13185,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/relay-boundary.test.js",
+        "tapDurationMs": 501.286953,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13192,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/reviewer-provider-router.test.js",
+        "tapDurationMs": 431.955707,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13199,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/reviewer-provider-runtime.test.js",
+        "tapDurationMs": 463.271912,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13206,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/reviewer-provider-selection-ui.test.js",
+        "tapDurationMs": 435.881223,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13213,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/reviewer-settings.test.js",
+        "tapDurationMs": 589.348468,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13224,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/run-information-architecture.test.js",
+        "tapDurationMs": 444.03592,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13232,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/run-limits-persistence.new.test.js",
+        "tapDurationMs": 1295.912913,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13243,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/run-outcomes-persistence.test.js",
+        "tapDurationMs": 1632.410706,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13250,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/run-policy.test.js",
+        "tapDurationMs": 479.998983,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13257,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/run-service.test.js",
+        "tapDurationMs": 1512.39438,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13264,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/run-state-machine.test.js",
+        "tapDurationMs": 587.791089,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13271,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/runtime-cleanup/contract.test.js",
+        "tapDurationMs": 86390.287035,
+        "pass": true,
+        "timeoutMs": 720000,
+        "pid": 13278,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/runtime-cleanup/evidence.test.mjs",
+        "tapDurationMs": 507.703924,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13748,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/runtime-cleanup/representation.test.js",
+        "tapDurationMs": 443.76014,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13759,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/runtime-initialization-diagnostics.test.js",
+        "tapDurationMs": 970.528328,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13766,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/schema-migration.test.js",
+        "tapDurationMs": 4121.438541,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13773,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/security-evidence.test.js",
+        "tapDurationMs": 473.340776,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13780,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/selector-diagnostics-http.test.js",
+        "tapDurationMs": 4032.583862,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13787,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      },
+      {
+        "file": "tests/selector-repair-cli.test.js",
+        "tapDurationMs": 45943.931311,
+        "pass": true,
+        "timeoutMs": 180000,
+        "pid": 13826,
+        "closure": {
+          "code": 0,
+          "signal": null
+        },
+        "summaryStatus": "COMPLETE"
+      }
+    ],
+    "lastComplete": {
+      "file": "tests/selector-repair-cli.test.js",
+      "tapDurationMs": 45943.931311,
+      "pass": true,
+      "timeoutMs": 180000,
+      "pid": 13826,
+      "closure": {
+        "code": 0,
+        "signal": null
+      },
+      "summaryStatus": "COMPLETE"
+    },
+    "lastFileAnnouncement": "tests/selector-repair.test.js",
+    "lastAnnouncedFilePid": null,
+    "runnerPid": 2269,
+    "supervisorPid": 764,
+    "postKillExitClose": "UNKNOWN",
+    "resourceRecovery": "UNKNOWN",
+    "resourceSampleCount": 1615,
+    "minAvailableMemoryBytes": 2636845056,
+    "minAvailableDiskBytes": 1019883405312,
+    "evidence": [
+      "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\first-failure.log",
+      "C:\\Users\\cjh\\_gemini\\test\\new_neo\\app-web-agent-bridge\\.agent-controller\\m1-http-four-contracts\\ubuntu-e33b-env-gate\\official-result.json",
+      "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/discovery/latest-test-result.json",
+      "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/resource-diagnostics/resources.jsonl",
+      "/var/tmp/bridge-e33b-env-gate-wfF27e/evidence/verification-runs/8c5892f0-d64b-468c-bd41-8421c9cfb161/resource-diagnostics/stages.jsonl"
+    ]
+  },
+  "focusedSelector": {
+    "status": "PASS",
+    "attempts": 1,
+    "testsPassed": 20,
+    "testsFailed": 0,
+    "timeoutMs": 180000,
+    "tapDurationMs": 16415.087214,
+    "runnerCloseElapsedMs": 17537.937105,
+    "wrapperElapsedMs": 17782.640307,
+    "runnerPid": 648,
+    "testPid": 658,
+    "exitCode": 0,
+    "signal": null,
+    "runnerExitObserved": true,
+    "runnerCloseObserved": true,
+    "testClosure": {
+      "code": 0,
+      "signal": null
+    },
+    "terminal": true,
+    "sourceBefore": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+    "sourceAfter": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+    "unchanged": true,
+    "tempRemoved": true,
+    "leaseReleased": true,
+    "rerunThisTask": false,
+    "evidence": [
+      "/var/tmp/bridge-e33b-env-gate-wfF27e/checkout/.agent-controller/selector-single-approved-20261104-01/latest-test-result.json",
+      "/var/tmp/bridge-e33b-env-gate-wfF27e/checkout/.agent-controller/selector-single-approved-20261104-01/process-proof.json"
+    ]
+  },
+  "remoteCI": {
+    "candidateStatus": "UNKNOWN",
+    "baseCommitStatus": "PASS",
+    "baseCommitRunUrl": "https://github.com/jaehoon6523/app-web-agent-bridge/actions/runs/41591417981",
+    "baseCommit": "5ac8d982ec37e1ccf17334281b786214b375fd9a",
+    "candidateIdentityMatched": false,
+    "note": "현재 조회 API는 PR-triggered 첫 페이지에 한정됨. 후보 E 미커밋 변경과 일치하는 source 영수증을 확보하지 못함; 기존 커밋 PASS 승계 금지."
+  },
+  "e2e": {
+    "candidateProfiles": {
+      "total": 28,
+      "pass": 0,
+      "fail": 0,
+      "notRun": 28
+    },
+    "realUserFlow": "UNVERIFIED",
+    "historicalSummary": {
+      "sourceSha256": "ad68b59fb31f272a6411bd9c1b66b3ed3581e631a5d2b56bd03d25cbb93bbf2f",
+      "pass": 26,
+      "fail": 2,
+      "failedProfiles": [
+        "UF-24",
+        "UF-26"
+      ],
+      "creditedToCandidate": false
+    }
+  },
+  "features": [
+    {
+      "feature": "프로젝트 선택·복구",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "project-preparation, public/workflow-runtime: 준비·저장·화면 상태 복원",
+      "unverifiedScope": "실제 UI 프로젝트 선택부터 맥락 복구 전체 동선"
+    },
+    {
+      "feature": "브라우저 대화·응답 귀속",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "discussion-response, response-links, mixed-provider 등 제어된 피어 계약",
+      "unverifiedScope": "실제 로그인 서비스 전송 및 응답 귀속"
+    },
+    {
+      "feature": "승인·Worker 실행",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "preparation-api: HTTP 승인·영속 Run·RESULT projection",
+      "unverifiedScope": "실제 UI 승인 및 실제 외부 Worker 전체 동선"
+    },
+    {
+      "feature": "후보·Judge/Critic",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "multi-agent-coordination 12개: 독립 대화·동일 manifest·역할별 HOLD",
+      "unverifiedScope": "실제 로그인 Judge/Critic의 독립 검토"
+    },
+    {
+      "feature": "재검증·FAIL 차단",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "code-review, code-change-service: REWORK·귀속·적용 차단",
+      "unverifiedScope": "실제 사용자 수정·재검증 동선"
+    },
+    {
+      "feature": "명시적 Apply",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "spec 16/16 경계 관찰 및 code-change-service의 별도 Apply",
+      "unverifiedScope": "실제 대상에 사용자 승인 Apply"
+    },
+    {
+      "feature": "재시작·연결 복구",
+      "currentSourceEvidence": "일부 입증",
+      "realUIE2E": "미검증",
+      "observedScope": "recovery-scan, generated Apply restart: 복구 및 자동 재전송 방지",
+      "unverifiedScope": "실제 UI 재시작·연결 해제·미확정 전송 복구"
+    },
+    {
+      "feature": "Shutdown·자원 회수",
+      "currentSourceEvidence": "현재 소스에서 제한 범위 입증",
+      "realUIE2E": "전체 UI 미검증",
+      "observedScope": "양 OS M1: 실제 history 작업 취소·서버 자연 종료·DB 해제; 단독 selector 정상 close",
+      "unverifiedScope": "전체 Worker·브라우저 자원 및 과거 실패 실행 종료"
+    },
+    {
+      "feature": "전체 흐름 완주",
+      "currentSourceEvidence": "미검증",
+      "realUIE2E": "미검증",
+      "observedScope": "후보 E 공식 28개 E2E 프로필 실행 없음",
+      "unverifiedScope": "프로젝트 선택부터 검토·Apply·기록·복구까지 전체"
+    }
+  ],
+  "acceptanceBlockers": [
+    {
+      "id": "B1",
+      "title": "Discovery 기한 만료 및 종료 증거 누락",
+      "firstBoundary": "discovery 단계 execution deadline; 마지막 FILE selector-repair.test.js",
+      "rawError": "E2E runner resource closure failed: execution deadline",
+      "confirmedCause": "단계 실행기 deadline 경계 진입 및 일반 catch 경로의 kill 후 close 미확인",
+      "unknowns": [
+        "누적 시간·기동/정리 비용의 정확한 분해",
+        "당시 selector 파일 PID·정지 여부",
+        "기한 만료 뒤 실제 자식 종료·자원 회수"
+      ],
+      "modification": "미수정; 최소 변경안 승인 필요",
+      "sourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "resolutionEvidence": "selector 단독 20/20 PASS는 해당 단독 실행만 해결 증거이며 기존 Discovery 해결 증거가 아님",
+      "decisionChangingInformation": "고정된 유한 cleanup 경계에서 exit/close를 저장하도록 하는 최소 변경 승인",
+      "acceptanceBlocking": true
+    },
+    {
+      "id": "B2",
+      "title": "Ubuntu 잔여 공식 단계 미실행",
+      "firstBoundary": "discovery 이후 10개 필수 단계 BLOCKED",
+      "rawError": "RESOURCE_CLOSURE_UNCONFIRMED",
+      "confirmedCause": "상위 실행기의 unsafe 분기",
+      "unknowns": [
+        "잔여 43개 파일의 해당 실행 완료 결과",
+        "후속 10개 단계 실제 결과"
+      ],
+      "modification": "없음",
+      "sourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "resolutionEvidence": "없음; 158개 파일 PASS를 공식 단계 PASS로 대체하지 않음",
+      "decisionChangingInformation": "B1 해결 및 예산 실행 조건 확보 뒤 동일 고정 소스의 공식 결과",
+      "acceptanceBlocking": true
+    },
+    {
+      "id": "B3",
+      "title": "Windows·minimum·후보 일치 CI 미확보",
+      "firstBoundary": "선행 Ubuntu full 미통과로 다음 환경 실행 조건 미충족",
+      "rawError": null,
+      "confirmedCause": "실행 증거 공백; 기본 커밋 CI는 미커밋 후보와 다름",
+      "unknowns": [
+        "Windows 19개 단계",
+        "minimum 2개 단계",
+        "후보 source와 일치하는 CI matrix"
+      ],
+      "modification": "없음; commit/push 미승인",
+      "sourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "resolutionEvidence": "기본 커밋 Actions #188 성공은 참고 이력만",
+      "decisionChangingInformation": "선행 Gate PASS 후 동일 코드의 OS·Node·minimum 영수증; 원격 업로드 필요 시 별도 승인",
+      "acceptanceBlocking": true
+    },
+    {
+      "id": "B4",
+      "title": "실제 사용자 흐름 수용 미검증",
+      "firstBoundary": "후보 E 전체 공식 E2E·실제 로그인 서비스 동선 실행 증거 없음",
+      "rawError": null,
+      "confirmedCause": "검증 범위 부족; 제품 결함으로 단정하지 않음",
+      "unknowns": [
+        "공식 28개 프로필 결과",
+        "실제 대화·Worker·독립 리뷰·Apply·복구 완주"
+      ],
+      "modification": "없음",
+      "sourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "resolutionEvidence": "내부 계약·M1 성공은 전체 UI 완주를 대체하지 않음",
+      "decisionChangingInformation": "선행 검증 후 실제 대상 Apply 및 외부 서비스 영향 실행의 명시적 승인",
+      "acceptanceBlocking": true
+    }
+  ],
+  "proposedMinimalChange": {
+    "approvalRequired": true,
+    "applied": false,
+    "purpose": "timeout/취소의 강제 종료 요청과 실제 exit/close 확인을 분리하고 영수증에 보존",
+    "files": [
+      {
+        "path": "scripts/e2e/platform/process.mjs",
+        "change": "일반 catch에서도 observeChildClose 결과를 우선 확인하고 기존 1000ms close-drain 경계를 재사용하여 유한 관측; closure·PID·강제 종료 여부·미확인 사유를 error에 첨부. deadline 후 FAIL 유지."
+      },
+      {
+        "path": "scripts/verification-engine.mjs",
+        "change": "catch에서 error의 PID·원래 error code·close 관측·자원 종료 확인 여부를 단계 영수증에 저장. 확인 실패는 UNKNOWN/unsafe로 후속 단계 차단."
+      },
+      {
+        "path": "tests/verification-lifecycle.test.js / tests/platform/lifecycle.test.js",
+        "change": "연결된 기존 회귀 파일에서 deadline 후 정상 close와 미확인 close의 결과 보존·후속 차단을 집중 검증. 실제 편집 범위는 승인 후 호출 관계를 확인해 최소화."
+      }
+    ],
+    "invariants": [
+      "소스·테스트 목록·필수 검사·OS 정책·PASS 조건 유지",
+      "25분 단계 및 기존 파일별 기한 유지",
+      "기존 1000ms close 관측 경계 재사용, 무제한 대기·자동 재시도 없음",
+      "일반 정상 종료 경로와 native descendant containment 계약 유지",
+      "수정 후보는 새 SHA; 후보 E PASS 자동 승계 금지"
+    ],
+    "gateAfterPatch": "집중 검증과 Discovery 예산 실행 조건 검토가 모두 끝나기 전 full Gate 실행 금지"
+  },
+  "executionOptionsReview": {
+    "discoveryConcurrency": "Linux에는 단일 비병렬 discovery만 존재하므로 --discovery-concurrency=2/4는 Linux 분할 해결책이 아님",
+    "p1Files": "부분 선택이므로 full Gate 대체 불가",
+    "linuxPartitioning": "이번에는 패치하지 않음. 분할 시 전체 집합의 중복·누락 없음, 파일 기한·증거 결속·필수 검사·단계 판정 유지 필요. 단계 분모와 전체 합산 예산 변경은 별도 승인 사항; 17/17을 그대로 주장할 수 없음.",
+    "timeoutIncrease": "금지"
+  },
+  "changeHistory": [
+    {
+      "purpose": "기존 후보 기반 누적 변경",
+      "files": [
+        ".github/workflows/bridge-gates.yml",
+        "package.json",
+        "public/app.js",
+        "scripts/content-lifecycle-browser-suite.mjs",
+        "scripts/diagnose-server.mjs",
+        "scripts/run-tests.mjs",
+        "scripts/test-completion-reporter.mjs",
+        "scripts/verification-plan.mjs",
+        "src/diagnostics/report-store.js",
+        "tests/agent-diagnostics-complete.test.js",
+        "tests/agent-report.test.js",
+        "tests/helpers/failure-evidence.mjs",
+        "tests/platform/code-history-http.test.js",
+        "tests/runtime-cleanup/contract.test.js",
+        "tests/source-checkout.test.mjs",
+        "tests/verification-plan.test.js",
+        "scripts/history-shutdown-evidence.mjs",
+        "tests/helpers/cleanup-child-observer.mjs",
+        "tests/helpers/cleanup-execution-evidence.mjs",
+        "tests/helpers/history-shutdown-owner.mjs",
+        "tests/helpers/history-shutdown-seed.mjs",
+        "tests/helpers/project-draft-receipt-contract.mjs",
+        "tests/history-shutdown-contract.test.mjs",
+        "tests/platform/code-history-shutdown.test.js",
+        "tests/runtime-cleanup/evidence.test.mjs"
+      ],
+      "beforeSourceSha256": null,
+      "afterSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "focused": "M1 양 OS 및 HTTP 4/4; 전체 변경에 대한 개별 수정 이력은 UNKNOWN",
+      "fullGate": "Ubuntu FAIL; Windows NOT_RUN"
+    },
+    {
+      "purpose": "HTTP evidenceFetch 4개 계약 추가(기존 기록)",
+      "files": [
+        "tests/agent-diagnostics-complete.test.js"
+      ],
+      "beforeSourceSha256": "81c4fc90a399a9d29e0137fde2dbd4a1d9fa24effd85d22cc752685f61c3aa5a",
+      "afterSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "focused": "4/4 PASS",
+      "fullGate": "Ubuntu FAIL"
+    },
+    {
+      "purpose": "승인된 selector 단독 1회(이전 턴)",
+      "files": [],
+      "beforeSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "afterSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "focused": "20/20 PASS, close 확인",
+      "fullGate": "미실행"
+    },
+    {
+      "purpose": "이번 분석 및 최종 산출물",
+      "files": [
+        "verification-final-report.md",
+        "verification-final-status.json"
+      ],
+      "candidateSourceFilesChanged": 0,
+      "beforeSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "afterSourceSha256": "e33b7d3102b483052bb6ec85dc9fea2cdec9309bfde8afd3d675e7e311890200",
+      "focused": "추가 실행 없음",
+      "fullGate": "추가 실행 없음"
+    }
+  ],
+  "finalVerdicts": {
+    "implementation": "INCOMPLETE",
+    "verification": "FAIL",
+    "product": "UNKNOWN",
+    "deploymentAndApply": "INCOMPLETE"
+  },
+  "nextSingleTask": {
+    "action": "제출된 실행기 종료 확인 최소 변경안의 승인 결정",
+    "reason": "기한 만료 뒤 실제 close 확인 경계가 없고 기존 옵션으로 이를 해결할 수 없음. 지시서 B는 코드 변경 전 승인을 요구함.",
+    "completion": "위 파일 범위·유한 close 확인·FAIL/후속 차단 유지·새 SHA 관리에 대한 명시적 승인 또는 거절. 승인 전 코드 수정·집중 재검증·full Gate 없음."
+  },
+  "newTestRunsThisTask": 0,
+  "newGateRunsThisTask": 0
+}

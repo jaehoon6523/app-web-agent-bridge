@@ -6,6 +6,49 @@ import path from 'node:path';
 import { setupAudit, assertionsFor } from '../tests/helpers/audit-fixtures.js';
 import { createFixtureCodexWorker } from '../tests/helpers/codex-worker-fixture.js';
 
+test('identity rejection stays visible through an open socket until matching authentication is accepted', {timeout:25000}, async t=>{
+  const f=await extensionBrowser(t,{autoConnect:false});
+  f.transport.acceptPairedIdentity('different-controller-identity');
+  await f.background.addInitScript(()=>{
+    const Socket=globalThis.WebSocket;
+    globalThis.WebSocket=class extends Socket {
+      constructor(...args){super(...args);globalThis.identityTestSocket=this;}
+      addEventListener(type,listener,options){
+        if(type!=='message')return super.addEventListener(type,listener,options);
+        return super.addEventListener(type,event=>{
+          if(globalThis.holdAuthentication && JSON.parse(event.data).type==='controller.auth.challenge'){
+            globalThis.releaseAuthentication=()=>listener(event);return;
+          }
+          listener(event);
+        },options);
+      }
+    };
+  });
+  const url=new URL(f.readStorage().controllerUrl);url.protocol='http:';url.pathname='/';
+  await f.background.goto(url.href);
+  await f.background.waitForFunction(()=>globalThis.fixturePopupState?.lastError?.includes('AUTH_IDENTITY_MISMATCH'));
+  f.transport.acceptPairedIdentity(f.readStorage().extensionIdentity);
+  await f.background.evaluate(async()=>{
+    globalThis.holdAuthentication=true;
+    await new Promise(resolve=>globalThis.fixtureBackgroundListener({type:'bridge.reconnect'},{},resolve));
+  });
+  await f.background.waitForFunction(()=>typeof globalThis.releaseAuthentication==='function');
+  await f.background.waitForFunction(()=>globalThis.fixturePopupState?.transportConnected===true);
+  const pending=await f.background.evaluate(async()=>
+    (await new Promise(resolve=>globalThis.fixtureBackgroundListener({type:'bridge.getState'},{},resolve))).state);
+  assert.equal(pending.connected,false);
+  assert.equal(pending.transportConnected,true);
+  assert.match(pending.lastError,/AUTH_IDENTITY_MISMATCH/u);
+  await f.background.evaluate(()=>globalThis.identityTestSocket.dispatchEvent(new Event('error')));
+  const afterTransportError=await f.background.evaluate(async()=>
+    (await new Promise(resolve=>globalThis.fixtureBackgroundListener({type:'bridge.getState'},{},resolve))).state);
+  assert.match(afterTransportError.lastError,/AUTH_IDENTITY_MISMATCH/u);
+  await f.background.evaluate(()=>{globalThis.holdAuthentication=false;globalThis.releaseAuthentication();});
+  await f.background.waitForFunction(()=>globalThis.fixturePopupState?.connected===true);
+  assert.equal(await f.background.evaluate(()=>globalThis.fixturePopupState.lastError),null);
+  assert.deepEqual(f.errors,[]);
+});
+
 for (const variant of ['roles', 'classes', 'headings']) {
   test(`browser fixture: full extension + Web adapter sends once and reads ${variant} DOM`, { timeout: 25_000 }, async t => {
     const f = await extensionBrowser(t, { variant });

@@ -22,8 +22,8 @@ function chatGptConversationId(value) {
   const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
   if (markerIndex < 0 || markerIndex + 1 >= segments.length) return null;
   const id = decodeURIComponent(segments[markerIndex + 1]);
-  // ChatGPT can expose WEB:* briefly while a new conversation is being created.
-  return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+  // New conversations expose temporary IDs before their persistent URL is ready.
+  return id.length > 0 && !/^(?:WEB|local-chatgpt):/iu.test(id) ? id : null;
 }
 
 export const CHATGPT_WEB_PROVIDER = Object.freeze({

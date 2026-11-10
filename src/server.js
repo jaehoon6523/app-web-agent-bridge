@@ -9,6 +9,7 @@ import { installDeliveryOwnershipInspection } from "./orchestration/delivery-own
 import { createDeliveryRecoveryActions } from "./orchestration/delivery-recovery-actions.js";
 import { createExtensionIdentityPairing } from "./runtime/web/extension-pairing.js";
 import { collectSelectorDiagnostics } from "./orchestration/selector-diagnostics.js";
+import { handleMessageDomInspection } from "./orchestration/message-dom-inspection.js";
 import { GitChangeWorkspace } from "./repository/git-change-workspace.js";
 import { chooseProjectFolder } from "./repository/folder-picker.js";
 import http from "node:http";
@@ -446,6 +447,9 @@ export function createBridgeServer({
     try {await agentReport.refresh("EXPORT");res.json(await agentReport.export());}
     catch {res.status(503).json({code:"DIAGNOSTIC_EXPORT_UNAVAILABLE"});}
   });
+
+  app.get("/api/message-dom-inspection", requireDashboardRead,
+    (req, res) => handleMessageDomInspection(extensionTransport, req, res));
 
   app.get("/api/selector-diagnostics", requireDashboardRead, async (_req, res) => {
     try { const snapshot = await collectSelectorDiagnostics(extensionTransport);

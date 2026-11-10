@@ -7,7 +7,8 @@ import { canonicalJson } from "../domain/canonical-json.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 import { validateReviewerConfiguration } from "./reviewer-settings.js";
-import { projectedError, bestEffortFailureLog } from "./preparation-diagnostics.js";
+import { projectedError, bestEffortFailureLog, preparationReceiptError } from "./preparation-diagnostics.js";
+import { submittedRootRecovery, bindSubmittedRootRecovery } from "./submitted-root-recovery.js";
 
 function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
 const stamp = () => new Date().toISOString();
@@ -25,7 +26,6 @@ const PACKET_FORMAT_CODES = new Set([
 const USER_TAB_SELECTION_ERRORS = new Set(["AMBIGUOUS", "STORED_AMBIGUOUS_REBIND_REQUIRED"]);
 const MAX_FOLLOW_UP_HANDOFF_NOTES = 20;
 const MAX_FOLLOW_UP_HANDOFF_CHARS = 12_000;
-
 function isUnsentFailure(delivery, error) {
   return delivery?.state === "FAILED"
     && (delivery.unsent === true || error?.details?.browserDispatchStarted === false);
@@ -295,8 +295,9 @@ export class PreparationService {
       let result;
       try { result = await this.dispatch(type, input); }
       catch (error) {
+        if (error?.code === "RECOVERY_PERSISTENCE_UNCERTAIN") throw error;
         await this.saveReceipt(input.requestId, {
-          ...receipt, status:"FAILED", error:{code:error.code ?? "PREPARATION_FAILED",message:error.message},
+          ...receipt, status:"FAILED", error:preparationReceiptError(error),
         });
         throw error;
       }
@@ -756,7 +757,7 @@ export class PreparationService {
     return this.web.focusCandidateTab({ tabId: candidate.tabId, url: candidate.url });
   }
   async webCommand(context, type, input) {
-    const session = context.webSession;
+    let session = context.webSession;
     for (const [key, value] of Object.entries({ sessionId: session.sessionId, conversationId: session.conversationId,
       conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId })) {
       if (input[key] !== value) fail("Web identity mismatch: " + key, "DELIVERY_RECOVERY_MISMATCH");
@@ -774,7 +775,8 @@ export class PreparationService {
       }
       if (typeof this.web?.rebind !== "function") fail("The Web adapter does not support explicit tab selection.", "WEB_REBIND_UNAVAILABLE");
       const bootstrap = session.conversationUrl === null && session.conversationId === null;
-      const rebound = await this.web.rebind({
+      let rebound;
+      try { rebound = await this.web.rebind({
         tabId: selected.tabId,
         focus: true,
         binding: createWebSessionBinding({
@@ -785,7 +787,19 @@ export class PreparationService {
           lastObservedAssistantMessageId: session.lastObservedAssistantMessageId,
           bindingStatus: "NEEDS_REBIND",
         }),
-      });
+      }); } catch (rawError) {
+        const error = projectedError(rawError);
+        if (error.details?.browserDispatchStarted === false && USER_TAB_SELECTION_ERRORS.has(error.code)) {
+          const currentCandidates = selectableTabsFor(error, session);
+          context.error = {
+            code: currentCandidates.length ? "WEB_TAB_SELECTION_REQUIRED" : error.code,
+            message: error.message,
+            details: { ...error.details, candidates:currentCandidates },
+          };
+          await this.touch(context);
+        }
+        throw rawError;
+      }
       if (rebound.sessionId !== session.sessionId || rebound.runId !== context.preparationId
         || (!bootstrap && (rebound.conversationUrl !== session.conversationUrl || rebound.conversationId !== session.conversationId))
         || (bootstrap && (rebound.bindingStatus !== "ROOT_READY" || rebound.conversationUrl !== "https://chatgpt.com/" || rebound.conversationId !== null))) {
@@ -807,15 +821,51 @@ export class PreparationService {
     // Explicit reconcile is the user-authorized refresh path, including an
     // ACK_PENDING response that may have one manually completed follow-up.
     const refreshCompleted = type === "web.reconcile";
-    const observed = await this.web.inspectDelivery({ refreshCompleted,
-      adoptManualFollowup: refreshCompleted && type === "web.reconcile" });
-    this.setDiagnostics(context, observed); await this.touch(context);
+    const recoverSubmitted = refreshCompleted ? submittedRootRecovery(context) : null;
+    const recoveryBefore = recoverSubmitted ? canonicalJson(context) : null;
+    const observed = await this.web.inspectDelivery(recoverSubmitted ? { recoverSubmitted } : { refreshCompleted, adoptManualFollowup: refreshCompleted && type === "web.reconcile" }, type === "web.reconcile" ? input.requestId : null);
+    if (recoverSubmitted) {
+      if (this.jobs.has(context.preparationId) || canonicalJson(context) !== recoveryBefore) {
+        fail("Preparation changed during recovery.", "DELIVERY_RECOVERY_MISMATCH");
+      }
+      const next = structuredClone(context);
+      bindSubmittedRootRecovery(next, next.webSession, observed, recoverSubmitted);
+      this.setDiagnostics(next, observed);
+      const delivery = next.deliveries.find(item => item.deliveryId === next.webSession.activeDeliveryId);
+      if (!delivery || delivery.response) fail("Recovery delivery changed.", "DELIVERY_RECOVERY_MISMATCH");
+      delivery.conversationId = observed.completedDelivery.binding.conversationId;
+      delivery.trace = structuredClone(observed.completedDelivery.trace);
+      delivery.response = structuredClone(observed.completedDelivery);
+      delivery.state = "RESPONSE_COMPLETED";
+      next.version++; next.updatedAt = stamp();
+      try {
+        await persistPreparation(this.db, () => {
+          if (this.data.contexts[context.preparationId] !== context || canonicalJson(context) !== recoveryBefore
+            || this.jobs.has(context.preparationId)) {
+            fail("Preparation changed during recovery.", "DELIVERY_RECOVERY_MISMATCH");
+          }
+          return canonicalJson({ ...this.data, contexts:{ ...this.data.contexts, [context.preparationId]:next } });
+        }, () => { Object.assign(context, next); }, () => this.closed);
+      } catch (error) {
+        if (error instanceof AggregateError) {
+          // Do not overwrite an unknown transaction outcome with a failed receipt.
+          this.closed = true;
+          throw Object.assign(new Error("Recovery persistence outcome is unknown; further writes are blocked.", { cause:error }),
+            { code:"RECOVERY_PERSISTENCE_UNCERTAIN" });
+        }
+        throw error;
+      }
+      session = context.webSession;
+    } else {
+      this.setDiagnostics(context, observed); await this.touch(context);
+    }
     const completed = observed.completedDelivery;
-    if (completed && completed.turnId === session.activeDeliveryId && completed.binding?.sessionId === session.sessionId
+    if (!recoverSubmitted && completed && completed.turnId === session.activeDeliveryId && completed.binding?.sessionId === session.sessionId
       && completed.binding?.runId === context.preparationId && completed.binding?.conversationId === session.conversationId) {
       const delivery = context.deliveries.find((d) => d.deliveryId === session.activeDeliveryId);
       if (delivery && (!delivery.response || type === "web.reconcile")) {
         if (delivery.response) (delivery.responseHistory ??= []).push(delivery.response);
+        if (recoverSubmitted) { delivery.conversationId = completed.binding.conversationId; delivery.trace = completed.trace; }
         delivery.response = completed; delivery.state = "RESPONSE_COMPLETED"; await this.touch(context);
       }
     }
@@ -915,7 +965,7 @@ export class PreparationService {
         && !this.jobs.has(context.preparationId)) caps.push("web.rebind");
       if (context.diagnostics?.canFocus) caps.push("web.focus");
       if (context.diagnostics?.canStop) caps.push("web.stop");
-      if (context.deliveries.some((d) => d.deliveryId === context.webSession.activeDeliveryId && d.response)
+      if ((context.deliveries.some((d) => d.deliveryId === context.webSession.activeDeliveryId && d.response) || submittedRootRecovery(context))
         && !this.jobs.has(context.preparationId)) caps.push("web.reconcile");
     }
     return caps;

@@ -55,7 +55,7 @@
     const index = Math.max(parts.lastIndexOf("c"), parts.lastIndexOf("uc"));
     if (index < 0 || index + 1 >= parts.length) return null;
     const id = decodeURIComponent(parts[index + 1]);
-    return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+    return id.length > 0 && !/^(?:WEB|local-chatgpt):/iu.test(id) ? id : null;
   }
 
   function assertContract() {
@@ -328,50 +328,78 @@
       || null;
   }
 
-  function messageRole(roleNode) {
-    const explicit = roleNode.getAttribute?.("data-message-author-role")
-      || roleNode.querySelector?.("[data-message-author-role]")?.getAttribute("data-message-author-role");
-    if (explicit === "user" || explicit === "assistant") return explicit;
-    const container = messageContainer(roleNode);
-    const classes = `${String(roleNode.className || "")} ${String(container.className || "")}`.toLowerCase();
-    if (classes.includes("user-turn")) return "user";
-    if (classes.includes("agent-turn") || classes.includes("assistant-turn")) return "assistant";
-    const labelled = [container, ...(container.querySelectorAll?.("h1, h2, h3, h4, h5, h6") || [])];
-    for (const node of labelled) {
-      const label = `${node.getAttribute?.("aria-label") || ""} ${node.textContent || ""}`
-        .trim().toLowerCase().replace(/\s+/g, " ");
-      if (/^(you said|user said|user|사용자|나의 말|내가 말함|내 말)(:|의 말| 메시지|$)/u.test(label)) return "user";
-      if (/^(chatgpt said|assistant said|chatgpt|assistant|챗지피티|어시스턴트)(:|의 말| 메시지|$)/u.test(label)) return "assistant";
+  // Only an accessibility heading outside message content can prove its single sibling branch.
+  function headingRole(node, content) {
+    const labels = new Map([["내가 한 말:", "user"], ["You said:", "user"],
+      ["ChatGPT 답변:", "assistant"], ["ChatGPT said:", "assistant"]]);
+    for (let parent = content; parent; parent = parent.parentElement) {
+      const children = [...(parent.children ?? [])];
+      const headings = children.filter(child => child.tagName === "H4" && child.classList?.contains("sr-only"));
+      if (!headings.length) continue;
+      if (headings.length !== 1 || children.length !== 2) return null;
+      const heading = headings[0], branch = children.find(child => child !== heading);
+      const label = (heading.textContent ?? "").trim(), role = labels.get(label);
+      const bodySelector = "[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown";
+      if (!role || !content.matches?.(bodySelector) || heading.closest(bodySelector) || !branch?.contains(content) || (node !== parent && !branch.contains(node) && !node.contains(parent))
+        || parent.querySelectorAll("h4.sr-only").length !== 1) return null;
+      // An outer turn wrapper is eligible only when all message evidence belongs to this one inner block.
+      if (node !== parent && node.contains(parent) && (node.querySelectorAll("h4.sr-only").length !== 1
+        || [...node.querySelectorAll(bodySelector + ", [data-message-author-role], [data-chatgpt-search-unit-key]")]
+          .some(item => !parent.contains(item)))) return null;
+      const bodies = [branch, ...branch.querySelectorAll(bodySelector)].filter(item => item.matches(bodySelector));
+      const roots = bodies.filter(item => !bodies.some(other => other !== item && other.contains(item)));
+      if (roots.length !== 1 || !roots[0].contains(content)) return null;
+      const roleNodes = [node, parent, ...parent.querySelectorAll("[data-message-author-role], [data-chatgpt-search-unit-key]")];
+      for (const item of roleNodes) {
+        const explicit = item.getAttribute("data-message-author-role");
+        const suffix = item.getAttribute("data-chatgpt-search-unit-key")?.match(/:(user|assistant)$/u)?.[1];
+        if ((explicit && explicit !== role) || (suffix && suffix !== role)) return null;
+      }
+      // Distinct sibling units under one heading cannot borrow each other's role proof.
+      const units = [...branch.querySelectorAll("[data-chatgpt-search-unit-key]")];
+      if (branch.getAttribute("data-chatgpt-search-unit-key") !== null) units.unshift(branch);
+      if (units.length > 1 || parent.querySelectorAll("[data-message-author-role]").length > 1) return null;
+      return { role, content, container:parent, proof:{ source:"PAGE_ACCESSIBILITY_HEADING", tagName:"H4", label,
+        relation:"DIRECT_SIBLING_MESSAGE_BRANCH", headingCount:1, messageBranchCount:1 } };
     }
     return null;
+  }
+  function messageEvidence(roleNode) {
+    const content = roleNode.querySelector("[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown") ?? roleNode;
+    return headingRole(roleNode, content);
   }
 
   function readMessages() {
     assertContract();
-    let roleNodes = [];
-    for (const selector of selectorRegistry.groups.message) {
-      roleNodes = [...document.querySelectorAll(selector)].filter((node) => {
-        const role = messageRole(node);
-        return role === "user" || role === "assistant";
-      });
-      if (roleNodes.length) {
-        selectorTelemetry.set("message", selector);
-        break;
+    // Inspect the union in DOM order: a search unit must not hide a legacy message.
+    const selectors = ["[data-chatgpt-search-unit-key]", ...selectorRegistry.groups.message];
+    const roleNodes = [...document.querySelectorAll(selectors.join(", "))];
+    const seen = new Set(), seenIds = new Set(), messages = [];
+    let messageSelectorRecorded = false;
+    roleNodes.forEach((roleNode) => {
+      const evidence = messageEvidence(roleNode);
+      if (!evidence) throw new PageProviderError("UI_CONTRACT_CHANGED", "Message role evidence is unavailable.");
+      if (seen.has(evidence.container)) return;
+      seen.add(evidence.container);
+      const unit = evidence.container.matches?.("[data-chatgpt-search-unit-key]") ? evidence.container
+        : evidence.container.querySelector("[data-chatgpt-search-unit-key]");
+      let id;
+      if (unit) {
+        const ids = [...new Set((unit.getAttribute("data-chatgpt-search-message-ids") ?? "").split(/\s+/u).filter(Boolean))];
+        if (ids.length !== 1 || seenIds.has(ids[0])) throw new PageProviderError("AMBIGUOUS_PROMPT_BINDING", "Message identity is ambiguous.");
+        id = ids[0];
+      } else id = messageId(messageContainer(roleNode));
+      if (id && seenIds.has(id)) throw new PageProviderError("AMBIGUOUS_PROMPT_BINDING", "Message identity is ambiguous.");
+      if (id) seenIds.add(id);
+      messages.push({ id, role:evidence.role, text:extractAssistantResponse(evidence.content),
+        index:messages.length, element:evidence.content });
+      if (!messageSelectorRecorded) {
+        const selector = selectors.find(candidate => roleNode.matches(candidate));
+        if (selector) {
+          selectorTelemetry.set("message", selector);
+          messageSelectorRecorded = true;
+        }
       }
-    }
-    const seen = new Set();
-    const messages = [];
-    roleNodes.forEach((roleNode, index) => {
-      const container = messageContainer(roleNode);
-      if (seen.has(container)) return;
-      seen.add(container);
-      messages.push({
-        id:messageId(container),
-        role:messageRole(roleNode),
-        text:extractAssistantResponse(container),
-        index,
-        element:container,
-      });
     });
     return messages;
   }

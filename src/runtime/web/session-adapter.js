@@ -3,16 +3,11 @@ import { randomUUID } from "node:crypto";
 import { validateRuntimeEventType } from "../runtime-events.js";
 import { WebExtensionAuthenticator } from "./auth.js";
 import { createWebSessionBinding, validateWebSessionBinding } from "./binding.js";
+import { inspectDeliveryRequest, markReconcileDiagnostic } from "./delivery-inspection.js";
 import { parseFinalControllerPacket } from "./controller-packet.js";
 import { assertDeliveryDiscardResponse, assertWebSessionProviderBinding, resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
-import {
-  WEB_BRIDGE_PROTOCOL_VERSION,
-  WebAuthenticationState,
-  WebBindingStatus,
-  WebCompletionConfidence,
-  WebProtocolError,
-  assertProtocolEnvelope,
-} from "./protocol.js";
+import { WEB_BRIDGE_PROTOCOL_VERSION, WebAuthenticationState, WebBindingStatus, WebCompletionConfidence, WebProtocolError, assertProtocolEnvelope } from "./protocol.js";
+/** @typedef {{httpRequestId:string, extensionRequestId:string|null, extensionRequestType:"web.delivery.inspect", sendOutcome:"NOT_ATTEMPTED"|"CALLING"|"CALL_RETURNED"|"CALL_THROWN", failureBoundary:"TIMEOUT"|"CONNECTION_CLOSED"|"SEND_FAILURE"|"EXTENSION_ERROR_RESPONSE"|"INSPECTION_VALIDATION"|"INSPECTION_PRE_DISPATCH"|"UNKNOWN", responseType:string|null, extensionErrorCode:string|null}} ReconcileReceiptDiagnostics */
 /**
  * @typedef {object} WebSessionBindingValue
  * @property {string} sessionId
@@ -718,14 +713,13 @@ export class WebSessionAdapter {
       return message.payload;
     } finally { this.#sessionOperation = null; }
   }
-  async inspectDelivery({ refreshCompleted = false, adoptManualFollowup = false } = {}) {
-    const payload = refreshCompleted
-      ? { refreshCompleted: true, ...(adoptManualFollowup ? { adoptManualFollowup: true } : {}) }
-      : null;
-    const message = await this.#request({ type: "web.delivery.inspect", ...(payload ? { payload } : {}) },
-      new Set(["web.delivery.inspected", "web.session.error"]), refreshCompleted ? 30_000 : 10_000);
-    if (message.type === "web.session.error") throw this.#messageError(message);
-    return message.payload;
+  async inspectDelivery(options = {}, diagnosticRequestId = null) {
+    return inspectDeliveryRequest({ binding:this.#transport.snapshot.binding, activeTurnId:this.#activeTurnId,
+      sessionOperation:this.#sessionOperation, pendingCount:this.#pending.size, ambiguousTurnId:this.#ambiguousTurnId,
+      request:(message, types, timeoutMs, explicitRequestId = null, diagnostic = null) => this.#request(
+        message, types, timeoutMs, explicitRequestId, diagnostic), messageError:message => this.#messageError(message),
+      acceptReturnedBinding:(...args) => this.#acceptReturnedBinding(...args),
+      setAmbiguousTurnId:value => { this.#ambiguousTurnId = value; }, setReady:value => { this.#ready = value; } }, options, diagnosticRequestId);
   }
 
   async confirmDeliveryAcknowledgement({ turnId, sessionId, runId, conversationUrl }) {
@@ -768,6 +762,7 @@ export class WebSessionAdapter {
     this.#ready = false;
     for (const entry of this.#pending.values()) {
       clearTimeout(entry.timer);
+      markReconcileDiagnostic(entry.diagnostic, "CONNECTION_CLOSED");
       entry.reject(new WebProtocolError("Web session closed", "EXTENSION_DISCONNECTED"));
     }
     this.#pending.clear();
@@ -856,8 +851,10 @@ export class WebSessionAdapter {
     this.#transport.setBinding(next);
   }
 
-  #request(message, expectedTypes, timeoutMs, explicitRequestId = null) {
+  /** @param {ReconcileReceiptDiagnostics|null} diagnostic */
+  #request(message, expectedTypes, timeoutMs, explicitRequestId = null, diagnostic = null) {
     const requestId = explicitRequestId ?? `web_${randomUUID()}`;
+    if (diagnostic) diagnostic.extensionRequestId = requestId;
     if (this.#pending.has(requestId)) {
       throw new WebProtocolError("A Web request with this ID is already pending", "DUPLICATE_WEB_REQUEST");
     }
@@ -877,18 +874,18 @@ export class WebSessionAdapter {
         ));
         return;
       }
+      markReconcileDiagnostic(diagnostic, "TIMEOUT");
       rejectRequest(new WebProtocolError("Web extension response timed out", "WEB_RESPONSE_TIMEOUT"));
     }, timeoutMs);
-    this.#pending.set(requestId, {
-      resolve: resolveRequest,
-      reject: rejectRequest,
-      expectedTypes,
-      requestType: message.type,
-      timer,
-    });
+    this.#pending.set(requestId, { resolve:resolveRequest, reject:rejectRequest, expectedTypes,
+      requestType:message.type, timer, diagnostic });
     try {
+      if (diagnostic) diagnostic.sendOutcome = "CALLING";
       this.#transport.send({ ...message, requestId });
+      if (diagnostic) diagnostic.sendOutcome = "CALL_RETURNED";
     } catch (error) {
+      if (diagnostic) diagnostic.sendOutcome = "CALL_THROWN";
+      markReconcileDiagnostic(diagnostic, "SEND_FAILURE");
       clearTimeout(timer);
       this.#pending.delete(requestId);
       throw error;
@@ -911,6 +908,7 @@ export class WebSessionAdapter {
         this.#pending.delete(message.requestId);
         this.#ready = false;
         this.#ambiguousTurnId = message.requestId;
+        markReconcileDiagnostic(pending.diagnostic, "EXTENSION_ERROR_RESPONSE", message.type, "MANUAL_INTERVENTION_DETECTED");
         pending.reject(new WebProtocolError(
           "Manual intervention was detected in the bound conversation",
           "MANUAL_INTERVENTION_DETECTED",
@@ -970,6 +968,7 @@ export class WebSessionAdapter {
           "WEB_TURN_AMBIGUOUS",
         ));
       } else {
+        markReconcileDiagnostic(pending.diagnostic, "CONNECTION_CLOSED");
         pending.reject(new WebProtocolError("Web extension disconnected", "EXTENSION_DISCONNECTED"));
       }
     }

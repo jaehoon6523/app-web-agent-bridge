@@ -17,8 +17,8 @@ test("binding presentation distinguishes bootstrap, exact binding and recovery",
 
 test("diagnostics preserve runtime failure separately from successful HTTP state observation", () => {
   const previousDocument = globalThis.document, previousWindow = globalThis.window;
-  const ids = ["dashboardAddress", "dashboardPhase", "dashboardErrorCode", "dashboardRuntimeDetail", "dashboardLastConfirmed", "connectionDiagnostics"];
-  const elements = Object.fromEntries(ids.map(id => [id, { textContent:"", open:false }]));
+  const ids = ["dashboardAddress", "dashboardPhase", "dashboardErrorCode", "dashboardRuntimeDetail", "dashboardLastConfirmed", "connectionDiagnostics", "runPanel"];
+  const elements = Object.fromEntries(ids.map(id => [id, { textContent:"", open:false, dataset:{} }]));
   globalThis.document = { getElementById:id => elements[id] };
   globalThis.window = { location:{ origin:"http://127.0.0.1:8787" } };
   try {
@@ -28,6 +28,7 @@ test("diagnostics preserve runtime failure separately from successful HTTP state
     assert.match(elements.dashboardRuntimeDetail.textContent, /LIVE_RUNTIME_READ_TIMEOUT/u);
     assert.equal(elements.connectionDiagnostics.open, true);
     assert.equal(elements.dashboardErrorCode.textContent, "없음");
+    assert.equal(elements.runPanel.dataset.loadState, "READY");
   } finally { globalThis.document = previousDocument; globalThis.window = previousWindow; }
 });
 
@@ -47,5 +48,25 @@ test("fatal page failure blocks stale mutation buttons and offers reload", () =>
     assert.equal(elements.refreshDashboard.disabled, false);
     elements.refreshDashboard.onclick();
     assert.equal(reloads, 1);
+  } finally { globalThis.document = previousDocument; globalThis.window = previousWindow; console.error = previousError; }
+});
+
+test("an in-flight refresh cannot overwrite fatal page diagnostics", () => {
+  const previousDocument = globalThis.document, previousWindow = globalThis.window, previousError = console.error;
+  const ids = ["dashboardPageError", "dashboardPhase", "dashboardErrorCode", "refreshDashboard", "runPanel", "connectionNotice",
+    "dashboardAddress", "dashboardRuntimeDetail", "dashboardLastConfirmed", "connectionDiagnostics"];
+  const elements = Object.fromEntries(ids.map(id => [id, { id, hidden:true, textContent:"", dataset:{} }]));
+  globalThis.document = { getElementById:id => elements[id], querySelectorAll:() => [elements.refreshDashboard] };
+  globalThis.window = { location:{ origin:"http://127.0.0.1:8787", reload() {} } };
+  console.error = () => {};
+  try {
+    showDashboardPageError(new Error("first failure token=private-test-credential"));
+    showDashboardPageError(new Error("second failure"));
+    updateDashboardDiagnostics({phase:"READY", connectionState:{lastError:null}, snapshot:null});
+    assert.match(elements.dashboardPageError.textContent, /first failure/u);
+    assert.doesNotMatch(elements.dashboardPageError.textContent, /private-test-credential/u);
+    assert.doesNotMatch(elements.dashboardPageError.textContent, /second failure/u);
+    assert.equal(elements.dashboardPhase.textContent, "화면 오류");
+    assert.equal(elements.dashboardErrorCode.textContent, "DASHBOARD_RENDER_FAILED");
   } finally { globalThis.document = previousDocument; globalThis.window = previousWindow; console.error = previousError; }
 });

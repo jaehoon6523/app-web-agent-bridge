@@ -25,7 +25,7 @@ async function serverFixture(t, {corrupt = false} = {}) {
     WEB_EXTENSION_SHARED_SECRET:"history-extension-secret-0123456789abcdef", WEB_EXTENSION_EXPECTED_IDENTITY:"history-extension"}});
   new SqliteStore(config.persistence.databasePath).close();
   const seedStarted=performance.now();
-  const {record} = seedHistory(config.persistence.databasePath, corrupt ? {versions:8} : {versions:1000, eventBytes:1024});
+  const {record} = seedHistory(config.persistence.databasePath, corrupt ? {versions:8} : {versions:1000, eventBytes:128});
   timing.seedMs=performance.now()-seedStarted;
   if (corrupt) {
     const writer = new DatabaseSync(config.persistence.databasePath);

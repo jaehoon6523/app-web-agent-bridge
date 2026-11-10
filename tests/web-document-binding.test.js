@@ -21,7 +21,7 @@ test("registered ChatGPT provider rejects temporary WEB conversation IDs", () =>
   assert.equal(conversation.conversationIdFromUrl("https://chatgpt.com/c/real-id"), "real-id");
 });
 
-function harness({ root = false, reloadBeforePing = false, reloadAfterPing = false, staleEvidence = false,
+function harness({ root = false, temporaryRoot = false, reloadBeforePing = false, reloadAfterPing = false, staleEvidence = false,
   activeTabId = 7, activeUrl = null, activeDocumentId = null, staleTabClosed = false } = {}) {
   const state = { lastBoundSessionId: "s1", lastBoundRunId: "r1", currentDeliveryId: null,
     tabId: 7, windowId: 1, documentId: "d1", frameId: 0,
@@ -55,14 +55,20 @@ function harness({ root = false, reloadBeforePing = false, reloadAfterPing = fal
         const location = { href: tab.url };
         const receiver = vm.createContext({ DOCUMENT_ID: documentId, FRAME_ID: 0, ContentContractError: ContractError,
           currentJob: null, AbortController, DOMException,
+          setTimeout: callback => { location.href = tab.url = "https://chatgpt.com/c/new"; callback(); },
           location, selectorTelemetry: new Map(), messageSnapshot: () => [],
           canonicalConversationUrl: conversation.canonicalChatGptUrl, conversationIdFromUrl: conversation.conversationIdFromUrl,
           requirePageProvider: () => ({ rootUrl: "https://chatgpt.com/", resetEvidence() {} }),
           requirePageContract: () => ({}),
           parseMarkers: () => ({ controllerMessageId: "t1", runId: "r1" }),
           assertExpectedConversation: url => assert.equal(url, location.href), inspectPageState: () => ({ status: "READY" }),
-          submitPrompt: async () => { clicks.push(id); if (root) location.href = tab.url = "https://chatgpt.com/c/new"; },
-          waitForControlledUserMessage: async () => ({ id: "u1" }),
+          submitPrompt: async () => { clicks.push(id); if (root) location.href = tab.url = temporaryRoot
+            ? "https://chatgpt.com/c/local-chatgpt%3Atemporary" : "https://chatgpt.com/c/new"; },
+          waitForControlledUserMessage: async expected => {
+            assert.equal(expected.expectedConversationId, conversation.conversationIdFromUrl(tab.url));
+            assert.equal(expected.expectedConversationUrl, tab.url);
+            return { id: "u1" };
+          },
           waitForAssistantResponse: async () => ({ text: "reply", confidence: "CONFIRMED_BY_UI_STATE",
             evidence: { conversationUrl: tab.url, conversationId: conversation.conversationIdFromUrl(tab.url),
               documentId: staleEvidence ? "stale" : documentId, frameId: 0 } }),
@@ -78,6 +84,15 @@ function harness({ root = false, reloadBeforePing = false, reloadAfterPing = fal
   return { state, messages, dispatches, clicks,
     run: () => context.handlePrompt({ requestId: "t1", payload: { controllerMessageId: "t1", runId: "r1", text: "request" } }) };
 }
+
+test("root submission waits through a local ChatGPT ID and binds the persistent conversation without resending", async () => {
+  const h = harness({ root: true, temporaryRoot: true });
+  await h.run();
+  assert.deepEqual(h.clicks, [7]);
+  assert.equal(h.dispatches.length, 1);
+  assert.equal(h.messages[0].type, "web.prompt.result");
+  assert.equal(h.state.completedDelivery.binding.conversationId, "new");
+});
 
 for (const root of [false, true]) {
   test(`reload before dispatch rebinds ${root ? "root" : "bound"} prompt to the current document`, async () => {

@@ -88,3 +88,10 @@ export function bestEffortFailureLog(event, value) {
   try { console.error(event, JSON.stringify(projectDiagnostics(value))); }
   catch { /* Diagnostic output must never replace the operation failure. */ }
 }
+
+/** @typedef {{code:string, message:string, diagnostics?:object}} PreparationReceiptError */
+/** @param {Error & {code?:string, receiptDiagnostics?:object}} error @returns {PreparationReceiptError} */
+export function preparationReceiptError(error) {
+  return {code:error.code ?? "PREPARATION_FAILED", message:error.message,
+    ...(error.receiptDiagnostics ? {diagnostics:error.receiptDiagnostics} : {})};
+}

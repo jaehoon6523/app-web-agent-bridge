@@ -48,6 +48,8 @@ export const WebProtocolMessageType = enumObject([
   "extension.agent-report.get",
   "controller.agent-report.result",
   "controller.diagnostics.inspect",
+  "controller.message-dom.inspect",
+  "extension.message-dom.inspected",
   "extension.diagnostics.inspected",
   "extension.delivery.inspect",
   "controller.delivery.inspected",

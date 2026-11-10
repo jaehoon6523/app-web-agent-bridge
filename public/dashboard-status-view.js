@@ -1,3 +1,5 @@
+import { redactDiagnosticLog } from "./diagnostic-export.js";
+
 export function bindingPresentation({ connected, webAuthenticated, binding, workflowStage }) {
   if (!connected) return { state:"unknown", detail:"최신 상태 확인 필요" };
   if (!webAuthenticated) return { state:"warn", detail:"확장 연결 대기" };
@@ -10,8 +12,11 @@ export function bindingPresentation({ connected, webAuthenticated, binding, work
 export function showDashboardPageError(error) {
   const panel = document.getElementById("dashboardPageError");
   if (!panel) return;
+  if (!panel.hidden) { console.error("Additional dashboard page failure:", error); return; }
   panel.hidden = false;
-  panel.textContent = "화면 초기화 또는 표시 중 오류가 발생했습니다. 페이지를 새로고침하세요. 계속되면 브라우저 Console의 오류를 확인하세요.";
+  const detail = typeof error?.message === "string" ? redactDiagnosticLog(error.message).slice(0, 500) : "";
+  panel.textContent = "화면 초기화 또는 표시 중 오류가 발생했습니다. 페이지를 새로고침하세요."
+    + (detail ? " 원인: " + detail : " 브라우저 Console의 오류를 확인하세요.");
   document.getElementById("dashboardPhase").textContent = "화면 오류";
   document.getElementById("dashboardErrorCode").textContent = "DASHBOARD_RENDER_FAILED";
   // Prevent stale controls from dispatching mutations after a render failure.
@@ -23,13 +28,24 @@ export function showDashboardPageError(error) {
   console.error("Dashboard page failed:", error);
 }
 
-export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed }) {
+export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading = false }) {
+  if (document.getElementById("dashboardPageError")?.hidden === false) return;
   const put = (id, value) => { document.getElementById(id).textContent = value; };
+  document.getElementById("runPanel").dataset.loadState = phase === "READY" ? "READY" : connectionState.lastError ? "ERROR" : "LOADING";
+  if (loading && snapshot && !connectionState.lastError) put("connectionNotice", target && target !== snapshot.run?.runId
+    ? `작업 ${target} 조회 중입니다.` : "작업 상태 조회 중 · 마지막 확인 데이터 표시 중입니다.");
   const labels = { SESSION:"대시보드 인증 확인", STATE:"작업 상태 조회", PROJECTION:"화면 데이터 확인", READY:"최신 상태 확인 완료" };
   put("dashboardAddress", window.location.origin);
   put("dashboardPhase", connectionState.runtimeError ? "화면 데이터 해석 실패" : labels[phase] ?? phase);
   const error = connectionState.lastError;
   put("dashboardErrorCode", error ? [error.code, error.status ? `HTTP ${error.status}` : null].filter(Boolean).join(" · ") || "상태 확인 실패" : "없음");
+  const failures = connectionState.failureHistory ?? [];
+  const history = document.getElementById("dashboardLastError");
+  if (history) history.textContent = failures.length
+    ? [error ? "해결되지 않은 오류가 있습니다." : "현재 상태 조회는 복구됐습니다.", ...failures.map(failure =>
+      [failure.at ? new Date(failure.at).toLocaleString("ko-KR") : null, failure.code,
+        failure.status ? `HTTP ${failure.status}` : null, failure.message].filter(Boolean).join(" · "))].join("\n")
+    : "없음";
   const runtime = snapshot?.runtimeAvailability;
   put("dashboardRuntimeDetail", runtime?.ready === true ? "준비됨" : runtime?.ready === false
     ? ["준비 실패 또는 대기", runtime.code, runtime.message].filter(Boolean).join(" · ") : "확인 전");

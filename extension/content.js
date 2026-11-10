@@ -665,9 +665,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message?.type === "agent.recheck") {
-    const expected = message.payload;
+    const expected = { ...message.payload };
+    let recoveryJob = null;
     void (async () => {
       if (currentJob) throw new ContentContractError("WEB_SESSION_BUSY", "페이지가 다른 요청을 처리 중입니다.");
+      if (expected.recoverSubmitted === true) currentJob = recoveryJob = { requestId:expected.controllerMessageId,
+        abortController:new AbortController(), expected };
       assertExpectedDocument(expected);
       assertExpectedConversation(expected.expectedConversationUrl, expected.expectedConversationId);
       if (expected.allowManualFollowup === true) {
@@ -679,15 +682,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         }
       }
       const baseline = messageSnapshot();
-      const matches = baseline.filter(item => item.id === expected.userMessageId && isExpectedUser(item, expected));
+      const matches = baseline.filter(item => (expected.recoverSubmitted === true || item.id === expected.userMessageId) && isExpectedUser(item, expected));
       if (matches.length !== 1) throw new ContentContractError("AMBIGUOUS_PROMPT_BINDING", "원래 요청 메시지를 확인할 수 없습니다.");
+      if (expected.recoverSubmitted === true) {
+        const users = baseline.filter(item => item.role === "user");
+        const assistants = baseline.filter(item => item.role === "assistant" && item.index > matches[0].index);
+        if (baseline.length !== 2 || users.length !== 1 || assistants.length !== 1 || !matches[0].id || !assistants[0].id) {
+          throw new ContentContractError("AMBIGUOUS_COMPLETION", "원본 요청 한 개와 바로 뒤 응답 한 개만 복구할 수 있습니다.");
+        }
+        expected.assistantMessageId = assistants[0].id;
+      }
       const result = await waitForAssistantResponse({ expected, baseline, userMessage: matches[0],
-        timeoutMs: 15000, stableMs: 3500, signal: new AbortController().signal, requestId: expected.controllerMessageId });
+        timeoutMs: 15000, stableMs: 3500, signal: (recoveryJob?.abortController ?? new AbortController()).signal, requestId: expected.controllerMessageId });
       if (result.evidence.assistantMessageId !== expected.assistantMessageId) {
         throw new ContentContractError("AMBIGUOUS_COMPLETION", "원래 답변과 다른 메시지가 관측됐습니다.");
       }
       return result;
-    })().then(result => sendResponse({ ok: true, ...result }))
+    })().finally(() => { if (recoveryJob && currentJob === recoveryJob) currentJob = null; })
+      .then(result => sendResponse({ ok: true, ...result }))
       .catch(error => sendResponse({ ok: false, code: error.code, error: error.message }));
     return true;
   }
