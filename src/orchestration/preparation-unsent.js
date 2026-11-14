@@ -1,7 +1,7 @@
 export function isUnsentFailure(delivery, error) {
   return delivery?.state === "FAILED" && !delivery.response && delivery.processingState == null
     && error?.details?.browserDispatchStarted !== true
-    && (delivery.unsent === true || error?.details?.browserDispatchStarted === false);
+    && (delivery.unsentBeforeBrowserRequest === true || error?.details?.browserDispatchStarted === false);
 }
 
 export function canCancelUnsentDelivery(observed, deliveryId) {

@@ -496,6 +496,27 @@ test("composer failure stays visible across restart and requires local cancellat
   assert.ok(f.service.capabilities().includes("preparation.start"));
 });
 
+for (const browserDispatchStarted of [undefined, true]) {
+  test("restart does not trust a legacy unsent flag with dispatch evidence " + browserDispatchStarted, async (t) => {
+    const f = fixture(t);
+    f.web.resume = async () => { throw new Error("Seed a preparation before dispatch"); };
+    await f.start(); await settled(f.service);
+    const current = f.service.current, [delivery] = current.deliveries;
+    delete delivery.unsentBeforeBrowserRequest;
+    delivery.unsent = true;
+    current.error.details = browserDispatchStarted === undefined ? {} : { browserDispatchStarted };
+    f.service.saveSync();
+    f.web.inspectDelivery = async () => ({
+      currentDeliveryId:null, extensionBusy:false, hasCompletedDelivery:false, scopedDeliveries:[],
+    });
+    f.restart();
+    assert.equal(f.service.snapshot().state, "RECOVERY_REQUIRED");
+    assert.ok(!f.service.capabilities().includes("preparation.cancel"));
+    await assert.rejects(f.command("preparation.cancel"), { code:"PREPARATION_CONFLICT" });
+    assert.equal(f.service.snapshot().webSession.activeDeliveryId, delivery.deliveryId);
+  });
+}
+
 test("an extension-reported unsent failure cannot cancel while extension ownership remains", async (t) => {
   const f = fixture(t);
   f.web.submitTurn = async () => {
@@ -503,9 +524,9 @@ test("an extension-reported unsent failure cannot cancel while extension ownersh
   };
   await f.start(); await settled(f.service);
   const before = f.service.snapshot(), deliveryId = before.webSession.activeDeliveryId;
-  let owner = deliveryId, parked = [];
+  let owner = deliveryId, parked = [], evidence = {};
   f.web.inspectDelivery = async () => ({
-    currentDeliveryId:owner, extensionBusy:false, hasCompletedDelivery:false, scopedDeliveries:parked,
+    currentDeliveryId:owner, extensionBusy:false, hasCompletedDelivery:false, scopedDeliveries:parked, ...evidence,
   });
   const cancel = { preparationId:before.preparationId, expectedVersion:before.version, requestId:"safe-unsent" };
   await assert.rejects(f.service.execute("preparation.cancel", { ...cancel, requestId:"blocked-unsent" }), { code:"RECOVERY_REQUIRED" });
@@ -514,6 +535,20 @@ test("an extension-reported unsent failure cannot cancel while extension ownersh
   parked = [{ deliveryId }];
   await assert.rejects(f.service.execute("preparation.cancel", { ...cancel, requestId:"parked-unsent" }), { code:"RECOVERY_REQUIRED" });
   parked = [];
+  for (const [name, value] of Object.entries({
+    hasCompletedDelivery:true, lastAcknowledgedDelivery:{ deliveryId }, lastDeliveryDiscard:{ deliveryId },
+  })) {
+    evidence = { [name]:value };
+    await assert.rejects(f.service.execute("preparation.cancel", { ...cancel, requestId:name }), { code:"RECOVERY_REQUIRED" });
+    assert.equal(f.service.snapshot().webSession.activeDeliveryId, deliveryId);
+  }
+  evidence = {};
+  const inspect = f.web.inspectDelivery;
+  f.web.inspectDelivery = async () => { f.service.current.version++; return inspect(); };
+  await assert.rejects(f.service.execute("preparation.cancel", { ...cancel, requestId:"version-drift" }), { code:"PREPARATION_VERSION_CONFLICT" });
+  assert.equal(f.service.snapshot().webSession.activeDeliveryId, deliveryId);
+  f.web.inspectDelivery = inspect;
+  cancel.expectedVersion = f.service.current.version;
   const result = await f.service.execute("preparation.cancel", cancel);
   f.restart();
   assert.deepEqual(await f.service.execute("preparation.cancel", cancel), result);
