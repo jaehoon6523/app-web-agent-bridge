@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { recoverBootstrapAfterNavigation } from '../extension/runtime/bootstrap-recovery.js';
 import { createExtensionStateStore } from '../extension/runtime/storage.js';
+import { conversationTabCandidates } from "../extension/runtime/conversation-bootstrap.js";
 import * as documentBinding from "../extension/runtime/document-binding.js";
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
@@ -57,7 +58,7 @@ test("root prepare returns without navigation; first delivery sends once and per
   const state = { tabId: 99, bindingStatus: "AMBIGUOUS", currentDeliveryId: null };
   const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/" };
   const sent = [], prompts = [];
-  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, ...providerTarget, createControlledPrompt,
+  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, ...providerTarget, createControlledPrompt, conversationTabCandidates,
     console, Number, Date, setTimeout, clearTimeout, lastError: null,
     bridgeLog() {},
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],

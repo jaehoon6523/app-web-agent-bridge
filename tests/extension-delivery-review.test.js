@@ -26,6 +26,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
   const store = createExtensionStateStore({ get: async () => structuredClone(saved), set: async value => { saved = structuredClone(value); } });
   const turnGate = createActiveTurnGate(), opened = [];
   const tabs = { sendMessage: async () => ({ ok: true, busy: false, generating: false, documentId: 'doc', ...page }),
+    query: async () => [{ id:7, url:'https://chatgpt.com/c/test' }],
     get: async () => ({ id: 7, url: 'https://chatgpt.com/c/test' }), update: async (...value) => opened.push(value),
     create: async value => opened.push(value) };
   let inspected = 0;

@@ -13,7 +13,7 @@ import { bindCurrentUserTarget, createStoredTarget, installCurrentTargetTracking
 import { createExtensionStateStore, ensureExtensionIdentity, isLegacyBridgeTestDelivery } from "./runtime/storage.js";
 import { clearLegacyTestDelivery } from "./runtime/legacy-cleanup.js";
 import { assertRelaySafeCompletion, assertTurnSessionBinding, assertTurnStateBinding, assertTurnTabBinding, captureTurnBinding, createActiveTurnGate } from "./runtime/turn-guard.js";
-import { createConversationBootstrapTab, reopenExactConversationTab } from "./runtime/conversation-bootstrap.js";
+import { conversationTabCandidates, createConversationBootstrapTab } from "./runtime/conversation-bootstrap.js";
 import { createBrowserRuntime } from "./runtime/browser-runtime.js";
 import { handleDeliveryAcknowledgement as acknowledgeDeliveryMessage } from "./runtime/delivery-ack.js";
 import { createReconnectController } from "./runtime/reconnect.js";
@@ -450,20 +450,19 @@ async function selectRootBootstrapTab(payload, requested) {
   const provider = resolveWebTargetProvider({ provider:requested.provider });
   if (!provider) throw rootBootstrapError("WEB_PROVIDER_UNAVAILABLE", "The requested Web provider is not registered.", "DISCOVER");
   let tabs;
-  try { tabs = await chrome.tabs.query({ url: provider.urlPatterns }); }
+  try { tabs = await chrome.tabs.query({}); }
   catch (error) { throw rootBootstrapError("ROOT_TAB_QUERY_FAILED", error.message, "DISCOVER"); }
-  const roots = tabs.filter((tab) => provider.canonicalize(tab?.url) === provider.rootUrl);
-  const create = payload.createNewConversation === true || roots.length === 0;
-  console.info("[bridge:root:select]", rootBootstrapDetails("SELECT", { sessionId: requested.sessionId, rootCount: roots.length, action: create ? "CREATE" : "REUSE" }));
-  if (create) {
+  const roots = conversationTabCandidates(tabs, provider, provider.rootUrl, null);
+  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "Web provider 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
+  if (roots.length === 1) return roots[0];
+  if (payload.createNewConversation === true) {
     let tab;
     try { tab = await createConversationBootstrapTab(chrome, waitForContentScript, provider); }
     catch (error) { throw rootBootstrapError(error.code ?? "ROOT_TAB_CREATE_FAILED", error.message, "CREATE", { rootCount: roots.length, causeDetails:error.details ?? null }); }
     if (!tab) throw rootBootstrapError("ROOT_TAB_CREATE_FAILED", "Web provider 시작 탭을 만들지 못했습니다.", "CREATE", { rootCount: roots.length });
     return tab;
   }
-  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "Web provider 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
-  return roots[0];
+  throw rootBootstrapError("BROWSER_SCOPE_UNCONFIRMED", "Open a start tab in the connected Chrome profile or explicitly request a new conversation.", "SELECT");
 }
 async function prepareBoundSession(payload) {
   const requested = requireBindingInput(payload);
@@ -503,6 +502,9 @@ async function prepareBoundSession(payload) {
   }
   let matched;
   if (requested.bootstrap) {
+    if (state.currentDeliveryId || Object.values(state.deliveryScopes ?? {}).some(slot => slot.currentDeliveryId)) {
+      throw rootBootstrapError("WEB_SESSION_BUSY", "Resolve the active delivery before starting a new conversation.", "SELECT");
+    }
     let root;
     try { root = await selectRootBootstrapTab(payload, requested); }
     catch (error) { if (sameSession) await store.update({ bindingStatus: error.code === "AMBIGUOUS" ? "AMBIGUOUS" : "NEEDS_REBIND" }); throw error; }
@@ -515,6 +517,12 @@ async function prepareBoundSession(payload) {
     let documentBinding;
     try {
       documentBinding = await inspectBoundDocument(chrome.tabs, root.id, { conversationUrl: provider.rootUrl, conversationId: null, documentId: page.documentId });
+      const current = conversationTabCandidates(await chrome.tabs.query({}), provider, provider.rootUrl, null);
+      if (current.length !== 1 || current[0].id !== root.id || current[0].pendingUrl
+        || provider.canonicalize(current[0].url) !== provider.rootUrl) {
+        throw new ExtensionOperationError(current.length > 1 ? "AMBIGUOUS" : "BROWSER_SCOPE_UNCONFIRMED",
+          "The start tab changed before it could be bound.");
+      }
       await store.bindSession({ ...documentBinding, lastBoundSessionId: requested.sessionId, lastBoundRunId: requested.runId,
         webProvider: requested.provider, tabId: root.id, windowId: root.windowId, conversationUrl: provider.rootUrl, conversationId: null,
         bindingStatus: "ROOT_READY", bindingError: null, lastActiveWebTarget: createStoredTarget({ provider:requested.provider, tabId: root.id, windowId: root.windowId, ...documentBinding, conversationUrl: provider.rootUrl, conversationId: null }) });
@@ -524,27 +532,13 @@ async function prepareBoundSession(payload) {
       conversationUrl: provider.rootUrl, conversationId: null, title: root.title || provider.provider,
       lastObservedUserMessageId: null, lastObservedAssistantMessageId: null, bindingStatus: "ROOT_READY" };
   } else {
-    const tabs = await chrome.tabs.query({ url: provider.urlPatterns });
-    const preferred = Number.isSafeInteger(state.tabId)
-      ? tabs.find((tab) => tab.id === state.tabId
-        && provider.canonicalize(tab?.url) === requested.conversationUrl
-        && provider.conversationIdFromUrl(tab?.url) === requested.conversationId)
-      : null;
-    matched = preferred
-      ? { status: "BOUND", tab: preferred }
-      : (() => {
-        const matches = tabs.filter((tab) => provider.canonicalize(tab?.url) === requested.conversationUrl
-          && provider.conversationIdFromUrl(tab?.url) === requested.conversationId);
-        return matches.length === 1 ? { status:"BOUND", tab:matches[0] }
-          : { status:matches.length > 1 ? "AMBIGUOUS" : "NEEDS_REBIND", tab:null };
-      })();
-    if (matched.status === "NEEDS_REBIND") {
-      const reopened = await reopenExactConversationTab(chrome, waitForContentScript, requested, provider);
-      if (reopened) matched = { status: "BOUND", tab: reopened };
-    }
+    const tabs = await chrome.tabs.query({});
+    const matches = conversationTabCandidates(tabs, provider, requested.conversationUrl, requested.conversationId);
+    matched = matches.length === 1 ? { status:"BOUND", tab:matches[0] }
+      : { status:matches.length > 1 ? "AMBIGUOUS" : "BROWSER_SCOPE_UNCONFIRMED", tab:null };
   }
   if (matched.status !== "BOUND") {
-    if (sameSession) await store.update({ bindingStatus: matched.status });
+    if (sameSession) await store.update({ bindingStatus: matched.status === "AMBIGUOUS" ? "AMBIGUOUS" : "NEEDS_REBIND" });
     throw new ExtensionOperationError(matched.status, "The exact Web provider conversation tab could not be uniquely recovered.", {
       mode: "EXACT_CONVERSATION_RECOVERY", requested: {
         sessionId: requested.sessionId, runId: requested.runId,
@@ -560,6 +554,13 @@ async function prepareBoundSession(payload) {
   }
   if (payload.focus === true) await focusTab(matched.tab);
   const ready = await waitForContentScript(matched.tab.id, 30_000, true);
+  const current = conversationTabCandidates(await chrome.tabs.query({}),
+    provider, requested.conversationUrl, requested.conversationId);
+  if (current.length !== 1 || current[0].id !== matched.tab.id || current[0].pendingUrl
+    || provider.canonicalize(current[0].url) !== requested.conversationUrl) {
+    throw new ExtensionOperationError(current.length > 1 ? "AMBIGUOUS" : "BROWSER_SCOPE_UNCONFIRMED",
+      "The conversation tab changed before it could be bound.");
+  }
   await persistBoundTab(matched.tab, { ...requested, documentId: ready.documentId });
   return getSessionInfo();
 }

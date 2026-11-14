@@ -3,6 +3,7 @@ import { resolveStoredWebTargetProvider } from "./provider-target.js";
 import { hasExactDiscardReceipt } from "./delivery-discard.js";
 import { readDeliveryPage, inspectDeliveryPage, pageDiagnosticMetadata } from "./delivery-page.js";
 import { validateLocalControllerUrl } from "./conversation.js";
+import { conversationTabCandidates } from "./conversation-bootstrap.js";
 
 export function deliveryOwner(state) {
   return { currentDeliveryId: state.currentDeliveryId, sessionId: state.lastBoundSessionId,
@@ -117,9 +118,23 @@ export function createDeliveryReview({ store, turnGate, tabs, inspectServer, onC
     if (!provider || provider.canonicalize(state.conversationUrl) !== state.conversationUrl) {
       throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "전송의 대화 주소를 확인할 수 없습니다.");
     }
-    const tab = state.tabId !== null ? await tabs.get(state.tabId).catch(() => null) : null;
-    if (tab && provider.canonicalize(tab.url) === state.conversationUrl) return tabs.update(tab.id, { active: true });
-    return tabs.create({ url: state.conversationUrl, active: true });
+    if (!state.conversationId) {
+      throw new ExtensionStateError("BROWSER_SCOPE_UNCONFIRMED", "The original conversation ID was not saved.");
+    }
+    const matches = conversationTabCandidates(await tabs.query({}),
+      provider, state.conversationUrl, state.conversationId);
+    if (matches.length !== 1) {
+      throw new ExtensionStateError(matches.length > 1 ? "AMBIGUOUS" : "BROWSER_SCOPE_UNCONFIRMED",
+        "Open exactly one copy of the original conversation in the connected Chrome profile.");
+    }
+    const [tab] = matches;
+    const live = await tabs.get(tab.id);
+    assertOwner(await store.read(), expected);
+    if (live.pendingUrl || provider.canonicalize(live.url) !== state.conversationUrl
+      || (state.tabId !== null && state.tabId !== live.id)) {
+      throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The conversation tab or saved binding changed.");
+    }
+    return tabs.update(live.id, { active:true });
   }
   async function selectScope(expected) {
     const held = turnGate.reserve("scope_" + crypto.randomUUID());
