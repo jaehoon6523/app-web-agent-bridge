@@ -6,36 +6,50 @@ export function conversationTabCandidates(tabs, provider, url, conversationId) {
     provider.canonicalize(value) === url && provider.conversationIdFromUrl(value) === conversationId));
 }
 
-async function inspectRootTabs(chromeApi, provider) {
+async function inspectRootTabs(chromeApi, provider, windowId, stage) {
+  const fail = (code, message, details = {}) => {
+    throw new ExtensionStateError(code, message, { stage, windowId, tabId:null, rootCount:null, ...details });
+  };
   let windows, tabs;
   try {
     windows = await chromeApi.windows.getAll({ populate:true, windowTypes:["normal"] });
-    tabs = await chromeApi.tabs.query({});
-  } catch {
-    throw new ExtensionStateError("BROWSER_SCOPE_UNCONFIRMED", "The extension could not verify its browser window.");
-  }
-  const [window] = windows;
-  if (windows.length !== 1 || window.type !== "normal" || window.incognito !== false
-    || !Number.isSafeInteger(window.id) || !Array.isArray(window.tabs) || window.tabs.length === 0) {
-    throw new ExtensionStateError("BROWSER_SCOPE_UNCONFIRMED", "Select an existing start tab in the connected Chrome profile.");
-  }
-  const visible = tabs.filter(tab => tab.windowId === window.id);
-  if (visible.length !== window.tabs.length || visible.some(tab =>
-    !window.tabs.some(item => item.id === tab.id && item.url === tab.url && item.pendingUrl === tab.pendingUrl))) {
-    throw new ExtensionStateError("BROWSER_SCOPE_UNCONFIRMED", "Browser tabs changed while checking the target window.");
+  } catch { fail("BROWSER_SCOPE_UNCONFIRMED", "Chrome window enumeration failed."); }
+  try { tabs = await chromeApi.tabs.query({}); }
+  catch { fail("ROOT_TAB_QUERY_FAILED", "Chrome tab enumeration failed."); }
+  const regular = windows.filter(window => window.type === "normal" && window.incognito === false
+    && Number.isSafeInteger(window.id) && Array.isArray(window.tabs));
+  if (!regular.length) fail("BROWSER_SCOPE_UNCONFIRMED", "No regular window is available in the extension profile.");
+  for (const window of regular) {
+    const visible = tabs.filter(tab => tab.windowId === window.id);
+    if (visible.length !== window.tabs.length || visible.some(tab =>
+      !window.tabs.some(item => item.id === tab.id && item.url === tab.url && item.pendingUrl === tab.pendingUrl))) {
+      fail("WEB_TAB_INVENTORY_CHANGED", "Chrome tabs changed during inspection.", { windowId:window.id });
+    }
   }
   const roots = conversationTabCandidates(tabs, provider, provider.rootUrl, null);
-  if (roots.length > 1) throw new ExtensionStateError("AMBIGUOUS", "More than one provider start tab is open.");
-  return { windowId:window.id, root:roots[0] ?? null };
+  if (roots.length > 1) fail("AMBIGUOUS", "More than one provider start tab is open.", { rootCount:roots.length });
+  const root = roots[0] ?? null;
+  const target = root?.windowId ?? windowId ?? (regular.length === 1 ? regular[0].id : null);
+  if (target === null) fail("ROOT_WINDOW_SELECTION_REQUIRED", "Choose the Chrome window for the start tab.", { rootCount:0 });
+  if (!regular.some(window => window.id === target)) {
+    fail("BROWSER_SCOPE_UNCONFIRMED", "The target window is outside the verified windows.", { windowId:target, rootCount:roots.length });
+  }
+  if (root && (root.pendingUrl || provider.canonicalize(root.url) !== provider.rootUrl)) {
+    fail("WEB_TAB_INVENTORY_CHANGED", "The start tab is navigating.", { windowId:target, tabId:root.id, rootCount:1 });
+  }
+  return { windowId:target, root };
 }
 
-export async function createConversationBootstrapTab(chromeApi, waitForContentScript, provider = CHATGPT_WEB_TARGET_PROVIDER) {
-  const before = await inspectRootTabs(chromeApi, provider);
+export async function createConversationBootstrapTab(chromeApi, waitForContentScript, provider = CHATGPT_WEB_TARGET_PROVIDER, windowId = null) {
+  const before = await inspectRootTabs(chromeApi, provider, windowId, "BEFORE_CREATE");
   if (before.root) return before.root;
   const created = await chromeApi.tabs.create({ url:provider.rootUrl, active:true, windowId:before.windowId });
   if (!Number.isSafeInteger(created?.id)) return null;
   await waitForContentScript(created.id, 30_000, true);
-  const after = await inspectRootTabs(chromeApi, provider);
-  return after.windowId === before.windowId && after.root?.id === created.id
-    && provider.canonicalize(after.root.url) === provider.rootUrl ? after.root : null;
+  const after = await inspectRootTabs(chromeApi, provider, before.windowId, "AFTER_CREATE");
+  if (after.windowId !== before.windowId || after.root?.id !== created.id) {
+    throw new ExtensionStateError("WEB_TAB_INVENTORY_CHANGED", "The created tab changed before binding.",
+      { stage:"AFTER_CREATE", windowId:before.windowId, tabId:created.id, rootCount:after.root ? 1 : 0 });
+  }
+  return after.root;
 }

@@ -388,8 +388,8 @@ export class WebSessionAdapter {
     }
   }
 
-  /** @param {{binding?: WebSessionBindingValue, focus?: boolean, createNewConversation?: boolean}} [input] */
-  async resume({ binding, focus = false, createNewConversation = false } = {}) {
+  /** @param {{binding?: WebSessionBindingValue, focus?: boolean, createNewConversation?: boolean, windowId?: number}} [input] */
+  async resume({ binding, focus = false, createNewConversation = false, windowId = binding?.windowId } = {}) {
     validateWebSessionBinding(binding); assertWebSessionProviderBinding(binding, this.#provider);
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
@@ -408,7 +408,7 @@ export class WebSessionAdapter {
         type: "web.session.prepare",
         payload: this.#bindingPayload(binding, {
           focus,
-          ...(createNewConversation ? { createNewConversation: true } : {}),
+          ...(createNewConversation ? { createNewConversation:true, ...(Number.isSafeInteger(windowId) ? { windowId } : {}) } : {}),
         }),
       }, new Set(["web.session.ready", "web.session.error"]), 60_000);
       if (message.type === "web.session.error") throw this.#messageError(message);

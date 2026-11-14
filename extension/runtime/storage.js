@@ -221,8 +221,8 @@ export function createExtensionStateStore(storageArea) {
       }
       return mutate(async () => {
         const current = await readStoredState();
-        if (Object.entries(expected).some(([key, value]) => key === "deliveryScopes"
-          ? JSON.stringify(current.deliveryScopes) !== JSON.stringify(value) : current[key] !== value)) {
+        if (Object.entries(expected).some(([key, value]) => ["deliveryScopes", "completedDelivery"].includes(key)
+          ? JSON.stringify(current[key]) !== JSON.stringify(value) : current[key] !== value)) {
           throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The persisted owner changed; inspect it again.");
         }
         const next = normalizeExtensionState({ ...current, ...structuredClone(patch) });

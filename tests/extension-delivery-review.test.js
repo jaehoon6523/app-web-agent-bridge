@@ -165,6 +165,24 @@ test('ownership drift during server inspection cannot clear a different delivery
   assert.equal((await f.store.read()).currentDeliveryId, 'new-owner');
 });
 
+test("stale binding can discover an exact conversation without changing delivery ownership", async () => {
+  const f = await harness({ stored:{ tabId:null, windowId:null, documentId:null } });
+  const correct = { id:17, windowId:4, url:"https://chatgpt.com/c/test" };
+  const other = { id:19, windowId:4, url:"https://chatgpt.com/c/other" };
+  f.tabs.query = async () => [other, correct];
+  f.tabs.get = async () => correct;
+  const result = await f.review.inspect();
+  assert.deepEqual(result.conversationCandidate, { status:"BOUND", count:1, tabId:17, windowId:4 });
+  assert.equal(result.page.reachable, false);
+  await assert.rejects(f.review.openConversation({ ...f.owner, sessionId:"wrong" }), { code:"DELIVERY_RECOVERY_MISMATCH" });
+  await f.review.openConversation(f.owner);
+  assert.deepEqual(f.opened, [[17, { active:true }]]);
+  assert.equal((await f.store.read()).tabId, null);
+  f.tabs.query = async () => [other];
+  await assert.rejects(f.review.openConversation(f.owner), { code:"BROWSER_SCOPE_UNCONFIRMED" });
+  assert.equal(f.opened.length, 1);
+});
+
 test('read-only conversation navigation does not clear or resend a delivery', async () => {
   const f = await harness(); await f.review.openConversation(f.owner);
   assert.deepEqual(f.opened, [[7, { active: true }]]);

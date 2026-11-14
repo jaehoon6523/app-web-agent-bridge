@@ -30,6 +30,12 @@ function own(value, key) {
 // Copy bounded data while ignoring application-defined accessors and toJSON.
 const SUMMARY = Object.freeze({
   UI_CONTRACT_CHANGED: "Web page controls are unavailable or changed. Inspect structured page diagnostics.",
+  ROOT_TAB_QUERY_FAILED: "Chrome could not list tabs in the connected profile.",
+  ROOT_TAB_NOT_FOUND: "Open a provider start tab in the connected Chrome profile.",
+  ROOT_WINDOW_SELECTION_REQUIRED: "Select the Chrome window in which to open the start tab.",
+  BROWSER_SCOPE_UNCONFIRMED: "The extension could not verify the requested Chrome window or conversation.",
+  WEB_TAB_INVENTORY_CHANGED: "Chrome tabs changed during verification. Check the intended tab again.",
+  CONTENT_SCRIPT_UNAVAILABLE: "The content script did not respond on the selected tab.",
   WEB_DOCUMENT_CHANGED: "The bound Web document changed. Prepare the session again.",
   AMBIGUOUS: "The matching Web conversation cannot be uniquely identified.",
   WEB_TAB_SELECTION_REQUIRED: "Select the matching Web conversation tab; no prompt has been sent.",

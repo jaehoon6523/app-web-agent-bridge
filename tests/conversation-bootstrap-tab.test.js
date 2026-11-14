@@ -10,10 +10,10 @@ function browser({ initial = [other], afterCreate = [], queryTabs, windowCount =
   let visible = initial;
   const tabs = {
     query:async () => queryTabs ?? visible,
-    create:async options => { calls.push(options); visible = [...visible, root, ...afterCreate]; return root; },
+    create:async options => { calls.push(options); const tab = { ...root, windowId:options.windowId }; visible = [...visible, tab, ...afterCreate]; return tab; },
   };
   const windows = { getAll:async () => Array.from({ length:windowCount }, (_, i) =>
-    ({ id:2 + i, type:"normal", incognito:false, tabs:visible })) };
+    ({ id:2 + i, type:"normal", incognito:false, tabs:visible.filter(tab => tab.windowId === 2 + i) })) };
   return { chrome:{ tabs, windows }, calls };
 }
 
@@ -30,11 +30,27 @@ test("reuses a single root and refuses to create when the tab inventory changes 
   const existing = browser({ initial:[other, root] });
   assert.equal(await createConversationBootstrapTab(existing.chrome, async () => {}), root);
   assert.deepEqual(existing.calls, []);
-  for (const options of [{ windowCount:0 }, { windowCount:2 }, { queryTabs:[other, root] }, { queryTabs:[] }]) {
+  for (const options of [{ windowCount:0 }, { queryTabs:[other, root] }, { queryTabs:[] }]) {
     const { chrome, calls } = browser(options);
-    await assert.rejects(createConversationBootstrapTab(chrome, async () => {}), { code:"BROWSER_SCOPE_UNCONFIRMED" });
+    await assert.rejects(createConversationBootstrapTab(chrome, async () => {}), { code:options.windowCount === 0 ? "BROWSER_SCOPE_UNCONFIRMED" : "WEB_TAB_INVENTORY_CHANGED" });
     assert.deepEqual(calls, []);
   }
+});
+
+test("two regular windows reuse a unique root or require explicit selection before creating", async () => {
+  const second = { ...other, id:10, windowId:3 };
+  const existing = browser({ initial:[other, second, root], windowCount:2 });
+  assert.deepEqual(await createConversationBootstrapTab(existing.chrome, async () => {}), root);
+  assert.deepEqual(existing.calls, []);
+  const missing = browser({ initial:[other, second], windowCount:2 });
+  await assert.rejects(createConversationBootstrapTab(missing.chrome, async () => {}), { code:"ROOT_WINDOW_SELECTION_REQUIRED" });
+  assert.deepEqual(missing.calls, []);
+  assert.equal((await createConversationBootstrapTab(missing.chrome, async () => {}, undefined, 3)).windowId, 3);
+  const ambiguous = browser({ initial:[other, root, { ...root, id:42, windowId:3 }], windowCount:2 });
+  await assert.rejects(createConversationBootstrapTab(ambiguous.chrome, async () => {}), { code:"AMBIGUOUS" });
+  assert.deepEqual(ambiguous.calls, []);
+  missing.chrome.tabs.query = async () => { throw new Error("unavailable"); };
+  await assert.rejects(createConversationBootstrapTab(missing.chrome, async () => {}), { code:"ROOT_TAB_QUERY_FAILED" });
 });
 
 test("duplicate start tabs block creation or prevent returning the created tab for binding", async () => {

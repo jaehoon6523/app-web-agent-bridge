@@ -34,6 +34,15 @@ function harness(overrides = {}, pageOverrides = {}, tabOverrides = {}) {
     conversationUrl: state.conversationUrl, ...patch,
   } }) };
 }
+test("an exact replacement tab can be inspected without changing the original binding", async () => {
+  const h = harness({ documentId:"original", frameId:0 }, {}, { id:22 });
+  await h.recover();
+  assert.equal(h.sent[0].payload.code, "DELIVERY_RESPONSE_REQUIRED");
+  assert.equal(h.sent[0].payload.details.observedTabId, 22);
+  assert.equal(h.state.tabId, 7);
+  assert.equal(h.state.documentId, "original");
+});
+
 test('idle page evidence cannot clear an unresolved delivery', async () => {
   const h = harness(); await h.recover();
   assert.deepEqual(h.cleared, []);
