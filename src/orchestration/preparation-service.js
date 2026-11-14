@@ -8,7 +8,7 @@ import { canonicalConversationUrl, createWebSessionBinding, extractConversationI
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 import { validateReviewerConfiguration } from "./reviewer-settings.js";
 import { projectedError, bestEffortFailureLog } from "./preparation-diagnostics.js";
-
+import { canCancelUnsentDelivery, isUnsentFailure } from "./preparation-unsent.js";
 function fail(message, code = "PREPARATION_CONFLICT", details = null) { throw Object.assign(new Error(message), { code, details }); }
 const stamp = () => new Date().toISOString();
 const terminal = new Set(["APPLIED", "CANCELLED", "FAILED", "INCONCLUSIVE", "COMPLETE"]);
@@ -25,12 +25,6 @@ const PACKET_FORMAT_CODES = new Set([
 const USER_TAB_SELECTION_ERRORS = new Set(["AMBIGUOUS", "STORED_AMBIGUOUS_REBIND_REQUIRED"]);
 const MAX_FOLLOW_UP_HANDOFF_NOTES = 20;
 const MAX_FOLLOW_UP_HANDOFF_CHARS = 12_000;
-
-function isUnsentFailure(delivery, error) {
-  return delivery?.state === "FAILED"
-    && (delivery.unsent === true || error?.details?.browserDispatchStarted === false);
-}
-
 function logPreparationFailure(context, deliveryId, error, unsent, onFailure) {
   try {onFailure?.({code:error.code,details:{...error.details,deliveryId,sessionId:context.webSession.sessionId,
     runId:context.preparationId,stage:error.details?.stage ?? (unsent ? "BEFORE_DISPATCH" : "DELIVERY")}});}
@@ -428,6 +422,16 @@ export class PreparationService {
       if (!this.capabilities().includes(type)) fail("Inspect and stop the active delivery before cancellation.");
       const delivery = context.deliveries.find((d) => d.deliveryId === context.webSession.activeDeliveryId);
       if (isUnsentFailure(delivery, context.error)) {
+        if (delivery.unsentBeforeBrowserRequest !== true) {
+          const version = context.version;
+          const observed = await this.web.inspectDelivery();
+          if (context !== this.current || context.version !== version || context.webSession.activeDeliveryId !== delivery.deliveryId) {
+            fail("Preparation changed during unsent verification.", "PREPARATION_VERSION_CONFLICT");
+          }
+          if (!canCancelUnsentDelivery(observed, delivery.deliveryId)) {
+            fail("The extension has not confirmed that the unsent delivery can be cancelled.", "RECOVERY_REQUIRED");
+          }
+        }
         delivery.cancelled = true; delivery.cancelledAt = stamp();
         context.webSession.activeDeliveryId = null;
         context.lifecycle = "ABANDONED";
@@ -494,7 +498,9 @@ export class PreparationService {
           runId: context.preparationId,
         }));
         const delivery = context.deliveries.find((d) => d.deliveryId === deliveryId);
-        const unsent = delivery.state === "RESERVED" || error.details?.browserDispatchStarted === false;
+        delivery.unsentBeforeBrowserRequest = delivery.state === "RESERVED" && error.details?.browserDispatchStarted !== true;
+        const unsent = error.details?.browserDispatchStarted !== true && !delivery.response
+          && (delivery.unsentBeforeBrowserRequest || (delivery.state === "DISPATCHING" && error.details?.browserDispatchStarted === false));
         delivery.unsent = unsent;
         const candidates = unsent ? selectableTabsFor(error, session) : [];
         const selectionRequired = candidates.length > 0;

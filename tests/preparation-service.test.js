@@ -496,6 +496,45 @@ test("composer failure stays visible across restart and requires local cancellat
   assert.ok(f.service.capabilities().includes("preparation.start"));
 });
 
+test("an extension-reported unsent failure cannot cancel while extension ownership remains", async (t) => {
+  const f = fixture(t);
+  f.web.submitTurn = async () => {
+    throw Object.assign(new Error("Before dispatch"), { code:"WEB_DOCUMENT_CHANGED", details:{ browserDispatchStarted:false } });
+  };
+  await f.start(); await settled(f.service);
+  const before = f.service.snapshot(), deliveryId = before.webSession.activeDeliveryId;
+  let owner = deliveryId, parked = [];
+  f.web.inspectDelivery = async () => ({
+    currentDeliveryId:owner, extensionBusy:false, hasCompletedDelivery:false, scopedDeliveries:parked,
+  });
+  const cancel = { preparationId:before.preparationId, expectedVersion:before.version, requestId:"safe-unsent" };
+  await assert.rejects(f.service.execute("preparation.cancel", { ...cancel, requestId:"blocked-unsent" }), { code:"RECOVERY_REQUIRED" });
+  assert.equal(f.service.snapshot().webSession.activeDeliveryId, deliveryId);
+  owner = null;
+  parked = [{ deliveryId }];
+  await assert.rejects(f.service.execute("preparation.cancel", { ...cancel, requestId:"parked-unsent" }), { code:"RECOVERY_REQUIRED" });
+  parked = [];
+  const result = await f.service.execute("preparation.cancel", cancel);
+  f.restart();
+  assert.deepEqual(await f.service.execute("preparation.cancel", cancel), result);
+  assert.equal(f.service.receipt(cancel.requestId).status, "COMPLETED");
+  assert.equal(f.service.snapshot().webSession.activeDeliveryId, null);
+  assert.ok(f.service.capabilities().includes("preparation.start"));
+});
+
+for (const browserDispatchStarted of [true, undefined]) {
+  test("a submitted request with dispatch evidence " + browserDispatchStarted + " stays out of the unsent path", async (t) => {
+    const f = fixture(t);
+    f.web.submitTurn = async () => {
+      throw Object.assign(new Error("Dispatch outcome"), { code:"WEB_FAILED", details:{ browserDispatchStarted } });
+    };
+    await f.start(); await settled(f.service);
+    assert.equal(f.service.snapshot().deliveries[0].unsent, false);
+    assert.equal(f.service.snapshot().state, "RECOVERY_REQUIRED");
+    assert.ok(!f.service.capabilities().includes("preparation.cancel"));
+  });
+}
+
 test("ambiguous unsent binding waits for an explicit eligible tab and then sends exactly once", async (t) => {
   const f = fixture(t);
   let resumeCalls = 0, sent = 0;
