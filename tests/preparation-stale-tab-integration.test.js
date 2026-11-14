@@ -17,17 +17,14 @@ test("exact binding reuses one candidate and blocks missing, duplicate, and late
   const requested = { sessionId: "web_run_judge", runId: "run_1",
     conversationUrl: "https://chatgpt.com/c/judge", conversationId: "judge" };
   const tab = { id: 31, windowId: 1, url: requested.conversationUrl };
-  let reopenCount = 0, candidates = [];
+  const created = [];
+  let candidates = [];
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
   const context = vm.createContext({
     ...documentBinding, ...conversation, conversationTabCandidates, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
-    chrome: { tabs: { query: async () => candidates, sendMessage: async () => ({ ready: true }) } },
-    reopenExactConversationTab: async (_chrome, _wait, binding) => {
-      reopenCount++;
-      assert.equal(binding.conversationId, "judge");
-      return tab;
-    },
+    chrome: { tabs: { query: async () => candidates, create:async options => { created.push(options); return tab; },
+      sendMessage: async () => ({ ready: true }) } },
     waitForContentScript: async () => ({ documentId: "document-31", frameId: 0 }),
     persistBoundTab: async () => {},
     inspectBoundDocument: async () => ({ documentId: "document-31", frameId: 0 }),
@@ -48,7 +45,7 @@ test("exact binding reuses one candidate and blocks missing, duplicate, and late
   candidates = [tab];
   context.waitForContentScript = async () => { candidates.push(duplicate); return { documentId:"document-31" }; };
   await assert.rejects(context.prepareBoundSession(requested), { code:"AMBIGUOUS" });
-  assert.equal(reopenCount, 0);
+  assert.deepEqual(created, []);
 });
 
 test("a new root preparation cannot displace another session's unresolved delivery", async () => {
@@ -168,7 +165,7 @@ test("preparation requires an explicit creation request when no root is visible"
   });
   vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function rebindSession(")), context);
   const request = { sessionId:"web_prep_1", runId:"prep_1", conversationUrl:null, conversationId:null };
-  await assert.rejects(context.prepareBoundSession(request), { code:"BROWSER_SCOPE_UNCONFIRMED" });
+  await assert.rejects(context.prepareBoundSession(request), { code:"ROOT_TAB_NOT_FOUND" });
   assert.equal(created, 0);
   const session = await context.prepareBoundSession({ ...request, createNewConversation:true });
   assert.equal(created, 1);
