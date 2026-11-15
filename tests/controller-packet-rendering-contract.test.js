@@ -71,3 +71,19 @@ test("DOM-safe closing marker must still be the final standalone unquoted line",
     { code: "CONTROLLER_PACKET_MISSING" },
   );
 });
+test("packetless prose and malformed JSON retain distinct errors", () => {
+  assert.throws(() => parseFinalControllerPacketJsonEnvelope("Which file should change?"),
+    { code: "CONTROLLER_PACKET_MISSING" });
+  assert.throws(() => parseFinalControllerPacketJsonEnvelope(
+    "CONTROLLER_PACKET_BEGIN\n{broken}\nCONTROLLER_PACKET_END"),
+    { code: "INVALID_PACKET_JSON" });
+});
+
+test("only the final block controls parsing when two packets are present", () => {
+  const wrap = (value) => ["CONTROLLER_PACKET_BEGIN", JSON.stringify(value), "CONTROLLER_PACKET_END"].join("\n");
+  const previous = wrap({ ...packet, summary: "Earlier packet" });
+  const final = wrap(packet);
+  const parsed = parseFinalControllerPacketJsonEnvelope(previous + "\n" + final);
+  assert.deepEqual(parsed.parsed, packet);
+  assert.equal(parsed.body, previous);
+});

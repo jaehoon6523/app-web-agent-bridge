@@ -803,3 +803,27 @@ for (const mismatch of [{ conversationId: "other" }, { deliveryId: "other" }]) {
     assert.equal(f.calls.length, 1);
   });
 }
+
+test("preparation requires a DOM-safe final packet even when only a question can be proposed", async (t) => {
+  const f = fixture(t), submit = f.web.submitTurn;
+  f.web.submitTurn = async (input) => {
+    const { completion } = await submit(input);
+    const response = await completion;
+    return { completion: Promise.resolve({ ...response, rawText:response.rawText
+      .replace("<controller_packet>", "CONTROLLER_PACKET_BEGIN")
+      .replace("</controller_packet>", "CONTROLLER_PACKET_END") }) };
+  };
+  await f.service.execute("preparation.start", {
+    requestId: "structured-questions", objective: "작업 범위를 알려주세요", targetRoot: f.root,
+    conversationUrl: "https://chatgpt.com/c/test", acceptPlainTextDiscussion: true,
+  });
+  await settled(f.service);
+  assert.equal(f.prompts.length, 1);
+  assert.match(f.prompts[0], /CONTROLLER_PACKET_BEGIN/u);
+  assert.match(f.prompts[0], /CONTROLLER_PACKET_END/u);
+  assert.match(f.prompts[0], /정보가 부족해도.*questions.*items/u);
+  assert.doesNotMatch(f.prompts[0], /태그가 전혀 없는 평문/u);
+  assert.equal(f.service.current.agreement.status, "DISCUSSING");
+  assert.equal(f.service.current.agreement.unresolvedQuestions.length, 1);
+  assert.deepEqual(f.service.current.agreement.requirements, []);
+});
