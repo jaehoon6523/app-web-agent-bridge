@@ -388,6 +388,8 @@ test('a quiet streaming pause and a previous completed turn cannot finish the cu
   const receipt = response.evidence.decisionEvidence;
   assert.equal(receipt.status,'PERSISTED');
   const decision = f.readDecisionEvidence(receipt);
+  assert.equal(decision.persistedAt,receipt.persistedAt);
+  assert.ok(decision.persistedAt >= decision.capturedAt);
   assert.equal(decision.pageHtml,decisionHtml);
   assert.ok(receipt.page.utf8Bytes > 1024 * 1024);
   assert.equal(receipt.page.sha256,createHash('sha256').update(decisionHtml).digest('hex'));
@@ -413,7 +415,7 @@ test('a quiet streaming pause and a previous completed turn cannot finish the cu
   assert.equal(await f.page.evaluate(()=>sessionStorage.getItem('clicks')),'1');
   t.diagnostic(JSON.stringify({ assistantMessageId:response.evidence.assistantMessageId,
     initialMutationAt:await f.page.evaluate(()=>window.fixtureLastTextAndDomAt),
-    lastTextAndDomChangeAt:observed.at, decisionCapturedAt:decision.capturedAt, returnedAt,
+    lastTextAndDomChangeAt:observed.at, decisionCapturedAt:decision.capturedAt, persistedAt:decision.persistedAt, returnedAt,
     bytes:Buffer.byteLength(response.rawText),
     sha256:createHash('sha256').update(response.rawText).digest('hex'),
     stopButtonVisible:response.evidence.stopButtonVisible, sendButtonState:response.evidence.sendButtonState,
@@ -448,5 +450,7 @@ test('a failed private store returns an explicit evidence failure', {timeout:200
   const response = await f.submit('private-storage-failure');
   assert.equal(response.rawText,'Observed fixture reply');
   assert.deepEqual(response.evidence.decisionEvidence,{status:'FAILED',code:'EVIDENCE_STORAGE_FAILED'});
+  assert.ok(f.frames.some(frame=>frame.type === 'extension.decision-evidence.prepare'));
+  assert.ok(!f.frames.some(frame=>frame.type === 'extension.decision-evidence'));
   assert.equal(f.readStorage().currentDeliveryId,'private-storage-failure');
 });

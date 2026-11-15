@@ -55,7 +55,7 @@ function send(message, { allowUnauthenticated = false } = {}) {
   socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
   return true;
 }
-const decisionEvidence = createDecisionEvidenceRelay({ store, send }), serverDeliveryInspector = createServerDeliveryInspector({ send });
+const decisionEvidence = createDecisionEvidenceRelay({ store, send, getConnection:() => socket }), serverDeliveryInspector = createServerDeliveryInspector({ send });
 const deliveryReview = createDeliveryReview({ store, turnGate, tabs: chrome.tabs,
   inspectServer: expected => serverDeliveryInspector.inspect(expected), onChange: broadcastPopupState });
 const reconnect = createReconnectController({ connect, connected: () => Boolean(socket), onError(error) {

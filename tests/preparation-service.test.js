@@ -6,6 +6,8 @@ import path from "node:path";
 import { PreparationService, workflowForRun } from "../src/orchestration/preparation-service.js";
 import { normalizeDashboardState } from "../public/dashboard-model.js";
 import { validateWebSessionBinding } from "../src/runtime/web/binding.js";
+import { parseFinalControllerPacketJsonEnvelope } from "../src/domain/controller-packet-envelope.js";
+import { requirementsProposalIssues } from "../src/domain/requirements-proposal.js";
 
 const tick = () => new Promise(setImmediate);
 async function settled(service) {
@@ -825,6 +827,7 @@ test("preparation requires a DOM-safe final packet even when only a question can
   assert.match(f.prompts[0], /준비 ID=[^\n]+\n프로젝트 루트=[^\n]+\nChatGPT 대화 URL=/u);
   assert.match(f.prompts[0], /사용자의 최초 요청=테스트 화면에 한 줄을 표시해 주세요\.\n/u);
   assert.match(f.prompts[0], /파일 경로·컴포넌트·URL.*questions/u);
+  assert.match(f.prompts[0], /각 항목에 statement와 acceptanceCriteria가 필요하다/u);
   const [begin, json, end] = f.prompts[0].split("\n").slice(-3);
   assert.equal(begin, "CONTROLLER_PACKET_BEGIN");
   assert.equal(end, "CONTROLLER_PACKET_END");
@@ -832,6 +835,9 @@ test("preparation requires a DOM-safe final packet even when only a question can
   assert.equal(example.type, "REQUIREMENTS_PROPOSAL");
   assert.equal(example.questions.length, 1);
   assert.deepEqual(example.items, []);
+  const twoQuestions = { ...example, questions:[...example.questions,"확인할 테스트 대상은 무엇인가요?"] };
+  const parsed = parseFinalControllerPacketJsonEnvelope([begin,JSON.stringify(twoQuestions),end].join("\n")).parsed;
+  assert.deepEqual(requirementsProposalIssues(parsed),{invalidFields:[],missingFields:[]});
   assert.equal(f.service.current.agreement.status, "DISCUSSING");
   assert.deepEqual(f.service.current.agreement.unresolvedQuestions, example.questions);
   assert.deepEqual(f.service.current.agreement.requirements, []);

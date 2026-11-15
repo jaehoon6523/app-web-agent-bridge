@@ -29,17 +29,25 @@ test("only an authenticated extension can persist private decision bytes through
   const captureId = randomUUID();
   const pageHtml = '<html><body data-private="fixture-only">한글</body></html>';
   const extracted = "한글\n";
-  const record = {captureId,deliveryId:"fixture-delivery",phase:"COMPLETED",documentId:"fixture-document",
+  const record = {captureId,capturedAt:Date.now(),deliveryId:"fixture-delivery",phase:"COMPLETED",documentId:"fixture-document",
     pageHtml,assistantHtml:"<p>한글</p>",bodyHtml:[],extracted};
   const frame = {type:"extension.decision-evidence",requestId:captureId,
     payload:{index:0,final:true,chunk:JSON.stringify(record)}};
-  send(frame);
+  const prepare = {type:"extension.decision-evidence.prepare",requestId:captureId};
+  send(prepare);
   const acceptance = receive();
   send({type:"extension.auth.response",challengeId:challenge.challengeId,extensionIdentity:"fixture-extension",
     hmacSha256:computeWebChallengeHmac(challenge.nonce,secret)});
   assert.equal((await acceptance).type,"controller.auth.accepted");
   const evidenceRoot = path.join(root,".agent-controller");
   assert.equal(fs.existsSync(evidenceRoot),false);
+  const unprepared = receive();
+  send(frame);
+  assert.equal((await unprepared).payload.code,"EVIDENCE_STORAGE_UNCONFIRMED");
+  assert.equal(fs.existsSync(evidenceRoot),false);
+  const ready = receive();
+  send(prepare);
+  assert.deepEqual((await ready).payload,{status:"READY",captureId});
   const persisted = receive();
   send(frame);
   const receipt = (await persisted).payload;
@@ -48,7 +56,11 @@ test("only an authenticated extension can persist private decision bytes through
   assert.doesNotMatch(JSON.stringify(receipt),/fixture-only|한글/u);
   assert.equal(receipt.page.sha256,createHash("sha256").update(pageHtml).digest("hex"));
   assert.equal(receipt.response.utf8Bytes,Buffer.byteLength(extracted));
+  assert.ok(receipt.persistedAt >= record.capturedAt);
   const directory = path.join(evidenceRoot,receipt.relativePath);
+  const decision = JSON.parse(fs.readFileSync(path.join(directory,"decision.json"),"utf8"));
+  assert.equal(decision.capturedAt,record.capturedAt);
+  assert.equal(decision.persistedAt,receipt.persistedAt);
   assert.equal(fs.readFileSync(path.join(directory,"page-raw.html"),"utf8"),pageHtml);
   assert.equal(fs.readFileSync(path.join(directory,"response-extracted.txt"),"utf8"),extracted);
   assert.ok(fs.existsSync(path.join(directory,"manifest.sha256")));
