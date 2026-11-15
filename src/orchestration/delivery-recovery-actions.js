@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isTerminalDiscard, reconcileTerminalDiscard } from "./terminal-delivery-reconciliation.js";
 import { inspectDeliveryOwnership } from "./delivery-ownership.js";
 import { webBinding } from "./audit-round.js";
@@ -19,6 +20,15 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
     const server = await inspectDeliveryOwnership(expected, getSources);
     const observed = await web.inspectDelivery();
     const completed = observed.completedDelivery?.turnId === expected.currentDeliveryId;
+    const otherActive = (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId);
+    const { binding, rawText } = observed.completedDelivery ?? {};
+    const record = server.records[0];
+    const responseFingerprint = server.status === "MATCHED" && record.kind === "PREPARATION"
+      && record.active && record.responseStored && !server.otherActive && !otherActive
+      && completed && exact(observed, expected) && exact({ ...binding, currentDeliveryId: observed.completedDelivery.turnId }, expected)
+      && typeof rawText === "string" && rawText.length > 0
+      ? { bytes: Buffer.byteLength(rawText, "utf8"), sha256: createHash("sha256").update(rawText, "utf8").digest("hex") }
+      : null;
     const durableAck = server.status === "MATCHED" && server.records[0]?.processingState === "ACK_PENDING"
       && server.records[0]?.responseStored === true;
     const settled = server.status === "MATCHED" && !server.records[0]?.active;
@@ -29,7 +39,7 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
       pageReachable: observed.pageReachable,
       pageIdentityConfirmed: observed.pageReachable === true && observed.observedConversationUrl === expected.conversationUrl
         && observed.observedDocumentId === observed.documentId && typeof observed.documentId === "string", pageBusy: observed.pageBusy, generating: observed.generating,
-      otherActive: (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId),
+      otherActive, responseFingerprint,
       hasCompletedDelivery: observed.hasCompletedDelivery,
       resultStatus: server.records[0]?.responseStored ? "RESPONSE_STORED" : "UNKNOWN",
       extensionBusy: observed.extensionBusy, exact: exact(observed, expected),
