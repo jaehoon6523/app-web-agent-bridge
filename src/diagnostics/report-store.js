@@ -10,7 +10,11 @@ const sections = new Set(['server','repair','deliveryReview','extension','startu
 const queues = new Map();
 const abandonedRecoveryPreparations = new Set();
 const limit = 262144;
-const decode = text => { const value = JSON.parse(text); return value?.schemaVersion === 1 ? value : {}; };
+function decode(text) {
+  if (text.length === 0) return {};
+  const value = JSON.parse(text);
+  return value?.schemaVersion === 1 ? value : {};
+}
 // Synchronous compatibility reader for offline tools. The server uses the async reader.
 export function readAgentReport(directory) {
   const filename = path.join(directory,'runtime-latest.json');

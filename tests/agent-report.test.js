@@ -13,6 +13,14 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, {recursive:true, force:true}));
   return root;
 }
+test("a zero-byte diagnostic report can be rebuilt and closed", async t => {
+  const root = fixture(t), filename = path.join(root, "runtime-latest.json");
+  fs.writeFileSync(filename, "");
+  const report = createAutomaticAgentReport({ root, directory: root, observeRepository: async () => ({}) });
+  await report.ready;
+  await report.close();
+  assert.equal(JSON.parse(fs.readFileSync(filename, "utf8")).server.trigger, "SERVER_CREATED");
+});
 test("automatic repository observation bypasses fsmonitor hooks while preserving HEAD and dirty evidence", async t => {
   const root = fixture(t), marker = path.join(root, "fsmonitor-invoked");
   const hook = path.join(root, "fsmonitor.mjs");
