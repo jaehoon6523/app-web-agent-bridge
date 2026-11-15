@@ -922,7 +922,8 @@ function proposalControls() {
 }
 function renderPreparation() {
   if (!preparation) { preparationSignature = ""; tabChoice.reset(); return; }
-  const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
+  const canApprove = preparation.state === "AGREEMENT_READY" && agreement?.status === "READY" && currentPreparationActions().approve;
+  const signature = JSON.stringify([preparation, canApprove, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
   $("planningObjective").value = preparation.objective;
@@ -1013,10 +1014,12 @@ function renderPreparation() {
       const requirementCount = (packet.items ?? []).length;
       recovery.append(node("p", `내용 해석: 요구사항 ${requirementCount}개와 확인 질문 ${questionCount}개를 인지함`, "recovery-guidance ok"));
       recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${questionCount}개`, "diagnostic-row health ok"));
-      recovery.append(node("p", questionCount === 0
-        ? "요구사항 상태: 요구사항 합의 완료 · 승인 가능"
-        : "요구사항 상태: 추가 합의 필요 · 확인 질문에 답변 필요",
-      questionCount === 0 ? "diagnostic-row health ok" : "diagnostic-row health warn"));
+      const approvalReady = responseSettled && canApprove && questionCount === 0;
+      const requirementStatus = !responseSettled
+        ? preparation.state === "RECOVERY_REQUIRED" ? "전송 정리 필요 · 승인 불가" : "형식 검증 완료 · ACK 확인 중"
+        : approvalReady ? "요구사항 합의 완료 · 승인 가능"
+          : questionCount > 0 ? "추가 합의 필요 · 확인 질문에 답변 필요" : "승인 조건 확인 필요";
+      recovery.append(node("p", `요구사항 상태: ${requirementStatus}`, approvalReady ? "diagnostic-row health ok" : "diagnostic-row health warn"));
     } else if (displayedDelivery.response) {
       recovery.append(node("p", "응답 수신 · 제안의 형식 검증이 확인되지 않았습니다.", "diagnostic-row health warn"));
     }

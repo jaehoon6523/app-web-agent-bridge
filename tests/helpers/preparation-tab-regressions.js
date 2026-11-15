@@ -133,4 +133,34 @@ export function registerTabSelectionTests({ dashboard, prepared, renderedText })
     assert.match(rendered,/items\[0\]\.acceptanceCriteria/u);
     assert.doesNotMatch(rendered,/packet 양식: 정상|승인 가능/u);
   });
+
+  for (const [status, guidance] of [
+    ["WAITING_WEB_RESPONSE", /형식 검증 완료 · ACK 확인 중/u],
+    ["RECOVERY_REQUIRED", /전송 정리 필요 · 승인 불가/u],
+  ]) {
+    test("validated packet gates approval guidance in " + status, async () => {
+      const state = prepared();
+      Object.assign(state.workflow, { stage:"START", state:status });
+      const delivery = { deliveryId:"d1", state:"RESPONSE_COMPLETED", processingState:"ACK_PENDING",
+        validation:{ format:"CONFIRMED" }, response:{ packet:{ type:"REQUIREMENTS_PROPOSAL", questions:[],
+          items:[{ statement:"메뉴 표시", acceptanceCriteria:"메뉴 항목 표시 확인" }] } } };
+      Object.assign(state.preparation, { lifecycle:"ACTIVE", state:status, deliveries:[delivery] });
+      state.commandCapabilities = ["web.reconcile"];
+      const ui = await dashboard(state);
+      const recoveryText = () => renderedText(ui.elements.get("preparationDiagnosticsBody")) + renderedText(ui.elements.get("startRecovery"));
+      assert.match(recoveryText(), /packet 양식: 정상/u);
+      assert.doesNotMatch(recoveryText(), /승인 가능/u);
+      assert.match(recoveryText(), guidance);
+
+      Object.assign(state.workflow, { stage:"PREPARE", state:"AGREEMENT_READY" });
+      Object.assign(state.preparation, { state:"AGREEMENT_READY", agreement:{ status:"READY", unresolvedQuestions:[], requirements:[] } });
+      Object.assign(delivery, { state:"ACKNOWLEDGED", processingState:"COMPLETE" });
+      state.preparation.webSession.activeDeliveryId = null;
+      await ui.run("refresh()");
+      assert.doesNotMatch(recoveryText(), /승인 가능/u);
+      state.commandCapabilities.push("preparation.approve");
+      await ui.run("refresh()");
+      assert.match(recoveryText(), /승인 가능/u);
+    });
+  }
 }
