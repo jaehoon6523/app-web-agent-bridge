@@ -337,7 +337,7 @@ test("missing server workflow fails closed without constructing a preparation", 
   assert.equal(ui.elements.get("planRun").disabled, true);
   assert.match(ui.elements.get("connectionNotice").textContent, /상태 응답 해석 실패 · 기술 진단을 확인하세요/u);
 });
-registerTabSelectionTests({ dashboard, prepared });
+registerTabSelectionTests({ dashboard, prepared, renderedText });
 
 test("an initial binding failure displays the original error and holds the request until explicit cancellation", async () => {
   const state = prepared();

@@ -316,3 +316,29 @@ for (const action of ['continueProject','newProjectTask']) {
     });
   }
 }
+
+test('stable incomplete packet waits for generation to stop and is stored verbatim', {timeout:20000}, async t => {
+  const raw='CONTROLLER_PACKET_BEGIN';
+  const f=await extensionBrowser(t,{reply:async (_text,{page})=>{
+    await page.evaluate(raw=>{
+      appendMessage('assistant','a-contract',raw);
+      const stop=document.createElement('button');
+      stop.dataset.testid='stop-button'; stop.textContent='Stop generating';
+      document.body.append(stop);
+    },raw);
+    return new Promise(()=>{});
+  }});
+  await f.prepare();
+  const completion=f.submit('completion-contract');
+  const stop=f.page.getByTestId('stop-button');
+  await stop.waitFor();
+  const observation=await Promise.race([completion.then(()=> 'completed'),new Promise(resolve=>setTimeout(()=>resolve('waiting'),1400))]);
+  assert.equal(observation,'waiting');
+  assert.equal((await f.sendContent({type:'agent.ping'})).generating,true);
+  assert.equal(f.readStorage().completedDelivery,null);
+  await stop.evaluate(node=>node.remove());
+  const response=await completion;
+  assert.equal(response.rawText,raw);
+  assert.equal(f.readStorage().completedDelivery.rawText,raw);
+  assert.equal(await f.page.evaluate(()=>sessionStorage.getItem('clicks')),'1');
+});

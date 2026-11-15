@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-export function registerTabSelectionTests({ dashboard, prepared }) {
+export function registerTabSelectionTests({ dashboard, prepared, renderedText }) {
   test("a historical unsent marker cannot hide recovery after a resumed dispatch", async () => {
     const state = prepared();
     state.workflow = { stage:"START", state:"RECOVERY_REQUIRED", preparationId:"p1", preparationVersion:3 };
@@ -115,5 +115,22 @@ export function registerTabSelectionTests({ dashboard, prepared }) {
     assert.equal(mutations[0].body.selectedTabId, 12);
     assert.equal(mutations[0].body.deliveryId, "d2");
     assert.equal(mutations[0].body.sessionId, "s2");
+  });
+
+  test("received packet with invalid requirements never renders as ready for approval", async () => {
+    const state=prepared();
+    Object.assign(state.workflow,{stage:"START",state:"RECOVERY_REQUIRED"});
+    Object.assign(state.preparation,{lifecycle:"ACTIVE",state:"RECOVERY_REQUIRED",
+      error:{code:"INVALID_AGREEMENT",message:"Invalid designer response."},
+      deliveries:[{deliveryId:"delivery-schema",state:"RESPONSE_COMPLETED",
+        response:{packet:{type:"REQUIREMENTS_PROPOSAL",questions:[],items:[{id:"req-1",description:"menu"}]}},
+        validation:{format:"INVALID",packetParsed:true,formatError:{code:"INVALID_REQUIREMENTS_PROPOSAL",message:"Invalid requirements",
+          missingFields:["items[0].statement","items[0].acceptanceCriteria"]}}}]});
+    const ui=await dashboard(state);
+    const rendered=renderedText(ui.elements.get("startRecovery"));
+    assert.match(rendered,/응답 수신/u);
+    assert.match(rendered,/INVALID_REQUIREMENTS_PROPOSAL/u);
+    assert.match(rendered,/items\[0\]\.acceptanceCriteria/u);
+    assert.doesNotMatch(rendered,/packet 양식: 정상|승인 가능/u);
   });
 }

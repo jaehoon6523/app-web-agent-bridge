@@ -1003,8 +1003,12 @@ function renderPreparation() {
     const confidenceReason = displayedDelivery.response?.confidenceReason
       ?? displayedDelivery.response?.evidence?.confidenceReason
       ?? null;
-    const packet = displayedDelivery.response?.packet;
-    if (packet?.type === "REQUIREMENTS_PROPOSAL") {
+    const packet = displayedDelivery.response?.packet, formatError = displayedDelivery.validation?.formatError;
+    if (formatError) {
+      const fields = [...(formatError.missingFields ?? []), ...(formatError.invalidFields ?? [])];
+      recovery.append(node("p", "응답은 수신됐으나 제안 검증에 실패했습니다.", "recovery-guidance error"));
+      recovery.append(node("p", [formatError.code, formatError.message, fields.join(", ")].filter(Boolean).join(" · "), "diagnostic-row health error"));
+    } else if (packet?.type === "REQUIREMENTS_PROPOSAL" && displayedDelivery.validation?.format === "CONFIRMED") {
       const questionCount = (packet.questions ?? []).length;
       const requirementCount = (packet.items ?? []).length;
       recovery.append(node("p", `내용 해석: 요구사항 ${requirementCount}개와 확인 질문 ${questionCount}개를 인지함`, "recovery-guidance ok"));
@@ -1013,15 +1017,8 @@ function renderPreparation() {
         ? "요구사항 상태: 요구사항 합의 완료 · 승인 가능"
         : "요구사항 상태: 추가 합의 필요 · 확인 질문에 답변 필요",
       questionCount === 0 ? "diagnostic-row health ok" : "diagnostic-row health warn"));
-    } else if (packet) {
-      recovery.append(node("p", `내용 해석: packet은 확인됨 · ${packet.type ?? "알 수 없는 유형"}`, "diagnostic-row health warn"));
-      recovery.append(node("p", "packet 양식: 현재 준비 단계에서 기대한 REQUIREMENTS_PROPOSAL이 아님", "diagnostic-row health error"));
-    } else if (displayedDelivery.response && !packet) {
-      recovery.append(node("p", "내용 해석: 확인 불가 · 응답 packet을 해석하지 못함", "recovery-guidance error"));
-      const formatError = displayedDelivery.validation?.formatError;
-      recovery.append(node("p", formatError
-        ? `packet 양식: ${formatError.code} · ${formatError.message}`
-        : "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
+    } else if (displayedDelivery.response) {
+      recovery.append(node("p", "응답 수신 · 제안의 형식 검증이 확인되지 않았습니다.", "diagnostic-row health warn"));
     }
     if (displayedDelivery.response?.confidence === "HEURISTIC") {
       recovery.append(node("p", "응답 전달 검증: 확인 불가 · 이번 요청에 대한 응답인지 DOM 순서로 확정하지 못함", "recovery-guidance error"));

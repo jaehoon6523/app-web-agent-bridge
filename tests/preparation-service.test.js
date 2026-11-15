@@ -809,12 +809,11 @@ test("preparation requires a DOM-safe final packet even when only a question can
   f.web.submitTurn = async (input) => {
     const { completion } = await submit(input);
     const response = await completion;
-    return { completion: Promise.resolve({ ...response, rawText:response.rawText
-      .replace("<controller_packet>", "CONTROLLER_PACKET_BEGIN")
-      .replace("</controller_packet>", "CONTROLLER_PACKET_END") }) };
+    const rawText = input.text.split("\n").slice(-3).join("\n");
+    return { completion: Promise.resolve({ ...response, rawText }) };
   };
   await f.service.execute("preparation.start", {
-    requestId: "structured-questions", objective: "작업 범위를 알려주세요", targetRoot: f.root,
+    requestId: "structured-questions", objective: "테스트 화면에 한 줄을 표시해 주세요.", targetRoot: f.root,
     conversationUrl: "https://chatgpt.com/c/test", acceptPlainTextDiscussion: true,
   });
   await settled(f.service);
@@ -823,7 +822,107 @@ test("preparation requires a DOM-safe final packet even when only a question can
   assert.match(f.prompts[0], /CONTROLLER_PACKET_END/u);
   assert.match(f.prompts[0], /정보가 부족해도.*questions.*items/u);
   assert.doesNotMatch(f.prompts[0], /태그가 전혀 없는 평문/u);
+  assert.match(f.prompts[0], /준비 ID=[^\n]+\n프로젝트 루트=[^\n]+\nChatGPT 대화 URL=/u);
+  assert.match(f.prompts[0], /사용자의 최초 요청=테스트 화면에 한 줄을 표시해 주세요\.\n/u);
+  assert.match(f.prompts[0], /파일 경로·컴포넌트·URL.*questions/u);
+  const [begin, json, end] = f.prompts[0].split("\n").slice(-3);
+  assert.equal(begin, "CONTROLLER_PACKET_BEGIN");
+  assert.equal(end, "CONTROLLER_PACKET_END");
+  const example = JSON.parse(json);
+  assert.equal(example.type, "REQUIREMENTS_PROPOSAL");
+  assert.equal(example.questions.length, 1);
+  assert.deepEqual(example.items, []);
   assert.equal(f.service.current.agreement.status, "DISCUSSING");
-  assert.equal(f.service.current.agreement.unresolvedQuestions.length, 1);
+  assert.deepEqual(f.service.current.agreement.unresolvedQuestions, example.questions);
   assert.deepEqual(f.service.current.agreement.requirements, []);
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+});
+
+const packetEnvelope = packet => ["CONTROLLER_PACKET_BEGIN", JSON.stringify(packet), "CONTROLLER_PACKET_END"].join("\n");
+const proposal = { type:"REQUIREMENTS_PROPOSAL", summary:"메뉴 화면 구현", questions:[],
+  items:[{ statement:"메뉴 목록을 표시한다", acceptanceCriteria:"메뉴 항목이 표시된다" }] };
+
+for (const [name, rawText, code, parsed, missingFields] of [
+  ["BEGIN only", "CONTROLLER_PACKET_BEGIN", "CONTROLLER_PACKET_MISSING", false, []],
+  ["alternate item fields", packetEnvelope({...proposal, items:[{id:"req-1",description:"메뉴 화면 구현"}]}),
+    "INVALID_REQUIREMENTS_PROPOSAL", true, ["items[0].statement","items[0].acceptanceCriteria"]],
+  ["wrong packet type", packetEnvelope({...proposal,type:"PROPOSAL"}), "INVALID_REQUIREMENTS_PROPOSAL", true, []],
+  ["invalid JSON", "CONTROLLER_PACKET_BEGIN\n{\"private\":\"PRIVATE_RAW_FIXTURE\", broken}\nCONTROLLER_PACKET_END",
+    "INVALID_PACKET_JSON", false, []],
+]) {
+  test("packet contract preserves and rejects " + name, async t => {
+    const f=fixture(t), submit=f.web.submitTurn;
+    let ackCalls=0;
+    f.web.submitTurn=async input=>{
+      const {completion}=await submit(input);
+      return {completion:completion.then(response=>({...response,rawText}))};
+    };
+    f.web.acknowledgeDelivery=async()=>{ackCalls++;};
+    await f.start();
+    await settled(f.service);
+    let context=f.service.current, delivery=context.deliveries[0];
+    assert.equal(context.state,"RECOVERY_REQUIRED");
+    assert.equal(context.error.code,"INVALID_AGREEMENT");
+    assert.equal(delivery.state,"RESPONSE_COMPLETED");
+    assert.equal(delivery.response.rawText,rawText);
+    assert.equal(delivery.validation.formatError.code,code);
+    assert.equal(context.webSession.activeDeliveryId,delivery.deliveryId);
+    assert.equal(context.agreement.requirements.length,0);
+    assert.equal(ackCalls,0);
+    const {createHash}=await import("node:crypto");
+    const hash=createHash("sha256").update(rawText).digest("hex");
+    f.restart();
+    context=f.service.current; delivery=context.deliveries[0];
+    assert.equal(delivery.response.rawText,rawText);
+    assert.equal(context.webSession.activeDeliveryId,delivery.deliveryId);
+    assert.equal(delivery.validation.formatError.code,code);
+    assert.equal(delivery.validation.packetParsed,parsed);
+    assert.equal(delivery.validation.responseBytes,Buffer.byteLength(rawText));
+    assert.equal(delivery.validation.responseSha256,hash);
+    assert.deepEqual(delivery.validation.formatError.missingFields ?? [],missingFields);
+    assert.doesNotMatch(delivery.validation.formatError.message,/PRIVATE_RAW_FIXTURE/);
+  });
+}
+
+test("packet contract validates requirements before acknowledging and releases only the matching delivery", async t => {
+  const f=fixture(t), submit=f.web.submitTurn, acknowledge=f.web.acknowledgeDelivery;
+  let ackCalls=0;
+  f.web.submitTurn=async input=>{
+    const {completion}=await submit(input);
+    return {completion:completion.then(response=>({...response,rawText:packetEnvelope(proposal)}))};
+  };
+  f.web.acknowledgeDelivery=async input=>{
+    ackCalls++;
+    const persisted=JSON.parse(f.service.db.prepare("SELECT json FROM preparation_state").get().json);
+    const context=persisted.contexts[f.service.current.preparationId], d=context.deliveries[0];
+    assert.equal(input.turnId,d.deliveryId);
+    assert.equal(d.validation.format,"CONFIRMED");
+    assert.equal(d.processingState,"ACK_PENDING");
+    assert.deepEqual(d.response.packet.items,proposal.items);
+    assert.equal(context.webSession.activeDeliveryId,d.deliveryId);
+    await acknowledge(input);
+  };
+  await f.start(); await settled(f.service);
+  const c=f.service.current;
+  assert.equal(ackCalls,1);
+  assert.equal(c.agreement.status,"READY");
+  assert.deepEqual(c.agreement.requirements,proposal.items);
+  assert.equal(c.deliveries[0].state,"ACKNOWLEDGED");
+  assert.equal(c.webSession.activeDeliveryId,null);
+});
+
+test("packet contract will not apply a valid reply for another delivery", async t => {
+  const f=fixture(t), submit=f.web.submitTurn;
+  let ackCalls=0;
+  f.web.submitTurn=async input=>{
+    const {completion}=await submit(input);
+    return {completion:completion.then(response=>({...response,turnId:"different-delivery",rawText:packetEnvelope(proposal)}))};
+  };
+  f.web.acknowledgeDelivery=async()=>{ackCalls++;};
+  await f.start(); await settled(f.service);
+  const c=f.service.current;
+  assert.equal(ackCalls,0);
+  assert.equal(c.agreement.requirements.length,0);
+  assert.notEqual(c.deliveries[0].state,"RESPONSE_COMPLETED");
+  assert.equal(c.webSession.activeDeliveryId,c.deliveries[0].deliveryId);
 });
