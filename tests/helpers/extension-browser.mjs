@@ -1,10 +1,14 @@
-import { readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
 import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright-core';
 import { WebSocketServer } from 'ws';
 import { ChatGptWebSessionAdapter, WebExtensionTransport, WebSessionAdapter } from '../../src/runtime/web/index.js';
+import { installDecisionEvidenceStorage } from '../../src/evidence/decision-evidence-store.js';
 
 const extensionRoot = new URL('../../extension/', import.meta.url);
 const publicRoot = new URL('../../public/', import.meta.url);
@@ -42,6 +46,8 @@ export async function extensionBrowser(t, {
   autoConnect = true,
   cleanup = null,
   observeFrame = null,
+  disableDecisionEvidenceStorage = false,
+  decisionEvidenceParent = null,
 } = {}) {
   const browser = await chromium.launch({
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE }
@@ -56,11 +62,22 @@ export async function extensionBrowser(t, {
   const manifest = JSON.parse(await readFile(new URL('manifest.json', extensionRoot), 'utf8'));
   const scripts = await Promise.all(manifest.content_scripts[0].js.map(file => readFile(new URL(file, extensionRoot), 'utf8')));
   const transport = production ? null : new WebExtensionTransport({ sharedSecret: secret, expectedExtensionIdentity: identity });
+  const decisionReceipts = [];
+  const decisionDirectory = transport ? await mkdtemp(path.join(decisionEvidenceParent ?? os.tmpdir(),'decision-fixture-')) : null;
+  if (decisionDirectory) {
+    if (!decisionEvidenceParent) after(() => rm(decisionDirectory,{recursive:true,force:true}));
+    installDecisionEvidenceStorage(transport, disableDecisionEvidenceStorage
+      ? path.join(decisionDirectory,'invalid-parent') : decisionDirectory, receipt=>decisionReceipts.push(receipt));
+    if (disableDecisionEvidenceStorage) await writeFile(path.join(decisionDirectory,'invalid-parent'),'not a directory');
+  }
   const server = production ? null : new WebSocketServer({ host: '127.0.0.1', port: 0 });
   if (server) await once(server, 'listening');
   const frames = [];
   server?.on('connection', socket => {
-    socket.on('message', raw => frames.push(JSON.parse(String(raw))));
+    socket.on('message', raw => {
+      const message = JSON.parse(String(raw));
+      frames.push(message.type === 'extension.decision-evidence' ? {type:message.type,requestId:message.requestId} : message);
+    });
     transport.attach(socket);
   });
   const createAdapter = provider => {
@@ -147,9 +164,11 @@ export async function extensionBrowser(t, {
   async function configureProviderPage(providerPage, id) {
     providerPage.on('close', () => pages.delete(id));
     providerPage.on('pageerror', error => errors.push(error.message));
-    await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id }) => {
-      globalThis.fixtureBackgroundListener?.(message, { tab: { id }, frameId: 0 }, () => {});
-    }, { message, id }));
+    await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id }) =>
+      new Promise(resolve => {
+        const pending = globalThis.fixtureBackgroundListener?.(message, { tab: { id }, frameId: 0 }, resolve);
+        if (!pending) resolve(null);
+      }), { message, id }));
     await providerPage.exposeBinding('fixtureReply', (_source, text) => reply(text, { page:providerPage, tabId:id }));
     await providerPage.addInitScript(({ id, production }) => {
       globalThis.fixtureConversationId = production && id !== 7 ? 'created-' + id : 'created';
@@ -207,7 +226,9 @@ export async function extensionBrowser(t, {
             if (variant === 'classes') article.className = role === 'user' ? 'group/user-turn' : 'group/agent-turn';
             else { const heading = document.createElement('h2'); heading.textContent = role === 'user' ? 'You said:' : 'ChatGPT said:'; article.append(heading); } }
           const body = document.createElement('div'); body.setAttribute('data-message-content', ''); body.style.whiteSpace = 'pre-wrap'; body.textContent = text;
-          article.append(body); document.querySelector('#messages').append(article);
+          article.append(body);
+          if (role === 'assistant') article.setAttribute('data-talvt-turn-state', 'complete');
+          document.querySelector('#messages').append(article);
           if (preserveHistory && record) {
             const messages = JSON.parse(sessionStorage.getItem('fixtureMessages') || '[]');
             messages.push({ role, id, text }); sessionStorage.setItem('fixtureMessages', JSON.stringify(messages));
@@ -285,6 +306,24 @@ export async function extensionBrowser(t, {
   if (autoConnect) await connect();
   return { connect, adapter, createAdapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
     readStorage: () => structuredClone(stored),
+    decisionReceipts,
+    decisionDirectory,
+    readDecisionEvidence(receipt) {
+      const directory = path.join(decisionDirectory,receipt.relativePath);
+      const read = name => readFileSync(path.join(directory,name),'utf8');
+      const manifest = read('manifest.sha256');
+      if (createHash('sha256').update(manifest).digest('hex') !== receipt.manifestSha256) throw new Error('Manifest hash mismatch');
+      for (const row of manifest.trimEnd().split('\n')) {
+        const [sha256,name] = row.split('  ');
+        if (createHash('sha256').update(read(name)).digest('hex') !== sha256) throw new Error('Evidence hash mismatch: '+name);
+      }
+      const decision = JSON.parse(read('decision.json'));
+      const optional = name => decision.files[name] ? read(name) : null;
+      return {...decision, pageHtml:read('page-raw.html'), assistantHtml:optional('assistant-raw.html'),
+        userHtml:optional('user-raw.html'), composerHtml:optional('composer-raw.html'), stopHtml:optional('stop-raw.html'),
+        assistantRawText:optional('response-raw.txt'), extracted:read('response-extracted.txt'),
+        bodyHtml:Object.keys(decision.files).filter(name=>name.startsWith('body-')).map(read)};
+    },
     providerPages: () => [...pages.entries()],
     setProviderUnavailable: (id, value) => value ? unavailableTabs.add(id) : unavailableTabs.delete(id),
     createProviderTab: url => background.evaluate(url => chrome.tabs.create({ url }), url),

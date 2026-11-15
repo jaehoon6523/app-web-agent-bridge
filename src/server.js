@@ -20,6 +20,7 @@ import process from "node:process";
 import { performance } from "node:perf_hooks";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
+import { installDecisionEvidenceStorage } from "./evidence/decision-evidence-store.js";
 import { loadConfig } from "./config.js";
 import { AuditProjectSettings } from "./orchestration/audit-project-settings.js";
 import { defaultReviewerConfiguration } from "./orchestration/reviewer-settings.js";
@@ -94,6 +95,9 @@ export function createBridgeServer({
     ? new WebExtensionTransport({ ...runtimeConfig.webExtension,
         expectedExtensionIdentity: extensionPairing.identity })
     : null;
+  if (extensionTransport) installDecisionEvidenceStorage(extensionTransport,
+    path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller"),
+    receipt => console.info("[bridge:decision-evidence]", receipt));
   const webSession = extensionTransport
     ? new ChatGptWebSessionAdapter({
         transport: extensionTransport,

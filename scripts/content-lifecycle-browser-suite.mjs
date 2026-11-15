@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs/promises';
 import { collectSelectorDiagnostics } from '../src/orchestration/selector-diagnostics.js';
 import { extensionBrowser } from '../tests/helpers/extension-browser.mjs';
@@ -341,4 +342,111 @@ test('stable incomplete packet waits for generation to stop and is stored verbat
   assert.equal(response.rawText,raw);
   assert.equal(f.readStorage().completedDelivery.rawText,raw);
   assert.equal(await f.page.evaluate(()=>sessionStorage.getItem('clicks')),'1');
+});
+
+test('a quiet streaming pause and a previous completed turn cannot finish the current packet', {timeout:20000}, async t => {
+  const begin = 'CONTROLLER_PACKET_BEGIN';
+  const raw = begin + '\n{"type":"REQUIREMENTS_PROPOSAL","summary":"fixture","questions":["Which screen?"],"items":[]}\nCONTROLLER_PACKET_END';
+  let decisionHtml;
+  const f = await extensionBrowser(t, {decisionEvidenceParent:process.env.BRIDGE_DECISION_FIXTURE_ROOT,reply:async (_text,{page}) => {
+    await page.evaluate(begin => {
+      appendMessage('assistant','a-current',begin);
+      document.querySelector('#a-current').removeAttribute('data-talvt-turn-state');
+      document.querySelector('[data-testid="send-button"]').remove();
+      window.fixtureLastTextAndDomAt = Date.now();
+    },begin);
+    return new Promise(()=>{});
+  }});
+  await f.page.evaluate(()=>appendMessage('assistant','a-prior','Previously completed'));
+  await f.prepare();
+  const completion = f.submit('quiet-stream');
+  const message = f.page.locator('#a-current [data-message-content]');
+  await message.waitFor();
+  const result = await Promise.race([
+    completion.then(response=>({completed:true, bytes:Buffer.byteLength(response.rawText),
+      assistantId:response.evidence.assistantMessageId, returnedAt:Date.now(),
+      sha256:createHash('sha256').update(response.rawText).digest('hex')})),
+    new Promise(resolve=>setTimeout(()=>resolve({completed:false}),1650)),
+  ]);
+  assert.deepEqual(result,{completed:false});
+  const observed = await message.evaluate((body,raw)=>{
+    body.textContent = raw;
+    body.parentElement.setAttribute('data-talvt-turn-state','complete');
+    const extra = document.createElement('template');
+    extra.innerHTML = '<!--' + 'x'.repeat(1_100_000) + '-->';
+    document.head.append(extra);
+    return { at:Date.now(), html:document.documentElement.outerHTML };
+  },raw);
+  decisionHtml = observed.html;
+  const response = await completion;
+  const returnedAt = Date.now();
+  assert.equal(response.rawText,raw);
+  assert.equal(response.evidence.assistantMessageId,'a-current');
+  assert.equal(response.evidence.completionSignal,'ASSISTANT_TURN_COMPLETE');
+  assert.equal(response.evidence.sendButtonState,'CONFIRMED_EMPTY_COMPOSER');
+  assert.equal(f.readStorage().completedDelivery.rawText,raw);
+  const receipt = response.evidence.decisionEvidence;
+  assert.equal(receipt.status,'PERSISTED');
+  const decision = f.readDecisionEvidence(receipt);
+  assert.equal(decision.pageHtml,decisionHtml);
+  assert.ok(receipt.page.utf8Bytes > 1024 * 1024);
+  assert.equal(receipt.page.sha256,createHash('sha256').update(decisionHtml).digest('hex'));
+  assert.equal(decision.extracted,raw);
+  assert.equal(decision.assistantRawText,raw);
+  assert.equal(decision.files['response-extracted.txt'].utf8Bytes,Buffer.byteLength(raw));
+  assert.equal(receipt.response.sha256,createHash('sha256').update(raw).digest('hex'));
+  assert.match(decision.assistantHtml,/id="a-current"/u);
+  assert.match(decision.userHtml,/id="u1"/u);
+  assert.match(decision.composerHtml,/id="prompt-textarea"/u);
+  assert.equal(decision.stopHtml,null);
+  assert.deepEqual(decision.bodyHtml,[`<div data-message-content="" style="white-space: pre-wrap;">${raw}</div>`]);
+  await message.evaluate(body=>{ body.textContent += '\nLate addition'; });
+  const deadline = Date.now() + 6000;
+  while (!f.decisionReceipts.some(item=>item.phase === 'AFTER_CHANGE') && Date.now() < deadline) {
+    await new Promise(resolve=>setTimeout(resolve,50));
+  }
+  const late = f.readDecisionEvidence(f.decisionReceipts.find(item=>item.phase === 'AFTER_CHANGE'));
+  assert.equal(late.observation.previousCaptureId,receipt.captureId);
+  assert.equal(late.assistantMessageId,decision.assistantMessageId);
+  assert.equal(late.extracted,raw+'\nLate addition');
+  assert.equal(f.readStorage().completedDelivery.rawText,raw);
+  assert.equal(await f.page.evaluate(()=>sessionStorage.getItem('clicks')),'1');
+  t.diagnostic(JSON.stringify({ assistantMessageId:response.evidence.assistantMessageId,
+    initialMutationAt:await f.page.evaluate(()=>window.fixtureLastTextAndDomAt),
+    lastTextAndDomChangeAt:observed.at, decisionCapturedAt:decision.capturedAt, returnedAt,
+    bytes:Buffer.byteLength(response.rawText),
+    sha256:createHash('sha256').update(response.rawText).digest('hex'),
+    stopButtonVisible:response.evidence.stopButtonVisible, sendButtonState:response.evidence.sendButtonState,
+    page:receipt.page, captureId:receipt.captureId, relativePath:receipt.relativePath,
+    ...(process.env.BRIDGE_DECISION_FIXTURE_ROOT ? { fixtureRoot:f.decisionDirectory } : {}) }));
+});
+
+test('unsupported completion markup times out and persists an unconfirmed decision', {timeout:20000}, async t => {
+  const raw = 'Full answer from a variant without a completion attribute';
+  const f = await extensionBrowser(t,{reply:async (_text,{page})=>{
+    await page.evaluate(raw=>{
+      appendMessage('assistant','a-unknown',raw);
+      document.querySelector('#a-unknown').removeAttribute('data-talvt-turn-state');
+    },raw);
+    return new Promise(()=>{});
+  }});
+  await f.prepare();
+  await assert.rejects(f.submit('unknown-completion'),{code:'AMBIGUOUS_COMPLETION'});
+  const receipt = f.decisionReceipts.find(item=>item.phase === 'UNCONFIRMED');
+  assert.equal(receipt.status,'PERSISTED');
+  const decision = f.readDecisionEvidence(receipt);
+  assert.equal(decision.assistantMessageId,'a-unknown');
+  assert.equal(decision.extracted,raw);
+  assert.equal(decision.observation.errorCode,'AMBIGUOUS_COMPLETION');
+  assert.equal(f.readStorage().completedDelivery,null);
+  assert.equal(f.readStorage().currentDeliveryId,'unknown-completion');
+});
+
+test('a failed private store returns an explicit evidence failure', {timeout:20000}, async t => {
+  const f = await extensionBrowser(t,{disableDecisionEvidenceStorage:true});
+  await f.prepare();
+  const response = await f.submit('private-storage-failure');
+  assert.equal(response.rawText,'Observed fixture reply');
+  assert.deepEqual(response.evidence.decisionEvidence,{status:'FAILED',code:'EVIDENCE_STORAGE_FAILED'});
+  assert.equal(f.readStorage().currentDeliveryId,'private-storage-failure');
 });

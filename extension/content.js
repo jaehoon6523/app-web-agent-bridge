@@ -248,6 +248,50 @@ function locateAssociatedAssistant(
 // case) rather than an ambiguous one. Any other missing-button case is an
 // unexpected selector/UI-contract mismatch and is reported there via
 // console.warn.
+function captureDecision({ phase, requestId, assistantElement, assistantId, userMessage, extracted, observation }) {
+  const unavailable = { status:"FAILED", code:"EVIDENCE_CAPTURE_UNAVAILABLE" };
+  try {
+    const provider = requirePageContract();
+    if (!provider.decisionNodes) return Promise.resolve(null);
+    const { turn, composer, send, stop, bodies } = provider.decisionNodes(assistantElement);
+    const html = element => element?.isConnected ? element.outerHTML : null;
+    const at = Date.now();
+    const payload = { phase, capturedAt:at, dataUrl:location.href, documentId:DOCUMENT_ID,
+      conversationId:conversationIdFromUrl(location.href), assistantMessageId:assistantId, userMessageId:userMessage?.id ?? null,
+      pageHtml:document.documentElement.outerHTML, assistantHtml:html(assistantElement), userHtml:html(userMessage?.element),
+      turnHtml:html(turn), turnAttributes:turn ? [...turn.attributes].map(({name,value})=>[name,value]) : [],
+      composerHtml:html(composer), sendHtml:html(send), stopHtml:html(stop), bodyHtml:bodies.map(html),
+      assistantRawText:assistantElement?.isConnected ? assistantElement.textContent : null, extracted,
+      observation:{ ...observation, ...selectedSelectorEvidence() } };
+    return chrome.runtime.sendMessage({ type:"agent.decision-evidence", requestId, payload })
+      .then(receipt => receipt ?? unavailable, () => unavailable);
+  } catch {
+    return Promise.resolve(unavailable);
+  }
+}
+
+function watchCompletedResponse({ requestId, assistantId, userMessage, extracted, documentUrl, previousCaptureId }) {
+  if (!assistantId) return;
+  let timer;
+  const check = () => {
+    if (location.href !== documentUrl) return stop();
+    let matches;
+    try { matches = messageSnapshot().filter(message => message.role === "assistant" && message.id === assistantId); }
+    catch { return stop(); }
+    if (matches.length !== 1 || matches[0].text === extracted) return;
+    stop();
+    const current = matches[0];
+    void captureDecision({ phase:"AFTER_CHANGE", requestId, assistantElement:current.element, assistantId,
+      userMessage, extracted:current.text, observation:{ previousCaptureId } })
+      .then(receipt => { if (receipt?.status === "FAILED") contentTrace("decision-evidence-failed", { requestId, code:receipt.code }); });
+  };
+  const observer = new MutationObserver(check);
+  function stop() { observer.disconnect(); clearTimeout(timer); }
+  observer.observe(document.documentElement, { childList:true, subtree:true, characterData:true });
+  timer = setTimeout(stop, 10000);
+  check();
+}
+
 async function waitForAssistantResponse({ expected, baseline, userMessage, timeoutMs, stableMs, signal, requestId }) {
   const deadline = Date.now() + timeoutMs;
   const baselineAssistantIds = new Set(
@@ -267,6 +311,9 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
   let virtualizedUser = false;
   let virtualizedAssociationConfirmed = false;
   let lastDomMutationAt = Date.now();
+  let observation = {};
+  const capture = phase => captureDecision({ phase, requestId, assistantElement, assistantId, userMessage,
+    extracted:lastText, observation:{ ...observation, lastTextChangeAt, lastDomMutationAt, requiredStableMs:stableMs } });
   const observer = new MutationObserver(() => {
     lastDomMutationAt = Date.now();
   });
@@ -362,10 +409,23 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
         && lastText
         && Date.now() - lastTextChangeAt >= stableMs
         && Date.now() - lastDomMutationAt >= stableMs;
-      if (stable && !stopVisible && sendConfirmed) {
+      const completionSignal = stable && requirePageContract().assistantCompletion?.(assistantElement);
+      observation = { decisionAt:Date.now(), stopButtonVisible:stopVisible, sendButtonState:sendState.state,
+        composerPresent:page.composerPresent, completionSignal:completionSignal || null,
+        stableForMs:Math.min(Date.now() - lastTextChangeAt, Date.now() - lastDomMutationAt) };
+      if (stable && !stopVisible && sendConfirmed
+        && (!requirePageContract().assistantCompletion || completionSignal)) {
         const confidence = virtualizedUser && !virtualizedAssociationConfirmed
           ? "HEURISTIC"
           : "CONFIRMED_BY_UI_STATE";
+        observation.responseAssociation = virtualizedUser
+          ? virtualizedAssociationConfirmed ? "VIRTUALIZED_USER_LAST_ASSISTANT" : "VIRTUALIZED_USER_HEURISTIC"
+          : "DIRECT_DOM_ORDER";
+        const documentUrl = location.href;
+        const decisionEvidence = await capture("COMPLETED");
+        if (decisionEvidence?.status === "PERSISTED") watchCompletedResponse({ requestId, assistantId,
+          userMessage, extracted:lastText, documentUrl, previousCaptureId:decisionEvidence.captureId });
+        if (decisionEvidence?.status === "FAILED") contentTrace("decision-evidence-failed", { requestId, code:decisionEvidence.code });
         return {
           text: lastText,
           confidence,
@@ -387,19 +447,29 @@ async function waitForAssistantResponse({ expected, baseline, userMessage, timeo
                 : "VIRTUALIZED_USER_HEURISTIC")
               : "DIRECT_DOM_ORDER",
             stopButtonVisible: stopVisible,
+            ...(completionSignal ? { completionSignal } : {}),
+            ...(decisionEvidence ? { decisionEvidence } : {}),
             sendButtonState: sendState.state,
             sendButtonEnabled: sendState.state === "ENABLED" ? true : sendState.state === "DISABLED" ? false : null,
-            stableForMs: Math.min(Date.now() - lastTextChangeAt, Date.now() - lastDomMutationAt),
+            stableForMs: observation.stableForMs,
             ...selectedSelectorEvidence(),
           },
         };
       }
       await sleep(250, signal);
     }
+  } catch (error) {
+    observation.errorCode = error?.code ?? error?.name ?? "RESPONSE_FAILED";
+    const receipt = await capture("UNCONFIRMED");
+    if (receipt) contentTrace("decision-evidence-unconfirmed", { requestId, code:receipt.code ?? receipt.status });
+    throw error;
   } finally {
     observer.disconnect();
   }
 
+  observation.errorCode = assistantId ? "AMBIGUOUS_COMPLETION" : "RESPONSE_TIMEOUT";
+  const receipt = await capture("UNCONFIRMED");
+  if (receipt) contentTrace("decision-evidence-unconfirmed", { requestId, code:receipt.code ?? receipt.status });
   throw new ContentContractError(
     assistantId ? "AMBIGUOUS_COMPLETION" : "RESPONSE_TIMEOUT",
     assistantId
@@ -546,7 +616,12 @@ async function waitForExplicitManualFollowup(expected) {
     throw new ContentContractError("UI_CONTRACT_CHANGED", "Manual follow-up selector is unavailable.");
   }
   const deadline = Date.now() + 15_000;
-  let assistantId = null, lastText = "", lastTextChangeAt = Date.now(), lastDomMutationAt = Date.now();
+  let assistantId = null, assistantElement = null, userMessage = null;
+  let lastText = "", lastTextChangeAt = Date.now(), lastDomMutationAt = Date.now();
+  let observation = {};
+  const requestId = expected.controllerMessageId;
+  const capture = phase => captureDecision({ phase,requestId,assistantElement,assistantId,userMessage,extracted:lastText,
+    observation:{ ...observation,lastTextChangeAt,lastDomMutationAt,requiredStableMs:3500 } });
   const observer = new MutationObserver(() => { lastDomMutationAt = Date.now(); });
   observer.observe(requirePageContract().mutationRoot(), {
     childList: true, subtree: true, characterData: true,
@@ -572,6 +647,8 @@ async function waitForExplicitManualFollowup(expected) {
       if (selected.status === "MATCHED") {
         const assistant = messages.find((message) =>
           message.role === "assistant" && message.id === selected.assistantMessageId);
+        assistantElement = assistant?.element ?? null;
+        userMessage = messages.find(message => message.role === "user" && message.id === selected.userMessageId) ?? null;
         const text = assistant?.element ? elementText(assistant.element) : "";
         if (assistantId !== selected.assistantMessageId || text !== lastText) {
           assistantId = selected.assistantMessageId;
@@ -585,7 +662,17 @@ async function waitForExplicitManualFollowup(expected) {
         const stable = assistantId && lastText
           && Date.now() - lastTextChangeAt >= 3500
           && Date.now() - lastDomMutationAt >= 3500;
-        if (stable && !stopVisible && sendConfirmed) {
+        const completionSignal = stable && requirePageContract().assistantCompletion?.(assistant?.element);
+        observation = { decisionAt:Date.now(),stopButtonVisible:stopVisible,sendButtonState:sendState.state,
+          composerPresent:page.composerPresent,completionSignal:completionSignal || null,
+          stableForMs:Math.min(Date.now() - lastTextChangeAt,Date.now() - lastDomMutationAt),
+          responseAssociation:"EXPLICIT_MANUAL_FOLLOWUP" };
+        if (stable && !stopVisible && sendConfirmed
+          && (!requirePageContract().assistantCompletion || completionSignal)) {
+          const documentUrl = location.href;
+          const decisionEvidence = await capture("COMPLETED");
+          if (decisionEvidence?.status === "PERSISTED") watchCompletedResponse({ requestId,assistantId,userMessage,
+            extracted:lastText,documentUrl,previousCaptureId:decisionEvidence.captureId });
           return {
             text: lastText,
             confidence: "CONFIRMED_BY_UI_STATE",
@@ -600,10 +687,12 @@ async function waitForExplicitManualFollowup(expected) {
               conversationId: conversationIdFromUrl(location.href),
               responseAssociation: "EXPLICIT_MANUAL_FOLLOWUP",
               stopButtonVisible: stopVisible,
+              ...(completionSignal ? { completionSignal } : {}),
+              ...(decisionEvidence ? { decisionEvidence } : {}),
               sendButtonState: sendState.state,
               sendButtonEnabled: sendState.state === "ENABLED" ? true
                 : sendState.state === "DISABLED" ? false : null,
-              stableForMs: Math.min(Date.now() - lastTextChangeAt, Date.now() - lastDomMutationAt),
+              stableForMs: observation.stableForMs,
               ...selectedSelectorEvidence(),
             },
           };
@@ -611,9 +700,15 @@ async function waitForExplicitManualFollowup(expected) {
       }
       await sleep(250);
     }
+  } catch (error) {
+    observation.errorCode = error?.code ?? "RESPONSE_FAILED";
+    await capture("UNCONFIRMED");
+    throw error;
   } finally {
     observer.disconnect();
   }
+  observation.errorCode = "AMBIGUOUS_COMPLETION";
+  await capture("UNCONFIRMED");
   throw new ContentContractError("AMBIGUOUS_COMPLETION",
     "The explicit manual follow-up was observed but completion could not be confirmed.");
 }

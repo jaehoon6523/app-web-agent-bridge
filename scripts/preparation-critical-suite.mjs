@@ -35,7 +35,7 @@ async function settle(service, timeoutMs = 15_000) {
   assert.equal(service.jobs.size, 0, "PreparationService did not settle before the critical-path deadline.");
 }
 
-async function runFullPath(t, { rawText, objective, providerHtml = null, expectedUi = [] }) {
+async function runFullPath(t, { rawText, objective, providerHtml = null, expectedUi = [], expectedFormatError = null }) {
   const observed = new Set();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-critical-preparation-"));
   const database = path.join(root, "preparation.sqlite");
@@ -67,7 +67,7 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   assert.match(dispatchedPrompt, /JSON\.parse/u);
   assert.match(dispatchedPrompt, /Windows 경로는 C:\/path/u);
   assert.match(dispatchedPrompt, /역슬래시.*\\\\/u);
-  assert.match(dispatchedPrompt, /Markdown escape나 코드 fence/u);
+  assert.match(dispatchedPrompt, /마커를 인용하거나 이스케이프하지 말고, 마커와 JSON을 Markdown 코드 펜스로 감싸지 않는다/u);
   assert.ok(dispatchedPrompt.includes(objective));
   assert.ok(dispatchedPrompt.includes(`프로젝트 루트=${root}`));
   assert.match(dispatchedPrompt, /기존 준비 문맥:\n\{"preparationId"/u);
@@ -79,6 +79,8 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   const contentResult = browser.contentResults.find((entry) => entry.request.type === "agent.prompt")?.result;
   assert.equal(contentResult?.ok, true);
   assert.equal(contentResult?.text, rawText);
+  assert.equal(contentResult.evidence.completionSignal, "ASSISTANT_TURN_COMPLETE");
+  assert.equal(contentResult.evidence.decisionEvidence.status, "PERSISTED");
   observed.add("CONTENT");
 
   const backgroundFrame = browser.frames.find((frame) => frame.type === "web.prompt.result");
@@ -102,6 +104,33 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   assert.equal(await browser.page.locator("[data-message-author-role='user']").count(), 1,
     "the provider fixture must contain exactly one submitted prompt");
   assert.equal(delivery.response.rawText, rawText);
+  assert.equal(delivery.response.evidence.completionSignal, "ASSISTANT_TURN_COMPLETE");
+  const receipt = delivery.response.evidence.decisionEvidence;
+  assert.deepEqual(receipt,contentResult.evidence.decisionEvidence);
+  assert.deepEqual(receipt.response,{utf8Bytes:Buffer.byteLength(domText),sha256:sha256(domText)});
+  assert.equal(browser.readDecisionEvidence(receipt).extracted,domText);
+  if (expectedFormatError) {
+    const stored = browser.readStorage().completedDelivery;
+    assert.equal(stored.turnId, delivery.deliveryId);
+    assert.equal(stored.evidence.assistantMessageId, delivery.response.evidence.assistantMessageId);
+    assert.equal(stored.binding.conversationId, delivery.response.binding.conversationId);
+    assert.equal(stored.rawText, domText);
+    assert.equal(delivery.validation.responseBytes, Buffer.byteLength(domText));
+    assert.equal(delivery.validation.responseSha256, sha256(domText));
+    assert.equal(delivery.validation.formatError.code, expectedFormatError);
+    assert.equal(context.webSession.activeDeliveryId, delivery.deliveryId);
+    assert.equal(context.state, "RECOVERY_REQUIRED");
+    assert.equal(browser.readStorage().lastAcknowledgedDelivery, null);
+    service.close();
+    serviceClosed = true;
+    service = new PreparationService(options);
+    serviceClosed = false;
+    const restored = service.snapshot();
+    assert.equal(restored.deliveries.at(-1).response.rawText, rawText);
+    assert.equal(restored.webSession.activeDeliveryId, delivery.deliveryId);
+    assert.equal(browser.commands.filter((entry) => entry.type === "agent.prompt").length, 1);
+    return { context, delivery };
+  }
   assert.equal(delivery.response.packet.type, "REQUIREMENTS_PROPOSAL");
   observed.add("ADAPTER");
 
@@ -109,6 +138,8 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   assert.equal(context.state, "AGREEMENT_READY");
   assert.equal(context.agreement.summary, delivery.response.packet.summary);
   assert.equal(context.agreement.requirements.length, delivery.response.packet.items.length);
+  assert.equal(delivery.state,"ACKNOWLEDGED");
+  assert.equal(context.webSession.activeDeliveryId,null);
   observed.add("PREPARATION");
 
   service.close();
@@ -166,6 +197,12 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
   assert.deepEqual(browser.errors, []);
   return { context, delivery, rendered };
 }
+
+test("a positively completed BEGIN-only response is preserved and rejected without ACK", { timeout:45_000 }, async t => {
+  const { delivery } = await runFullPath(t, { rawText:"CONTROLLER_PACKET_BEGIN",
+    objective:"Incomplete packet fixture", expectedFormatError:"CONTROLLER_PACKET_MISSING" });
+  assert.equal(delivery.state, "RESPONSE_COMPLETED");
+});
 
 test("incident 20260915 crosses every production preparation boundary without changing raw bytes", { timeout: 45_000 }, async (t) => {
   const rawText = readIncident("raw-response.txt").trimEnd();

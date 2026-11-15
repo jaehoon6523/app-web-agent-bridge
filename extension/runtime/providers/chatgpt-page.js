@@ -221,6 +221,27 @@
     return Boolean(firstVisible("stopButton"));
   }
 
+  function assistantTurn(element) {
+    if (!element?.isConnected) return null;
+    const selector = "[data-talvt-turn-state]";
+    const enclosingTurn = element.closest(selector);
+    const nestedTurns = enclosingTurn ? [] : element.querySelectorAll(selector);
+    return enclosingTurn ?? (nestedTurns.length === 1 ? nestedTurns[0] : null);
+  }
+
+  function assistantCompletion(element) {
+    return assistantTurn(element)?.getAttribute("data-talvt-turn-state") === "complete" ? "ASSISTANT_TURN_COMPLETE" : null;
+  }
+
+  function decisionNodes(assistant) {
+    const composer = resolveComposer();
+    const send = composer?.fallbackContainer ? fallbackSend(composer.fallbackContainer) : firstVisible("sendButton");
+    return { turn:assistantTurn(assistant), composer:composer?.element, send:send?.element,
+      stop:firstVisible("stopButton")?.element,
+      bodies:assistant ? selectorRegistry.groups.messageContent.flatMap(selector =>
+        assistant.matches(selector) ? [assistant] : [...assistant.querySelectorAll(selector)]) : [] };
+  }
+
   function composerDiagnostics() {
     return { selectorVersion:selectorRegistry.version, composerSelectors:selectorRegistry.groups.composer.map((selector) => {
       const matches = [...document.querySelectorAll(selector)];
@@ -452,6 +473,8 @@
     findSendControl,
     submitPrompt,
     detectGeneration,
+    assistantCompletion,
+    decisionNodes,
     cancelGeneration,
     extractAssistantResponse,
     inspectPageState,

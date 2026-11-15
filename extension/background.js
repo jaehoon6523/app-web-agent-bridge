@@ -1,4 +1,5 @@
 import { createExtensionAgentDiagnostics } from "./runtime/agent-diagnostics.js";
+import { createDecisionEvidenceRelay } from "./runtime/decision-evidence.js";
 import { discardExactDelivery } from "./runtime/delivery-discard.js";
 import { readDeliveryPage } from "./runtime/delivery-page.js";
 import { createCoalescedTask } from "./runtime/coalesced-task.js";
@@ -54,7 +55,7 @@ function send(message, { allowUnauthenticated = false } = {}) {
   socket.send(JSON.stringify({ ...message, protocolVersion: PROTOCOL_VERSION }));
   return true;
 }
-const serverDeliveryInspector = createServerDeliveryInspector({ send });
+const decisionEvidence = createDecisionEvidenceRelay({ store, send }), serverDeliveryInspector = createServerDeliveryInspector({ send });
 const deliveryReview = createDeliveryReview({ store, turnGate, tabs: chrome.tabs,
   inspectServer: expected => serverDeliveryInspector.inspect(expected), onChange: broadcastPopupState });
 const reconnect = createReconnectController({ connect, connected: () => Boolean(socket), onError(error) {
@@ -172,7 +173,7 @@ async function handleControllerMessage(raw) {
     // All other controller commands are ignored until authentication completes.
     return;
   }
-  if (agentDiagnostics.accept(message) || serverDeliveryInspector.accept(message)) return;
+  if (decisionEvidence.accept(message) || agentDiagnostics.accept(message) || serverDeliveryInspector.accept(message)) return;
   switch (message.type) {
     case "controller.diagnostics.inspect":
       await replyToSelectorDiagnostics(chrome.tabs, send, message.requestId, chrome.runtime.getManifest().version, await store.read());
@@ -913,6 +914,9 @@ async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer =
   return browserRuntime.waitForContentScript(tabId, timeoutMs, requireComposer);
 }
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.type === "agent.decision-evidence") {
+    void decisionEvidence.record(message, _sender).then(sendResponse, () => sendResponse({ status:"FAILED", code:"EVIDENCE_RELAY_FAILED" })); return true;
+  }
   if (message?.type === "agent.progress") {
     if (!authenticated) return false;
     void store.read().then((state) => {
