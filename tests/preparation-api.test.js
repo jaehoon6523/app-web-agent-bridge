@@ -46,7 +46,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
           const packet = count === 1 ? { type: "REQUIREMENTS_PROPOSAL", summary: "질문", questions: ["어떤 기능?"], items: [] }
             : { type: "REQUIREMENTS_PROPOSAL", summary: "값 표시", questions: [], items: [{ statement: "값 표시", acceptanceCriteria: "화면에 1이 표시된다" }] };
           binding.lastObservedUserMessageId = "u" + count; binding.lastObservedAssistantMessageId = "a" + count;
-          release = () => reply("web.prompt.result", { text: "<controller_packet>\n" + JSON.stringify(packet) + "\n</controller_packet>",
+          release = () => reply("web.prompt.result", { text: JSON.stringify(packet),
             confidence: "CONFIRMED_BY_UI_STATE", session: binding,
             evidence: { documentId: binding.documentId, frameId: binding.frameId },
             trace: { requestId: active, actionId: active, result: "success", tabId: binding.tabId,

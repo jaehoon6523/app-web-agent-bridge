@@ -3,6 +3,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 
 const stateArgument = process.argv.indexOf("--state-file");
 const stateFile = stateArgument >= 0 ? process.argv[stateArgument + 1] : null;
+const defaultModelArgument = process.argv.indexOf("--default-model");
+const defaultModel = defaultModelArgument >= 0 ? process.argv[defaultModelArgument + 1] : null;
 let savedState = null;
 if (stateFile && existsSync(stateFile)) {
   try {
@@ -90,7 +92,7 @@ function handleRequest(message) {
       return;
     }
     const threadId = `thr_${++threadSequence}`;
-    const thread = { id: threadId, sessionId: threadId, turns: [] };
+    const thread = { id: threadId, sessionId: threadId, requestedModel: params.model, turns: [] };
     threads.set(threadId, thread);
     saveState();
     send({ id, result: { thread: { id: threadId, sessionId: threadId, ephemeral: false } } });
@@ -144,6 +146,7 @@ function handleRequest(message) {
       items: [],
       error: null,
       prompt: promptText(params.input),
+      requestedModel: params.model,
       outputSchema: params.outputSchema,
       sandboxPolicy: params.sandboxPolicy,
     };
@@ -162,6 +165,14 @@ function handleRequest(message) {
       method: "item/agentMessage/delta",
       params: { threadId: record.id, turnId: turn.id, itemId: `item_${turn.id}`, delta: "ui-only-delta" },
     });
+
+    if ((params.model ?? record.requestedModel ?? defaultModel) === "gpt-6.1-sol") {
+      turn.status = "failed";
+      turn.error = { message: JSON.stringify({ error: { code: "model_not_found" } }) };
+      saveState();
+      send({ method: "turn/completed", params: { threadId: record.id, turn: { ...turn } } });
+      return;
+    }
 
     if (["__interrupt__", "__interrupt_inspect__", "__interrupt_reject_once__"].includes(turn.prompt)) return;
     if (turn.prompt === "__crash__") {

@@ -66,6 +66,7 @@ test("a new root preparation parks another session's unresolved delivery instead
   const context = vm.createContext({
     ...documentBinding, ...conversation, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
+    createConversationBootstrapTab: async () => { throw new Error("must reuse the only start tab"); },
     chrome: { tabs: {
       query: async () => [rootTab],
       sendMessage: async (tabId) => tabId === rootTab.id ? rootPage : null,
@@ -85,7 +86,7 @@ test("a new root preparation parks another session's unresolved delivery instead
 
   const session = await context.prepareBoundSession({
     sessionId: "web_prep_new", runId: "prep_new",
-    conversationUrl: null, conversationId: null, focus: true,
+    conversationUrl: null, conversationId: null, focus: true, createNewConversation: true,
   });
 
   assert.equal(session.sessionId, "web_prep_new");
@@ -116,12 +117,13 @@ test("a failed new root binding leaves the existing session and delivery untouch
   };
   const store = createExtensionStateStore(storage);
   const before = await store.read();
+  let roots = [], createAttempts = 0;
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
   const context = vm.createContext({
     ...documentBinding, ...conversation, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
-    chrome: { tabs: { query: async () => [], sendMessage: async () => null } },
-    createConversationBootstrapTab: async () => null,
+    chrome: { tabs: { query: async () => roots, sendMessage: async () => null } },
+    createConversationBootstrapTab: async () => { createAttempts++; return null; },
     waitForContentScript: async () => { throw new Error("must not wait without a root tab"); },
     focusTab: async () => {},
     getSessionInfo: async () => { throw new Error("not used"); },
@@ -135,13 +137,23 @@ test("a failed new root binding leaves the existing session and delivery untouch
     context,
   );
 
-  await assert.rejects(context.prepareBoundSession({
-    sessionId: "session-new", runId: "run-new", conversationUrl: null, conversationId: null, focus: true,
-  }), (error) => error.code === "ROOT_TAB_CREATE_FAILED"
+  const payload = { sessionId: "session-new", runId: "run-new", conversationUrl: null, conversationId: null, focus: true };
+  await assert.rejects(context.prepareBoundSession(payload), error =>
+    error.code === "ROOT_TAB_NOT_FOUND" && error.details?.stage === "SELECT");
+  assert.equal(createAttempts, 0);
+  assert.deepEqual(await store.read(), before);
+
+  await assert.rejects(context.prepareBoundSession({ ...payload, createNewConversation: true }), (error) => error.code === "ROOT_TAB_CREATE_FAILED"
     && error.details?.flow === "ROOT_BOOTSTRAP_V2"
     && error.details?.stage === "CREATE"
     && error.details?.rootCount === 0);
+  assert.equal(createAttempts, 1);
+  assert.deepEqual(await store.read(), before);
 
+  roots = [8, 9].map(id => ({ id, windowId: 1, url: "https://chatgpt.com/" }));
+  await assert.rejects(context.prepareBoundSession({ ...payload, createNewConversation: true }), error =>
+    error.code === "AMBIGUOUS" && error.details?.stage === "SELECT");
+  assert.equal(createAttempts, 1);
   assert.deepEqual(await store.read(), before);
 });
 
@@ -169,7 +181,7 @@ test("preparation opens a ChatGPT root tab when none exists", async () => {
   });
   vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function rebindSession(")), context);
   const session = await context.prepareBoundSession({ sessionId: "web_prep_1", runId: "prep_1",
-    conversationUrl: null, conversationId: null });
+    conversationUrl: null, conversationId: null, createNewConversation: true });
   assert.equal(created, 1);
   assert.equal(session.bindingStatus, "ROOT_READY");
   assert.equal((await store.read()).tabId, 19);

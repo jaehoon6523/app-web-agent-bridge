@@ -33,7 +33,7 @@ function outsideMarkdownFence(text, offset) {
   return activeFence === null;
 }
 
-function assertPacketJsonDepth(value, maxDepth) {
+export function assertPacketJsonDepth(value, maxDepth) {
   if (!Number.isSafeInteger(maxDepth) || maxDepth < 1) {
     throw new ControllerPacketEnvelopeError(
       "maxJsonDepth must be a positive safe integer.",
@@ -72,7 +72,10 @@ const DOM_SAFE_PACKET_CLOSE = "CONTROLLER_PACKET_END";
 const LEGACY_PACKET_OPEN = "<controller_packet>";
 const LEGACY_PACKET_CLOSE = "</controller_packet>";
 
+export const PREPARATION_PACKET_MARKERS = Object.freeze({ opening: "답변시작", closing: "답변끝" });
+
 function packetFraming(trimmedEnd) {
+  if (trimmedEnd.endsWith(PREPARATION_PACKET_MARKERS.closing)) return PREPARATION_PACKET_MARKERS;
   if (trimmedEnd.endsWith(DOM_SAFE_PACKET_CLOSE)) {
     return { opening: DOM_SAFE_PACKET_OPEN, closing: DOM_SAFE_PACKET_CLOSE };
   }

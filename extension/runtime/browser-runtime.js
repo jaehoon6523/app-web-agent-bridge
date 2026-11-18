@@ -58,14 +58,25 @@ export function createBrowserRuntime(chromeApi) {
     fail(entry, changed());
   }
   chromeApi.tabs.onUpdated?.addListener((tabId, change) => {
-    if (change.status === "loading" || typeof change.url === "string") invalidate(tabId);
+    if (change.status === "loading" || typeof change.url === "string") {
+      // The first commit has no previous document to invalidate.
+      if (entries.get(tabId)?.waitingForFirstCommit) return;
+      invalidate(tabId);
+    }
   });
   chromeApi.tabs.onRemoved?.addListener(invalidate);
 
   async function readTab(entry) {
+    const registry = defaultWebTargetProviderRegistry;
     const tab = await bounded(() => chromeApi.tabs.get(entry.tabId), 2000, "CONTENT_SCRIPT_TAB_TIMEOUT");
     if (!current(entry)) throw changed();
-    if (!tab || !defaultWebTargetProviderRegistry.providerForUrl(tab.url)) {
+    if (!entry.url && tab?.status === "loading" && (!tab.url || tab.url === "about:blank")
+      && registry.providerForUrl(tab.pendingUrl)) {
+      entry.waitingForFirstCommit = true;
+      return null;
+    }
+    entry.waitingForFirstCommit = false;
+    if (!tab || !registry.providerForUrl(tab.url)) {
       throw new BrowserRuntimeError("WEB_TAB_UNAVAILABLE", "The Web tab is closed or unsupported.");
     }
     if (entry.url && entry.url !== tab.url) throw changed();
@@ -109,6 +120,7 @@ export function createBrowserRuntime(chromeApi) {
     entry.running = true;
     try {
       const tab = await readTab(entry);
+      if (!tab) return;
       let response;
       try {
         entry.pingAttempts = (entry.pingAttempts ?? 0) + 1;
@@ -171,6 +183,7 @@ export function createBrowserRuntime(chromeApi) {
       // A new call after an idle interval prepares the current target afresh.
       // Injection history stays cached; only a navigation event resets it.
       entry.url = null;
+      entry.waitingForFirstCommit = false;
       entry.contentDocumentId = null;
       entry.chromeDocumentId = null;
       entry.responded = false;

@@ -47,13 +47,20 @@ test("provider resolver is fail-closed for unknown or mismatched providers", () 
 test("bootstrap creates the supplied provider root instead of a hard-coded ChatGPT URL", async () => {
   const provider = providerFixture();
   const calls = [];
-  const chromeApi = { tabs:{
-    create:async(options) => { calls.push(options); return { id:41 }; },
-    get:async(id) => ({ id, windowId:2, url:provider.rootUrl }),
-  } };
-  const tab = await createConversationBootstrapTab(chromeApi, async() => {}, provider);
-  assert.equal(tab.url, provider.rootUrl);
-  assert.deepEqual(calls, [{ url:provider.rootUrl, active:true }]);
+  const visibleTabs = [];
+  const root = { id:41, windowId:2, url:provider.rootUrl };
+  const chromeApi = {
+    tabs:{
+      query:async() => [...visibleTabs],
+      create:async(options) => { calls.push(options); visibleTabs.push(root); return { id:root.id }; },
+    },
+    windows:{ getAll:async() => [{ id:2, type:"normal", incognito:false, tabs:[...visibleTabs] }] },
+  };
+  const tab = await createConversationBootstrapTab(chromeApi, async(id) => {
+    assert.equal(id, root.id);
+  }, provider);
+  assert.deepEqual(tab, root);
+  assert.deepEqual(calls, [{ url:provider.rootUrl, active:true, windowId:root.windowId }]);
 });
 
 test("exact conversation reopen validates with the supplied provider identity rules", async () => {

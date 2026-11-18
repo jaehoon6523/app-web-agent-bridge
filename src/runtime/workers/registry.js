@@ -13,6 +13,7 @@ export async function createRegisteredCodeWorker({
     return createCodexWorker({
       workspace,
       ...codex,
+      model: workerConfig?.model ?? null,
       persistThreadId,
       persistCapture,
     });

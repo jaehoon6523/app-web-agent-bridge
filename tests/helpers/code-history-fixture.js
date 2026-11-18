@@ -11,13 +11,18 @@ export function seedHistory(filename, {versions = 8, eventBytes = 32, legacy = f
   db.exec("PRAGMA journal_mode=WAL; BEGIN IMMEDIATE");
   let previousHash = null, record, json, hash;
   const events = [], runId = "accumulated-history";
+  const eventJson = [];
   const insert = db.prepare("INSERT INTO code_change_history VALUES (?,?,?,?,?,?)");
   try {
     for (let version = 1; version <= versions; version++) {
-      events.push({type:"STATE_CHANGED", detail:"x".repeat(eventBytes), version});
+      const event = {type:"STATE_CHANGED", detail:"x".repeat(eventBytes), version};
+      events.push(event);
+      eventJson.push(canonicalJson(event));
       record = {runId, version, schemaVersion:3, stage:"CANCELLED", events, objective:"history contract",
         createdAt:"2026-10-05T00:00:00.000Z", updatedAt:"2026-10-05T00:00:00.000Z"};
-      json = canonicalJson(record); hash = sha256Text(json);
+      // Earlier events are immutable, so reuse their canonical JSON across versions.
+      json = canonicalJson({...record, events:[]}).replace('"events":[]', () => '"events":['+eventJson.join(',')+']');
+      hash = sha256Text(json);
       const headHash = sha256CanonicalJson({kind:"CODE_CHANGE_HISTORY",runId,version,recordHash:hash,previousHash});
       insert.run(runId, version, json, hash, legacy ? null : previousHash, legacy ? null : headHash);
       previousHash = headHash;
