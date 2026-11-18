@@ -150,8 +150,9 @@ test('a failing first verification scenario retains its details after eight succ
         {cwd:checkout,env,encoding:'utf8',timeout:verificationFileBudget,maxBuffer:8*1024*1024}),code:0};
     } catch (error) { return {stdout:error.stdout,stderr:error.stderr,code:error.status}; }
   };
+  // The standalone diagnostic flag test also appears in the TAP counts.
   const failed = invoke();
-  assert.equal(failed.code,1); assert.match(failed.stdout,/# pass 8\b/u); assert.match(failed.stdout,/# fail 1\b/u);
+  assert.equal(failed.code,1); assert.match(failed.stdout,/# pass 9\b/u); assert.match(failed.stdout,/# fail 1\b/u);
   const directory = path.join(checkout,'.agent-controller/latest-verification-command');
   const saved = JSON.parse(fs.readFileSync(path.join(directory,'result.json'),'utf8'));
   assert.equal(saved.status,'FAIL'); assert.equal(saved.terminal,true);
@@ -190,7 +191,7 @@ test('a failing first verification scenario retains its details after eight succ
   t.diagnostic('Pre-command failure retained: '+JSON.stringify({runId:earlyRun.runId,exitCode:early.code,status:earlyRun.status}));
   fs.writeFileSync(path.join(directory,'previous-run-marker'),'old run');
   fs.writeFileSync(filename,original);
-  const passed = invoke(); assert.equal(passed.code,0); assert.match(passed.stdout,/# pass 9\b/u);
+  const passed = invoke(); assert.equal(passed.code,0); assert.match(passed.stdout,/# pass 10\b/u);
   const current = JSON.parse(fs.readFileSync(path.join(directory,'result.json'),'utf8'));
   assert.notEqual(current.runId,saved.runId); assert.notEqual(current.runId,earlyRun.runId);
   assert.equal(current.status,'PASS'); assert.equal(current.terminal,true);

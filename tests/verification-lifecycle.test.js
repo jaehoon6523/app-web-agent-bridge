@@ -185,7 +185,8 @@ test("verification timeout remains bounded after slow startup when an exited par
   }
 });
 
-test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:10000}, async t => {
+// The 1500 ms verification deadline below starts after Git setup and the pipe-holder handshake.
+test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:20000}, async t => {
   const started=performance.now();
   const mark=phase=>t.diagnostic(JSON.stringify({phase,elapsedMs:performance.now()-started}));
   mark('setup');

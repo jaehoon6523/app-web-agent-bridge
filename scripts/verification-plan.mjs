@@ -51,21 +51,16 @@ export function verificationPlan({scope='full',platform=process.platform}={}) {
     // of concurrent groups; its file watchdog now allows scheduling variance.
     const exclusive='tests/audit-ack-recovery.test.js';
     if(!files.includes(exclusive)) throw Error('MISSING_EXCLUSIVE_DISCOVERY_FILE');
-    const groups=Array.from({length:Math.min(4,files.length)},()=>[]);
-    files.forEach((file,index)=>groups[index%groups.length].push(file));
-    for(const group of groups) {
-      const index=group.indexOf(exclusive);
-      if(index!==-1) {group.splice(index,1);break;}
-    }
-    // The last measured Windows run (e8b50d22) spent 293 s on this file in
-    // discovery and only 0.3 s on the exchanged file in discovery-4. Keep the
-    // inventory and group sizes unchanged while reducing the longest group.
-    const slow='tests/runtime-cleanup/contract.test.js';
+    const groups=Array.from({length:4},()=>[]);
+    // Keep the measured slow and fast files in their designated groups.
     const fast='tests/prepared-session-target.test.js';
-    const slowIndex=groups[0].indexOf(slow),fastIndex=groups[3].indexOf(fast);
-    if(slowIndex!==-1 && fastIndex!==-1) {
-      groups[0][slowIndex]=fast;
-      groups[3][fastIndex]=slow;
+    const slow='tests/runtime-cleanup/contract.test.js';
+    if(files.includes(fast)) groups[0].push(fast);
+    if(files.includes(slow)) groups[3].push(slow);
+    for(const file of files) {
+      if(file===exclusive || file===fast || file===slow) continue;
+      const smallest=groups.reduce((lightest,group)=>group.length<lightest.length?group:lightest);
+      smallest.push(file);
     }
     return [{...item,id:'discovery-serial',command:null,nodeArgs:['scripts/run-tests.mjs',exclusive],
       isolatedGateOutput:true,parallelEligible:false},

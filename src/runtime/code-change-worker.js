@@ -6,7 +6,7 @@ import { CodexProcessManager, createCodexAgentSessionAdapter } from "./codex/ind
  * to the caller. Review/approval and repeated dispatch remain Controller work.
  */
 export async function createCodeChangeWorker({
-  workspace, executablePath, authPathKeys = [], approvalPolicy,
+  workspace, executablePath, authPathKeys = [], approvalPolicy, model = null,
   persistThreadId, persistCapture,
 }) {
   if (typeof persistThreadId !== "function" || typeof persistCapture !== "function") {
@@ -18,7 +18,7 @@ export async function createCodeChangeWorker({
   });
   try {
     const session = createCodexAgentSessionAdapter({
-      manager, workspaceRoot: workspace.root, mode: "CODE_CHANGE", approvalPolicy, persistThreadId,
+      manager, workspaceRoot: workspace.root, mode: "CODE_CHANGE", approvalPolicy, model, persistThreadId,
     });
     return bindCodeChangeCapture({
       session, workspace, persistCapture,

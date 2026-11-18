@@ -452,8 +452,9 @@ async function selectRootBootstrapTab(payload, requested) {
   let tabs;
   try { tabs = await chrome.tabs.query({ url: provider.urlPatterns }); }
   catch (error) { throw rootBootstrapError("ROOT_TAB_QUERY_FAILED", error.message, "DISCOVER"); }
-  const roots = tabs.filter((tab) => provider.canonicalize(tab?.url) === provider.rootUrl);
-  const create = payload.createNewConversation === true || roots.length === 0;
+  const roots = tabs.filter(tab => tab.incognito !== true && [tab.url, tab.pendingUrl].some(url => provider.canonicalize(url) === provider.rootUrl));
+  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "Web provider 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
+  const create = payload.createNewConversation === true && roots.length === 0;
   console.info("[bridge:root:select]", rootBootstrapDetails("SELECT", { sessionId: requested.sessionId, rootCount: roots.length, action: create ? "CREATE" : "REUSE" }));
   if (create) {
     let tab;
@@ -462,7 +463,8 @@ async function selectRootBootstrapTab(payload, requested) {
     if (!tab) throw rootBootstrapError("ROOT_TAB_CREATE_FAILED", "Web provider 시작 탭을 만들지 못했습니다.", "CREATE", { rootCount: roots.length });
     return tab;
   }
-  if (roots.length > 1) throw rootBootstrapError("AMBIGUOUS", "Web provider 시작 탭이 여러 개여서 선택할 수 없습니다.", "SELECT", { rootTabs: roots.map((tab) => ({ tabId: tab.id, windowId: tab.windowId, url: tab.url })) });
+  if (roots[0]?.pendingUrl) throw rootBootstrapError("WEB_TAB_INVENTORY_CHANGED", "The start tab is navigating.", "SELECT", {rootCount:1, tabId:roots[0].id});
+  if (roots.length === 0) throw rootBootstrapError("ROOT_TAB_NOT_FOUND", "No eligible provider start tab is open.", "SELECT", { rootCount:0 });
   return roots[0];
 }
 async function prepareBoundSession(payload) {
