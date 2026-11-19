@@ -88,3 +88,19 @@ test('injected DOM corruption is detected at depth 08 and cannot reach command',
   assert.ok(ui);
   assert.equal(ui.calls.filter(x=>x.url==='/api/commands').length,0);
 });
+
+test('initial preparation shows the current delivery without enabling another start', async () => {
+  const ui = await dashboard({
+    workflow: { stage: 'START', state: 'WAITING_WEB_RESPONSE', preparationId: 'p1', preparationVersion: 3 },
+    preparation: {
+      preparationId: 'p1', version: 3, state: 'WAITING_WEB_RESPONSE', lifecycle: 'ACTIVE',
+      objective: '작업 A', targetRoot: 'C:/project',
+      webSession: { sessionId: 's1', activeDeliveryId: 'd1', conversationUrl: 'https://chatgpt.com/c/c1' },
+      deliveries: [{ deliveryId: 'old', state: 'ACKNOWLEDGED' }, { deliveryId: 'd1', state: 'SUBMITTED' }],
+    },
+    runs: [], preflight: { checks: { extensionAuthenticated: true } }, commandCapabilities: ['preparation.cancel'],
+  });
+  assert.match(ui.elements.get('startProgressDetail').textContent, /전송이 확인됐습니다.*응답을 기다립니다/u);
+  assert.equal(ui.elements.get('planRun').disabled, true);
+  assert.equal(ui.elements.get('cancelInitialPreparation').disabled, false);
+});

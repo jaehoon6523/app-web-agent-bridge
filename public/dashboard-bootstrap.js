@@ -10,6 +10,12 @@ document.getElementById("dashboardAddress").textContent = window.location.origin
 document.getElementById("refreshDashboard").onclick = () => window.location.reload();
 try {
   await import("./app.js");
+  const projects = document.getElementById("toggleProjectNavigation");
+  projects.addEventListener("click", () => {
+    const expanded = projects.getAttribute("aria-expanded") !== "true";
+    projects.setAttribute("aria-expanded", String(expanded));
+    projects.textContent = expanded ? "프로젝트 닫기" : "프로젝트 보기";
+  });
   if (document.getElementById("dashboardPageError").hidden) document.getElementById("refreshDashboard").onclick = null;
 } catch (error) {
   showDashboardPageError(error);

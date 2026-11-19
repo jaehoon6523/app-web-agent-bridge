@@ -24,7 +24,8 @@ const inspectTabs = document.querySelector("#inspectTabs"), diagnosticTab = docu
 const openDiagnosticTab = document.querySelector("#openDiagnosticTab");
 let tabDiagnosticText = "", connectionDiagnosticText = "";
 const confirmations = ["ownershipConfirmed", "pageUnconfirmed"].map(id => document.querySelector("#" + id));
-let inspection = null, refreshing = null;
+let inspection = null, refreshing = null, inspecting = false;
+let deliveryOwnerVersion = 0, deliveryOwnerKey = "";
 let authenticated = false;
 const choosePreparationTab = document.querySelector("#choosePreparationTab");
 let outcomeDeliveryId = null;
@@ -39,15 +40,28 @@ function render(response) {
   if (!response?.ok) {
     authenticated = false;
     if (choosePreparationTab) choosePreparationTab.disabled = true;
-    status.textContent = "error"; status.className = "badge bad";
+    status.textContent = "확장 상태를 확인할 수 없습니다";
+    document.querySelector("#connectionSummary").textContent = "연결 설정에서 다시 연결하거나 팝업을 다시 여세요.";
+    openPairing.hidden = true;
+    openController.textContent = "대시보드 열기";
+    openController.className = "secondary";
+    deliveryOwnerVersion++;
+    inspectDelivery.disabled = true;
+    inspection = null;
+    updateDiscard();
     detail.textContent = response?.error || "Extension service worker is unavailable.";
     return;
   }
   const state = response.state || {};
   authenticated = state.connected === true;
   const connectionSummary = document.querySelector("#connectionSummary");
-  if (connectionSummary) connectionSummary.textContent = authenticated ? "컨트롤러 연결됨 · 탭 준비 상태는 별도로 확인합니다." : "컨트롤러 연결이 필요합니다. 연결 설정 또는 확장 연결 승인을 확인하세요.";
-  openPairing.hidden = !String(state.lastError ?? "").includes("AUTH_IDENTITY_MISMATCH");
+  const identityChanged = String(state.lastError ?? "").includes("AUTH_IDENTITY_MISMATCH");
+  openPairing.hidden = !identityChanged;
+  const ownerKey = JSON.stringify(state.deliveryOwner ?? state.currentDeliveryId ?? null);
+  if (ownerKey !== deliveryOwnerKey) {
+    deliveryOwnerKey = ownerKey;
+    deliveryOwnerVersion++;
+  }
   displayedDeliveryId = state.currentDeliveryId ?? null;
   if (outcomeDeliveryId && state.currentDeliveryId && state.currentDeliveryId !== outcomeDeliveryId) {
     recoveryOutcome.textContent = "";
@@ -58,9 +72,28 @@ function render(response) {
   const pending = Boolean(state.currentDeliveryId || state.pendingDeliveryCount > 0);
   const blocked = pending || state.busy || state.bindingStatus === "AMBIGUOUS";
   const healthy = state.connected && !blocked && ["BOUND", "ROOT_READY"].includes(state.bindingStatus);
-  status.textContent = pending ? "전송 확인 필요" : state.busy ? "작업 중"
-    : state.bindingStatus === "AMBIGUOUS" ? "AMBIGUOUS" : healthy ? state.bindingStatus : state.connected ? "연결됨" : "연결 확인 필요";
-  status.className = `badge ${healthy ? "ok" : "bad"}`;
+  const startTabReady = authenticated && !blocked && state.bindingStatus !== "BOUND" && state.startTab?.ready === true;
+  openController.textContent = startTabReady ? "대시보드에서 탭 확인" : "대시보드 열기";
+  openController.className = startTabReady ? "" : "secondary";
+  const matchingInspection = inspection?.owner?.currentDeliveryId && inspection.owner.currentDeliveryId === state.currentDeliveryId
+    && (!state.deliveryOwner || Object.keys(state.deliveryOwner).every(key => state.deliveryOwner[key] === inspection.owner[key]));
+  const missing = matchingInspection && inspection.server?.status === "MISSING";
+  const ackPending = matchingInspection && inspection.phase === "ACK_PENDING";
+  status.textContent = identityChanged ? "새 연결을 확인해 주세요"
+    : !authenticated ? "Bridge에 연결되지 않았습니다"
+      : missing ? "서버에서 전송 기록을 찾지 못했습니다"
+        : ackPending ? "저장된 응답의 수신 확인이 필요합니다"
+          : state.deliveryPhase === "RESPONSE_OBSERVED" ? "응답이 관측되었습니다"
+          : state.deliveryPhase === "IN_FLIGHT" || state.busy ? "메시지를 처리하고 있습니다"
+            : blocked ? "전송 또는 탭 상태를 확인해 주세요"
+              : state.bindingStatus === "BOUND" ? "대화 연결이 유지되고 있습니다"
+                : startTabReady ? "사용 가능한 시작 탭이 있습니다" : "대시보드와 연결되었습니다";
+  connectionSummary.textContent = !authenticated ? "연결 설정과 인증 상태를 확인하세요."
+    : missing ? "해당 전송의 상태는 아래에서 확인할 수 있습니다."
+      : ackPending ? "저장 근거를 확인했습니다. 전송 기록에서 수신 확인 상태를 확인하세요."
+      : state.deliveryPhase === "RESPONSE_OBSERVED" ? "서버 저장 및 수신 확인 상태는 전송 기록에서 확인하세요."
+        : startTabReady ? "대시보드에서 사용할 탭을 확인할 수 있습니다."
+          : "컨트롤러 인증이 확인되었습니다.";
   detail.className = healthy ? "detail-ok" : "detail-error";
   const phases = { RESPONSE_OBSERVED: "응답 관측됨 · 서버 검증·저장 및 ACK 확인 필요", IN_FLIGHT: "전송 작업 진행 중", UNRESOLVED: "전송 결과 미확정", IDLE: "활성 전송 없음" };
   const lines = [
@@ -91,7 +124,7 @@ function render(response) {
   connectionDiagnosticText = lines.join("\n");
   detail.textContent = `${state.bindingRecovery?.message ? state.bindingRecovery.message + "\n" : ""}${state.connected ? "인증 완료" : "연결 확인 필요"} · 확장 ${state.extensionVersion ?? "확인 전"}. 상세 정보는 진단 로그로 내보내세요.`;
   deliveryRecovery.hidden = !pending;
-  inspectDelivery.disabled = !state.currentDeliveryId;
+  inspectDelivery.disabled = inspecting || !state.currentDeliveryId;
   if (inspection && (inspection.owner?.currentDeliveryId !== state.currentDeliveryId
     || state.deliveryOwner && Object.keys(state.deliveryOwner).some(key => state.deliveryOwner[key] !== inspection.owner?.[key]))) {
     inspection = null; confirmations.forEach(item => { item.checked = false; });
@@ -217,10 +250,19 @@ openDiagnosticTab?.addEventListener("click", async () => {
   } catch (error) { tabDiagnosticText = error.message; document.querySelector("#tabNextReason").textContent = "탭 확인에 실패했습니다. 다시 확인하거나 진단 로그를 내보내세요."; }
 });
 inspectDelivery.addEventListener("click", async () => {
+  if (inspectDelivery.disabled) return;
+  inspecting = true;
   inspectDelivery.disabled = true;
+  const version = deliveryOwnerVersion;
   recoveryOutcome.textContent = "";
   outcomeDeliveryId = null;
-  const response = await send({ type: "bridge.inspectDelivery" });
+  const response = await send({ type: "bridge.inspectDelivery" })
+    .catch(error => ({ ok: false, error: error.message }));
+  inspecting = false;
+  if (version !== deliveryOwnerVersion) {
+    await refresh();
+    return;
+  }
   inspection = response?.ok ? response.result : null;
   confirmations.forEach(item => { item.checked = false; });
   const server = inspection?.server, page = inspection?.page;

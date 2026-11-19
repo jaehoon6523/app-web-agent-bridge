@@ -267,6 +267,7 @@ test("refresh restores preparation and questions, and reply retains preparation 
   assert.equal(ui.elements.get("projectPanel").hidden, false);
   assert.equal(ui.elements.get("startPanel").hidden, true);
   assert.equal(ui.elements.get("planningObjective").value, "  아무거나\n");
+  assert.equal(ui.elements.get("preparationObjective").textContent, "  아무거나\n");
   assert.equal(ui.elements.get("reviseRequirements").disabled, false);
   assert.equal(ui.elements.get("saveProject").disabled, true);
   ui.elements.get("proposalFeedback").value = "채팅";

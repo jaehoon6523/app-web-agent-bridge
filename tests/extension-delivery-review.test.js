@@ -38,7 +38,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
 }
 
 test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as success', () => {
-  const ids = ['openPairing','recoveryOutcome','ownershipConfirmed','status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
+  const ids = ['openPairing','recoveryOutcome','ownershipConfirmed','status','connectionSummary','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
     'deliveryRecovery','recoveryDetail','inspectDelivery','openDelivery','openController','discardOrphan','discardReason',
     'unresolvedConfirmed','noResendConfirmed','orphanOwnershipCleanupConfirmed','pageUnconfirmed'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', textContent: '', checked: false }]));
@@ -49,10 +49,20 @@ test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as
     startTab: { tabId: 8, ready: true }, bindingError: 'CONTENT_SCRIPT_INJECTION_FAILED: Original cause',
     bindingRecovery: { message: 'Inspect this delivery' }, deliveryPhase: 'UNRESOLVED' };
   vm.runInContext('render({ok:true,state})', context);
-  assert.equal(nodes.status.className, 'badge bad'); assert.equal(nodes.status.textContent, '전송 확인 필요');
+  assert.equal(nodes.status.textContent, '전송 또는 탭 상태를 확인해 주세요');
+  assert.doesNotMatch(nodes.connectionSummary.textContent, /사용할 탭/u);
   assert.match(vm.runInContext("connectionDiagnosticText", context), /Original cause/u); assert.match(vm.runInContext("connectionDiagnosticText", context), /Inspect this delivery/u);
   assert.doesNotMatch(nodes.detail.textContent, /Original cause|identity:/u);
   assert.match(vm.runInContext("connectionDiagnosticText", context), /tab 8/u); assert.equal(nodes.deliveryRecovery.hidden, false);
+  context.state.deliveryPhase = 'RESPONSE_OBSERVED';
+  vm.runInContext('render({ok:true,state})', context);
+  assert.match(nodes.status.textContent, /응답이 관측/u);
+  assert.match(nodes.connectionSummary.textContent, /서버 저장 및 수신 확인/u);
+  vm.runInContext('inspection = { owner: { currentDeliveryId:"other" }, server: { status:"MISSING" } }; render({ok:true,state})', context);
+  assert.doesNotMatch(nodes.status.textContent, /전송 기록을 찾지/u);
+  vm.runInContext('inspection = { owner: { currentDeliveryId:"d" }, server: { status:"MISSING" } }; render({ok:true,state})', context);
+  assert.match(nodes.status.textContent, /전송 기록을 찾지/u);
+
 });
 
 for (const [label, stored, server, phase] of [

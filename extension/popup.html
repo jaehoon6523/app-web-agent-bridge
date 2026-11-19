@@ -8,32 +8,26 @@
   </head>
   <body>
     <main>
-      <header>
-        <strong>ChatGPT Web Agent Bridge</strong>
-        <span id="status" class="badge">checking</span>
-      </header>
+      <header><strong>ChatGPT Web Agent Bridge</strong></header>
+      <h1 id="status">연결 상태 확인 중</h1>
+      <p id="connectionSummary" role="status">확장 프로그램의 상태를 불러오고 있습니다.</p>
+      <button id="openPairing" type="button" hidden>연결 승인 화면 열기</button>
+      <button id="openController" type="button" class="secondary">대시보드 열기</button>
       <button id="openResizableWindow" type="button" class="secondary">크기 조절 창으로 열기</button>
       <p id="popupWindowStatus" role="status"></p>
-      <p id="connectionSummary" role="status">연결 상태 확인 중</p>
-      <ol class="step-rail"><li aria-current="step">1. 탭 확인</li><li>2. 탭 선택</li><li>3. 전송 확인</li></ol>
-      <section class="tab-card">
-        <div class="panel-head"><b>확장 팝업</b><span>읽기 전용</span></div>
+      <details class="tab-card"><summary>탭 진단 및 로그</summary>
         <div class="panel-body">
-        <h1>탭 진단</h1>
-        <p>입력창을 확인한 뒤 컨트롤러에서 사용할 탭을 선택하세요.</p>
         <button id="inspectTabs" type="button" class="secondary">열린 탭 다시 확인</button>
         <label>확인할 ChatGPT 탭<select id="diagnosticTab"></select></label>
         <p id="tabSummary" role="status">먼저 열린 탭을 확인하세요.</p>
         <button id="openDiagnosticTab" type="button" class="secondary" disabled>탭 화면 보기</button>
-        <button id="choosePreparationTab" type="button" disabled aria-describedby="tabNextReason">컨트롤러에서 이 탭 선택</button>
+        <button id="choosePreparationTab" type="button" disabled aria-describedby="tabNextReason">대시보드에서 이 탭 확인</button>
         <p id="tabNextReason">탭 진단 후 사용할 수 있습니다.</p>
         <label><input id="includeRawDiagnostic" type="checkbox" /> 원시 응답·대화 내용 포함 (공유 전 검토 필요)</label>
       <button id="exportAgentDiagnostics" type="button" class="secondary">진단 로그 내보내기</button>
         <p id="agentDiagnosticStatus" role="status">선택자·문서 토큰·전송 상세를 저장합니다. 공유 전 민감정보를 확인하세요.</p>
         </div>
-      </section>
-      <button id="openController" type="button" class="secondary">컨트롤러에서 현재 작업 확인</button>
-      <button id="openPairing" type="button" class="secondary" hidden>확장 연결 승인</button>
+      </details>
       <details class="settings"><summary>연결 설정과 상세 상태</summary>
         <label>Controller WebSocket<input id="controllerUrl" type="text" spellcheck="false" /></label>
         <label>Shared secret<input id="sharedSecret" type="password" autocomplete="off" /></label>

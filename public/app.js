@@ -1,7 +1,7 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
 import { createPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation, userFacingError, userFacingStoredError, runCommandSuccessMessage, phaseReasons } from "./dashboard-status-view.js";
-import { renderInitialRequest } from "./preparation-view.js";
+import { renderInitialRequest, renderPreparationConversation, bindPreparationConversation, renderWorkspaceHeading } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
 import { filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks } from "./dashboard-model.js";
@@ -518,6 +518,7 @@ function render() {
     $("conversationUrl").readOnly = reuse;
   }
   const preparing = workflow.stage === "PREPARE";
+  renderWorkspaceHeading($, text, preparation, checks, preparing && !overviewGroup, snapshot?.projectConversations);
   renderInitialRequest(workflow, preparation, $, text, document, capabilities().has("preparation.cancel"));
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
@@ -925,11 +926,9 @@ function renderPreparation() {
   const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
-  $("planningObjective").value = preparation.objective;
-  $("planningUrl").value = preparation.webSession?.conversationUrl ?? preparation.conversationUrl ?? "";
+  renderPreparationConversation($, text, preparation);
   $("planningFollowUp").hidden = !preparation.followUp;
   text("planningFollowUp", preparation.followUp ? `이전 적용 작업: ${preparation.followUp.objective} · 요구사항은 이번에 다시 승인합니다.` : "");
-  $("projectRoot").value = preparation.targetRoot;
   document.querySelector(".preparation-tab-choice")?.remove();
   const summary = $("proposalSummary"); summary.replaceChildren();
   const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
@@ -951,7 +950,7 @@ function renderPreparation() {
   $("projectRequirements").replaceChildren();
   for (const item of agreement?.requirements ?? []) {
     const row = node("article", "", "record");
-    row.append(node("p", item.statement), node("p", item.acceptanceCriteria));
+    row.append(node("strong", item.statement), node("p", item.acceptanceCriteria, "muted"));
     $("projectRequirements").append(row);
   }
   text("reviewerProviderSummary", `감사 provider · Judge ${preparation.reviewers?.JUDGE?.provider ?? "CHATGPT_WEB"} · Critic ${preparation.reviewers?.CRITIC?.provider ?? "CHATGPT_WEB"} · 준비 대화는 ChatGPT`);
@@ -1082,7 +1081,7 @@ function renderPreparation() {
       node("p", error.message)
     );
   }
-  text("proposalStatus", error ? "" : progress[workflow.state] ?? workflow.state);
+  text("proposalStatus", error ? "" : progress[workflow.state] ?? "최신 준비 상태를 확인하세요.");
 }
 async function preparationMutation(operation, capability, url, payload = {}) {
   if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;
@@ -1130,6 +1129,7 @@ async function beginPreparation() {
       ...(followUpSource ? { followUpRunId:followUpSource.runId } : {}),
       reuseProjectConversation:$("reuseProjectConversation").checked && !$("projectConversationPanel").hidden });
 }
+bindPreparationConversation($, text, () => preparation);
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
 $("startRoot").addEventListener("input", render);
 $("historySearch").addEventListener("input", () => {
