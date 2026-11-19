@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 import {identityMatches,sameUniqueMembers,resourceClosureUnconfirmed} from './verification-identity.mjs';
+import {atomicWrite} from './mv3-reload-core.mjs';
 import {nativeExtensionComplete} from './native-extension-contract.js';
 
 export function receiptLocation(kind, root, directory) {
@@ -70,10 +71,8 @@ export async function executeVerification({root,directory,plan,source,readSource
   const resultPath=path.join(directory,'latest-verification.json'), logPath=path.join(directory,'latest-verification.log');
   fs.writeFileSync(logPath,''); let bytes=0;
   const save=()=>{
-    const data=JSON.stringify(result,null,2)+'\n';
-    for(const target of [resultPath,path.join(evidenceRoot,'result.json')]) {
-      fs.writeFileSync(target+'.tmp',data); fs.renameSync(target+'.tmp',target);
-    }
+    atomicWrite(resultPath,result);
+    atomicWrite(path.join(evidenceRoot,'result.json'),result);
   };
   const log=chunk=>{const data=Buffer.from(chunk);fs.appendFileSync(logPath,data);bytes+=data.length;output(data);};
   save(); // The complete plan exists even if no child can start.

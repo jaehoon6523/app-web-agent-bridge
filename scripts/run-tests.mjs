@@ -18,9 +18,8 @@ export const reporter = new URL('./test-completion-reporter.mjs', import.meta.ur
 // separate wall-clock budget for an entire file and its completion receipt.
 const DEFAULT_FILE_TIMEOUT_MS = 180000;
 const fileTimeouts = new Map([
-  // This real recovery suite has taken about 170 s alone on Windows. Its file
-  // watchdog must allow scheduling variance; each assertion keeps its contract.
   ['tests/audit-ack-recovery.test.js', 5 * 60 * 1000],
+  ['tests/audit-ack-recovery-boundaries.test.js', 5 * 60 * 1000],
   ['tests/runtime-cleanup/contract.test.js', 12 * 60 * 1000],
   // Bounded checkout setup, nine CLI cases, and source cleanup.
   ['tests/verification-command.test.js', 5 * 60 * 1000],

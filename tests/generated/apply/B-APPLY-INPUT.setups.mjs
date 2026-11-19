@@ -31,14 +31,14 @@ async function runApply(f, run, payload) {
 
 export const setups = {
   "A-STAGE": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     f.service.update(run.runId, { stage: "REVIEW_RUNNING" });
     const updated = f.service.get(run.runId);
     return await runApply(f, updated, buildPayload(f, updated));
   },
   "A-JOB": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     const jobs = f.service.jobs;
     if (jobs instanceof Map) jobs.set(run.runId, {});
@@ -48,59 +48,59 @@ export const setups = {
     return await runApply(f, run, buildPayload(f, run));
   },
   "A-STOP": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     f.service.update(run.runId, { stopRequested: true });
     const updated = f.service.get(run.runId);
     return await runApply(f, updated, buildPayload(f, updated));
   },
   "B-SCHEMA": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     f.service.update(run.runId, { schemaVersion: 2 });
     const updated = f.service.get(run.runId);
     return await runApply(f, updated, buildPayload(f, updated));
   },
   "B-AUDIT": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     f.service.update(run.runId, { auditResult: "FAIL" });
     const updated = f.service.get(run.runId);
     return await runApply(f, updated, buildPayload(f, updated));
   },
   "C-CANDIDATE": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     return await runApply(f, run, buildPayload(f, run, { candidateId: "deliberately-different" }));
   },
   "C-REVIEW": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     return await runApply(f, run, buildPayload(f, run, { reviewId: "deliberately-different" }));
   },
   "C-ARTIFACT": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     return await runApply(f, run, buildPayload(f, run, { artifactHash: "deliberately-different" }));
   },
   "C-BASE": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     return await runApply(f, run, buildPayload(f, run, { baseCommit: "deliberately-different" }));
   },
   "C-VERSION": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     const v = f.service.get(run.runId).version;
     return await runApply(f, run, buildPayload(f, run, { expectedVersion: v + 1 }));
   },
   "D-PASS": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     return await runApply(f, run, buildPayload(f, run));
   },
   "E-IDEMPOTENT": async (t) => {
-    const f = setupAudit(t, { reviewVerdicts: ["UNSATISFIED", "SATISFIED"] });
+    const f = setupAudit(t, { reviewVerdicts: ["SATISFIED"] });
     const run = await f.run();
     await f.service.command("code.apply", buildPayload(f, run));
     const after1 = f.service.get(run.runId);

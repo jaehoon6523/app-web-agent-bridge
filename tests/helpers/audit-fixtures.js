@@ -141,7 +141,10 @@ export function setupAudit(t, hooks = {}) {
   service=new CodeChangeService(serviceOptions);
   const live={codeChanges:service,store:{listRuns:()=>[],getRun:()=>null}};
   const dashboard=new DashboardController({getRuntime:async()=>live,preflight:()=>({readyForProvisioning:true}),webSession:serviceOptions.webSession,transport:null});
-  t.after(async()=>{await service.close();fs.rmSync(directory,{recursive:true,force:true});});
+  t.after(async () => {
+    await service.close();
+    await fs.promises.rm(directory, { recursive:true, force:true, maxRetries:5 });
+  });
   return {target,directory,options:serviceOptions,briefs,prompts,reviewPrompts,discussionPrompts,discussionDiscards,acknowledgements,dashboard,git,starts:()=>starts,reviews:()=>prompts.length,get service(){return service;},
     async start(){return dashboard.execute({type:"run.start",payload:{mode:"CODE_CHANGE",expectedVersion:0,objective:"Implement required file contents",conversationUrl:"https://chatgpt.com/c/test"}});},
     async run(){const r=await this.start();await service.jobs.get(r.runId);return service.get(r.runId);},

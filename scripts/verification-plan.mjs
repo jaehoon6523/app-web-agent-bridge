@@ -46,11 +46,10 @@ export function verificationPlan({scope='full',platform=process.platform}={}) {
     if(item.id!=='discovery' || item.nodeArgs) return [item];
     const files=discoveryFiles;
     if(platform!=='win32') return [{...item,command:null,nodeArgs:['scripts/run-tests.mjs',...files],isolatedGateOutput:true}];
-    // This file completed in 169.8 s alone and reached its former 180 s file
-    // deadline beside another discovery runner. Keep it in the inventory ahead
-    // of concurrent groups; its file watchdog now allows scheduling variance.
-    const exclusive='tests/audit-ack-recovery.test.js';
-    if(!files.includes(exclusive)) throw Error('MISSING_EXCLUSIVE_DISCOVERY_FILE');
+    // The ACK recovery files both provision real Git worktrees. Run them
+    // before the parallel groups so Windows process contention stays bounded.
+    const exclusive=['tests/audit-ack-recovery.test.js','tests/audit-ack-recovery-boundaries.test.js'];
+    if(!exclusive.every(file=>files.includes(file))) throw Error('MISSING_EXCLUSIVE_DISCOVERY_FILE');
     const groups=Array.from({length:4},()=>[]);
     // Keep the measured slow and fast files in their designated groups.
     const fast='tests/prepared-session-target.test.js';
@@ -58,11 +57,11 @@ export function verificationPlan({scope='full',platform=process.platform}={}) {
     if(files.includes(fast)) groups[0].push(fast);
     if(files.includes(slow)) groups[3].push(slow);
     for(const file of files) {
-      if(file===exclusive || file===fast || file===slow) continue;
+      if(exclusive.includes(file) || file===fast || file===slow) continue;
       const smallest=groups.reduce((lightest,group)=>group.length<lightest.length?group:lightest);
       smallest.push(file);
     }
-    return [{...item,id:'discovery-serial',command:null,nodeArgs:['scripts/run-tests.mjs',exclusive],
+    return [{...item,id:'discovery-serial',command:null,nodeArgs:['scripts/run-tests.mjs',...exclusive],
       isolatedGateOutput:true,parallelEligible:false},
     ...groups.map((files,index)=>({...item,id:index===0?'discovery':`discovery-${index+1}`,
       command:null,nodeArgs:['scripts/run-tests.mjs',...files],isolatedGateOutput:true,parallelEligible:true}))];

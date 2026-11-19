@@ -14,7 +14,7 @@ const snapshot = { tabs:[{ tabId:7, runtimeVersion:"0.2.11", extensionVersion:"0
     tagName:'DIV', controls:[{controlLabel:'음성 입력', secret:'PRIVATE_SECRET'}], responseBody:'PRIVATE_RESPONSE' }]}] } }] };
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-selector-repair-'));
-  t.after(() => fs.rmSync(root, { recursive:true, force:true }));
+  t.after(() => fs.rmSync(root, { recursive:true, force:true, maxRetries:5 }));
   const targetRoot = path.join(root, 'target'); fs.mkdirSync(targetRoot);
   const write = (name, value) => { const filename = path.join(targetRoot, name); fs.mkdirSync(path.dirname(filename), { recursive:true }); fs.writeFileSync(filename, value); };
   write('package.json', '{"name":"app-web-agent-bridge"}');

@@ -85,7 +85,8 @@ function render(response) {
         : ackPending ? "저장된 응답의 수신 확인이 필요합니다"
           : state.deliveryPhase === "RESPONSE_OBSERVED" ? "응답이 관측되었습니다"
           : state.deliveryPhase === "IN_FLIGHT" || state.busy ? "메시지를 처리하고 있습니다"
-            : blocked ? "전송 또는 탭 상태를 확인해 주세요"
+            : pending ? "전송 확인 필요"
+              : blocked ? "대화 탭 상태를 확인해 주세요"
               : state.bindingStatus === "BOUND" ? "대화 연결이 유지되고 있습니다"
                 : startTabReady ? "사용 가능한 시작 탭이 있습니다" : "대시보드와 연결되었습니다";
   connectionSummary.textContent = !authenticated ? "연결 설정과 인증 상태를 확인하세요."

@@ -78,7 +78,13 @@ export function atomicWrite(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const temp = `${file}.${process.pid}.tmp`;
   fs.writeFileSync(temp, JSON.stringify(value, null, 2) + '\n');
-  fs.renameSync(temp, file);
+  for (let attempt = 0; ; attempt++) {
+    try { fs.renameSync(temp, file); break; }
+    catch (error) {
+      if (process.platform !== 'win32' || !['EPERM', 'EBUSY', 'EACCES'].includes(error.code) || attempt === 4) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
+  }
 }
 export function readSnapshot(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; }

@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { setTimeout as wait } from 'node:timers/promises';
 import { commitExternalLock } from './external-lock.mjs';
 import { preparationHarness, preparationPackets } from './preparation.mjs';
-import { state, storedRun, saveEvidence, git, envelope } from './lifecycle.mjs';
+import { state, storedRun, saveEvidence, git } from './lifecycle.mjs';
 
 export async function notes(f, setup) {
   const original=setup.run;
@@ -150,7 +150,7 @@ export async function intervention(t,f) {
 }
 
 export async function binding(t,f) {
-  const setup=await preparationHarness(t,f,{revise:true,afterPreparationReply:()=>envelope(preparationPackets[1])});
+  const setup=await preparationHarness(t,f,{revise:true,afterPreparationReply:()=>JSON.stringify(preparationPackets[1])});
   const old=setup.context.webSession.documentId, clicks=await setup.extension.page.evaluate(()=>Number(sessionStorage.getItem('clicks')));
   await setup.extension.page.reload();
   const ping=await setup.extension.sendContent({type:'agent.ping'});assert.notEqual(ping.documentId,old);

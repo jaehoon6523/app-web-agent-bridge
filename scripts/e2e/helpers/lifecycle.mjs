@@ -38,7 +38,7 @@ export async function reviewedRun(t, f, {rework=false, criticFault=false} = {}) 
     const data=JSON.parse(text.split('\n').find(line=>line.startsWith('{')));
     prompts.push({data,tabId:peer.tabId});
     if(prompts.length===1) await firstGate;
-    if(!data.role && !data.context && !data.planId) return envelope({type:'REQUIREMENTS_PROPOSAL',summary:'Controlled follow-up scope',questions:[],items:[{statement:'Follow-up new clock scope',acceptanceCriteria:'Follow-up improvement visible'}]});
+    if(!data.role && !data.context && !data.planId) return JSON.stringify({type:'REQUIREMENTS_PROPOSAL',summary:'Controlled follow-up scope',questions:[],items:[{statement:'Follow-up new clock scope',acceptanceCriteria:'Follow-up improvement visible'}]});
     if(data.kind==='REVIEW_DISCUSSION' && data.userText.includes('UNKNOWN')) {
       await peer.page.evaluate(()=>{ window.appendFixtureMessage('assistant','duplicate-uncertain','Unknown origin response'); });
       return 'Uncertain response with two possible assistant messages';

@@ -18,6 +18,21 @@ async function scenario(t,plan,run,options={}) {
       return await run?.(stage,context) || {code:0,signal:null,forced:false};
     },...options});
 }
+test('Windows retries a temporarily locked verification receipt without dropping the result', {skip:process.platform!=='win32'}, async t => {
+  const rename = fs.renameSync;
+  let blocked = false;
+  t.mock.method(fs,'renameSync',(from,to)=>{
+    if (!blocked && path.basename(to)==='latest-verification.json') {
+      blocked = true;
+      throw Object.assign(new Error('Temporary sharing violation'), {code:'EPERM'});
+    }
+    return rename(from,to);
+  });
+  const result = await scenario(t,[item('lint')]);
+  assert.ok(blocked);
+  assert.equal(result.status,'PASS');
+});
+
 test('CI and local use the same catalog including every previously omitted gate',()=>{
   const workflow=fs.readFileSync(new URL('../.github/workflows/bridge-gates.yml',import.meta.url),'utf8');
   assert.match(workflow,/run: npm run verify:all\r?\n/u);
@@ -43,7 +58,7 @@ test('Windows discovery groups cover exactly the Linux discovery inventory with 
   const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-\d+)?$/u.test(stage.id));
   const exclusive=verificationPlan({platform:'win32'}).find(stage=>stage.id==='discovery-serial');
   assert.equal(groups.length,4);
-  assert.deepEqual(exclusive.expectedFiles,['tests/audit-ack-recovery.test.js']);
+  assert.deepEqual(exclusive.expectedFiles,['tests/audit-ack-recovery.test.js','tests/audit-ack-recovery-boundaries.test.js']);
   assert.equal(exclusive.parallelEligible,false);
   const scheduled=[...exclusive.expectedFiles,...groups.flatMap(stage=>stage.expectedFiles)];
   assert.equal(new Set(scheduled).size,scheduled.length,'No duplicate scheduling');

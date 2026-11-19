@@ -49,7 +49,7 @@ test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as
     startTab: { tabId: 8, ready: true }, bindingError: 'CONTENT_SCRIPT_INJECTION_FAILED: Original cause',
     bindingRecovery: { message: 'Inspect this delivery' }, deliveryPhase: 'UNRESOLVED' };
   vm.runInContext('render({ok:true,state})', context);
-  assert.equal(nodes.status.textContent, '전송 또는 탭 상태를 확인해 주세요');
+  assert.equal(nodes.status.textContent, '전송 확인 필요');
   assert.doesNotMatch(nodes.connectionSummary.textContent, /사용할 탭/u);
   assert.match(vm.runInContext("connectionDiagnosticText", context), /Original cause/u); assert.match(vm.runInContext("connectionDiagnosticText", context), /Inspect this delivery/u);
   assert.doesNotMatch(nodes.detail.textContent, /Original cause|identity:/u);

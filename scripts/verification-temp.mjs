@@ -36,7 +36,7 @@ function probeWorktree(temporary, longestPath) {
     if (!fs.existsSync(path.join(worktree, ...longestPath.split('/')))) throw Error('WORKTREE_PROBE_FILE_MISSING');
   } finally {
     try { if (fs.existsSync(worktree)) git(target, ['worktree', 'remove', '--force', '--', worktree]); }
-    finally { fs.rmSync(fixture, { recursive:true, force:true }); }
+    finally { fs.rmSync(fixture, { recursive:true, force:true, maxRetries:5 }); }
   }
 }
 
@@ -69,7 +69,7 @@ export function configureVerificationTemp(root, { env = process.env, platform = 
     } catch (error) {
       failures.push(`${base}: ${error.code ?? error.message}`);
       if (temporary) {
-        try { fs.rmSync(temporary, { recursive:true, force:true }); }
+        try { fs.rmSync(temporary, { recursive:true, force:true, maxRetries:5 }); }
         catch (cleanupError) { failures.push(`${base}: CLEANUP_${cleanupError.code ?? 'FAILED'}`); }
       }
     }

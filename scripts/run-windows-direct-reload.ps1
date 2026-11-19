@@ -12,7 +12,9 @@ $exitCode = 2
 try {
     $root = (git rev-parse --show-toplevel 2>$null)
     if ($LASTEXITCODE -ne 0 -or -not $root) { throw 'Run from the app-web-agent-bridge checkout.' }
-    $root = $root.Trim()
+    $root = (Resolve-Path -LiteralPath $root.Trim()).ProviderPath
+    $scriptCheckout = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).ProviderPath
+    if ($root -ne $scriptCheckout) { throw 'Wrong checkout: run this script from its own checkout.' }
     $entry = Join-Path $root 'scripts/windows-diagnostics.mjs'
     if (-not (Test-Path -LiteralPath $entry)) { throw 'Wrong checkout: diagnostics entry not found.' }
     $dir = Join-Path $root '.agent-controller'
