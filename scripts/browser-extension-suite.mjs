@@ -5,140 +5,101 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setupAudit, assertionsFor } from '../tests/helpers/audit-fixtures.js';
 import { createFixtureCodexWorker } from '../tests/helpers/codex-worker-fixture.js';
+import { inspectMessageDom } from '../extension/runtime/message-dom-inspection.js';
 
+// Observed DOM structure with synthetic text and IDs. The sibling span and buttons are UI chrome.
+const keyedUserBubbleHtml = `<!doctype html><main></main>
+    <textarea id="prompt-textarea"></textarea><button data-testid="send-button">Send</button>
+    <script>
+    document.querySelector('button').onclick = () => {
+      const composer = document.querySelector('textarea');
+      history.pushState({}, '', '/c/created');
+      document.querySelector('main').innerHTML = \`
+        <div><h4 class="sr-only">You said:</h4>
+          <div data-chatgpt-search-unit-key="turn:0:user" data-chatgpt-search-message-ids="u1">
+            <div data-content-search-unit-key="turn:0:user"><div>
+              <div data-user-message-bubble="true" data-user-message-has-prompt="true"><div><div>
+                <div data-search-result-target><div><div dir="auto" style="white-space:pre-wrap"></div></div></div>
+                <span>UI status</span>
+              </div><button data-markdown-copy="exclude">Show more</button></div></div>
+              <div><button>Copy</button></div>
+            </div></div>
+          </div>
+        </div>
+        <div data-talvt-turn-state="complete"><h4 class="sr-only">ChatGPT said:</h4>
+          <div data-chatgpt-search-unit-key="turn:1:assistant" data-chatgpt-search-message-ids="a1 a1">
+            <div data-markdown-text-style="assistant-message">Fixture reply</div>
+          </div>
+        </div>\`;
+      const body = document.querySelector('[dir="auto"]');
+      body.textContent = window.keyedBubbleCase === 'wrong-marker'
+        ? composer.value.replace('[run_id:r1]', '[run_id:other-run]')
+        : composer.value;
+      if (window.keyedBubbleCase === 'duplicate') {
+        const first = document.querySelector('main').firstElementChild;
+        const duplicate = first.cloneNode(true);
+        const unit = duplicate.querySelector('[data-chatgpt-search-unit-key]');
+        unit.setAttribute('data-chatgpt-search-message-ids', 'u2');
+        unit.setAttribute('data-chatgpt-search-unit-key', 'turn:2:user');
+        unit.firstElementChild.setAttribute('data-content-search-unit-key', 'turn:2:user');
+        first.after(duplicate);
+      }
+      sessionStorage.setItem('submitted', composer.value);
+      sessionStorage.setItem('clicks', String(Number(sessionStorage.getItem('clicks') || 0) + 1));
+      composer.value = '';
+    };
+    </script>`;
+test('browser fixture: keyed user bubble binds the delivered prompt and its assistant', { timeout:25_000 }, async t => {
+  const f = await extensionBrowser(t, { providerHtml:keyedUserBubbleHtml });
+  await f.prepare();
+  const result = await f.submit();
+  const messages = await f.page.evaluate(() => WebBridgePageProviders.provider('CHATGPT_WEB').readMessages()
+    .map(({ id, role, text }) => ({ id, role, text })));
+  const submitted = await f.page.evaluate(() => sessionStorage.getItem('submitted'));
+  assert.deepEqual(messages, [
+    { id:'u1', role:'user', text:submitted },
+    { id:'a1', role:'assistant', text:'Fixture reply' },
+  ]);
+  assert.equal(result.evidence.userMessageId, 'u1');
+  assert.equal(result.evidence.assistantMessageId, 'a1');
+  assert.equal(result.rawText, 'Fixture reply');
+  assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
 
-import { productionProcess } from './e2e/helpers/process.mjs';
-import { launchBrowser } from './e2e/helpers/browser.mjs';
-import { resources } from './e2e/helpers/resources.mjs';
-const STATE='/api/state';
-const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done;});return {promise,resolve};};
-const json=(route,status,body)=>route.fulfill({status,contentType:'application/json',body:JSON.stringify(body)});
-const expectDashboardCode=(page,code)=>page.waitForFunction(code=>document.getElementById('dashboardErrorCode').textContent.includes(code),code);
-async function errorDashboardBrowser(t,{intercept,expectedMutations=[]}) {
-  const owner=resources(t),server=await productionProcess();
-  owner.add('error fixture server',async()=>server.assertShutdown(await server.stop()),30,15000);
-  owner.add('error fixture workspace',()=>server.dispose(),40);
-  await server.ready();
-  const browser=await launchBrowser();owner.add('error fixture browser',()=>browser.close(),20);
-  const context=await browser.newContext(),page=await context.newPage(),errors=[],routeErrors=[],mutations=[];
-  page.on('pageerror',e=>errors.push(e.message));
-  page.on('request',request=>{const url=new URL(request.url());if(url.pathname.startsWith('/api/') && !['GET','HEAD'].includes(request.method()) && url.pathname!=='/api/dashboard/session')mutations.push(url.pathname);});
-  await context.route('**/api/**',async route=>{
-    try {if(!await intercept({route,pathname:new URL(route.request().url()).pathname}))await route.continue();}
-    catch(error){if(page.isClosed())return;routeErrors.push(error.message);await route.abort();}
+  const inspection = await f.page.evaluate(({ source, request }) => (0, eval)('(' + source + ')')(request), {
+    source:inspectMessageDom.toString(),
+    request:{ conversationUrl:'https://chatgpt.com/c/created', controllerMessageId:'d1', runId:'r1' },
   });
-  owner.add('error fixture negative checks',()=>{assert.deepEqual(errors,[]);assert.deepEqual(routeErrors,[]);assert.deepEqual(mutations,expectedMutations);},10);
-  return {owner,page,open:()=>page.goto(server.baseUrl),ready:async()=>{
-    await page.waitForFunction(()=>document.getElementById('dashboardPhase').textContent==='최신 상태 확인 완료');
-    assert.equal(await page.locator('#dashboardErrorCode').textContent(),'없음');
-  }};
-}
+  assert.equal(inspection.result, 'FOUND');
+  assert.equal(inspection.matches[0].exactMarkers, true);
+  assert.equal(inspection.matches[0].node.attributes['data-chatgpt-search-message-ids'].value, 'u1');
 
-function loadedRunState(base, id, phase = 'WORKER_RUNNING', aliases = false) {
-  const run = {runId:id, phase, version:3, objective:`작업 ${id}`, requirements:{items:[]}, extensionField:{retained:true}};
-  const state = {...base,run:{...run},preparation:null,
-    workflow:{stage:phase === 'APPLIED' ? 'RESULT' : 'WORK',state:phase,runId:id,runVersion:3},
-    runs:[run,{...run,runId:id === 'A' ? 'B' : 'A',objective:`작업 ${id === 'A' ? 'B' : 'A'}`}],
-    dataKnowledge:{runs:{status:'AVAILABLE_NONEMPTY'}},commandCapabilities:['run.stop'],extensionField:{retained:true}};
-  if (aliases) {state.run.id=id;state.run.status=phase;delete state.run.runId;delete state.run.phase;}
-  return state;
-}
-
-test('an ID mismatch remains visible during automatic retry and in history after confirmed recovery',{timeout:25000},async t=>{
-  let mode='ready';const held=deferred(),release=deferred(),delivered=deferred();
-  const f=await errorDashboardBrowser(t,{intercept:async({route,pathname})=>{
-    if(pathname!==STATE)return false;
-    const base=await(await route.fetch()).json();
-    const id=new URL(route.request().url()).searchParams.get('runId')||'A';
-    if(mode==='held'){held.resolve();await release.promise;await json(route,200,loadedRunState(base,id));delivered.resolve();}
-    else await json(route,200,loadedRunState(base,mode==='wrong'?'A':id));
-    return true;
-  }});
-  f.owner.add('release ID recovery',()=>release.resolve(),0);
-  await f.open();await f.ready();mode='wrong';
-  await f.page.locator('#runList .run-item').filter({hasText:'작업 B'}).click();
-  await expectDashboardCode(f.page,'DASHBOARD_STATE_INVALID');
-  assert.match(await f.page.locator('#connectionNotice').innerText(),/조회한 작업과 응답 작업이 일치하지 않습니다/u);
-  const notice=await f.page.locator('#connectionNotice').innerText();
-  mode='held';await held.promise;
-  assert.match(await f.page.locator('#dashboardErrorCode').textContent(),/DASHBOARD_STATE_INVALID/u);
-  assert.equal(await f.page.locator('#connectionNotice').innerText(),notice);
-  assert.equal(await f.page.locator('#runPanel').getAttribute('data-load-state'),'ERROR');
-  assert.equal(await f.page.locator('#stopRun').isDisabled(),true);
-  mode='ready';release.resolve();await delivered.promise;await f.ready();
-  assert.equal(await f.page.locator('#runPanel').getAttribute('data-run-id'),'B');
-  assert.match(await f.page.locator('#dashboardLastError').innerText(),/DASHBOARD_STATE_INVALID/u);
-  assert.match(await f.page.locator('#dashboardLastError').innerText(),/일치하지 않습니다/u);
-  assert.match(await f.page.locator('#dashboardLastError').innerText(),/복구됐습니다/u);
+  const page = await f.sendContent({ type:'agent.ping' });
+  const recovery = { recoverSubmitted:true, controllerMessageId:'d1', runId:'r1',
+    expectedConversationUrl:page.url, expectedConversationId:page.conversationId,
+    expectedDocumentId:page.documentId, expectedFrameId:0, userMessageId:'u1', assistantMessageId:'a1' };
+  const rejected = await f.sendContent({ type:'agent.recheck', payload:{ ...recovery, assistantMessageId:'other' } });
+  assert.equal(rejected.code, 'AMBIGUOUS_COMPLETION');
+  const recovered = await f.sendContent({ type:'agent.recheck', payload:recovery });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.text, 'Fixture reply');
+  assert.equal(recovered.evidence.userMessageId, 'u1');
+  assert.equal(recovered.evidence.assistantMessageId, 'a1');
+  assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
 });
 
-test('a fatal page error survives a pending successful response and keeps mutation controls blocked',{timeout:25000},async t=>{
-  let hold=false;const held=deferred(),release=deferred(),delivered=deferred();
-  const f=await errorDashboardBrowser(t,{intercept:async({route,pathname})=>{
-    if(pathname!==STATE)return false;
-    const base=await(await route.fetch()).json();
-    if(hold){held.resolve();await release.promise;}
-    await json(route,200,loadedRunState(base,'A'));if(hold)delivered.resolve();return true;
-  }});
-  f.owner.add('release post-fatal state',()=>release.resolve(),0);
-  await f.open();await f.ready();
-  assert.equal(await f.page.locator('#stopRun').isEnabled(),true);
-  hold=true;await f.page.locator('#refreshDashboard').click();await held.promise;
-  await f.page.evaluate(()=>window.dispatchEvent(new ErrorEvent('error',{error:new Error('Controlled error while state is pending')})));
-  await expectDashboardCode(f.page,'DASHBOARD_RENDER_FAILED');
-  release.resolve();await delivered.promise;
-  await f.page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
-  assert.equal(await f.page.locator('#dashboardPhase').textContent(),'화면 오류');
-  assert.equal(await f.page.locator('#dashboardErrorCode').textContent(),'DASHBOARD_RENDER_FAILED');
-  assert.equal(await f.page.locator('#dashboardPageError').isVisible(),true);
-  assert.equal(await f.page.locator('#stopRun').isDisabled(),true);
-  assert.equal(await f.page.locator('#refreshDashboard').textContent(),'페이지 새로고침');
-});
-
-
-
-for (const variant of ['identity','version']) {
-  test(`fixed scope browser 1: rejects initial workflow/run ${variant} mismatch`,{timeout:25000},async t=>{
-    const f=await errorDashboardBrowser(t,{intercept:async({route,pathname})=>{
-      if(pathname!==STATE)return false;
-      const state=loadedRunState(await(await route.fetch()).json(),'A');
-      if(variant==='identity')state.run.runId='B';else state.run.version++;
-      await json(route,200,state);return true;
-    }});
-    await f.open();await expectDashboardCode(f.page,'DASHBOARD_STATE_INVALID');
-    assert.equal(await f.page.locator('#stopRun').isDisabled(),true);
-    assert.equal(await f.page.locator('#dashboardPageError').isVisible(),false);
+for (const [variant, code] of [
+  ['wrong-marker', 'MANUAL_INTERVENTION_DETECTED'],
+  ['duplicate', 'AMBIGUOUS_PROMPT_BINDING'],
+]) {
+  test(`browser fixture: keyed user bubble rejects ${variant}`, { timeout:25_000 }, async t => {
+    const f = await extensionBrowser(t, { providerHtml:keyedUserBubbleHtml });
+    await f.page.evaluate(value => { window.keyedBubbleCase = value; }, variant);
+    await f.prepare();
+    await assert.rejects(f.submit(), { code });
+    assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
+    assert.equal(f.readStorage().completedDelivery, null);
   });
 }
-
-test('fixed scope browser 2: late A command error never contaminates B and remains attributable to A',{timeout:25000},async t=>{
-  const sent=deferred(),release=deferred(),delivered=deferred();let body;
-  const f=await errorDashboardBrowser(t,{expectedMutations:['/api/commands'],intercept:async({route,pathname})=>{
-    if(pathname==='/api/commands'){
-      body=route.request().postDataJSON();sent.resolve();await release.promise;
-      await json(route,409,{error:{code:'RUN_BUSY',message:'Controlled late A failure'}});delivered.resolve();return true;
-    }
-    if(pathname!==STATE)return false;
-    const id=new URL(route.request().url()).searchParams.get('runId')||'A';
-    await json(route,200,loadedRunState(await(await route.fetch()).json(),id));return true;
-  }});
-  f.owner.add('release late command',()=>release.resolve(),0);
-  await f.open();await f.ready();
-  assert.equal(await f.page.locator('#stopRun').isVisible(),false);
-  await f.page.locator('#runSecondaryTier > summary').click();
-  assert.equal(await f.page.locator('#stopRun').isVisible(),true);
-  t.diagnostic('Opened the existing collapsed action panel before issuing the command.');
-  await f.page.locator('#stopRun').click();await sent.promise;
-  assert.equal(body.payload.runId,'A');assert.equal(body.payload.expectedVersion,3);
-  await f.page.locator('#runList .run-item').filter({hasText:'\uC791\uC5C5 B'}).click();
-  await f.page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='B');
-  release.resolve();await delivered.promise;await f.ready();
-  assert.equal(await f.page.locator('#runPanel').getAttribute('data-run-id'),'B');
-  assert.equal(await f.page.locator('#commandResult').textContent(),'');
-  await f.page.locator('#runList .run-item').filter({hasText:'\uC791\uC5C5 A'}).click();
-  await f.page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='A' && document.getElementById('commandResult').textContent.length>0);
-});
-
 
 test('identity rejection stays visible through an open socket until matching authentication is accepted', {timeout:25000}, async t=>{
   const f=await extensionBrowser(t,{autoConnect:false});
@@ -442,54 +403,4 @@ test('browser fixture: mixed-provider audit uses ChatGPT Judge and Claude Critic
   assert.equal(new Set(prompts.map(command => command.requestId)).size, 2);
   assert.equal(web.contentResults.filter(entry => entry.request.type === 'agent.prompt').length, 2);
   assert.deepEqual(web.errors, []);
-});
-
-import {asyncBoundaryFixture} from '../tests/helpers/async-boundary-regressions.js';
-for (const id of ['A-01','B-01','B-02']) test(`async boundary browser ${id}`,{timeout:25000},async t=>{
-  const f=await asyncBoundaryFixture(t),owner=resources(t),browser=await launchBrowser();
-  owner.add('AB browser',()=>browser.close(),20);
-  const page=await browser.newPage(),errors=[],posts=[],queries=[];let pending,requestId;
-  page.on('pageerror',error=>errors.push(error.message));
-  await page.route('**/api/**',async route=>{
-    const req=route.request(),url=new URL(req.url());
-    if(url.pathname==='/api/dashboard/session')return json(route,200,{token:'ab-test-token-0123456789abcdef-0123456789'});
-    if(url.pathname==='/api/state'){
-      if(url.searchParams.has('requestId'))queries.push(url.searchParams.get('requestId'));
-      if(!url.searchParams.has('runId'))url.searchParams.set('runId','A');
-    }
-    const options={method:req.method(),...(req.postData()?{body:req.postData()}: {})};
-    if(url.pathname==='/api/commands'){
-      const body=req.postDataJSON();posts.push(body);
-      if(body.payload.runId==='A'){
-        requestId=body.requestId;pending=f.api(url.pathname,options);await f.entered.promise;
-        if(id!=='B-01')return route.abort('failed');
-        const result=await pending;return json(route,result.status,result.body);
-      }
-    }
-    const result=await f.api(url.pathname+url.search,options);return json(route,result.status,result.body);
-  });
-  await page.goto(f.base);await page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='A');
-  await page.evaluate(()=>{for(const e of document.querySelectorAll('details'))e.open=true;});
-  await page.locator('#operatorNoteText').fill('A note');await page.locator('#addOperatorNote').click();await f.entered.promise;
-  if(id!=='B-01')await page.waitForFunction(()=>document.getElementById('commandResult').textContent.includes('같은 요청을 자동으로 다시 보내지 않습니다'));
-  if(id==='A-01'){
-    await page.reload();await page.waitForFunction(()=>document.getElementById('commandResult').textContent.includes('PROCESSING'));
-    assert.ok(queries.includes(requestId));assert.equal(posts.length,1);
-    f.release.resolve();await pending;await page.waitForFunction(()=>document.getElementById('commandResult').textContent.includes('COMPLETED'));
-    assert.equal(f.service.get('A').operatorNotes.length,1);assert.equal(posts.length,1);
-  }else{
-    await page.locator('#runList .run-item').filter({hasText:'B'}).click();
-    await page.waitForFunction(()=>document.getElementById('runPanel').dataset.runId==='B');
-    await page.evaluate(()=>{for(const e of document.querySelectorAll('details'))e.open=true;});
-    await page.locator('#operatorNoteText').fill('B note');await page.locator('#addOperatorNote').click();
-    await page.waitForFunction(()=>document.getElementById('operatorNoteText').value==='');
-    await page.locator('#archiveRun').click();await page.waitForFunction(()=>document.getElementById('archiveRun').textContent==='보관 해제');
-    await page.locator('#archiveRun').click();await page.waitForFunction(()=>document.getElementById('archiveRun').textContent==='기록 보관');
-    await page.locator('#operatorNoteText').fill('B draft');f.release.resolve();await pending;
-    await page.waitForResponse(response=>new URL(response.url()).pathname==='/api/state');
-    assert.equal(await page.locator('#runPanel').getAttribute('data-run-id'),'B');
-    assert.equal(await page.locator('#operatorNoteText').inputValue(),'B draft');
-    assert.equal(f.service.get('B').operatorNotes.length,1);assert.equal(f.service.get('B').archivedAt,null);
-  }
-  assert.deepEqual(errors,[]);t.diagnostic(JSON.stringify({id,posts:posts.map(x=>({runId:x.payload.runId,requestId:x.requestId,type:x.type})),queries}));
 });

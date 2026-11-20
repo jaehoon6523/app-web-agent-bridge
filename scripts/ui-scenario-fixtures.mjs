@@ -31,12 +31,14 @@ export function createUiScenarioFixture(targetRoot) {
     const old = requested.get('runId') === 'old';
     const selected = old ? { ...run(), runId: 'old', phase: 'CANCELLED', objective: 'Previous task' }
       : phase && !(requested.get('view') === 'start' && terminal) ? run() : null;
-    const workflow = preparation?.lifecycle === 'ACTIVE'
+    const context = old ? null : preparation;
+    const workflow = context?.lifecycle === 'ACTIVE'
       ? { stage: ['WAITING_WEB_RESPONSE', 'WEB_BLOCKED'].includes(preparation.state) ? 'START' : 'PREPARE',
         state: preparation.state, preparationId: preparation.preparationId, preparationVersion: preparation.version }
       : selected ? { stage: old || terminal ? 'RESULT' : 'WORK', state: selected.phase, runId: selected.runId, runVersion: selected.version }
         : { stage: 'START', state: 'START_IDLE' };
-    const caps = preparation?.lifecycle === 'ACTIVE'
+    Object.assign(workflow, {preparationId:context?.preparationId ?? null, preparationVersion:context?.version ?? null});
+    const caps = context?.lifecycle === 'ACTIVE'
       ? ['preparation.cancel', ...(preparation.state === 'DISCUSSING' ? ['preparation.reply'] : []),
         ...(preparation.state === 'AGREEMENT_READY' ? ['preparation.approve', 'preparation.reply'] : [])]
       : phase && !terminal ? phase === 'RECOVERY_REQUIRED' ? ['run.reconcile', 'run.abandon']
@@ -45,7 +47,7 @@ export function createUiScenarioFixture(targetRoot) {
         : ['preparation.start', ...(phase === 'AWAITING_APPLY' && !old
           ? ['code.apply', 'evidence.get', 'evidence.export', 'code.review.discuss', 'run.stop'] : [])];
     const runs = phase ? [{ runId: 'old', phase: 'CANCELLED', objective: 'Previous task' }, run()] : [];
-    return { workflow, preparation, run: selected, runs,
+    return { workflow, preparation:context, run: selected, runs,
       runtimeAvailability: runtimeAvailable
         ? { ready: true, code: null, message: null }
         : { ready: false, code: 'RUNTIME_FAULT_INJECTED', message: 'fixture runtime unavailable' },

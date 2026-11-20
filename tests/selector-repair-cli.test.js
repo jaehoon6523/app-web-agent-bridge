@@ -70,16 +70,14 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   const env={...process.env,DASHBOARD_TOKEN:'fixture-dashboard-token-0123456789',DEMO_MODE:'false',WEB_EXTENSION_SHARED_SECRET:'',WEB_EXTENSION_EXPECTED_IDENTITY:'',
     CODE_WORKER_PROVIDER:'gemini',CODE_WORKER_EXECUTABLE:process.execPath,CODE_WORKER_ARGS:JSON.stringify([worker])};
   try {
-  const options={cwd:target,env,signal:t.signal};
-  const generated=await evidence.command(process.execPath,[cli,'--server',`http://127.0.0.1:${server.address().port}`,'--tab','7'],{...options,timeout:150000,maxBuffer:8*1024*1024},run);
-  t.signal.throwIfAborted();
+  const generated=await evidence.command(process.execPath,[cli,'--server',`http://127.0.0.1:${server.address().port}`,'--tab','7'],{cwd:target,env,signal:t.signal,timeout:150000,maxBuffer:8*1024*1024},run);
   const result=JSON.parse(generated.stdout);assert.equal(result.stage,'AWAITING_APPROVAL');
   assert.equal(git('status','--porcelain'),'');
   assert.ok(fs.readFileSync(result.logFile,'utf8').includes('VERIFICATION_STARTED'));
-  await assert.rejects(evidence.command(process.execPath,[cli,'--apply',result.jobId,'--approve','wrong'],{...options,timeout:15000},run));
-  t.signal.throwIfAborted();
-  await evidence.command(process.execPath,[cli,'--apply',result.jobId,'--approve',result.patchHash],{...options,timeout:15000},run);
-  const inspected=await evidence.command(process.execPath,[cli,'--inspect',result.jobId],{...options,timeout:15000},run);
+  const commandOptions = {cwd:target,env,signal:t.signal,timeout:30000};
+  await assert.rejects(evidence.command(process.execPath,[cli,'--apply',result.jobId,'--approve','wrong'],commandOptions,run));
+  await evidence.command(process.execPath,[cli,'--apply',result.jobId,'--approve',result.patchHash],commandOptions,run);
+  const inspected=await evidence.command(process.execPath,[cli,'--inspect',result.jobId],commandOptions,run);
   assert.equal(JSON.parse(inspected.stdout).applicationState,'APPLIED');
   assert.match(fs.readFileSync(path.join(target,'extension/selectors/send-button-selectors.js'),'utf8'),/새로운 음성 입력/u);
   if (failVerification) assert.fail('Expected internal verification to fail');
@@ -103,7 +101,7 @@ readline.createInterface({input:process.stdin}).on('line', line => {
 }
 
 function repairTest(name, failVerification = false) {
-  test(name,{timeout:240000},async t => {
+  test(name,{timeout:210000},async t => {
     const evidence = evidenceRun.scenario(failVerification ? 'inner-failure' : 'repair-apply');
     try { await scenario(t,evidence,failVerification); evidence.finish(null); }
     catch (error) { evidence.finish(error); t.diagnostic('Failure evidence: '+evidence.directory); throw error; }

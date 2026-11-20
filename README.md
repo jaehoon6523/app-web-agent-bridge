@@ -40,7 +40,7 @@ npm start
 | `CODEX_EXECUTABLE` | 실제 Codex 기능 사용 시 필수 | Codex 실행 파일 경로. 미설정이면 해당 기능만 not-ready |
 | `CODEX_HOME` | 선택 | Codex 인증/home 경로를 runtime에 전달 |
 | `CODE_WORKER_PROVIDER` | 기본값 있음 | `codex` 기본; `deepseek`, `claude`, `qwen`, `gemini` 지원 |
-| `CODE_WORKER_MODEL` | 선택 | 구현 worker 모델 라벨 |
+| `CODE_WORKER_MODEL` | 선택 | 구현 Worker 모델. 비워 두면 공급자의 기본 설정 사용 |
 | `CODE_WORKER_EXECUTABLE` | non-Codex worker 사용 시 필수 | JSONL-compatible provider CLI/shim |
 | `CODE_WORKER_ARGS` | 선택 | worker 실행 인자 JSON 배열 |
 | `WEB_RESPONSE_TIMEOUT_MS` | 기본값 있음 | Web turn timeout. 기본 `300000` ms |

@@ -31,13 +31,17 @@ export function createDashboardHealthPresentation({
               : { state:"unknown", detail:"인증 확인 전" };
     }
     if (id === "channelHealth") {
-      if (!connected) return { state:"unknown", detail:"최신 상태 확인 필요" };
+      const checking = connectionState.stateRead === StateReadState.IN_FLIGHT
+        && sessionAuthenticated && !connectionState.lastError;
+      if (!connected && !checking) return { state:"unknown", detail:"최신 상태 확인 필요" };
       const browser = projectBrowserState(snapshot?.preflight);
-      return browser.extension === ExtensionState.AUTHENTICATED
-        ? { state:"ok", detail:"확장 인증됨" }
-        : browser.extension === ExtensionState.DISCONNECTED
-          ? { state:"warn", detail:"확장 연결 대기" }
-          : { state:"unknown", detail:"확인 전" };
+      if (browser.extension === ExtensionState.AUTHENTICATED) {
+        return { state:"ok", detail:checking ? "마지막 확인: 확장 인증됨" : "확장 인증됨" };
+      }
+      if (browser.extension === ExtensionState.DISCONNECTED) {
+        return { state:"warn", detail:checking ? "마지막 확인: 확장 연결 대기" : "확장 연결 대기" };
+      }
+      return { state:"unknown", detail:checking ? "확장 상태 확인 중" : "확인 전" };
     }
     if (["cliSignal", "webSignal", "webBindingSignal"].includes(id) && !connected) {
       if (serverUnreachable) return { state:"warn", detail:"서버 응답 없음" };

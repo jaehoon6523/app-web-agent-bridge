@@ -19,6 +19,16 @@ const proposal = { type: "PROPOSAL", summary: "Test", body: "Keep exact sessions
 const token = "dashboard-integration-token-0123456789abcdef";
 const secret = "extension-integration-secret-0123456789abcdef";
 
+test("dashboard summaries preserve each run's preparation and conversation mapping", async () => {
+  const run = {runId:"mapped-run", phase:"APPLIED", objective:"Done", projectRef:{targetRoot:"C:/project"},
+    preparationId:"mapped-prep", conversationUrl:"https://chatgpt.com/c/source"};
+  const live = {store:{listRuns:() => []}, codeChanges:{list:() => [run], snapshot:() => ({run})}};
+  const dashboard = new DashboardController({getRuntime:async () => live, preflight:() => ({})});
+  const state = await dashboard.snapshot();
+  assert.equal(state.runs[0].preparationId, run.preparationId);
+  assert.equal(state.runs[0].conversationUrl, run.conversationUrl);
+});
+
 function fixture(t, beforeClose = async () => {}) {
   const directory = mkdtempSync(join(tmpdir(), "dashboard-controller-"));
   const store = new SqliteStore(join(directory, "controller.sqlite"));
@@ -86,9 +96,23 @@ test("dashboard snapshot remains readable when live runtime initialization fails
 });
 
 test("dashboard runs both actors, exposes durable output, and acknowledges stored Web responses", async (t) => {
-  const { dashboard, store, sessions, live } = fixture(t);
+  const { dashboard, composition, store, sessions, live } = fixture(t);
+  const dispatch = composition.dispatchUntilSettled.bind(composition);
+  const {promise:dispatchExit, resolve:allowDispatchExit} = Promise.withResolvers();
+  t.after(allowDispatchExit);
+  composition.dispatchUntilSettled = async input => {
+    const result = await dispatch(input);
+    await dispatchExit;
+    return result;
+  };
   const { runId } = await dashboard.execute({ type: "run.start", payload: { expectedVersion: 0, mode: "DISCUSSION", objective: "Test relay", maxTurns: 2, conversationUrl: "https://chatgpt.com/c/conversation-test" } });
   const state = await settled(dashboard, runId);
+  assert.equal(state.commandCapabilities.includes("run.delete"), false);
+  await assert.rejects(dashboard.execute({type:"run.delete",payload:{runId,expectedVersion:state.run.version}}),
+    {code:"RUN_BUSY"});
+  allowDispatchExit();
+  await dashboard.waitUntilSettled(runId);
+  assert.ok((await dashboard.snapshot(runId)).commandCapabilities.includes("run.delete"));
   assert.equal(state.run.currentTurn, 2);
   assert.equal(state.outcome.outcome.type, "INCONCLUSIVE");
   assert.equal(state.messages.filter((m) => m.actor).length, 2);

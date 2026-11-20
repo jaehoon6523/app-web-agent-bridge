@@ -13,6 +13,7 @@ let token = '', observation = null, busy = false;
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(30_000), cache: 'no-store',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  if (response.status === 401) token = '';
   const result = await response.json();
   if (!response.ok) {
     const error = new Error(result.error || '전송 상태를 확인하지 못했습니다.');
@@ -21,9 +22,13 @@ async function request(url, options = {}) {
   }
   return result;
 }
-async function readObservation() {
+async function readObservation(renewSession = true) {
   if (!token) token = (await request('/api/dashboard/session', { method: 'POST', body: '{}' })).token;
-  return request('/api/delivery-review?' + new URLSearchParams(owner));
+  try { return await request('/api/delivery-review?' + new URLSearchParams(owner)); }
+  catch (error) {
+    if (renewSession && error.httpStatus === 401) return readObservation(false);
+    throw error;
+  }
 }
 const terminalRecord = record => record?.active === false && ['DISCARDED', 'RECOVERY_DISCARDED'].includes(record.state)
   && record.responseStored === false && !['ACK_PENDING', 'ACKNOWLEDGED'].includes(record.processingState);
@@ -87,8 +92,13 @@ function capabilities() {
   $('discardPanel').hidden = !canDiscard;
   const unknown = pageUnconfirmed(seen, terminal);
   $('pageUnknownLabel').hidden = !canDiscard || !unknown;
-  $('ack').hidden = !(record?.kind === 'REVIEW' && record?.active && seen?.phase === 'ACK_PENDING' && (seen.exact || seen.ackConfirmed));
-  $('ack').disabled = busy || seen?.extensionBusy || seen?.pageBusy || seen?.generating;
+  const ackPending = observation?.server?.status === 'MATCHED' && record?.kind === 'REVIEW'
+    && record.active && seen?.phase === 'ACK_PENDING' && (seen.exact || seen.ackConfirmed);
+  const canAcknowledge = observation?.canAcknowledge === undefined
+    ? ackPending && !observation.server.otherActive && !seen.otherActive && !seen.extensionBusy && !seen.pageBusy && !seen.generating
+    : observation.canAcknowledge === true;
+  $('ack').hidden = !ackPending;
+  $('ack').disabled = busy || !ackPending || !canAcknowledge;
   $('preparationRecovery').hidden = !(record?.kind === 'PREPARATION' && record?.active);
   const action = !observation ? '확인 불가'
     : seen?.generating || seen?.pageBusy || seen?.extensionBusy || observation.server?.otherActive || seen?.otherActive ? '다른 작업 또는 생성 중 · 정리 불가'

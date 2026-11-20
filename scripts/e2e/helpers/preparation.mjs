@@ -103,8 +103,7 @@ export async function preparationHarness(t, f, { revise = false, afterPreparatio
       responseCount++;
       assert.ok(responseCount <= preparationPackets.length, 'Unexpected provider submission');
       assert.ok(text.includes(preparationObjective));
-      const targetRoot = fs.realpathSync(f.server.workspace).split(path.sep).join('/');
-      assert.ok(text.includes(targetRoot), 'The preparation prompt must identify the canonical project folder');
+      assert.ok(text.includes(fs.realpathSync(f.server.workspace).split(path.sep).join('/')));
       if (responseCount === 2) { receivedSecond(); await secondReleased; }
       return raw(preparationPackets[responseCount - 1]);
     },

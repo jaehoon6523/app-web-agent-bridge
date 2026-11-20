@@ -10,10 +10,10 @@ const TEXT = new Set(("name code flow stage provider selectorVersion runtimeVers
 const SELECTORS = new Set("composer sendButton stopButton message messageContainer messageContent".split(" "));
 const BINDING = new Set("sessionId runId conversationUrl conversationId tabId windowId bindingStatus documentId frameId".split(" "));
 const FLAGS = new Set(("ok ready busy generating composerPresent responded injectionAttempted missingReceiver requireComposer "
-+ "browserDispatchStarted unsent deliveryReserved contentDispatchStarted extensionBusy pageBusy pageReachable reloadRequired "
++ "browserDispatchStarted sendAttempted unsent deliveryReserved contentDispatchStarted extensionBusy pageBusy pageReachable reloadRequired "
 + "acceptedByVisibility connected disabled readOnly editable inForm inMain selected hasFocus documentMatches excludedAncestor").split(" "));
 const NUMBERS = new Set(("tabId windowId frameId persistedTabId storedTabId expectedTabId expectedFrameId observedTabId "
-+ "timeoutMs pingAttempts rootCount count matched visible width height eligible").split(" "));
++ "stageStartedAt stageEndedAt timeoutMs pingAttempts rootCount count matched visible width height eligible").split(" "));
 const OBJECTS = new Set(("details evidence cause causeDetails readiness lastReadiness inspectionError lastInspectionError "
 + "diagnostics pageState composerFallback selectorsUsed originalError expected observed requested persisted page binding transport").split(" "));
 const ARRAYS = new Set(("composerSelectors editableCandidates samples rootTabs candidates controls ancestors").split(" "));
@@ -30,6 +30,12 @@ function own(value, key) {
 // Copy bounded data while ignoring application-defined accessors and toJSON.
 const SUMMARY = Object.freeze({
   UI_CONTRACT_CHANGED: "Web page controls are unavailable or changed. Inspect structured page diagnostics.",
+  ROOT_TAB_QUERY_FAILED: "Chrome could not list tabs in the connected profile.",
+  ROOT_TAB_NOT_FOUND: "Open a provider start tab in the connected Chrome profile.",
+  ROOT_WINDOW_SELECTION_REQUIRED: "Select the Chrome window in which to open the start tab.",
+  BROWSER_SCOPE_UNCONFIRMED: "The extension could not verify the requested Chrome window or conversation.",
+  WEB_TAB_INVENTORY_CHANGED: "Chrome tabs changed during verification. Check the intended tab again.",
+  CONTENT_SCRIPT_UNAVAILABLE: "The content script did not respond on the selected tab.",
   WEB_DOCUMENT_CHANGED: "The bound Web document changed. Prepare the session again.",
   AMBIGUOUS: "The matching Web conversation cannot be uniquely identified.",
   WEB_TAB_SELECTION_REQUIRED: "Select the matching Web conversation tab; no prompt has been sent.",

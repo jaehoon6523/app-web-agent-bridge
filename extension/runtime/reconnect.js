@@ -1,4 +1,4 @@
-export function createReconnectController({ connect, connected, onError, setTimer = setTimeout, clearTimer = clearTimeout }) {
+export function createReconnectController({ connect, connected, onError, wake = undefined, setTimer = setTimeout, clearTimer = clearTimeout }) {
   let timer = null;
   let attempts = 0;
   let blocked = false;
@@ -7,6 +7,7 @@ export function createReconnectController({ connect, connected, onError, setTime
     cancel() {
       if (timer !== null) clearTimer(timer);
       timer = null;
+      wake?.cancel();
     },
     accepted() {
       controller.requested();
@@ -21,6 +22,7 @@ export function createReconnectController({ connect, connected, onError, setTime
       if (timer !== null || connected() || pairingAttempts >= 10) return;
       blocked = false;
       pairingAttempts++;
+      wake?.schedule();
       timer = setTimer(async () => {
         timer = null;
         try { await connect(); }
@@ -34,6 +36,7 @@ export function createReconnectController({ connect, connected, onError, setTime
       }
       if (blocked || timer !== null || connected()) return;
       const delay = Math.min(30_000, 2_000 * (2 ** Math.min(attempts++, 4)));
+      wake?.schedule();
       timer = setTimer(async () => {
         timer = null;
         try { await connect(); }

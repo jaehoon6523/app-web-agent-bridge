@@ -43,9 +43,6 @@ export async function connectedExtension(t, f, { reply, observeFrame = null, pro
   await f.page.locator('#objective').fill(objective);
   await f.page.locator('#startRoot').fill(f.server.workspace);
   await f.page.waitForFunction(() => !document.getElementById('planRun').disabled);
-  const probeDeadline = Date.now() + 15000;
-  const hasProviderProbe = () => extension.contentResults.some(item => item.request.type === 'agent.ping' && item.result?.ok);
-  while (!hasProviderProbe() && extension.errors.length === 0 && Date.now() < probeDeadline) await delay(100);
   assert.deepEqual(extension.errors, []);
   const types = extension.frames.map(frame => frame.type);
   assert.ok(types.includes('controller.auth.challenge'));
@@ -53,7 +50,7 @@ export async function connectedExtension(t, f, { reply, observeFrame = null, pro
   assert.ok(types.includes('controller.auth.accepted'));
   assert.ok(types.includes('extension.hello'));
   assert.ok(extension.commands.some(command => command.type === 'agent.ping'));
-  assert.ok(hasProviderProbe(), 'Authenticated extension did not complete its provider readiness probe');
+  assert.ok(extension.contentResults.some(item => item.request.type === 'agent.ping' && item.result?.ok));
   let documentLifecycle = null;
   if (probeReload && path.basename(f.output) === 'UF-12') {
     const before = await extension.sendContent({ type:'agent.ping' });

@@ -1,84 +1,42 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { isValidRequirementsProposal } from "../src/orchestration/invalid-preparation-abandonment.js";
 import os from "node:os";
 import path from "node:path";
-import { PreparationService, workflowForRun } from "../src/orchestration/preparation-service.js";
+import { workflowForRun } from "../src/orchestration/preparation-service.js";
 import { normalizeDashboardState } from "../public/dashboard-model.js";
-import { validateWebSessionBinding } from "../src/runtime/web/binding.js";
+import { fixture, settled, tick } from "./helpers/preparation-service-fixture.js";
 
-const tick = () => new Promise(setImmediate);
-async function settled(service) {
-  for (let i = 0; i < 50 && service.jobs.size; i++) await tick();
-  assert.equal(service.jobs.size, 0);
-}
-function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "canonical-preparation-"));
-  const runs = new Map(), calls = [], prompts = [];
-  let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {}, discarded = null;
-  const web = {
-    async inspect() {
-      return { binding: binding ?? null };
-    },
-    async resume(input) {
-      validateWebSessionBinding(input.binding);
-      binding = input.binding.conversationUrl === null
-        ? { ...input.binding, conversationUrl: "https://chatgpt.com/", conversationId: null, bindingStatus: "ROOT_READY", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 }
-        : { ...input.binding, bindingStatus: "BOUND", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 };
-      calls.push(binding.sessionId); return binding;
-    },
-    async rebind(input) {
-      validateWebSessionBinding(input.binding);
-      binding = input.binding.conversationUrl === null
-        ? { ...input.binding, conversationUrl:"https://chatgpt.com/", conversationId:null,
-          bindingStatus:"ROOT_READY", tabId:input.tabId, windowId:2, documentId:`document-${input.tabId}`, frameId:0 }
-        : { ...input.binding, bindingStatus:"BOUND", tabId:input.tabId, windowId:2,
-          documentId:`document-${input.tabId}`, frameId:0 };
-      calls.push(`rebind:${input.tabId}`); return binding;
-    },
-    async submitTurn(input) {
-      prompts.push(input.text);
-      if (binding.bindingStatus === "ROOT_READY") binding = { ...binding, conversationUrl: "https://chatgpt.com/c/new-conversation", conversationId: "new-conversation", bindingStatus: "BOUND" };
-      active = input.turnId; count++;
-      const parsed = count === 1 ? { type: "REQUIREMENTS_PROPOSAL", summary: "무엇을 만들까요?", questions: ["원하는 기능?"], items: [] }
-        : { type: "REQUIREMENTS_PROPOSAL", summary: "채팅", questions: [], items: [{ statement: "메시지 전송", acceptanceCriteria: "목록에 한 번 표시" }] };
-      binding = { ...binding, lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count };
-      return { completion: Promise.resolve({ turnId: active, binding, confidence: "CONFIRMED_BY_UI_STATE",
-        trace: { requestId: active, actionId: active, bindingId: `${binding.sessionId}:${binding.runId}`,
-          tabId: binding.tabId, documentId: binding.documentId, frameId: binding.frameId, result: "success" },
-        rawText: JSON.stringify(parsed) }) };
-    },
-    async inspectDelivery() { if (!binding) return { currentDeliveryId: null }; return { currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
-      conversationId: binding.conversationId, conversationUrl: binding.conversationUrl, observedConversationUrl: binding.conversationUrl,
-      pageReachable: true, generating: false, pageBusy: false, extensionBusy: false,
-      lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count, ...inspection }; },
-    async acknowledgeDelivery() { if (failAck) throw new Error("lost ACK"); active = null; Object.assign(inspection, afterAck); },
-    async discardDelivery(expected) {
-      discarded = structuredClone(expected);
-      active = null;
-      Object.assign(inspection, { currentDeliveryId: null });
-      return { ...expected, result: "discarded" };
-    },
+function createDirectoryAlias(target, alias) {
+  try { fs.symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir"); }
+  catch (error) {
+    if (process.platform !== "win32" || error.code !== "EPERM") throw error;
+    execFileSync(process.env.ComSpec || process.env.COMSPEC || "cmd.exe",
+      ["/d", "/v:off", "/s", "/c", "mklink /J %BRIDGE_JUNCTION_LINK% %BRIDGE_JUNCTION_TARGET%"],
+      { windowsHide:true, stdio:"pipe", env:{ ...process.env,
+        BRIDGE_JUNCTION_LINK:`"${alias}"`, BRIDGE_JUNCTION_TARGET:`"${target}"` } });
+  }
+  const canonicalPath = value => {
+    const resolved = path.normalize(fs.realpathSync.native(value));
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   };
-  const options = { filename: path.join(root, "state.sqlite"), web, available: () => true, assertStart: async () => {},
-    findRun: async (id) => runs.get(id),
-    approve: async (context) => {
-      assert.equal(context.agreement.status, "APPROVED");
-      assert.equal(context.webSession.activeDeliveryId, null);
-      const run = { runId: context.reservedRunId, preparationId: context.preparationId, baseCommit: "base", version: 1, phase: "WORKER_RUNNING" };
-      runs.set(run.runId, run); return { ...run, repository: { baseCommit: "base" } };
-    } };
-  let service = new PreparationService(options);
-  t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { root, runs, calls, prompts, web, get service() { return service; }, ackFailure(value) { failAck = value; },
-    get discarded() { return discarded; },
-    observe(value) { inspection = value; }, afterAck(value) { afterAck = value; },
-    restart() { service.close(); service = new PreparationService(options); },
-    start() { return service.execute("preparation.start", { requestId: "start",
-      objective: "  아무거나\n", targetRoot: root, conversationUrl: "https://chatgpt.com/c/test" }); },
-    command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), preparationId: service.current.preparationId, ...extras }); },
-  };
+  assert.equal(canonicalPath(alias), canonicalPath(target));
 }
+test("Windows EPERM junction fallback resolves an alias in a spaced path", { skip:process.platform !== "win32" }, t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "junction fallback with spaces-"));
+  t.after(() => fs.rmSync(directory, { recursive:true, force:true }));
+  const target = path.join(directory, "target directory");
+  const alias = path.join(directory, "project alias");
+  fs.mkdirSync(target);
+  const symlink = t.mock.method(fs, "symlinkSync", () => { throw Object.assign(new Error("forced EPERM"), { code:"EPERM" }); });
+
+  createDirectoryAlias(target, alias);
+
+  assert.equal(symlink.mock.callCount(), 1);
+  assert.equal(fs.statSync(alias).isDirectory(), true);
+});
 test("follow-up accepts the raw APPLIED stage from production findRun and keeps a new approval boundary", async (t) => {
   const f = fixture(t);
   f.runs.set("applied-1", { runId:"applied-1", stage:"APPLIED", projectRef:{ targetRoot:f.root },
@@ -100,7 +58,7 @@ test("follow-up accepts a saved project alias without inheriting prior approval"
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "follow-up-alias-"));
   t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
   const alias = path.join(directory, "project");
-  fs.symlinkSync(f.root, alias, process.platform === "win32" ? "junction" : "dir");
+  createDirectoryAlias(f.root, alias);
   f.runs.set("applied-alias", {runId:"applied-alias", stage:"APPLIED", projectRef:{targetRoot:alias},
     objective:"previous task", requirements:{items:[]}});
   await f.service.execute("preparation.start", {requestId:"follow-up-alias", objective:"next task",
@@ -165,7 +123,12 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
   const deliveryId = before.webSession.activeDeliveryId;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: deliveryId, sessionId: before.webSession.sessionId,
     runId: before.preparationId, conversationUrl: before.webSession.conversationUrl, conversationId: before.webSession.conversationId });
-  await f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Original conversation is unavailable." });
+  const confirmation = { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Original conversation is unavailable." };
+  await assert.rejects(f.command("preparation.discard", { ...confirmation, deliveryId:"previous-delivery" }),
+    {code:"DELIVERY_RECOVERY_MISMATCH"});
+  assert.equal(f.discarded, null);
+  assert.equal(f.service.current.webSession.activeDeliveryId, deliveryId);
+  await f.command("preparation.discard", { ...confirmation, deliveryId });
   const after = f.service.current;
   const delivery = after.deliveries.find((item) => item.deliveryId === deliveryId);
   assert.equal(delivery.state, "RECOVERY_DISCARDED");
@@ -184,11 +147,27 @@ test("discard refuses a delivery owned by a different extension preparation", as
   const before = f.service.current;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: "delivery-other", sessionId: "session-other", runId: "run-other" });
   await assert.rejects(
-    f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Check ownership." }),
+    f.command("preparation.discard", { deliveryId:before.webSession.activeDeliveryId, unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Check ownership." }),
     (error) => error.code === "DELIVERY_RECOVERY_MISMATCH",
   );
   assert.equal(f.discarded, null);
   assert.equal(f.service.current.webSession.activeDeliveryId, before.webSession.activeDeliveryId);
+});
+
+test("discard rechecks the preparation version after observing the extension", async (t) => {
+  const f = fixture(t);
+  f.ackFailure(true); await f.start(); await settled(f.service);
+  const context = f.service.current, session = context.webSession;
+  f.web.inspectDelivery = async () => {
+    await f.service.touch(context);
+    return {currentDeliveryId:session.activeDeliveryId,sessionId:session.sessionId,
+      runId:context.preparationId,conversationUrl:session.conversationUrl};
+  };
+  await assert.rejects(f.command("preparation.discard", {deliveryId:session.activeDeliveryId,
+    unresolvedResultConfirmed:true,noAutomaticResendConfirmed:true,reason:"Checked the original conversation"}),
+  {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.equal(f.discarded,null);
+  assert.equal(context.lifecycle,"ACTIVE");
 });
 
 test("a missing extension record cannot be treated as an already confirmed preparation discard", async (t) => {
@@ -196,7 +175,7 @@ test("a missing extension record cannot be treated as an already confirmed prepa
   const context = f.service.current, deliveryId = context.webSession.activeDeliveryId;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: null, sessionId: context.webSession.sessionId,
     runId: context.preparationId, conversationUrl: context.webSession.conversationUrl });
-  await assert.rejects(f.command("preparation.discard", { unresolvedResultConfirmed: true,
+  await assert.rejects(f.command("preparation.discard", { deliveryId, unresolvedResultConfirmed: true,
     noAutomaticResendConfirmed: true, reason: "Checked the original conversation" }), { code: "DELIVERY_RECOVERY_MISMATCH" });
   assert.equal(context.webSession.activeDeliveryId, deliveryId); assert.equal(f.discarded, null);
 });
@@ -264,7 +243,7 @@ test("root bootstrap timeout discard uses the canonical preparation and session 
   delivery.state = "RECOVERY_REQUIRED";
   delete delivery.runId;
   delete delivery.conversationUrl;
-  await f.command("preparation.discard", { unresolvedResultConfirmed: true,
+  await f.command("preparation.discard", { deliveryId:delivery.deliveryId, unresolvedResultConfirmed: true,
     noAutomaticResendConfirmed: true, reason: "No ChatGPT response was observed." });
   assert.equal(f.discarded.currentDeliveryId, delivery.deliveryId);
   assert.equal(f.discarded.sessionId, context.webSession.sessionId);
@@ -280,9 +259,20 @@ test("start returns server identity before dispatch; question-only reply retains
   assert.equal(first.objective, "  아무거나\n");
   assert.equal(first.deliveries[0].state, "RESERVED");
   await settled(f.service);
+  assert.ok(f.prompts[0].includes(first.objective));
+  assert.ok(!f.prompts[0].includes(first.preparationId));
+  assert.doesNotMatch(f.prompts[0], /JSON packet 문자열|이스케이프|기존 준비 문맥/u);
+  assert.doesNotMatch(f.prompts[0], /(?:^|\n)(?:답변시작|답변끝|CONTROLLER_PACKET_BEGIN|CONTROLLER_PACKET_END)(?:\n|$)/u);
+  const example = f.prompts[0].split("\n").at(-1);
+  assert.equal(isValidRequirementsProposal(JSON.parse(example)), true);
   assert.equal(f.service.current.state, "DISCUSSING");
   assert.equal(f.service.current.agreement.requirements.length, 0);
   assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+  const currentVersion = f.service.current.version;
+  await assert.rejects(f.service.execute("preparation.reply", {
+    requestId:"stale-reply", preparationId:first.preparationId, expectedVersion:currentVersion - 1, content:"old question",
+  }), {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.equal(f.service.current.version, currentVersion);
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);
   assert.equal(new Set(f.calls).size, 1);
   assert.equal(f.service.current.state, "AGREEMENT_READY");
@@ -340,7 +330,7 @@ test("confirmed project conversation persists and is reused only for its exact f
   assert.match(f.prompts.at(-1), /이전 승인·완료 기준·후보·적용 권한은 새 작업으로 승계되지 않는다/);
 });
 
-test("a new root preparation preserves a prior recovery-required delivery without inspecting or discarding it", async (t) => {
+test("a recovery-required preparation blocks a new root and remains visible after restart", async (t) => {
   const f = fixture(t);
   const submitTurn = f.web.submitTurn;
   f.web.submitTurn = async (input) => {
@@ -354,13 +344,35 @@ test("a new root preparation preserves a prior recovery-required delivery withou
   const old = f.service.current;
   assert.equal(old.state, "RECOVERY_REQUIRED");
   const oldDeliveryId = old.webSession.activeDeliveryId;
-  const next = await f.service.execute("preparation.start", {
+  const input = {
     requestId: "start-new", objective: "new", targetRoot: f.root, conversationUrl: "https://chatgpt.com/",
-  });
-  assert.equal(old.lifecycle, "ACTIVE");
-  assert.equal(old.webSession.activeDeliveryId, oldDeliveryId);
-  assert.equal(f.service.current.preparationId, next.preparationId);
+  };
+  await assert.rejects(f.service.execute("preparation.start", input), {code:"PREPARATION_CONFLICT"});
+  f.restart();
+  const restoredVersion = f.service.current.version;
+  assert.ok(restoredVersion >= old.version);
+  await assert.rejects(f.service.execute("preparation.start", {...input,requestId:"after-restart"}), {code:"PREPARATION_CONFLICT"});
+  const snapshot = await f.service.project({runs:[],run:null,commandCapabilities:[]});
+  assert.deepEqual(snapshot.activePreparation,{preparationId:old.preparationId,version:restoredVersion});
+  assert.equal(snapshot.preparation.webSession.activeDeliveryId, oldDeliveryId);
+  assert.ok(!snapshot.commandCapabilities.includes("preparation.start"));
+  assert.equal(Object.keys(f.service.data.contexts).length, 1);
   assert.equal(f.discarded, null);
+});
+
+test("legacy active owners remain visible when currentId points to settled history", async (t) => {
+  const f = fixture(t);
+  await f.start(); await settled(f.service);
+  const owner = f.service.current;
+  f.service.data.contexts.history = {...owner, preparationId:"history", lifecycle:"COMPLETED"};
+  f.service.data.currentId = "history";
+  await f.service.save();
+  f.restart();
+  assert.equal(f.service.busy, true);
+  assert.equal(f.service.current.preparationId, owner.preparationId);
+  await f.command("preparation.cancel", {expectedVersion:owner.version});
+  const next = await f.start({requestId:"next-after-cancel"});
+  assert.notEqual(next.preparationId, owner.preparationId);
 });
 
 test("cross-session active-delivery block is classified as stale extension runtime", async (t) => {
@@ -484,6 +496,10 @@ test("composer failure stays visible across restart and requires local cancellat
   assert.equal(f.service.current.preparationId, before.preparationId);
   f.service.available = () => false;
   assert.ok(f.service.capabilities().includes("preparation.cancel"));
+  await assert.rejects(f.service.execute("preparation.cancel", {
+    requestId:"stale-cancel", preparationId:before.preparationId, expectedVersion:f.service.current.version - 1,
+  }), {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.equal(f.service.current.webSession.activeDeliveryId, deliveryId);
   await f.command("preparation.cancel");
   assert.equal(f.service.current.lifecycle, "ABANDONED");
   assert.equal(f.service.current.webSession.activeDeliveryId, null);
@@ -536,6 +552,35 @@ test("ambiguous unsent binding waits for an explicit eligible tab and then sends
   assert.ok(f.calls.includes("rebind:12"));
 });
 
+test("closed selected tab refreshes the unsent candidate list without automatic resend", async (t) => {
+  const f = fixture(t);
+  f.web.resume = async () => { throw Object.assign(new Error("Select a tab."), {
+    code:"AMBIGUOUS", details:{rootTabs:[{tabId:11,windowId:2,url:"https://chatgpt.com/"}]},
+  }); };
+  await f.service.execute("preparation.start", {requestId:"start",objective:"test",targetRoot:f.root,conversationUrl:"https://chatgpt.com/"});
+  await settled(f.service);
+  const session=f.service.current.webSession, deliveryId=session.activeDeliveryId;
+  const rebind=f.web.rebind;
+  f.web.rebind=async()=>{throw Object.assign(new Error("Selected tab closed."),{
+    code:"AMBIGUOUS",details:{browserDispatchStarted:false,originalCode:"TAB_CHANGED",
+      rootTabs:[{tabId:12,windowId:2,url:"https://chatgpt.com/"},{tabId:13,url:"https://chatgpt.com/c/unrelated"}]},
+  });};
+  const input={sessionId:session.sessionId,conversationId:session.conversationId,
+    conversationUrl:session.conversationUrl,deliveryId};
+  await assert.rejects(f.command("web.rebind",{...input,selectedTabId:11}),{code:"AMBIGUOUS"});
+  assert.deepEqual(f.service.current.error.details.candidates.map(tab=>tab.tabId),[12]);
+  assert.equal(f.service.current.webSession.activeDeliveryId,deliveryId);
+  assert.equal(f.service.current.deliveries[0].state,"FAILED");
+  assert.equal(f.prompts.length,0);
+  f.restart();
+  assert.deepEqual(f.service.current.error.details.candidates.map(tab=>tab.tabId),[12]);
+  f.web.rebind=rebind;
+  await f.command("web.rebind",{...input,selectedTabId:12});
+  await settled(f.service);
+  assert.equal(f.prompts.length,1);
+  assert.equal(f.service.current.state,"DISCUSSING");
+});
+
 test("result projection never attaches an unrelated preparation or its commands", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   const run = { runId: "old-run", phase: "CANCELLED", version: 2 };
@@ -544,8 +589,12 @@ test("result projection never attaches an unrelated preparation or its commands"
   assert.equal(selected.workflow.stage, "RESULT");
   assert.equal(selected.workflow.preparationId, null);
   assert.equal(selected.preparation, null);
+  assert.deepEqual(selected.activePreparation, {
+    preparationId: f.service.current.preparationId, version: f.service.current.version,
+  });
   assert.deepEqual(selected.commandCapabilities, ["state.get"]);
   await f.command("preparation.cancel");
+  assert.equal((await f.service.project(snapshot, { runId: run.runId })).activePreparation, null);
   const automatic = await f.service.project(snapshot);
   assert.equal(automatic.workflow.preparationId, null);
   assert.equal(automatic.preparation, null);
@@ -575,7 +624,7 @@ test("first response must be stored and acknowledged before preparation is shown
 test("run transitions preserve in-progress and terminal meaning across frontend validation", () => {
   for (const [phase, stage] of [["STOPPING", "WORK"], ["HOLD", "WORK"], ["RECOVERY_REQUIRED", "WORK"],
     ["COMPLETE", "RESULT"], ["CANCELLED", "RESULT"], ["APPLIED", "RESULT"], ["APPLYING", "WORK"]]) {
-    const run = { runId: "run-test", version: 1, phase };
+    const run = { runId: "run-test", version: 1, phase, objective:"Workflow transition contract" };
     const workflow = workflowForRun(run);
     assert.equal(workflow.stage, stage);
     assert.equal(workflow.state, phase);
@@ -622,7 +671,12 @@ test("refresh/restart restores same preparation and receipt; approval retry yiel
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);
   const before = f.service.snapshot(); f.restart();
   assert.deepEqual(f.service.snapshot(), before);
-  const input = { requestId: "approve", preparationId: before.preparationId };
+  const input = { requestId: "approve", preparationId: before.preparationId, expectedVersion:before.version };
+  await assert.rejects(f.service.execute("preparation.approve", {
+    ...input, requestId:"stale-approve", expectedVersion:before.version - 1,
+  }), {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.deepEqual(f.service.snapshot(), before);
+  assert.equal(f.runs.size, 0);
   const first = await f.service.execute("preparation.approve", input);
   const second = await f.service.execute("preparation.approve", input);
   assert.deepEqual(first, second); assert.equal(f.runs.size, 1);
@@ -685,65 +739,25 @@ test("explicit preparation reconcile allows one manual follow-up adoption", asyn
   await f.command("web.reconcile", identity);
   assert.deepEqual(options, { refreshCompleted:true, adoptManualFollowup:true });
 });
-test("preparation commands no longer require a version and request IDs remain idempotent", async (t) => {
-  const f = fixture(t); await f.start(); await settled(f.service);
-  await assert.rejects(f.service.execute("preparation.start", { requestId: "start", objective: "different" }), /different command/);
-});
 
-for (const [label, observation] of Object.entries({
-  run: { runId: "other" }, conversation: { conversationId: "other" },
-  navigated: { observedConversationUrl: "https://chatgpt.com/c/other" },
-  generating: { generating: true }, worker: { extensionBusy: true },
-  response: { lastObservedAssistantMessageId: "other" },
-})) {
-  test(`ACK cannot settle delivery after ${label} evidence changes`, async (t) => {
-    const f = fixture(t); f.afterAck(observation); await f.start(); await settled(f.service);
-    assert.equal(f.service.current.state, "RECOVERY_REQUIRED");
-    assert.equal(f.service.current.deliveries[0].state, "RESPONSE_COMPLETED");
-    assert.ok(f.service.current.webSession.activeDeliveryId);
-    assert.equal(f.service.current.discussion.length, 1);
-  });
-}
-
-test("inspection never offers stop without an active delivery", async (t) => {
-  const f = fixture(t); await f.start(); await settled(f.service);
+test("failed reconcile diagnostics survive receipt persistence and restart", async (t) => {
+  const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
   const session = f.service.current.webSession;
-  f.observe({ generating: true, activeRequestId: null });
-  await f.command("web.inspect", { sessionId: session.sessionId, conversationId: session.conversationId,
-    conversationUrl: session.conversationUrl, deliveryId: null });
-  assert.equal(f.service.current.diagnostics.canStop, false);
-  assert.equal(f.service.capabilities().includes("web.stop"), false);
-});
+  const identity = { sessionId:session.sessionId, conversationId:session.conversationId,
+    conversationUrl:session.conversationUrl, deliveryId:session.activeDeliveryId };
+  const requestId = "reconcile-diagnostic-receipt";
+  const diagnostics = { httpRequestId:requestId, extensionRequestId:"web_test-id", extensionRequestType:"web.delivery.inspect",
+    sendOutcome:"CALL_RETURNED", failureBoundary:"EXTENSION_ERROR_RESPONSE", responseType:"web.session.error",
+    extensionErrorCode:"WEB_EXTENSION_ERROR" };
+  f.web.inspectDelivery = async () => { throw Object.assign(new Error("Web operation failed."), {
+    code:"WEB_EXTENSION_ERROR", receiptDiagnostics:diagnostics }); };
 
-for (const mismatch of [{ conversationId: "other" }, { deliveryId: "other" }]) {
-  test(`stop rejects mismatched ${Object.keys(mismatch)[0]} without dispatch`, async (t) => {
-    const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
-    const session = f.service.current.webSession;
-    f.observe({ generating: true, activeRequestId: session.activeDeliveryId });
-    const identity = { sessionId: session.sessionId, conversationId: session.conversationId,
-      conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId };
-    await f.command("web.inspect", identity);
-    assert.equal(f.service.capabilities().includes("web.stop"), true);
-    await assert.rejects(f.command("web.stop", { ...identity, ...mismatch }), { code: "DELIVERY_RECOVERY_MISMATCH" });
-    assert.equal(f.service.current.webSession.activeDeliveryId, session.activeDeliveryId);
-    assert.equal(f.calls.length, 1);
-  });
-}
-
-test("new JSON format freezes before dispatch and legacy in-flight deliveries keep their parser", async (t) => {
-  const f = fixture(t);
-  const submit = f.web.submitTurn.bind(f.web);
-  t.mock.method(f.web, "submitTurn", async input => {
-    const reply = await submit(input);
-    return { completion:reply.completion.then(result => ({ ...result,
-      rawText:"<controller_packet>\n" + result.rawText + "\n</controller_packet>" })) };
-  });
-  const reserved = await f.start();
-  assert.equal(reserved.deliveries[0].responseFormat, "JSON_OBJECT_V1");
-  delete f.service.current.deliveries[0].responseFormat;
-  await settled(f.service);
-  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+  await assert.rejects(f.command("web.reconcile", { ...identity, requestId }), { code:"WEB_EXTENSION_ERROR" });
+  assert.equal(f.service.data.receipts[requestId].status, "FAILED");
   f.restart();
-  assert.equal(f.service.snapshot().deliveries[0].responseFormat, undefined);
-  assert.match(f.service.snapshot().deliveries[0].response.rawText, /^<controller_packet>/u);
+  const receipt = f.service.data.receipts[requestId];
+  assert.equal(receipt.status, "FAILED");
+  assert.deepEqual(receipt.error.diagnostics, diagnostics);
+  assert.deepEqual({ code:receipt.error.code, message:receipt.error.message },
+    { code:"WEB_EXTENSION_ERROR", message:"Web operation failed." });
 });

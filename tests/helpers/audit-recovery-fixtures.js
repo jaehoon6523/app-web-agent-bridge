@@ -1,3 +1,5 @@
+import nodeTest from 'node:test';
+import fs from 'node:fs';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {ArtifactStore} from '../../src/evidence/artifact-store.js';
@@ -51,3 +53,31 @@ export function assertRecovered(f, run, receipt) {
   assert.ok(run.application == null);
   assert.equal(run.stage, 'RECOVERY_REQUIRED');
 }
+
+const diagnosticsEnabled = process.env.BRIDGE_PRIVATE_RECOVERY_DIAGNOSTICS === '1'
+  && Boolean(process.env.BRIDGE_PRIVATE_RECOVERY_TEST_LOG);
+export function tracePrivateRecovery(event, fields = {}) {
+  if (!diagnosticsEnabled) return;
+  try {
+    fs.appendFileSync(process.env.BRIDGE_PRIVATE_RECOVERY_TEST_LOG, JSON.stringify({at:new Date().toISOString(),
+      runId:process.env.BRIDGE_TEST_RUN_ID, sourceSha256:process.env.BRIDGE_TEST_SOURCE_SHA,
+      pid:process.pid, event, ...fields})+'\n');
+  } catch {}
+}
+export const privateRecoveryTest = (...args) => {
+  if (!diagnosticsEnabled) return nodeTest(...args);
+  const [name, optionsOrBody, maybeBody] = args;
+  const options = typeof optionsOrBody === 'function' ? undefined : optionsOrBody;
+  const body = typeof optionsOrBody === 'function' ? optionsOrBody : maybeBody;
+  const wrapped = t => {
+    tracePrivateRecovery('test.start', {testName:name});
+    const finish = () => tracePrivateRecovery('test.end', {testName:name});
+    try {
+      const result = body(t);
+      if (result && typeof result.then === 'function') return result.then(value => {finish(); return value;}, error => {finish(); throw error;});
+      finish();
+      return result;
+    } catch (error) {finish(); throw error;}
+  };
+  return options === undefined ? nodeTest(name, wrapped) : nodeTest(name, options, wrapped);
+};

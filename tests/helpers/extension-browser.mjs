@@ -42,6 +42,7 @@ export async function extensionBrowser(t, {
   autoConnect = true,
   cleanup = null,
   observeFrame = null,
+  decisionEvidence = false,
 } = {}) {
   const browser = await chromium.launch({
     ...(process.env.UI_BROWSER_EXECUTABLE ? { executablePath: process.env.UI_BROWSER_EXECUTABLE }
@@ -58,10 +59,11 @@ export async function extensionBrowser(t, {
   const transport = production ? null : new WebExtensionTransport({ sharedSecret: secret, expectedExtensionIdentity: identity });
   const server = production ? null : new WebSocketServer({ host: '127.0.0.1', port: 0 });
   if (server) await once(server, 'listening');
+  let socketTransport = transport;
   const frames = [];
   server?.on('connection', socket => {
     socket.on('message', raw => frames.push(JSON.parse(String(raw))));
-    transport.attach(socket);
+    socketTransport.attach(socket);
   });
   const createAdapter = provider => {
     if (production) throw new Error('Production transport is owned by src/server.js');
@@ -72,7 +74,7 @@ export async function extensionBrowser(t, {
   const adapter = production ? null : createAdapter('CHATGPT_WEB');
   after(async () => {
     if (!server) return;
-    await adapter.close(); transport.close();
+    await adapter.close(); socketTransport.close();
     for (const socket of server.clients) socket.terminate();
     await new Promise(resolve => server.close(resolve));
   });
@@ -104,20 +106,31 @@ export async function extensionBrowser(t, {
     if (operation === 'set') stored = { ...stored, ...structuredClone(value) };
     return structuredClone(stored);
   });
-  const tab = id => ({ id, windowId: 3, url: pages.get(id).url(), title: 'Provider DOM fixture' });
+  let activeTabId = 7;
+  const tab = id => ({ id, windowId: 3, active:id === activeTabId, url: pages.get(id).url(), title: 'Provider DOM fixture' });
   const commands = [];
   const contentResults = [];
+  const focusCalls = [];
   await background.exposeBinding('fixtureTabs', async (_source, operation, value) => {
     if (operation === 'query') return [...pages.keys()].map(tab);
-    if (operation === 'windows') return [{id:3,type:'normal',incognito:false,tabs:[...pages.keys()].map(tab)}];
+    if (operation === 'queryWindows') return [{id:3,type:'normal',incognito:false,tabs:[...pages.keys()].map(tab)}];
     if (operation === 'get') return pages.has(value) ? tab(value) : null;
-    if (operation === 'update') return tab(value.id);
+    if (operation === 'update') {
+      if (value.options.active === true) {
+        focusCalls.push({tabId:value.id});
+        await pages.get(value.id).bringToFront();
+        activeTabId = value.id;
+      }
+      return tab(value.id);
+    }
+    if (operation === 'focusWindow') { focusCalls.push({windowId:value}); return {id:value,focused:true}; }
     if (operation === 'create') {
       const id = nextTabId++;
       const created = await context.newPage();
       pages.set(id, created);
       await configureProviderPage(created, id);
       await created.goto(value.url);
+      if (value.active) activeTabId = id;
       return tab(id);
     }
     if (operation === 'sendMessage') {
@@ -134,23 +147,28 @@ export async function extensionBrowser(t, {
     const event = () => ({ addListener() {} });
     globalThis.chrome = {
       storage: { local: { get: () => fixtureStorage('get'), set: value => fixtureStorage('set', value) } },
-      runtime: { getManifest: () => manifest, sendMessage: async message => { globalThis.fixturePopupState = message.payload; },
+      alarms: { create() {}, clear() {}, onAlarm:event() },
+      runtime: { getManifest: () => manifest, onStartup:event(), sendMessage: async message => { globalThis.fixturePopupState = message.payload; },
         onMessage: { addListener(listener) { globalThis.fixtureBackgroundListener = listener; } } },
       tabs: { query: () => fixtureTabs('query'), get: id => fixtureTabs('get', id),
         update: (id, options) => fixtureTabs('update', { id, options }),
         create: options => fixtureTabs('create', options),
         sendMessage: (id, message) => fixtureTabs('sendMessage', { id, message }),
         onActivated: event(), onCreated: event(), onRemoved: event(), onUpdated: event() },
-      windows: { getAll: () => fixtureTabs('windows'), update: async () => {} },
+      windows: { getAll: () => fixtureTabs('queryWindows'),
+        update: (id, options) => options.focused ? fixtureTabs('focusWindow', id) : undefined },
       scripting: { executeScript: async () => { throw new Error('Fixture content script is not ready'); } },
     };
   }, { manifest });
   async function configureProviderPage(providerPage, id) {
     providerPage.on('close', () => pages.delete(id));
     providerPage.on('pageerror', error => errors.push(error.message));
-    await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id }) => {
+    await providerPage.exposeBinding('fixtureProgress', (_source, message) => background.evaluate(({ message, id, decisionEvidence }) => {
+      if (message.type === 'agent.decision-evidence' && decisionEvidence) return new Promise(resolve => {
+        globalThis.fixtureBackgroundListener(message, { tab:{ id }, frameId:0 }, resolve);
+      });
       globalThis.fixtureBackgroundListener?.(message, { tab: { id }, frameId: 0 }, () => {});
-    }, { message, id }));
+    }, { message, id, decisionEvidence }));
     await providerPage.exposeBinding('fixtureReply', (_source, text) => reply(text, { page:providerPage, tabId:id }));
     await providerPage.addInitScript(({ id, production }) => {
       globalThis.fixtureConversationId = production && id !== 7 ? 'created-' + id : 'created';
@@ -203,10 +221,10 @@ export async function extensionBrowser(t, {
         const preserveHistory = ${JSON.stringify(Boolean(production))};
         function appendMessage(role, id, text, record = true) {
           const article = document.createElement('article'); article.id = id;
+          if (role === 'assistant') article.setAttribute('data-talvt-turn-state', 'complete');
           if (variant === 'roles') article.setAttribute('data-message-author-role', role);
           else { article.setAttribute('data-testid', 'conversation-turn-' + id);
-            if (variant === 'classes') article.className = role === 'user' ? 'group/user-turn' : 'group/agent-turn';
-          }
+            if (variant === 'classes') article.className = role === 'user' ? 'group/user-turn' : 'group/agent-turn'; }
           const heading = document.createElement('h4'); heading.className = 'sr-only';
           heading.textContent = role === 'user' ? 'You said:' : 'ChatGPT said:'; article.append(heading);
           const body = document.createElement('div'); body.setAttribute('data-message-content', ''); body.style.whiteSpace = 'pre-wrap'; body.textContent = text;
@@ -286,7 +304,18 @@ export async function extensionBrowser(t, {
     });
   }
   if (autoConnect) await connect();
-  return { connect, adapter, createAdapter, transport, page, background, frames, commands, contentResults, errors, sendContent,
+  return { connect, adapter, createAdapter, transport, page, background, frames, commands, contentResults, focusCalls, errors, sendContent,
+    async restartController(configure) {
+      if (!server || !decisionEvidence) throw new Error('Requires a local evidence fixture');
+      socketTransport.close();
+      socketTransport = new WebExtensionTransport({ sharedSecret:secret, expectedExtensionIdentity:identity });
+      configure(socketTransport);
+      const authenticated = once(socketTransport, 'authenticated', { signal:AbortSignal.timeout(5_000) });
+      await background.evaluate(() => new Promise(resolve => {
+        globalThis.fixtureBackgroundListener({ type:'bridge.reconnect' }, {}, resolve);
+      }));
+      await authenticated;
+    },
     readStorage: () => structuredClone(stored),
     providerPages: () => [...pages.entries()],
     setProviderUnavailable: (id, value) => value ? unavailableTabs.add(id) : unavailableTabs.delete(id),

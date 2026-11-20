@@ -1,8 +1,7 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { assertionsFor } from './helpers/audit-fixtures.js';
 import { parseFinalControllerPacketJsonEnvelope } from '../src/domain/controller-packet-envelope.js';
-import { fixture, reopen, assertRecovered } from './helpers/audit-recovery-fixtures.js';
+import { fixture, reopen, assertRecovered, privateRecoveryTest as test } from './helpers/audit-recovery-fixtures.js';
 
 for (const newline of ['\n','\r\n']) {
   for (const fence of ['```','~~~']) {

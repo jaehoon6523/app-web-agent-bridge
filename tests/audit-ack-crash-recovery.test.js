@@ -6,13 +6,12 @@ import {ArtifactStore} from '../src/evidence/artifact-store.js';
 import {CodeChangeService} from '../src/orchestration/code-change-service.js';
 import {assertRecovered} from './helpers/audit-recovery-fixtures.js';
 import {killAtBoundary} from './helpers/audit-crash-checkpoint.js';
-import {removeOwnedFixture} from '../scripts/e2e/helpers/owned-fixture.mjs';
 
 for (const recoveryCrash of [false, true]) {
   test(`T${recoveryCrash ? 3 : 1} crash: SIGKILL ${recoveryCrash ? 'again during local recovery' : 'immediately after ACK commit'}`, async t => {
     const {metadata, boundary} = await killAtBoundary(t);
     let service;
-    t.after(async () => { await service?.close(); await removeOwnedFixture(metadata.directory); });
+    t.after(async () => { await service?.close(); fs.rmSync(metadata.directory, {recursive:true, force:true}); });
     const receipt = boundary.snapshot.webDeliveryReceipts.at(-1);
     assert.equal(receipt.state, 'ACKNOWLEDGED');
     assert.equal(boundary.snapshot.reviewArtifacts.length, 0);
@@ -37,7 +36,7 @@ for (const recoveryCrash of [false, true]) {
 test('a structurally redacted response survives real SIGKILL immediately after ACK', async t => {
   const {metadata, boundary} = await killAtBoundary(t, ['--sensitive-response']);
   let service;
-  t.after(async () => {await service?.close();await removeOwnedFixture(metadata.directory);});
+  t.after(async () => {await service?.close();fs.rmSync(metadata.directory,{recursive:true,force:true});});
   let sends = 0;
   const options = {filename:metadata.filename,project:metadata.project,
     artifactStore:new ArtifactStore(path.join(metadata.directory,'artifacts')),
@@ -57,7 +56,7 @@ test('a structurally redacted response survives real SIGKILL immediately after A
 test('fenced private wire survives real SIGKILL immediately after ACK', async t => {
   const {metadata,boundary} = await killAtBoundary(t, ['--sensitive-response','--fenced-response']);
   let service;
-  t.after(async () => {await service?.close();await removeOwnedFixture(metadata.directory);});
+  t.after(async () => {await service?.close();fs.rmSync(metadata.directory,{recursive:true,force:true});});
   const options = {filename:metadata.filename,project:metadata.project,
     artifactStore:new ArtifactStore(path.join(metadata.directory,'artifacts')),
     webSession:{submitTurn(){throw new Error('Recovery must not send');}},codex:{}};

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PreparationService } from '../src/orchestration/preparation-service.js';
 import { replyToTabFocus } from '../extension/runtime/tab-diagnostics.js';
-const context = { preparationId:'prep', lifecycle:'ACTIVE', webSession:{activeDeliveryId:'delivery'},
+const context = { preparationId:'prep', webSession:{activeDeliveryId:'delivery'},
   error:{code:'WEB_TAB_SELECTION_REQUIRED',details:{candidates:[{tabId:7,url:'https://chatgpt.com/'}]}} };
 test('candidate view validates current preparation and delivery and never touches ownership', async () => {
   const calls=[], current=structuredClone(context), before=JSON.stringify(current);
@@ -16,8 +16,8 @@ test('candidate view validates current preparation and delivery and never touche
   await assert.rejects(PreparationService.prototype.focusCandidateTab.call(service,{preparationId:'prep',deliveryId:'delivery',tabId:7}),{code:'TAB_CHANGED'});
 });
 test('focus protocol opens the exact tab and window, rejects navigation, and has no storage interface', async () => {
-  const calls=[], replies=[]; let url='https://chatgpt.com/';
-  const chrome={tabs:{get:async()=>({id:7,windowId:9,url,active:true}),update:async(...a)=>calls.push(a)},windows:{update:async(...a)=>{calls.push(a);return {focused:true};}}};
+  const calls=[], replies=[]; let url='https://chatgpt.com/', active=false;
+  const chrome={tabs:{get:async()=>({id:7,windowId:9,url,active}),update:async(...a)=>{calls.push(a); active=a[1].active;}},windows:{update:async(...a)=>{calls.push(a); return { focused:a[1].focused };}}};
   const message={requestId:'request',payload:{tabId:7,url}};
   await replyToTabFocus(chrome,m=>replies.push(m),message);
   assert.deepEqual(calls,[[7,{active:true}],[9,{focused:true}]]);

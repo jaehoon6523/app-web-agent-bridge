@@ -12,7 +12,9 @@ const excluded = /^(?:\.git|node_modules|\.agent-controller|diagnostic-runs|test
 // Git selects tracked and nonignored new paths; only current working-tree bytes
 // are read. No index writes, checkout, stash or commit touches the source.
 export function sourceManifest(root) {
-  const names = [...new Set(git(root, ['ls-files','-z','--cached','--others','--exclude-standard'])
+  // Nested checkouts and captured database evidence are local run outputs.
+  const names = [...new Set(git(root, ['ls-files','-z','--cached','--others','--exclude-standard','--','.',
+    ':(exclude,top).worktrees',':(exclude,glob,top)evidence/**/db/**'])
     .split('\0').filter(Boolean))].sort();
   const files = [], deleted = [], excludedLinks = [];
   for (const name of names) {

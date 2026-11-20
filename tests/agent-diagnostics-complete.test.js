@@ -145,10 +145,10 @@ test('standalone server and packaged extension use the same bounded diagnostic s
 test('EPERM is retried only with an observed existing lock and never removes its live owner',async t=>{
   const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
   fs.writeFileSync(lock,JSON.stringify({pid:process.pid}));
-  const original=io.open.bind(io);let denied=0, waits=0;
-  const opened=t.mock.method(io,'open',async (filename,...args)=>{
+  const original=io.link.bind(io);let denied=0, waits=0;
+  const opened=t.mock.method(io,'link',async (claim,filename)=>{
     if(filename===lock && fs.existsSync(lock)) {denied++;throw Object.assign(new Error('Injected Windows lock contention'),{code:'EPERM',syscall:'open',path:lock});}
-    return original(filename,...args);
+    return original(claim,filename);
   });
   const result=await enqueueAgentReport(root,'server',{source:'TEST'},{onDiagnostic:event=>{
     t.evidence.event(event);
@@ -163,14 +163,14 @@ test('EPERM is retried only with an observed existing lock and never removes its
   assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
 });
 
-test('EPERM without an existing lock is a write failure, is not retried, and leaves the previous report intact',async t=>{
+test('EPERM with no visible compatibility lock fails without retry and preserves the report',async t=>{
   const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock'), events=[];
   await enqueueAgentReport(root,'server',{source:'PREVIOUS'});
   const before=fs.readFileSync(path.join(root,'runtime-latest.json'));
-  const original=io.open.bind(io);let denied=0;
-  const opened=t.mock.method(io,'open',async (filename,...args)=>{
+  const original=io.link.bind(io);let denied=0;
+  const opened=t.mock.method(io,'link',async (claim,filename)=>{
     if(filename===lock) {denied++;throw Object.assign(new Error('Injected permission failure'),{code:'EPERM',syscall:'open',path:lock});}
-    return original(filename,...args);
+    return original(claim,filename);
   });
   await assert.rejects(enqueueAgentReport(root,'server',{source:'CURRENT'},{onDiagnostic:event=>{events.push(event);t.evidence.event(event);}}),
     error=>error.code==='EPERM' && error.diagnosticOperation==='lock.open' && error.lockState.state==='MISSING');
@@ -181,13 +181,55 @@ test('EPERM without an existing lock is a write failure, is not retried, and lea
   assert.equal(readAgentReport(root).server.source,'RECOVERED');
 });
 
+test('a second writer cannot open the compatibility lock while the first releases it',async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
+  const original=io.link.bind(io), unlink=io.unlink.bind(io);
+  let opens=0, release, removed;
+  const held=new Promise(resolve=>{removed=resolve;});
+  const resume=new Promise(resolve=>{release=resolve;});
+  t.mock.method(io,'link',async (claim,filename)=>{
+    if(filename===lock) opens++;
+    return original(claim,filename);
+  });
+  t.mock.method(io,'unlink',async filename=>{
+    await unlink(filename);
+    if(filename===lock) {removed();await resume;}
+  });
+  const first=writeAgentReport(root,'server',{source:'FIRST'});
+  try {
+    await Promise.race([held,first.then(()=>{throw new Error('Writer released without reaching the boundary');})]);
+    await assert.rejects(writeAgentReport(root,'repair',{code:'SECOND'}),{code:'DIAGNOSTIC_WRITER_BUSY'});
+    assert.equal(opens,1);
+  } finally {release();await first;}
+  await writeAgentReport(root,'repair',{code:'SECOND'});
+  assert.equal(readAgentReport(root).server.source,'FIRST');
+  assert.equal(readAgentReport(root).repair.code,'SECOND');
+});
+
+for (const operation of ['unlink','rename']) test(`a later write finishes an owned ${operation} release failure`,async t=>{
+  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
+  const target=operation==='unlink' ? lock : lock+'.writer';
+  const original=io[operation].bind(io);
+  const denied=t.mock.method(io,operation,async (filename,...args)=>{
+    if(filename===target) throw Object.assign(new Error('Injected release denial'),{code:'EPERM'});
+    return original(filename,...args);
+  });
+  await assert.rejects(writeAgentReport(root,'server',{source:'COMMITTED'}),{code:'EPERM'});
+  denied.mock.restore();
+  await writeAgentReport(root,'repair',{code:'AFTER_RELEASE'});
+  const report=readAgentReport(root);
+  assert.equal(report.server.source,'COMMITTED');
+  assert.equal(report.repair.code,'AFTER_RELEASE');
+  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
+});
+
 test('an unreleased observed lock has a bounded retry and returns the original EPERM with owner evidence',async t=>{
   const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
   const bytes=JSON.stringify({pid:process.pid});fs.writeFileSync(lock,bytes);
-  const original=io.open.bind(io);let denied=0;
-  t.mock.method(io,'open',async (filename,...args)=>{
+  const original=io.link.bind(io);let denied=0;
+  t.mock.method(io,'link',async (claim,filename)=>{
     if(filename===lock) {denied++;throw Object.assign(new Error('Injected persistent permission failure'),{code:'EPERM',syscall:'open',path:lock});}
-    return original(filename,...args);
+    return original(claim,filename);
   });
   await assert.rejects(enqueueAgentReport(root,'server',{}, {lockTimeoutMs:60,onDiagnostic:t.evidence.event}),
     error=>error.code==='EPERM' && error.path===lock && error.lockState.state==='LIVE');
@@ -218,13 +260,16 @@ test('fsync failure is not a successful write and cleanup errors do not replace 
   assert.equal(readAgentReport(root).server.source,'PREVIOUS');
 });
 
-test('a writer killed during an actual queued write is recovered on restart without losing committed sections', {timeout:10000},async t=>{
+for (const phase of ['before publication','during output sync'])
+test(`a writer killed ${phase} is recovered without losing committed sections`, {timeout:10000},async t=>{
   const root=fixture(t);await enqueueAgentReport(root,'server',{source:'COMMITTED'});
   const module=new URL('../src/diagnostics/report-store.js',import.meta.url).href;
   const child=spawn(process.execPath,['--input-type=module','-e',`
     import io from 'node:fs/promises';import {enqueueAgentReport} from ${JSON.stringify(module)};
-    const open=io.open.bind(io);io.open=async(filename,...args)=>{const handle=await open(filename,...args);
-      if(String(filename).endsWith('.tmp'))handle.sync=async()=>{process.send({type:'writer.held',pid:process.pid});await new Promise(()=>{});};return handle;};
+    const hold=async()=>{process.send({type:'writer.held',pid:process.pid});await new Promise(()=>{});};
+    if (${JSON.stringify(phase)} === 'before publication') io.link=hold;
+    else {const open=io.open.bind(io);io.open=async(filename,...args)=>{const handle=await open(filename,...args);
+      if(String(filename).endsWith('.tmp'))handle.sync=hold;return handle;};}
     await enqueueAgentReport(${JSON.stringify(root)},'repair',{code:'UNCOMMITTED'});
   `],{stdio:['ignore','pipe','pipe','ipc']});
   let stderr='';child.stderr.on('data',chunk=>{stderr+=chunk;});child.stdout.resume();
@@ -236,7 +281,9 @@ test('a writer killed during an actual queued write is recovered on restart with
     child.on('message',event=>{t.evidence.event(event);if(event.type==='writer.held'){clearTimeout(timeout);resolve();}});
     child.once('error',error=>{clearTimeout(timeout);reject(error);});
   });
-  assert.equal(JSON.parse(fs.readFileSync(path.join(root,'runtime-latest.json.lock'),'utf8')).pid,child.pid);
+  const lock=path.join(root,'runtime-latest.json.lock');
+  if (phase==='before publication') assert.equal(fs.existsSync(lock),false);
+  else assert.equal(JSON.parse(fs.readFileSync(lock,'utf8')).pid,child.pid);
   child.kill('SIGKILL');await closed;
   await enqueueAgentReport(root,'repair',{code:'RESTARTED'},{onDiagnostic:t.evidence.event});
   const report=readAgentReport(root);assert.equal(report.server.source,'COMMITTED');assert.equal(report.repair.code,'RESTARTED');
@@ -552,11 +599,11 @@ test('closing diagnostics cancels owned Git, drains accepted writes and reports 
   assert.equal(fs.existsSync(path.join(root,'runtime-latest.json.lock')),false);
   await enqueueAgentReport(root,'server',{source:'PREVIOUS'});
   const before=fs.readFileSync(path.join(root,'runtime-latest.json')), lock=path.join(root,'runtime-latest.json.lock');
-  const originalOpen=io.open.bind(io), failures=[], sent=[], transport=new EventEmitter();
+  const originalLink=io.link.bind(io), failures=[], sent=[], transport=new EventEmitter();
   transport.send=message=>sent.push(message);
-  const opened=t.mock.method(io,'open',async(filename,...args)=>{
+  const opened=t.mock.method(io,'link',async(claim,filename)=>{
     if(filename===lock)throw Object.assign(new Error('Injected write denial'),{code:'EPERM',syscall:'open',path:lock});
-    return originalOpen(filename,...args);
+    return originalLink(claim,filename);
   });
   let exportFailed;const observedFailure=new Promise(resolve=>{exportFailed=resolve;});
   const broken=createAutomaticAgentReport({root,directory:root,transport,collect:async()=>({tabs:[]}),onFailure:event=>failures.push(event),
@@ -598,27 +645,4 @@ test('a first scenario failure and cleanup failure retain their timelines, and t
   assert.equal(second.status,'PASS');assert.notEqual(second.runId,first.runId);
   assert.equal(second.scenarios.length,2);
   assert.doesNotMatch(fs.readFileSync(new URL(second.scenarios[0].directory+'/timeline.jsonl',latest),'utf8'),/FIRST_FAILURE/u);
-});
-
-
-test('writer release detaches its own lock before deletion and preserves the next owner',async t=>{
-  const root=fixture(t), lock=path.join(root,'runtime-latest.json.lock');
-  const unlink=io.unlink.bind(io), nextOwner={pid:process.pid,token:randomUUID()};
-  let detached=false;
-  const removed=t.mock.method(io,'unlink',async filename=>{
-    assert.notEqual(filename,lock,'Deleting the shared lock name races a concurrent Windows wx open');
-    if(String(filename).startsWith(lock+'.') && String(filename).endsWith('.released')){
-      assert.equal(fs.existsSync(lock),false);
-      await io.writeFile(lock,JSON.stringify(nextOwner),{flag:'wx'});
-      detached=true;
-    }
-    return unlink(filename);
-  });
-  await writeAgentReport(root,'server',{source:'COMMITTED'});
-  removed.mock.restore();
-  assert.equal(detached,true);
-  assert.equal(readAgentReport(root).server.source,'COMMITTED');
-  assert.deepEqual(JSON.parse(fs.readFileSync(lock,'utf8')),nextOwner);
-  await io.unlink(lock);
-  assert.deepEqual(fs.readdirSync(root),['runtime-latest.json']);
 });

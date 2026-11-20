@@ -153,7 +153,7 @@ for (const stage of ['LOAD', 'CREATE']) {
     let saved = {};
     const store = createExtensionStateStore({get:async () => structuredClone(saved), set:async value => {saved = value;}});
     if (stage === 'CREATE') f.chrome.tabs.query = async () => [];
-    const context = vm.createContext({...providerTarget, console:{info() {}}, chrome:f.chrome, store,
+    const context = vm.createContext({...providerTarget, conversationTabCandidates, console:{info() {}}, chrome:f.chrome, store,
       waitForContentScript:tabId => f.runtime.waitForContentScript(tabId, 100, true),
       createConversationBootstrapTab:async () => {await f.runtime.waitForContentScript(19, 100, true);},
       ExtensionOperationError:class extends Error {
@@ -165,9 +165,9 @@ for (const stage of ['LOAD', 'CREATE']) {
     t.mock.method(console, 'error', (...args) => logs.push(args));
     const service = new PreparationService({filename:path.join(root, 'state.sqlite'), available:() => true,
       assertStart:async () => {}, findRun:async () => null, approve:async () => {throw Error('Unexpected approval');},
-      web:{resume:async ({binding, createNewConversation}) => {
-        assert.equal(createNewConversation, true);
-        try {return await context.prepareBoundSession({...binding, createNewConversation});}
+      web:{resume:async () => {
+        try {return await context.prepareBoundSession({sessionId:'session', runId:'run', conversationUrl:null, conversationId:null,
+          createNewConversation:stage === 'CREATE'});}
         catch (error) {
           // Exercise the JSON wire boundary rather than sharing the original Error object.
           const payload = JSON.parse(JSON.stringify(errorPayload(error)));
@@ -192,3 +192,4 @@ for (const stage of ['LOAD', 'CREATE']) {
     assert.equal(service.current.state, 'WEB_BLOCKED');
   });
 }
+import { conversationTabCandidates } from "../extension/runtime/conversation-bootstrap.js";

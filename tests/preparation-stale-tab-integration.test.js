@@ -6,8 +6,9 @@ import test from "node:test";
 import vm from "node:vm";
 import { createExtensionStateStore } from "../extension/runtime/storage.js";
 import { createStoredTarget } from "../extension/runtime/current-target.js";
+import { conversationTabCandidates } from "../extension/runtime/conversation-bootstrap.js";
 
-test("a saved exact conversation is reopened when its tab is missing", async () => {
+test("exact binding reuses one candidate and blocks missing, duplicate, and late duplicate tabs", async () => {
   let stored = {};
   const store = createExtensionStateStore({
     get: async () => structuredClone(stored),
@@ -16,18 +17,19 @@ test("a saved exact conversation is reopened when its tab is missing", async () 
   const requested = { sessionId: "web_run_judge", runId: "run_1",
     conversationUrl: "https://chatgpt.com/c/judge", conversationId: "judge" };
   const tab = { id: 31, windowId: 1, url: requested.conversationUrl };
-  let reopenCount = 0;
+  let reopenCount = 0, candidates = [];
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
   const context = vm.createContext({
-    ...documentBinding, ...conversation, createStoredTarget, console, store,
+    ...documentBinding, ...conversation, conversationTabCandidates, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
-    chrome: { tabs: { query: async () => [], sendMessage: async () => ({ ready: true }) } },
+    chrome: { tabs: { query: async () => candidates, sendMessage: async () => ({ ready: true }) } },
     reopenExactConversationTab: async (_chrome, _wait, binding) => {
       reopenCount++;
       assert.equal(binding.conversationId, "judge");
       return tab;
     },
     waitForContentScript: async () => ({ documentId: "document-31", frameId: 0 }),
+    persistBoundTab: async () => {},
     inspectBoundDocument: async () => ({ documentId: "document-31", frameId: 0 }),
     focusTab: async () => {},
     getSessionInfo: async () => ({ ...requested, tabId: 31, bindingStatus: "BOUND" }),
@@ -36,13 +38,20 @@ test("a saved exact conversation is reopened when its tab is missing", async () 
     },
   });
   vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function requireExactBoundTab(")), context);
+  await assert.rejects(context.prepareBoundSession(requested), { code:"BROWSER_SCOPE_UNCONFIRMED" });
+  candidates = [tab];
   const session = await context.prepareBoundSession(requested);
-  assert.equal(reopenCount, 1);
   assert.equal(session.tabId, 31);
-  assert.equal((await store.read()).conversationId, "judge");
+  const duplicate = { id:32, windowId:2, pendingUrl:requested.conversationUrl + "?source=manual" };
+  candidates.push(duplicate);
+  await assert.rejects(context.prepareBoundSession(requested), { code:"AMBIGUOUS" });
+  candidates = [tab];
+  context.waitForContentScript = async () => { candidates.push(duplicate); return { documentId:"document-31" }; };
+  await assert.rejects(context.prepareBoundSession(requested), { code:"AMBIGUOUS" });
+  assert.equal(reopenCount, 0);
 });
 
-test("a new root preparation parks another session's unresolved delivery instead of recovering or blocking on it", async () => {
+test("a new root preparation cannot displace another session's unresolved delivery", async () => {
   let stored = {
     currentDeliveryId: "turn_1788583228992",
     lastBoundRunId: "manual_run_1788583228656",
@@ -66,7 +75,6 @@ test("a new root preparation parks another session's unresolved delivery instead
   const context = vm.createContext({
     ...documentBinding, ...conversation, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
-    createConversationBootstrapTab: async () => { throw new Error("must reuse the only start tab"); },
     chrome: { tabs: {
       query: async () => [rootTab],
       sendMessage: async (tabId) => tabId === rootTab.id ? rootPage : null,
@@ -84,22 +92,14 @@ test("a new root preparation parks another session's unresolved delivery instead
     context,
   );
 
-  const session = await context.prepareBoundSession({
+  await assert.rejects(context.prepareBoundSession({
     sessionId: "web_prep_new", runId: "prep_new",
-    conversationUrl: null, conversationId: null, focus: true, createNewConversation: true,
-  });
-
-  assert.equal(session.sessionId, "web_prep_new");
-  assert.equal(session.bindingStatus, "ROOT_READY");
+    conversationUrl: null, conversationId: null, focus: true,
+  }), { code:"WEB_SESSION_BUSY" });
   const active = await store.read();
-  assert.equal(active.lastBoundSessionId, "web_prep_new");
-  assert.equal(active.currentDeliveryId, null);
-  assert.equal(active.tabId, 8);
-  assert.equal(active.documentId, "document-root");
-  assert.equal(
-    active.deliveryScopes.manual_session_1788583228656.currentDeliveryId,
-    "turn_1788583228992",
-  );
+  assert.equal(active.lastBoundSessionId, "manual_session_1788583228656");
+  assert.equal(active.currentDeliveryId, "turn_1788583228992");
+  assert.equal(active.tabId, 7);
 });
 
 test("a failed new root binding leaves the existing session and delivery untouched", async () => {
@@ -117,13 +117,12 @@ test("a failed new root binding leaves the existing session and delivery untouch
   };
   const store = createExtensionStateStore(storage);
   const before = await store.read();
-  let roots = [], createAttempts = 0;
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
   const context = vm.createContext({
     ...documentBinding, ...conversation, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
-    chrome: { tabs: { query: async () => roots, sendMessage: async () => null } },
-    createConversationBootstrapTab: async () => { createAttempts++; return null; },
+    chrome: { tabs: { query: async () => [], sendMessage: async () => null } },
+    createConversationBootstrapTab: async () => null,
     waitForContentScript: async () => { throw new Error("must not wait without a root tab"); },
     focusTab: async () => {},
     getSessionInfo: async () => { throw new Error("not used"); },
@@ -137,27 +136,14 @@ test("a failed new root binding leaves the existing session and delivery untouch
     context,
   );
 
-  const payload = { sessionId: "session-new", runId: "run-new", conversationUrl: null, conversationId: null, focus: true };
-  await assert.rejects(context.prepareBoundSession(payload), error =>
-    error.code === "ROOT_TAB_NOT_FOUND" && error.details?.stage === "SELECT");
-  assert.equal(createAttempts, 0);
-  assert.deepEqual(await store.read(), before);
+  await assert.rejects(context.prepareBoundSession({
+    sessionId: "session-new", runId: "run-new", conversationUrl: null, conversationId: null, focus: true,
+  }), { code:"WEB_SESSION_BUSY" });
 
-  await assert.rejects(context.prepareBoundSession({ ...payload, createNewConversation: true }), (error) => error.code === "ROOT_TAB_CREATE_FAILED"
-    && error.details?.flow === "ROOT_BOOTSTRAP_V2"
-    && error.details?.stage === "CREATE"
-    && error.details?.rootCount === 0);
-  assert.equal(createAttempts, 1);
-  assert.deepEqual(await store.read(), before);
-
-  roots = [8, 9].map(id => ({ id, windowId: 1, url: "https://chatgpt.com/" }));
-  await assert.rejects(context.prepareBoundSession({ ...payload, createNewConversation: true }), error =>
-    error.code === "AMBIGUOUS" && error.details?.stage === "SELECT");
-  assert.equal(createAttempts, 1);
   assert.deepEqual(await store.read(), before);
 });
 
-test("preparation opens a ChatGPT root tab when none exists", async () => {
+test("preparation requires an explicit creation request when no root is visible", async () => {
   let stored = {};
   const store = createExtensionStateStore({
     get: async () => structuredClone(stored),
@@ -165,13 +151,14 @@ test("preparation opens a ChatGPT root tab when none exists", async () => {
   });
   const root = { id: 19, windowId: 1, url: "https://chatgpt.com/" };
   const source = fs.readFileSync(new URL("../extension/background.js", import.meta.url), "utf8");
-  let created = 0;
+  let created = 0, tabs = [];
   const context = vm.createContext({
-    ...documentBinding, ...conversation, createStoredTarget, console, store,
+    ...documentBinding, ...conversation, conversationTabCandidates, createStoredTarget, console, store,
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
-    chrome: { tabs: { query: async () => [], sendMessage: async () => ({ ok: true, ready: true,
+    chrome: { tabs: { query: async () => tabs, sendMessage: async () => ({ ok: true, ready: true,
       busy: false, generating: false, url: root.url, conversationId: null, documentId: "doc-19", frameId: 0 }) } },
-    createConversationBootstrapTab: async () => { created++; return root; },
+    createConversationBootstrapTab: async () => { created++; tabs = [root]; return root; },
+    inspectBoundDocument: async () => ({ documentId:"doc-19", frameId:0 }),
     waitForContentScript: async () => ({ ok: true, ready: true, busy: false, generating: false,
       url: root.url, conversationId: null, documentId: "doc-19", frameId: 0 }), focusTab: async () => {},
     getSessionInfo: async () => { throw new Error("not used"); },
@@ -180,8 +167,10 @@ test("preparation opens a ChatGPT root tab when none exists", async () => {
     },
   });
   vm.runInContext(source.slice(source.indexOf("function requireBindingInput("), source.indexOf("async function rebindSession(")), context);
-  const session = await context.prepareBoundSession({ sessionId: "web_prep_1", runId: "prep_1",
-    conversationUrl: null, conversationId: null, createNewConversation: true });
+  const request = { sessionId:"web_prep_1", runId:"prep_1", conversationUrl:null, conversationId:null };
+  await assert.rejects(context.prepareBoundSession(request), { code:"ROOT_TAB_NOT_FOUND" });
+  assert.equal(created, 0);
+  const session = await context.prepareBoundSession({ ...request, createNewConversation:true });
   assert.equal(created, 1);
   assert.equal(session.bindingStatus, "ROOT_READY");
   assert.equal((await store.read()).tabId, 19);

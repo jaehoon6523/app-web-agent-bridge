@@ -24,11 +24,17 @@ function dom() {
   return { get, document: { getElementById: get, querySelector: name => get(name.slice(1)), createElement: () => node() } };
 }
 async function controller(initial, after, outcome = { discarded: true }) {
-  const ui = dom(); let current = initial, posted = null, readCount = 0;
+  const ui = dom(); let current = initial, posted = null, readCount = 0, sessionCount = 0;
   const fetch = async (url, opts = {}) => {
-    if (url === '/api/dashboard/session') return { ok: true, json: async () => ({ token: 'session' }) };
+    if (url === '/api/dashboard/session') {
+      const token = 'session-' + ++sessionCount;
+      return { ok: true, json: async () => ({ token }) };
+    }
     if (url.startsWith('/api/delivery-review?')) {
       readCount++;
+      if (outcome.restarted && readCount > 1 && opts.headers.Authorization === 'Bearer session-1') {
+        return { ok:false, status:401, json:async () => ({error:'Expired session'}) };
+      }
       if (current?.inspectionError) return { ok: false, json: async () => ({ error: current.inspectionError }) };
       return { ok: true, json: async () => current };
     }
@@ -59,6 +65,44 @@ const before = { server: { status: 'MATCHED', records: [record], otherActive: fa
   pageReachable: false, pageIdentityConfirmed: false, pageBusy: null, generating: null,
   terminalDiscardProtocol: 1, hasCompletedDelivery: false, phase: 'UNRESOLVED' } };
 const verified = { server: before.server, extension: { ...before.extension, exact: false, discardConfirmed: true } };
+
+test('delivery review renews an expired session during inspection', async () => {
+  const ui = await controller(before, verified, { restarted:true });
+  await ui.get('inspect').fire('click');
+  await tick();
+  assert.equal(ui.readCount(), 3);
+  assert.match(ui.get('status').textContent, /상태 확인 완료/);
+  assert.equal(ui.posted(), null);
+});
+
+test('pairing refresh renews an expired dashboard session', async () => {
+  const ui = dom(), calls = [];
+  let generation = 1;
+  const script = await fs.readFile(path.join(root, 'public/extension-pairing.js'), 'utf8');
+  vm.runInNewContext(script, { document:ui.document, setInterval() {},
+    fetch:async (url, options) => {
+      calls.push([options.method, url]);
+      if (url === '/api/dashboard/session') return {ok:true, json:async () => ({token:'session-' + generation})};
+      const valid = options.headers.Authorization === 'Bearer session-' + generation;
+      return {ok:valid, status:valid ? 200 : 401, json:async () => ({
+        currentIdentity:'owner-' + generation, candidate:{identity:'candidate'}, approvalAvailable:generation > 1,
+      })};
+    },
+  });
+  await tick();
+  ui.get('confirm').checked = true;
+  await ui.get('confirm').fire('change');
+  assert.equal(ui.get('approve').disabled, true);
+  generation++;
+  calls.length = 0;
+  await ui.get('refresh').fire('click');
+  assert.deepEqual(calls, [['GET', '/api/extension-pairing'], ['POST', '/api/dashboard/session'], ['GET', '/api/extension-pairing']]);
+  assert.match(ui.get('current').textContent, /owner-2/);
+  assert.equal(ui.get('confirm').checked, false);
+  ui.get('confirm').checked = true;
+  await ui.get('confirm').fire('change');
+  assert.equal(ui.get('approve').disabled, false);
+});
 
 test('controller: default summary, detailed raw data, explicit uncertain-page consent and verified receipt', async () => {
   const ui = await controller(before, verified);
@@ -312,6 +356,19 @@ test('controller ACK: only verified acknowledgement receipt is completion', asyn
   await staleUi.get('ack').fire('click');
   assert.match(staleUi.get('status').textContent,/최종 영수증을 확인하지 못했습니다/);
   assert.doesNotMatch(staleUi.get('status').textContent,/ACK 확인 완료/);
+});
+
+test('controller ACK is blocked when another delivery owns an active session', async () => {
+  const pending = {server:{status:'MATCHED', records:[{kind:'REVIEW', active:true, state:'ACK_PENDING',
+    processingState:'ACK_PENDING', responseStored:true}], otherActive:false},
+    extension:{...before.extension, exact:true, phase:'ACK_PENDING', pageBusy:false, generating:false}};
+  for (const owner of ['server', 'extension']) {
+    const blocked = {...pending, [owner]:{...pending[owner], otherActive:true}};
+    const ui = await controller(blocked, blocked);
+    assert.equal(ui.get('ack').disabled, true);
+    await ui.get('ack').fire('click');
+    assert.equal(ui.readCount(), 1);
+  }
 });
 
 test('controller: stored response without ACK metadata never offers discard', async () => {

@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "Codex / ChatGPT Web Agent Bridge",
-  "version": "0.2.24",
+  "version": "0.2.23",
   "description": "Binds an exact ChatGPT conversation to the local two-agent controller.",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "tabs", "scripting"],
+  "permissions": ["storage", "tabs", "scripting", "alarms"],
   "host_permissions": [
     "https://chatgpt.com/*",
     "https://claude.ai/*"
@@ -28,6 +28,7 @@
         "runtime/diagnostic-projection.js",
         "runtime/page-provider-registry.js",
         "runtime/manual-followup.js",
+        "runtime/turn-timeline.js",
         "runtime/response-text.js",
         "runtime/providers/chatgpt-page.js",
         "runtime/providers/claude-page.js",

@@ -6,6 +6,7 @@ import { ArtifactStore } from "../evidence/artifact-store.js";
 import { LiveDiscussionComposition } from "../orchestration/live-discussion-composition.js";
 import { SqliteStore } from "../persistence/sqlite-store.js";
 import { CodeChangeStore } from "../persistence/code-change-store.js";
+import { historyWorkerClosureEvidence } from "../persistence/code-change-history-job.js";
 import { initializeSqlite, DEFAULT_SQLITE_BUSY_TIMEOUT_MS } from "../persistence/sqlite-initialization.js";
 import { CodeChangeService } from "../orchestration/code-change-service.js";
 import { readAuditProject } from "../orchestration/audit-project.js";
@@ -131,7 +132,12 @@ export async function createLiveDiscussionRuntime({
     });
   } catch (error) {
     const failures = [];
-    try { await codeStore.close(); } catch (cleanup) { failures.push({resourceOwner:"CodeChangeStore", failureStage:"initialization.close", error:cleanup}); }
+    try { await codeStore.close(); } catch (cleanup) {
+      const closureEvidence = historyWorkerClosureEvidence(cleanup);
+      failures.push(closureEvidence
+        ? {resourceOwner:"CodeChangeHistoryWorker", failureStage:"initialization.close", error:cleanup, closureEvidence}
+        : {resourceOwner:"CodeChangeStore", failureStage:"initialization.close", error:cleanup});
+    }
     try { store.close(); } catch (cleanup) { failures.push({resourceOwner:"SqliteStore", failureStage:"initialization.close", error:cleanup}); }
     throw initializationFailure(error, failures);
   }

@@ -21,7 +21,7 @@ function ensureActivityControls($, node) {
 }
 
 export function renderProjectOverview({
-  group, busyRun, allRuns, $, text, node, folderName, labels, runAppearance,
+  group, projectConversation, busyRun, allRuns, $, text, node, folderName, labels, runAppearance,
   terminal, time, connected, newRunDisabled, openRun,
 }) {
   ensureActivityControls($, node);
@@ -42,6 +42,9 @@ export function renderProjectOverview({
 
   text("overviewTitle", folderName(group.targetRoot));
   text("overviewPath", group.targetRoot);
+  text("overviewConversation", projectConversation
+    ? `저장된 프로젝트 대화: ${projectConversation.conversationUrl} · 준비 ID ${projectConversation.preparationId ?? "기록 없음"}`
+    : "저장된 프로젝트 대화 없음 · 기존 대화는 각 작업 기록에서 확인하세요.");
   const tasks = group.runs;
   const attention = tasks.filter((run) => ["HOLD", "RECOVERY_REQUIRED", "AWAITING_APPLY"].includes(run.phase));
   text("overviewSummary", `기록 ${tasks.length}건 · 확인할 작업 ${attention.length}건`);
@@ -55,6 +58,8 @@ export function renderProjectOverview({
       : run.phase === "RECOVERY_REQUIRED" ? "복구 확인이 필요합니다."
       : terminal.has(run.phase) ? "종료된 작업입니다." : "진행 중";
     card.append(node("p", guidance), node("p", `시작 ${time(run.createdAt)} · 변경 ${time(run.updatedAt)}`, "muted"));
+    card.append(node("p", `작업 ID ${run.runId} · 준비 ID ${run.preparationId ?? "기록 없음"}`, "muted"),
+      node("p", `작업 대화: ${run.conversationUrl || "기록 없음"}`, "muted"));
     const lineage = lineageFor(run.runId);
     if (lineage?.parentRunId || lineage?.children.length) {
       const relation = [];

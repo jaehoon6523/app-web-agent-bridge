@@ -118,6 +118,109 @@ async function startAdapter() {
   return { adapter, transport, socket, sessionBinding };
 }
 
+function recoveredInspection(expected,next) {
+  return {currentDeliveryId:expected.currentDeliveryId,sessionId:next.sessionId,runId:next.runId,
+    tabId:next.tabId,documentId:next.documentId,observedDocumentId:next.documentId,frameId:next.frameId,
+    conversationId:next.conversationId,observedConversationUrl:next.conversationUrl,
+    pageReachable:true,generating:false,pageBusy:false,extensionBusy:false,
+    completedDelivery:{turnId:expected.currentDeliveryId,binding:next,rawText:'original reply',confidence:'CONFIRMED_BY_UI_STATE',
+      evidence:{conversationUrl:next.conversationUrl,conversationId:next.conversationId,documentId:next.documentId,
+        frameId:next.frameId,userMessageId:'u1',assistantMessageId:'a1',responseAssociation:'DIRECT_DOM_ORDER'}}};
+}
+
+for(const wrongRun of [false,true]) {
+  test(`submitted response inspection ${wrongRun?'rejects a foreign':'restores the verified'} binding without a prompt`,async t=>{
+    const {transport,socket}=authenticatedTransport();
+    const adapter=new ChatGptWebSessionAdapter({transport,responseTimeoutMs:100});
+    t.after(()=>adapter.close());
+    const expected={sessionId:'s1',runId:'prep_r1',currentDeliveryId:'d1',tabId:7,
+      conversationUrl:'https://chatgpt.com/c/created',conversationId:'created'};
+    const next=binding({sessionId:expected.sessionId,runId:wrongRun?'prep_other':'prep_r1',tabId:7,
+      conversationUrl:expected.conversationUrl,conversationId:expected.conversationId,windowId:3,documentId:'new',frameId:0});
+    const pending=adapter.inspectDelivery({recoverSubmitted:expected});
+    const request=socket.sent.at(-1);
+    assert.equal(request.type,'web.delivery.inspect');
+    assert.deepEqual(request.payload,{recoverSubmitted:expected});
+    socket.receive({type:'web.delivery.inspected',protocolVersion:2,requestId:request.requestId,
+      payload:recoveredInspection(expected,next)});
+    if(wrongRun){await assert.rejects(pending,{code:'DELIVERY_RECOVERY_MISMATCH'});assert.equal(transport.snapshot.binding,null);}
+    else {await pending;assert.equal(transport.snapshot.binding.conversationId,'created');}
+    assert.equal(socket.sent.filter(m=>m.type==='web.prompt').length,0);
+  });
+}
+
+test("reconcile diagnostics correlate extension errors without retaining payload text", async t => {
+  const {transport,socket}=authenticatedTransport();
+  const adapter=new ChatGptWebSessionAdapter({transport,responseTimeoutMs:100});
+  t.after(()=>adapter.close());
+  const httpRequestId="http-reconcile-1", privateText="private-token-marker";
+  const pending=adapter.inspectDelivery({refreshCompleted:true},httpRequestId);
+  const request=socket.sent.at(-1);
+  socket.receive({type:"web.session.error",protocolVersion:2,requestId:request.requestId,
+    payload:{code:"WEB_EXTENSION_ERROR",message:privateText,details:{token:privateText}}});
+  await assert.rejects(pending,error=>{
+    assert.equal(error.receiptDiagnostics.httpRequestId,httpRequestId);
+    assert.equal(error.receiptDiagnostics.extensionRequestId,request.requestId);
+    assert.equal(error.receiptDiagnostics.sendOutcome,"CALL_RETURNED");
+    assert.equal(error.receiptDiagnostics.failureBoundary,"EXTENSION_ERROR_RESPONSE");
+    assert.equal(error.receiptDiagnostics.responseType,"web.session.error");
+    assert.equal(error.receiptDiagnostics.extensionErrorCode,"WEB_EXTENSION_ERROR");
+    assert.equal(JSON.stringify(error.receiptDiagnostics).includes(privateText),false);
+    return true;
+  });
+});
+
+test("reconcile diagnostics classify manual response and explicit adapter close", async t => {
+  const manual=authenticatedTransport();
+  const manualAdapter=new ChatGptWebSessionAdapter({transport:manual.transport,responseTimeoutMs:100});
+  const pendingManual=manualAdapter.inspectDelivery({},"http-manual");
+  const manualRequest=manual.socket.sent.at(-1);
+  manual.socket.receive({type:"web.manual-intervention",protocolVersion:2,requestId:manualRequest.requestId,
+    payload:{message:"private manual text"}});
+  await assert.rejects(pendingManual,error=>{
+    assert.equal(error.receiptDiagnostics.failureBoundary,"EXTENSION_ERROR_RESPONSE");
+    assert.equal(error.receiptDiagnostics.responseType,"web.manual-intervention");
+    assert.equal(error.receiptDiagnostics.extensionErrorCode,"MANUAL_INTERVENTION_DETECTED");
+    return true;
+  });
+  await manualAdapter.close();
+
+  const closed=authenticatedTransport();
+  const closedAdapter=new ChatGptWebSessionAdapter({transport:closed.transport,responseTimeoutMs:100});
+  const pendingClose=closedAdapter.inspectDelivery({},"http-close");
+  await closedAdapter.close();
+  await assert.rejects(pendingClose,error=>{
+    assert.equal(error.receiptDiagnostics.failureBoundary,"CONNECTION_CLOSED");
+    assert.equal(error.receiptDiagnostics.responseType,null);
+    return true;
+  });
+
+  const disconnected=authenticatedTransport();
+  const disconnectedAdapter=new ChatGptWebSessionAdapter({transport:disconnected.transport,responseTimeoutMs:100});
+  const pendingDisconnect=disconnectedAdapter.inspectDelivery({},"http-disconnect");
+  disconnected.socket.close();
+  await assert.rejects(pendingDisconnect,error=>error.receiptDiagnostics.failureBoundary === "CONNECTION_CLOSED");
+});
+
+test("reconcile diagnostics classify timeout and isolate attachment failure", async t => {
+  const timed=authenticatedTransport();
+  const timedAdapter=new ChatGptWebSessionAdapter({transport:timed.transport,responseTimeoutMs:100});
+  const pendingTimeout=timedAdapter.inspectDelivery({},"http-timeout");
+  await assert.rejects(pendingTimeout,error=>{
+    assert.equal(error.receiptDiagnostics.failureBoundary,"TIMEOUT");
+    assert.equal(error.receiptDiagnostics.sendOutcome,"CALL_RETURNED");
+    return true;
+  });
+  await timedAdapter.close();
+
+  const broken=authenticatedTransport();
+  const brokenAdapter=new ChatGptWebSessionAdapter({transport:broken.transport,responseTimeoutMs:100});
+  const sendError=Object.freeze(Object.assign(new Error("private send failure"),{code:"SEND_FAILED"}));
+  broken.transport.send=()=>{throw sendError;};
+  await assert.rejects(brokenAdapter.inspectDelivery({},"http-send-failure"),error=>error === sendError);
+  await brokenAdapter.close();
+});
+
 function promptError(socket, requestId, code, message) {
   socket.receive({
     type: "web.prompt.error",
@@ -732,3 +835,34 @@ test("root readiness permits first prompt before conversation exists and binds i
   assert.equal(completed.binding.conversationId, "created-from-root");
   await adapter.close();
 });
+
+for(const scenario of ['allowed','not allowed','observed document','response evidence','busy']) {
+  test('submitted relocation response contract: '+scenario,async t=>{
+    const {transport,socket}=authenticatedTransport();
+    const adapter=new ChatGptWebSessionAdapter({transport,responseTimeoutMs:100});
+    t.after(()=>adapter.close());
+    const expected={sessionId:'s1',runId:'prep_r1',currentDeliveryId:'d1',tabId:7,
+      conversationUrl:'https://chatgpt.com/c/created',conversationId:'created',allowTabRelocation:scenario!=='not allowed'};
+    const next=binding({sessionId:'s1',runId:'prep_r1',tabId:8,windowId:4,documentId:'replacement',
+      conversationUrl:expected.conversationUrl,conversationId:expected.conversationId});
+    const payload=recoveredInspection(expected,next);
+    if(scenario==='observed document') payload.observedDocumentId='other';
+    if(scenario==='response evidence') payload.completedDelivery.evidence.conversationId='other';
+    if(scenario==='busy') payload.extensionBusy=true;
+    const pending=adapter.inspectDelivery({recoverSubmitted:expected});
+    const request=socket.sent.at(-1);
+    socket.receive({type:'web.delivery.inspected',protocolVersion:2,requestId:request.requestId,payload});
+    if(scenario==='allowed') {
+      await pending; assert.equal(transport.snapshot.binding.tabId,8);
+      // The server's durable context can still hold tab 7 after a failed write.
+      const again=adapter.inspectDelivery({recoverSubmitted:expected});
+      const retry=socket.sent.at(-1);
+      socket.receive({type:'web.delivery.inspected',protocolVersion:2,requestId:retry.requestId,payload});
+      await again;
+    } else {
+      await assert.rejects(pending,{code:'DELIVERY_RECOVERY_MISMATCH'});
+      assert.equal(transport.snapshot.binding,null);
+    }
+    assert.equal(socket.sent.filter(m=>m.type==='web.prompt').length,0);
+  });
+}

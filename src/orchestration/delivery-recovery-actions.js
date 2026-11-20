@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { isTerminalDiscard, reconcileTerminalDiscard } from "./terminal-delivery-reconciliation.js";
 import { inspectDeliveryOwnership } from "./delivery-ownership.js";
 import { webBinding } from "./audit-round.js";
@@ -12,6 +13,24 @@ function receiptMatches(observed, name, expected) {
   return observed.currentDeliveryId === null && exact({ ...observed, currentDeliveryId: expected.currentDeliveryId }, expected)
     && exact({ ...receipt, currentDeliveryId: receipt?.deliveryId }, expected);
 }
+function acknowledgementBlock({ server, extension }) {
+  const record = server.records[0];
+  if (server.status !== "MATCHED" || record?.kind !== "REVIEW" || !record.active
+    || record.processingState !== "ACK_PENDING" || !record.responseStored
+    || (!extension.exact && !extension.ackConfirmed)) {
+    return {code:"DELIVERY_RESPONSE_REQUIRED", message:"Only this durably stored reviewer response can be acknowledged."};
+  }
+  if (extension.extensionBusy || extension.pageBusy || extension.generating) {
+    return {code:"WEB_SESSION_BUSY", message:"A generation is active."};
+  }
+  if (server.otherActive || extension.otherActive) {
+    return {code:"WEB_SESSION_BUSY", message:"Another delivery owns an active session."};
+  }
+  return null;
+}
+function reviewerOperationActive(codeChanges, runId) {
+  return codeChanges.jobs.has(runId) || codeChanges.workers.has(runId) || codeChanges.reviewerWebBusy();
+}
 
 export function createDeliveryRecoveryActions({ getSources, getServices, web, audit = async () => {} }) {
   let mutation = false;
@@ -19,17 +38,26 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
     const server = await inspectDeliveryOwnership(expected, getSources);
     const observed = await web.inspectDelivery();
     const completed = observed.completedDelivery?.turnId === expected.currentDeliveryId;
+    const otherActive = (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId);
+    const { binding, rawText } = observed.completedDelivery ?? {};
+    const record = server.records[0];
+    const responseFingerprint = server.status === "MATCHED" && record.kind === "PREPARATION"
+      && record.active && record.responseStored && !server.otherActive && !otherActive
+      && completed && exact(observed, expected) && exact({ ...binding, currentDeliveryId: observed.completedDelivery.turnId }, expected)
+      && typeof rawText === "string" && rawText.length > 0
+      ? { bytes: Buffer.byteLength(rawText, "utf8"), sha256: createHash("sha256").update(rawText, "utf8").digest("hex") }
+      : null;
     const durableAck = server.status === "MATCHED" && server.records[0]?.processingState === "ACK_PENDING"
       && server.records[0]?.responseStored === true;
     const settled = server.status === "MATCHED" && !server.records[0]?.active;
-    return { server, extension: { currentDeliveryId: observed.currentDeliveryId,
+    const extension = { currentDeliveryId: observed.currentDeliveryId,
       sessionId: observed.sessionId, runId: observed.runId, conversationUrl: observed.conversationUrl,
       terminalDiscardProtocol: observed.terminalDiscardProtocol,
       tabId: observed.tabId, documentId: observed.documentId, frameId: observed.frameId,
       pageReachable: observed.pageReachable,
       pageIdentityConfirmed: observed.pageReachable === true && observed.observedConversationUrl === expected.conversationUrl
         && observed.observedDocumentId === observed.documentId && typeof observed.documentId === "string", pageBusy: observed.pageBusy, generating: observed.generating,
-      otherActive: (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId),
+      otherActive, responseFingerprint,
       hasCompletedDelivery: observed.hasCompletedDelivery,
       resultStatus: server.records[0]?.responseStored ? "RESPONSE_STORED" : "UNKNOWN",
       extensionBusy: observed.extensionBusy, exact: exact(observed, expected),
@@ -41,7 +69,13 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
       phase: settled && isTerminalDiscard(server.records[0])
         && !["ACK_PENDING", "ACKNOWLEDGED"].includes(server.records[0]?.processingState) && receiptMatches(observed, "lastDeliveryDiscard", expected) ? "DISCARDED"
         : settled && server.records[0]?.state === "ACKNOWLEDGED" && receiptMatches(observed, "lastAcknowledgedDelivery", expected) ? "ACKNOWLEDGED"
-          : durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED" : "UNRESOLVED" } };
+          : durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED" : "UNRESOLVED" };
+    let canAcknowledge = false;
+    if (!mutation && !acknowledgementBlock({ server, extension })) {
+      const { codeChanges } = await getServices();
+      canAcknowledge = !mutation && Boolean(codeChanges) && !reviewerOperationActive(codeChanges, expected.runId);
+    }
+    return { server, extension, canAcknowledge };
   }
   async function discard(input) {
     if (mutation) fail("WEB_SESSION_BUSY", "Another delivery recovery action is active.");
@@ -144,16 +178,11 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
       const inspected = await inspect(input), record = inspected.server.records[0];
       if (inspected.server.status === "MATCHED" && !record?.active && record?.state === "ACKNOWLEDGED"
         && inspected.extension.ackConfirmed) return { acknowledged: true, deliveryId: input.currentDeliveryId };
-      if (inspected.server.status !== "MATCHED" || record?.kind !== "REVIEW" || !record.active
-        || record.processingState !== "ACK_PENDING" || !record.responseStored
-        || (!inspected.extension.exact && !inspected.extension.ackConfirmed)) {
-        fail("DELIVERY_RESPONSE_REQUIRED", "Only this durably stored reviewer response can be acknowledged.");
-      }
-      if (inspected.extension.extensionBusy || inspected.extension.pageBusy || inspected.extension.generating) fail("WEB_SESSION_BUSY", "A generation is active.");
-      if (inspected.server.otherActive || inspected.extension.otherActive) fail("WEB_SESSION_BUSY", "Another delivery owns an active session.");
+      const blocker = acknowledgementBlock(inspected);
+      if (blocker) fail(blocker.code, blocker.message);
       const { codeChanges } = await getServices(), run = codeChanges.get(input.runId);
       const receipt = run.webDeliveryReceipts.find(item => item.deliveryId === input.currentDeliveryId);
-      if (codeChanges.jobs.has(input.runId) || codeChanges.workers.has(input.runId) || codeChanges.reviewerWebBusy()) fail("WEB_SESSION_BUSY", "A reviewer operation is active.");
+      if (reviewerOperationActive(codeChanges, input.runId)) fail("WEB_SESSION_BUSY", "A reviewer operation is active.");
       if (!receipt || !codeChanges.artifactStore.verify(receipt.responseRef.sha256)
         || !codeChanges.artifactStore.verify(receipt.packetRef.sha256)) fail("DELIVERY_RESPONSE_REQUIRED", "Durable response evidence is unavailable.");
       const owner = run.conversationBindings.find(item => item.sessionId === input.sessionId);

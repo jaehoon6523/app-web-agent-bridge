@@ -28,11 +28,11 @@ export function showDashboardPageError(error) {
   console.error("Dashboard page failed:", error);
 }
 
-export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading = false }) {
+export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading = false, background = false }) {
   if (document.getElementById("dashboardPageError")?.hidden === false) return;
   const put = (id, value) => { document.getElementById(id).textContent = value; };
   document.getElementById("runPanel").dataset.loadState = phase === "READY" ? "READY" : connectionState.lastError ? "ERROR" : "LOADING";
-  if (loading && snapshot && !connectionState.lastError) put("connectionNotice", target && target !== snapshot.run?.runId
+  if (loading && !background && snapshot && !connectionState.lastError) put("connectionNotice", target && target !== snapshot.run?.runId
     ? `작업 ${target} 조회 중입니다.` : "작업 상태 조회 중 · 마지막 확인 데이터 표시 중입니다.");
   const labels = { SESSION:"대시보드 인증 확인", STATE:"작업 상태 조회", PROJECTION:"화면 데이터 확인", READY:"최신 상태 확인 완료" };
   put("dashboardAddress", window.location.origin);
@@ -56,6 +56,8 @@ export function updateDashboardDiagnostics({ phase, connectionState, snapshot, l
 const errorCopy = Object.freeze({
   UNKNOWN_RESULT:"진행 중이던 요청의 결과를 확인할 수 없습니다. 같은 요청을 자동으로 다시 보내지 않습니다. 연결을 복구한 뒤 상태를 확인하세요.",
   RUN_VERSION_CONFLICT:"작업 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 시도하세요.",
+  PREPARATION_VERSION_REQUIRED:"이 화면은 준비 버전을 보내야 합니다. 페이지를 새로고침하세요.",
+  PREPARATION_VERSION_CONFLICT:"준비 상태가 변경되었습니다. 최신 내용을 확인한 뒤 다시 시도하세요.",
   RUN_BUSY:"다른 작업이 진행 중입니다. 현재 작업을 확인한 뒤 다시 시도하세요.",
   WEB_BLOCKED:"브라우저 확장 연결을 확인한 뒤 다시 시도하세요.",
   RECOVERY_REQUIRED:"현재 작업 상태를 먼저 확인해야 합니다. 복구 안내에 따라 상태를 확인하세요.",
@@ -77,25 +79,6 @@ export function userFacingStoredError(value, fallback) {
   const message = typeof value === "string" ? value.trim() : "";
   if (!message) return fallback;
   return /[가-힣]/u.test(message) ? message : fallback;
-}
-
-export function runCommandSuccessMessage(type) {
-  return {
-        "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
-        "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
-        "code.review.discuss": "감사자 답변을 기록했습니다. 현재 감사 판정과 적용 권한은 변경되지 않았습니다.",
-        "code.review.discuss.discard": "미확정 감사 대화 전송을 폐기했습니다. 자동 재전송하지 않습니다.",
-        "code.review.rebind": "감사자 대화 탭을 다시 연결했습니다. 같은 후보의 감사를 재개하려면 ‘웹 감사 다시 시도’를 누르세요.",
-        "run.note.add": "작업 메모를 기록했습니다. 실행 상태와 감사 판정은 변경되지 않았습니다.",
-        "run.retry": "수동 진행을 시작했습니다. 새 Worker 실행 상태를 확인하세요.",
-        "code.review.retry": "같은 후보의 웹 감사를 다시 시작했습니다. REWORK가 나오면 수정 루프를 이어갑니다.",
-        "run.stop": "중단 요청을 처리했습니다. 최신 실행 상태를 확인하세요.",
-        "code.apply": "적용 요청을 처리했습니다. 최신 적용 상태를 확인하세요.",
-        "evidence.export": "감사 기록 요청을 처리했습니다.",
-        "run.archive": "종료된 실행을 보관했습니다. 기록과 감사 근거는 유지됩니다.",
-        "run.unarchive": "보관된 실행을 기본 기록으로 복원했습니다.",
-        "run.delete": "종료된 작업 기록을 삭제했습니다.",
-      }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
 }
 
 export const phaseReasons = {

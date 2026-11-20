@@ -66,13 +66,16 @@ test('HTTP pairing requires explicit confirmation, refuses active ownership, and
   const body = { candidateIdentity: 'new-identity', expectedCurrentIdentity: 'old-identity',
     unresolvedStateConfirmed: true };
   const post = input => fetch(base + '/api/extension-pairing', { method: 'POST', headers, body: JSON.stringify(input) });
+  const read = async () => (await fetch(base + '/api/extension-pairing', { headers })).json();
   assert.equal((await post({ ...body, unresolvedStateConfirmed: false })).status, 409);
   active = true;
+  assert.equal((await read()).approvalAvailable, false);
   const blocked = await post(body);
   assert.equal(blocked.status, 409);
   assert.equal((await blocked.json()).code, 'WEB_SESSION_BUSY');
   assert.equal(fs.existsSync(path.join(root, 'extension-pairing.json')), false);
   active = false;
+  assert.equal((await read()).approvalAvailable, true);
   assert.equal((await post({ ...body, candidateIdentity: 'different' })).status, 409);
   const approved = await post(body);
   assert.equal(approved.status, 200);

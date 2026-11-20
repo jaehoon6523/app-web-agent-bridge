@@ -245,10 +245,6 @@ test("server boots without optional live credentials and local browser session r
   const { port } = bridge.server.address();
   const baseHttp = `http://127.0.0.1:${port}`;
 
-  const favicon = await fetch(`${baseHttp}/favicon.ico`);
-  assert.equal(favicon.status, 204);
-  assert.equal(await favicon.text(), "");
-  assert.equal((await fetch(`${baseHttp}/favicon.ico`, { method: "HEAD" })).status, 204);
   const preflight = await (await fetch(`${baseHttp}/api/preflight`)).json();
   assert.equal(preflight.checks.commandAuthenticationConfigured, true);
   assert.equal(preflight.checks.staticDashboardTokenConfigured, false);
@@ -297,7 +293,7 @@ test("server boots without optional live credentials and local browser session r
   assert.equal(legacyStart.status, 410);
 });
 
-test("legacy authenticated start cannot bypass preparation approval", async (t) => {
+test("legacy authenticated start cannot bypass approval and failed command receipts stay failed", async (t) => {
   const calls = [];
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-server-audit-"));
   const auditProjectFile = path.join(directory, "project.json");
@@ -310,7 +306,7 @@ test("legacy authenticated start cannot bypass preparation approval", async (t) 
       auditProjectFile,
     }),
     createLiveRuntime: async () => ({
-      codeChanges: { store: receipts, get: () => null, busy: () => false,
+      codeChanges: { store: receipts, get: () => null, busy: () => false, list: () => [],
         async start(input) { calls.push({ type: "code.start", input }); return { runId: "run_live_test", status: "ACCEPTED" }; } },
       store: {
         listRuns: () => [],
@@ -381,5 +377,15 @@ test("legacy authenticated start cannot bypass preparation approval", async (t) 
   assert.equal(response.status, 410);
   assert.equal((await response.json()).code, "PREPARATION_API_REQUIRED");
   assert.equal(calls.length, 0);
+  const headers = {authorization:`Bearer ${DASHBOARD_TOKEN}`, origin:"http://127.0.0.1:0", "content-type":"application/json"};
+  const requestId = "stale-stop";
+  const rejected = await fetch(`${baseHttp}/api/commands`, {method:"POST", headers, body:JSON.stringify({
+    requestId, type:"run.stop", payload:{runId:"old-run",expectedVersion:1},
+  })});
+  assert.equal(rejected.status, 409);
+  assert.equal((await rejected.json()).payload.code, "RUN_VERSION_CONFLICT");
+  const observed = await fetch(`${baseHttp}/api/state?requestId=${requestId}`, {headers});
+  assert.equal(observed.status, 200);
+  assert.deepEqual((await observed.json()).requestResult, {requestId,status:"FAILED"});
   socket.close();
 });

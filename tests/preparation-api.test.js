@@ -8,12 +8,30 @@ import { createBridgeServer } from "../src/server.js";
 import { CodeChangeService } from "../src/orchestration/code-change-service.js";
 import { computeWebChallengeHmac } from "../src/runtime/web/auth.js";
 import { GitChangeWorkspace } from "../src/repository/git-change-workspace.js";
-import { removeOwnedFixture } from "../scripts/e2e/helpers/owned-fixture.mjs";
+import { DatabaseSync } from "../src/persistence/sqlite-database.js";
 
 test("HTTP canonical preparation, real Git approval, durable Run and RESULT projection", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "preparation-api-"));
   const target = path.join(root, "project"); fs.mkdirSync(target);
   fs.writeFileSync(path.join(target, "app.js"), "export const value = 1;\n");
+  const incompleteRoot = fs.realpathSync(fs.mkdtempSync(path.join(root, "incomplete-")));
+  const preparationFile = path.join(root, "preparations.sqlite");
+  const previousMapping = { conversationUrl:"https://chatgpt.com/c/current", conversationId:"current",
+    preparationId:"prep-saved", updatedAt:"2026-11-18T00:00:00Z" };
+  const seed = new DatabaseSync(preparationFile);
+  seed.exec("CREATE TABLE preparation_state (id INTEGER PRIMARY KEY, json TEXT NOT NULL) STRICT");
+  seed.prepare("INSERT INTO preparation_state VALUES (1, ?)").run(JSON.stringify({
+    currentId:null, contexts:{}, receipts:{}, projectConversations:{
+      [fs.realpathSync(target)]:previousMapping,
+      [incompleteRoot]:{ ...previousMapping, conversationId:null },
+    },
+  }));
+  seed.close();
+  const storedPreparation = () => {
+    const db = new DatabaseSync(preparationFile, { readOnly:true });
+    try { return JSON.parse(db.prepare("SELECT json FROM preparation_state WHERE id=1").get().json); }
+    finally { db.close(); }
+  };
   const token = "test-token-preparation-api-0123456789", secret = "test-secret-preparation-api-0123456789";
   const config = { host: "127.0.0.1", port: 0, baseUrl: "http://127.0.0.1:0", workspace: target, demoMode: false,
     persistence: { databasePath: path.join(root, "controller.sqlite") }, codex: { executablePath: process.execPath },
@@ -26,7 +44,7 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     return { store: { listRuns: () => [], getRun: () => null }, codeChanges: service, close: () => service.close() };
   } });
   let bridge = create();
-  t.after(async () => { await bridge.close(); await removeOwnedFixture(root); });
+  t.after(async () => { await bridge.close(); fs.rmSync(root, { recursive: true, force: true }); });
   let binding, active = null, count = 0, release, dropAck = false;
   class Socket extends EventEmitter {
     readyState = 1;
@@ -77,26 +95,42 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
     base = "http://127.0.0.1:" + (await bridge.listen()).port;
   };
   const headers = { authorization: "Bearer " + token, origin: config.baseUrl, "content-type": "application/json" };
-  const request = async (url, options) => {
-    try { return await fetch(base + url, options); }
-    catch (error) {
-      console.error("[preparation-api fetch]", JSON.stringify({method:options.method ?? "GET", path:url.split("?")[0], causeCode:error.cause?.code ?? null}));
-      throw error;
-    }
-  };
-  const post = (url, body) => request(url, { method: "POST", headers, body: JSON.stringify(body) });
+  const post = (url, body) => fetch(base + url, { method: "POST", headers, body: JSON.stringify(body) });
   const state = async (query = "") => {
-    const response = await request("/api/state" + query, { headers });
+    const response = await fetch(base + "/api/state" + query, { headers });
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
   assert.equal((await state()).workflow.stage, "START");
   assert.equal((await post("/api/project/prepare", { targetRoot: target })).status, 410);
   assert.equal((await post("/api/runs/start", {})).status, 410);
+  const invalidStarts = [
+    [{}, 400, "INVALID_INPUT"],
+    [{ conversationUrl:null }, 400, "INVALID_INPUT"],
+    [{ conversationUrl:"" }, 400, "INVALID_INPUT"],
+    [{ conversationUrl:"https://example.invalid/c/test" }, 400, "INVALID_INPUT"],
+    [{ targetRoot:incompleteRoot, conversationUrl:previousMapping.conversationUrl,
+      reuseProjectConversation:true }, 409, "PROJECT_CONVERSATION_UNAVAILABLE"],
+    [{ conversationUrl:"https://chatgpt.com/c/old", reuseProjectConversation:true }, 409, "PROJECT_CONVERSATION_CHANGED"],
+  ];
+  for (const [index, [body, status, code]] of invalidStarts.entries()) {
+    const response = await post("/api/preparations", { requestId:"invalid-" + index, objective:"fixture", targetRoot:target, ...body });
+    assert.equal(response.status, status);
+    const rejected = await response.json();
+    assert.equal(rejected.code, code);
+    assert.equal(rejected.preparationId, null);
+    assert.equal(rejected.runId, null);
+  }
+  assert.equal(storedPreparation().currentId, null);
   const created = await post("/api/preparations", { requestId: "start",
-    objective: "  아무거나\n", targetRoot: target, conversationUrl: "https://chatgpt.com/c/test" });
+    objective: "  아무거나\n", targetRoot: target, conversationUrl: "https://chatgpt.com/c/test", reuseProjectConversation:false });
   assert.equal(created.status, 202, await created.clone().text());
   const prep = await created.json();
+  assert.match(prep.preparationId, /^prep_/u);
+  assert.equal(prep.resultingRunId, null);
+  assert.equal(prep.projectConversationSource, null);
+  assert.equal(storedPreparation().contexts[prep.preparationId].resultingRunId, null);
+  assert.deepEqual(storedPreparation().projectConversations[fs.realpathSync(target)], previousMapping);
   assert.equal(fs.existsSync(path.join(target, ".git")), false);
   const ready = async (expected) => {
     for (let i = 0; i < 50; i++) {
@@ -108,6 +142,12 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   await ready("WAITING_WEB_RESPONSE"); release();
   let current = await ready("DISCUSSING");
   assert.equal(current.preparation.preparationId, prep.preparationId);
+  const confirmedMapping = storedPreparation().projectConversations[fs.realpathSync(target)];
+  assert.equal(confirmedMapping.preparationId, prep.preparationId);
+  assert.equal(confirmedMapping.conversationId, "test");
+  assert.equal(confirmedMapping.conversationUrl, "https://chatgpt.com/c/test");
+  assert.deepEqual(current.projectConversations.find(it => it.targetRoot === fs.realpathSync(target)),
+    {targetRoot:fs.realpathSync(target), ...confirmedMapping});
   const identity = { preparationId: prep.preparationId, sessionId: current.preparation.webSession.sessionId,
     conversationId: current.preparation.webSession.conversationId, conversationUrl: current.preparation.webSession.conversationUrl };
   const beforeRestart = current.preparation;
@@ -115,22 +155,24 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   current = await state("?view=start");
   assert.equal(current.workflow.stage, "PREPARE");
   assert.deepEqual(current.preparation, beforeRestart);
+  assert.deepEqual(storedPreparation().projectConversations[fs.realpathSync(target)], confirmedMapping);
   assert.equal(count, 1);
   assert.equal(current.preparation.objective, "  아무거나\n");
   const reply = await post("/api/preparations/" + prep.preparationId + "/reply", {
-    requestId: "reply", content: "값 표시",
+    requestId: "reply", content: "값 표시", expectedVersion:current.workflow.preparationVersion,
   });
   assert.equal(reply.status, 202, await reply.clone().text());
   await ready("WAITING_WEB_RESPONSE"); dropAck = true; release();
   current = await ready("RECOVERY_REQUIRED");
   const deliveryId = current.preparation.webSession.activeDeliveryId;
   assert.equal(current.preparation.deliveries[1].state, "RESPONSE_COMPLETED");
+  assert.deepEqual(storedPreparation().projectConversations[fs.realpathSync(target)], confirmedMapping);
   await restart(); dropAck = false;
   current = await state();
   assert.equal(current.workflow.stage, "PREPARE");
   assert.equal(current.preparation.webSession.activeDeliveryId, deliveryId);
   const reconciled = await post("/api/preparations/web", { ...identity, deliveryId, command: "web.reconcile",
-    requestId: "reconcile" });
+    requestId: "reconcile", expectedVersion:current.workflow.preparationVersion });
   assert.equal(reconciled.status, 200, await reconciled.clone().text());
   current = await ready("AGREEMENT_READY");
   assert.equal(count, 2);
@@ -139,15 +181,20 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.equal(current.preparation.webSession.activeDeliveryId, null);
   assert.deepEqual(current.preparation.deliveries.map((d) => d.state), ["ACKNOWLEDGED", "ACKNOWLEDGED"]);
   assert.equal(fs.existsSync(path.join(target, ".git")), false);
-  const input = { requestId: "approve" };
+  const input = { requestId: "approve", expectedVersion:current.workflow.preparationVersion };
   const approveUrl = "/api/preparations/" + prep.preparationId + "/approve";
   const [approved, concurrent] = await Promise.all([post(approveUrl, input), post(approveUrl, input)]);
   assert.equal(approved.status, 200, await approved.clone().text());
   const run = await approved.json();
+  assert.match(run.runId, /^code_/u);
+  assert.notEqual(run.runId, prep.preparationId);
   if (concurrent.status === 200) assert.deepEqual(await concurrent.json(), run);
   else { assert.equal(concurrent.status, 409); assert.equal((await concurrent.json()).code, "UNKNOWN_RESULT"); }
   assert.deepEqual(await (await post("/api/preparations/" + prep.preparationId + "/approve", input)).json(), run);
   assert.equal(service.list().length, 1);
+  assert.equal(service.get(run.runId).preparationId, prep.preparationId);
+  assert.equal(service.get(run.runId).conversationUrl, confirmedMapping.conversationUrl);
+  assert.equal(storedPreparation().contexts[prep.preparationId].resultingRunId, run.runId);
   assert.equal(service.get(run.runId).baseCommit, GitChangeWorkspace.preflight(target).baseCommit);
   current = await state();
   assert.equal(current.workflow.stage, "WORK");
@@ -164,4 +211,28 @@ test("HTTP canonical preparation, real Git approval, durable Run and RESULT proj
   assert.deepEqual(await (await post(approveUrl, input)).json(), run);
   assert.equal((await state("?requestId=approve")).requestResult.status, "COMPLETED");
   assert.equal(service.list().length, 1);
+
+  service.update(run.runId, { stage:"APPLIED" });
+  const continued = await post("/api/preparations", { requestId:"continue", objective:"Follow-up fixture",
+    targetRoot:target, conversationUrl:confirmedMapping.conversationUrl, reuseProjectConversation:true, followUpRunId:run.runId });
+  assert.equal(continued.status, 202, await continued.clone().text());
+  const next = await continued.json();
+  assert.notEqual(next.preparationId, prep.preparationId);
+  assert.equal(next.followUp.runId, run.runId);
+  assert.equal(next.projectConversationSource, prep.preparationId);
+  assert.equal(next.resultingRunId, null);
+  await ready("WAITING_WEB_RESPONSE"); release();
+  current = await ready("AGREEMENT_READY");
+  const beforeCancel = storedPreparation().projectConversations[fs.realpathSync(target)];
+  assert.equal(beforeCancel.preparationId, next.preparationId);
+  const cancelled = await post("/api/preparations/" + next.preparationId + "/cancel", {
+    requestId:"cancel-follow-up", expectedVersion:current.workflow.preparationVersion,
+  });
+  assert.equal(cancelled.status, 200, await cancelled.clone().text());
+  assert.equal((await cancelled.json()).lifecycle, "ABANDONED");
+  await restart();
+  const reopened = storedPreparation();
+  assert.equal(reopened.contexts[next.preparationId].resultingRunId, null);
+  assert.deepEqual(reopened.projectConversations[fs.realpathSync(target)], beforeCancel);
+  assert.equal((await state()).runs.length, 1);
 });

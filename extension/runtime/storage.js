@@ -17,6 +17,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   completedDelivery: null,
   lastAcknowledgedDelivery: null,
   lastDeliveryDiscard: null,
+  invalidDeliveryArchives: {},
   deliveryScopes: {},
   lastActiveWebTarget: null,
   lastObservedUserMessageId: null,
@@ -123,6 +124,7 @@ export function normalizeExtensionState(value = {}) {
       ? structuredClone(value.lastAcknowledgedDelivery) : null,
     lastDeliveryDiscard: value.lastDeliveryDiscard && typeof value.lastDeliveryDiscard === "object"
       ? structuredClone(value.lastDeliveryDiscard) : null,
+    invalidDeliveryArchives: structuredClone(value.invalidDeliveryArchives ?? {}),
     deliveryScopes: normalizeDeliveryScopes(value.deliveryScopes),
     lastActiveWebTarget: normalizeActiveTarget(
       value.lastActiveWebTarget !== undefined ? value.lastActiveWebTarget : value.lastActiveChatGptTarget,
@@ -221,8 +223,9 @@ export function createExtensionStateStore(storageArea) {
       }
       return mutate(async () => {
         const current = await readStoredState();
-        if (Object.entries(expected).some(([key, value]) => key === "deliveryScopes"
-          ? JSON.stringify(current.deliveryScopes) !== JSON.stringify(value) : current[key] !== value)) {
+        if (Object.entries(expected).some(([key, value]) => ["deliveryScopes", "completedDelivery", "invalidDeliveryArchives",
+          "lastAcknowledgedDelivery", "lastDeliveryDiscard"].includes(key)
+          ? JSON.stringify(current[key]) !== JSON.stringify(value) : current[key] !== value)) {
           throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The persisted owner changed; inspect it again.");
         }
         const next = normalizeExtensionState({ ...current, ...structuredClone(patch) });

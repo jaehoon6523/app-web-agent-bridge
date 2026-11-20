@@ -55,7 +55,7 @@
     const index = Math.max(parts.lastIndexOf("c"), parts.lastIndexOf("uc"));
     if (index < 0 || index + 1 >= parts.length) return null;
     const id = decodeURIComponent(parts[index + 1]);
-    return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+    return id.length > 0 && !/^(?:WEB|local-chatgpt):/iu.test(id) ? id : null;
   }
 
   function assertContract() {
@@ -221,6 +221,27 @@
     return Boolean(firstVisible("stopButton"));
   }
 
+  function assistantTurn(element) {
+    if (!element?.isConnected) return null;
+    const selector = "[data-talvt-turn-state]";
+    const enclosingTurn = element.closest(selector);
+    const nestedTurns = enclosingTurn ? [] : element.querySelectorAll(selector);
+    return enclosingTurn ?? (nestedTurns.length === 1 ? nestedTurns[0] : null);
+  }
+
+  function assistantCompletion(element) {
+    return assistantTurn(element)?.getAttribute("data-talvt-turn-state") === "complete" ? "ASSISTANT_TURN_COMPLETE" : null;
+  }
+
+  function decisionNodes(assistant) {
+    const composer = resolveComposer();
+    const send = composer?.fallbackContainer ? fallbackSend(composer.fallbackContainer) : firstVisible("sendButton");
+    return { turn:assistantTurn(assistant), composer:composer?.element, send:send?.element,
+      stop:firstVisible("stopButton")?.element,
+      bodies:assistant ? selectorRegistry.groups.messageContent.flatMap(selector =>
+        assistant.matches(selector) ? [assistant] : [...assistant.querySelectorAll(selector)]) : [] };
+  }
+
   function composerDiagnostics() {
     return { selectorVersion:selectorRegistry.version, composerSelectors:selectorRegistry.groups.composer.map((selector) => {
       const matches = [...document.querySelectorAll(selector)];
@@ -328,24 +349,6 @@
       || null;
   }
 
-  function messageRole(roleNode) {
-    const explicit = roleNode.getAttribute?.("data-message-author-role")
-      || roleNode.querySelector?.("[data-message-author-role]")?.getAttribute("data-message-author-role");
-    if (explicit === "user" || explicit === "assistant") return explicit;
-    const container = messageContainer(roleNode);
-    const classes = `${String(roleNode.className || "")} ${String(container.className || "")}`.toLowerCase();
-    if (classes.includes("user-turn")) return "user";
-    if (classes.includes("agent-turn") || classes.includes("assistant-turn")) return "assistant";
-    const labelled = [container, ...(container.querySelectorAll?.("h1, h2, h3, h4, h5, h6") || [])];
-    for (const node of labelled) {
-      const label = `${node.getAttribute?.("aria-label") || ""} ${node.textContent || ""}`
-        .trim().toLowerCase().replace(/\s+/g, " ");
-      if (/^(you said|user said|user|사용자|나의 말|내가 말함|내 말)(:|의 말| 메시지|$)/u.test(label)) return "user";
-      if (/^(chatgpt said|assistant said|chatgpt|assistant|챗지피티|어시스턴트)(:|의 말| 메시지|$)/u.test(label)) return "assistant";
-    }
-    return null;
-  }
-
   // Only an accessibility heading outside message content can prove its single sibling branch.
   function headingRole(node, content, userSearchBody = false) {
     const labels = new Map([["내가 한 말:", "user"], ["You said:", "user"],
@@ -386,24 +389,11 @@
     }
     return null;
   }
-
   function messageEvidence(roleNode) {
-    const selector = "[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown";
-    const content = roleNode.querySelector(selector);
-    if (content) return headingRole(roleNode, content) ?? legacyMessageEvidence(roleNode, content, selector);
+    const content = roleNode.querySelector("[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown");
+    if (content) return headingRole(roleNode, content);
     const body = userSearchMessageBody(roleNode);
     return body ? headingRole(roleNode, body, true) : headingRole(roleNode, roleNode);
-  }
-
-  function legacyMessageEvidence(node, content, selector) {
-    const role = node.getAttribute("data-message-author-role");
-    if (!["user", "assistant"].includes(role) || !messageId(node)
-      || node.closest("[data-chatgpt-search-unit-key]")
-      || node.querySelector("[data-message-author-role], [data-chatgpt-search-unit-key]")
-      || node.parentElement?.querySelector("h4.sr-only")) return null;
-    const bodies = [...node.querySelectorAll(selector)];
-    if (bodies.some(item => !content.contains(item))) return null;
-    return { role, content, container:node };
   }
 
   function userSearchMessageBody(node) {
@@ -488,11 +478,12 @@
     throw new PageProviderError("MESSAGE_SEND_FAILED", "ChatGPT send control did not become enabled.", evidence());
   }
 
-  async function submitPrompt(text, signal, { assertCanMutate } = {}) {
+  async function submitPrompt(text, signal, { assertCanMutate, observe } = {}) {
     const composer = await waitForVisible("composer", 30_000, signal);
     assertCanMutate?.();
     composer.element.focus();
     setNativeValue(composer.element, text);
+    observe?.("SEND_CONTROL");
     await sleep(250, signal);
     const sendButton = await waitForEnabledSend(signal);
     assertCanMutate?.();
@@ -503,6 +494,7 @@
         || sendButton.element.disabled || sendButton.element.getAttribute("aria-disabled") === "true"))) {
       throw new PageProviderError("UI_CONTRACT_CHANGED", "Composer or send control changed before prompt dispatch.", evidence());
     }
+    observe?.("SEND_ATTEMPTED");
     sendButton.element.click();
   }
 
@@ -530,6 +522,8 @@
     findSendControl,
     submitPrompt,
     detectGeneration,
+    assistantCompletion,
+    decisionNodes,
     cancelGeneration,
     extractAssistantResponse,
     inspectPageState,

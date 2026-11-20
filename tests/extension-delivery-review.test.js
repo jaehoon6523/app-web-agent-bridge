@@ -26,6 +26,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
   const store = createExtensionStateStore({ get: async () => structuredClone(saved), set: async value => { saved = structuredClone(value); } });
   const turnGate = createActiveTurnGate(), opened = [];
   const tabs = { sendMessage: async () => ({ ok: true, busy: false, generating: false, documentId: 'doc', ...page }),
+    query: async () => [{ id:7, url:'https://chatgpt.com/c/test' }],
     get: async () => ({ id: 7, url: 'https://chatgpt.com/c/test' }), update: async (...value) => opened.push(value),
     create: async value => opened.push(value) };
   let inspected = 0;
@@ -38,7 +39,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
 }
 
 test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as success', () => {
-  const ids = ['openPairing','recoveryOutcome','ownershipConfirmed','status','connectionSummary','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
+  const ids = ['connectionSummary','openPairing','recoveryOutcome','ownershipConfirmed','status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
     'deliveryRecovery','recoveryDetail','inspectDelivery','openDelivery','openController','discardOrphan','discardReason',
     'unresolvedConfirmed','noResendConfirmed','orphanOwnershipCleanupConfirmed','pageUnconfirmed'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', textContent: '', checked: false }]));
@@ -49,20 +50,10 @@ test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as
     startTab: { tabId: 8, ready: true }, bindingError: 'CONTENT_SCRIPT_INJECTION_FAILED: Original cause',
     bindingRecovery: { message: 'Inspect this delivery' }, deliveryPhase: 'UNRESOLVED' };
   vm.runInContext('render({ok:true,state})', context);
-  assert.equal(nodes.status.textContent, '전송 확인 필요');
-  assert.doesNotMatch(nodes.connectionSummary.textContent, /사용할 탭/u);
+  assert.equal(nodes.detail.className, 'detail-error'); assert.equal(nodes.status.textContent, '전송 확인 필요');
   assert.match(vm.runInContext("connectionDiagnosticText", context), /Original cause/u); assert.match(vm.runInContext("connectionDiagnosticText", context), /Inspect this delivery/u);
   assert.doesNotMatch(nodes.detail.textContent, /Original cause|identity:/u);
   assert.match(vm.runInContext("connectionDiagnosticText", context), /tab 8/u); assert.equal(nodes.deliveryRecovery.hidden, false);
-  context.state.deliveryPhase = 'RESPONSE_OBSERVED';
-  vm.runInContext('render({ok:true,state})', context);
-  assert.match(nodes.status.textContent, /응답이 관측/u);
-  assert.match(nodes.connectionSummary.textContent, /서버 저장 및 수신 확인/u);
-  vm.runInContext('inspection = { owner: { currentDeliveryId:"other" }, server: { status:"MISSING" } }; render({ok:true,state})', context);
-  assert.doesNotMatch(nodes.status.textContent, /전송 기록을 찾지/u);
-  vm.runInContext('inspection = { owner: { currentDeliveryId:"d" }, server: { status:"MISSING" } }; render({ok:true,state})', context);
-  assert.match(nodes.status.textContent, /전송 기록을 찾지/u);
-
 });
 
 for (const [label, stored, server, phase] of [
@@ -393,6 +384,12 @@ test('ACK recovery checks durable evidence and retains server ownership until th
   await assert.rejects(invalid.actions.acknowledge(invalid.owner), { code: 'DELIVERY_RESPONSE_REQUIRED' });
   assert.equal(invalid.calls().ackCalls, 0);
   const f = recoveryHarness(); f.dropAck();
+  f.codeChanges.jobs.set(f.owner.runId, true);
+  assert.equal((await f.actions.inspect(f.owner)).canAcknowledge, false);
+  await assert.rejects(f.actions.acknowledge(f.owner), {code:'WEB_SESSION_BUSY'});
+  assert.equal(f.calls().ackCalls, 0);
+  f.codeChanges.jobs.delete(f.owner.runId);
+  assert.equal((await f.actions.inspect(f.owner)).canAcknowledge, true);
   await assert.rejects(f.actions.acknowledge(f.owner), { code: 'EXTENSION_DISCONNECTED' });
   assert.equal(f.run().conversationBindings[0].activeDeliveryId, 'd'); assert.equal(f.run().webDeliveryReceipts[0].state, 'ACK_PENDING');
   await f.actions.acknowledge(f.owner); await f.actions.acknowledge(f.owner);

@@ -11,7 +11,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; width: 390px; max-width: 100vw; overflow-wrap: anywhere; }
+body { margin: 0; width: 390px; overflow-wrap: anywhere; }
 body.window-view { width: 100%; }
 main { max-width: 580px; margin-inline: auto; padding: 22px clamp(16px, 5vw, 32px) 28px; }
 header { border-bottom: 1px solid var(--line); padding-bottom: 14px; font-size: 13px; }

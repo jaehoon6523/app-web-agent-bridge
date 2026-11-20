@@ -49,6 +49,14 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
     findRun: async () => null,
   };
   let service = new PreparationService(options);
+  if (legacy) {
+    const generate = service.generate.bind(service);
+    t.mock.method(service, "generate", async (context, deliveryId, preparedBinding) => {
+      delete context.deliveries.find(delivery => delivery.deliveryId === deliveryId).responseFormat;
+      await service.save();
+      return generate(context, deliveryId, preparedBinding);
+    });
+  }
   let serviceClosed = false;
   t.after(() => {
     if (!serviceClosed) service.close();
@@ -61,16 +69,15 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
     targetRoot: root,
     conversationUrl: "https://chatgpt.com/",
   });
-  if (legacy) delete service.current.deliveries.at(-1).responseFormat;
+  const assistant = browser.page.locator("[data-message-author-role='assistant']").first();
+  await assistant.waitFor();
+  await assistant.evaluate(element => element.setAttribute("data-talvt-turn-state", "complete"));
   await settle(service);
 
   const dispatchedPrompt = browser.commands.find((message) => message.type === "agent.prompt")?.payload?.text;
   assert.ok(dispatchedPrompt.includes(objective));
-  if (legacy) assert.match(dispatchedPrompt, /<controller_packet>/u);
-  else {
-    assert.match(dispatchedPrompt, /JSON 객체 하나/u);
-    assert.doesNotMatch(dispatchedPrompt, /CONTROLLER_PACKET_BEGIN|<controller_packet>/u);
-  }
+  assert.ok(dispatchedPrompt.includes(root.split(path.sep).join("/")));
+  assert.match(dispatchedPrompt, legacy ? /답변시작/u : /JSON 객체 하나/u);
 
   const domText = await browser.page.locator("[data-message-author-role='assistant'] [data-message-content]").innerText();
   assert.equal(domText, rawText);
@@ -221,7 +228,7 @@ if (process.env.CRITICAL_GOLDEN_ONLY !== "1") test("Windows backslashes are repa
   const invalidRaw = baseRaw.replaceAll("C:/Users/User/Desktop/pj", "C:\\Users\\User\\Desktop\\pj");
   const result = await runFullPath(t, {
     rawText: invalidRaw,
-    legacy: true,
+    legacy:true,
     objective: "시계 앱",
     expectedUi: ["시계 앱", "요구사항 합의 완료"],
   });

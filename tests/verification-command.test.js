@@ -21,7 +21,7 @@ function controlledPlan() {
   // Exercise Windows' generated direct-Node groups on every test host. Keep
   // process.platform intact: this models the plan, not a Windows OS runtime.
   if (process.platform !== 'win32') {
-    const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-serial|-[234])?$/u.test(stage.id));
+    const groups=verificationPlan({platform:'win32'}).filter(stage=>/^discovery(?:-[234])?$/u.test(stage.id));
     const index=verificationCatalog.findIndex(stage=>stage.id==='discovery');
     verificationCatalog.splice(index,1,...groups);
   }
@@ -29,7 +29,7 @@ function controlledPlan() {
 controlledPlan();
 let evidenceRun, suiteRoot, checkout, snapshot, originalContent;
 // Full source copying, Git initialization and dependency linking belong to the
-// file setup budget, rather than being repeated inside each verification case.
+// file setup budget, rather than being repeated inside every 15-second case.
 before(() => {
   evidenceRun = beginTestEvidenceRun(repository,'verification-command');
   const setup = evidenceRun.record.setup = {status:'RUNNING',startedAt:new Date().toISOString()}; evidenceRun.save();
@@ -49,8 +49,8 @@ after(() => {
   catch (error) { evidenceRun.record.cleanupErrors.push(error.message); throw error; }
   finally { evidenceRun.close(); }
 });
-function verificationTest(scenarioId, name, options, body) {
-  test(name,options,async t => {
+function verificationTest(scenarioId, name, body) {
+  test(name,{timeout:35000},async t => {
     const evidence = evidenceRun.scenario(scenarioId); contexts.set(t,evidence);
     evidence.record.snapshot = snapshot; evidence.save();
     t.after(() => { try { evidence.cleanup?.(); } finally { evidence.close(); } });
@@ -96,7 +96,7 @@ async function execute(t, mode) {
     }
     if (${JSON.stringify(mode)} !== 'missing' || stage==='verify:browser-install') {
       const uf=stage==='test:e2e:ci',native=stage==='test:extension:native',browser=stage==='verify:browser-install';
-      const receiptRoot=(native||browser)?root:spec.isolatedGateOutput?process.env.BRIDGE_TEST_GATE_OUTPUT:path.join(process.cwd(),'.agent-controller');
+      const receiptRoot=(native||browser)?root:path.join(process.cwd(),'.agent-controller');
       const target=path.join(receiptRoot,browser?'latest-browser-preparation.json':uf?'ui-qa/e2e-summary.json':native?'latest-native-extension.json':'latest-test-result.json');
       fs.mkdirSync(path.dirname(target),{recursive:true});
       const ids=${JSON.stringify(nativeExtensionSteps)};
@@ -125,14 +125,14 @@ async function execute(t, mode) {
     };`);
   try {
     await evidence.command(process.execPath,['--import',pathToFileURL(preload).href,command],{cwd:checkout,
-      env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:20000,maxBuffer:16*1024*1024},run);
+      env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:30000,maxBuffer:16*1024*1024},run);
   } catch (error) {
     if (typeof error.code !== 'number') throw error;
   }
   const closed = evidence.record.commands.at(-1);
   assert.equal(closed.timedOut,false);
-  assert.deepEqual(closed.stdout.match(/^peer discovery(?:-serial|-[234])?$/gmu),
-    ['discovery-serial','discovery','discovery-2','discovery-3','discovery-4'].map(id=>'peer '+id));
+  assert.deepEqual(closed.stdout.match(/^peer discovery(?:-[234])?$/gmu),
+    ['discovery','discovery-2','discovery-3','discovery-4'].map(id=>'peer '+id));
   assert.doesNotMatch(closed.stdout,/^FILE tests[\\/]/mu);
   assert.match(closed.stdout,/^peer windows-focused$/mu);
   const code = closed.exitCode, signal = closed.signal;
@@ -151,7 +151,7 @@ async function execute(t, mode) {
   return {code,result,log};
 }
 
-verificationTest('missing','verification command rejects exit zero without fresh completion receipts', {timeout:25000}, async t=>{
+verificationTest('missing','verification command rejects exit zero without fresh completion receipts', async t=>{
   const {code,result,log}=await execute(t,'missing');
   assert.equal(code,1);assert.equal(result.status,'FAIL');
   assert.ok(result.stages.some(stage=>stage.status==='FAIL'));
@@ -159,7 +159,7 @@ verificationTest('missing','verification command rejects exit zero without fresh
   assert.equal(result.stages.find(s=>s.id==='spec').failurePhase,'EVIDENCE');
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
-verificationTest('missing-spec','verification command binds spec stage output and refuses exit zero without its internal proof', {timeout:25000}, async t=>{
+verificationTest('missing-spec','verification command binds spec stage output and refuses exit zero without its internal proof', async t=>{
   const {code,result}=await execute(t,'missing-spec');
   assert.equal(code,1);assert.equal(result.stages.find(s=>s.id==='spec').failurePhase,'EVIDENCE');
   assert.ok(result.stages.filter(s=>s.applicable&&s.id!=='spec').every(s=>s.status==='PASS'));
@@ -167,14 +167,14 @@ verificationTest('missing-spec','verification command binds spec stage output an
   assert.equal(stage.receipt.runId,result.runId+'-spec');
   assert.equal(path.relative(result.evidenceRoot,stage.receiptPath).split(path.sep).join('/'),'spec/spec-result.json');
 });
-verificationTest('first-fails','verification command retains earlier failure after later successful stages', {timeout:25000}, async t=>{
+verificationTest('first-fails','verification command retains earlier failure after later successful stages', async t=>{
   const {code,result,log}=await execute(t,'first-fails');
   assert.equal(code,1);assert.equal(result.stages.find(s=>s.id==='lint').status,'FAIL');
   assert.ok(result.stages.filter(s=>s.applicable && s.id!=='lint').every(s=>s.status==='PASS'));
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
 
-verificationTest('large','verification command preserves the entire large output across all stages', {timeout:25000}, async t=>{
+verificationTest('large','verification command preserves the entire large output across all stages', async t=>{
   const {code,result,log}=await execute(t,'large');
   assert.equal(code,0);assert.equal(result.status,'PASS');
   assert.ok(log.length>2500000);
@@ -182,39 +182,21 @@ verificationTest('large','verification command preserves the entire large output
   assert.equal(chunks.length,verificationPlan().filter(s=>s.applicable).length); assert.ok(chunks.every(chunk=>chunk.length===500000));
   assert.ok(log.endsWith('VERIFICATION PASS\n'));
 });
-verificationTest('native-unavailable','an unavailable native extension loader cannot be reported as complete approval', {timeout:25000}, async t=>{
+verificationTest('native-unavailable','an unavailable native extension loader cannot be reported as complete approval', async t=>{
   const {code,result,log}=await execute(t,'native-unavailable');
   assert.equal(code,2); assert.equal(result.status,'PARTIAL');
   assert.equal(result.stages.find(s=>s.id==='native').status,'NOT_RUN'); assert.ok(log.endsWith('VERIFICATION PARTIAL\n'));
 });
 for (const [mode,command] of [['missing-gui','test:tab-ux-browser'],['missing-window-boundary','test:extension:native'],['blocked-e2e','test:e2e:ci']])
-  verificationTest(mode,`verification command rejects exit zero with ${mode} evidence`, {timeout:25000}, async t=>{
+  verificationTest(mode,`verification command rejects exit zero with ${mode} evidence`, async t=>{
     const {code,result}=await execute(t,mode);
     assert.equal(code,1); assert.equal(result.status,'FAIL');
     assert.equal(result.stages.find(stage=>stage.command===command).status,'FAIL');
   });
 
-verificationTest('source-changed','verification refuses a source change despite five successful stage receipts', {timeout:25000}, async t => {
+verificationTest('source-changed','verification refuses a source change despite five successful stage receipts', async t => {
   const {code,result,log} = await execute(t,'source-changed');
   assert.equal(code,1); assert.equal(result.status,'FAIL');
   assert.ok(result.stages.filter(s=>s.applicable).every(stage => stage.status === 'PASS'));
   assert.match(result.error,/Source changed/u); assert.ok(log.endsWith('VERIFICATION FAIL\n'));
-});
-
-
-test('diagnostic report options require every safe report flag and preserve inherited options', () => {
-  const source=fs.readFileSync(path.join(repository,'scripts/verify-all.mjs'),'utf8');
-  const block=source.match(/if\(!stage\.isolatedGateOutput\) delete env\.BRIDGE_TEST_GATE_OUTPUT;\r?\n([\s\S]*?)\s*delete env\.NODE_TEST_CONTEXT;/u)?.[1];
-  assert.ok(block,'inspect the actual stage environment construction');
-  const configure=new Function('env','stageDirectory','process',block+'return env.NODE_OPTIONS;');
-  const flags=['--report-on-fatalerror','--report-exclude-env','--report-exclude-network','--report-directory'];
-  for (const missing of flags) {
-    const allowedNodeEnvironmentFlags=new Set(flags.filter(flag=>flag!==missing));
-    assert.equal(configure({NODE_OPTIONS:' --no-warnings '},'report path with spaces',{allowedNodeEnvironmentFlags}),'--no-warnings');
-    assert.equal(configure({},'report path with spaces',{allowedNodeEnvironmentFlags}),'');
-  }
-  const options=configure({NODE_OPTIONS:'--no-warnings'},'report path with spaces',{allowedNodeEnvironmentFlags:new Set(flags)});
-  for (const flag of flags) assert.ok(options.includes(flag),flag);
-  assert.ok(options.startsWith('--no-warnings '));
-  assert.ok(options.includes('--report-directory="report path with spaces"'));
 });

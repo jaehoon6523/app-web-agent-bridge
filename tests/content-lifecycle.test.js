@@ -14,14 +14,15 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const event = () => { const listeners = []; return { addListener(fn) { listeners.push(fn); }, emit(...args) { for (const fn of listeners) fn(...args); } }; };
 
-function contentWorld({ active = false } = {}) {
+function contentWorld({ active = false, fixture } = {}) {
   const listeners = [], window = {}; window.top = window;
   const context = vm.createContext({ URL, crypto, window, location: { href: 'https://chatgpt.com/c/test' },
     document: { title: 'Fixture' }, AbortController, DOMException, setTimeout, clearTimeout,
+    MutationObserver: class { observe() {} disconnect() {} },
     console: { info() {} }, chrome: { runtime: { getManifest: () => manifest,
       sendMessage: async () => {}, onMessage: { addListener(fn) { listeners.push(fn); } } } } });
   for (const [file, source] of scripts) {
-    if (active && file === 'content.js') {
+    if ((active || fixture) && file === 'content.js') {
       const provider = { provider: 'CHATGPT_WEB', rootUrl: 'https://chatgpt.com/', assertContract() {},
         canonicalizeUrl: value => value, conversationIdFromUrl: () => 'test', resetEvidence() {},
         readConversationIdentity: () => ({ conversationUrl: 'https://chatgpt.com/c/test', conversationId: 'test' }),
@@ -29,6 +30,7 @@ function contentWorld({ active = false } = {}) {
         readMessages: () => [], detectGeneration: () => false, cancelGeneration() {},
         submitPrompt: (_text, signal) => new Promise((_, reject) => signal.addEventListener('abort',
           () => reject(new DOMException('Aborted', 'AbortError')), { once: true })) };
+      Object.assign(provider, fixture?.(context));
       context.WebBridgePageProviders = { resolve: () => provider, provider: () => provider };
     }
     vm.runInContext(source, context, { filename: file });
@@ -37,6 +39,63 @@ function contentWorld({ active = false } = {}) {
   const send = message => new Promise(resolve => listeners[0](message, {}, resolve));
   return { context, listeners, reinject, send };
 }
+
+async function rootTurn({ persistentGap = false, wrongConversation = false, wrongUser = false } = {}) {
+  const root = 'https://chatgpt.com/', url = root + 'c/new-turn', wrongUrl = root + 'c/other';
+  const text = '[controller_message_id:delivery]\n[run_id:run]\nFixture';
+  let clicks = 0, gaps = 0;
+  const f = contentWorld({ fixture: context => {
+    context.location.href = root;
+    return {
+      conversationIdFromUrl: value => value === root ? null : value.split('/').at(-1),
+      readConversationIdentity: () => ({ conversationUrl: context.location.href,
+        conversationId: context.location.href === root ? null : context.location.href.split('/').at(-1) }),
+      submitPrompt: () => { clicks++; context.location.href = url; },
+      inspectPageState: () => {
+        if (clicks && (gaps++ === 0 || persistentGap)) {
+          if (wrongConversation) context.location.href = wrongUrl;
+          return { status: 'UI_CONTRACT_CHANGED', composerPresent: false };
+        }
+        return { status: 'READY', composerPresent: true };
+      },
+      readMessages: () => clicks ? [
+        { id: 'user', role: 'user', text: wrongUser ? 'Different prompt' : text, index: 0 },
+        { id: 'assistant', role: 'assistant', element: 'Fixture answer', index: 1 },
+      ] : [],
+      mutationRoot: () => ({}), extractAssistantResponse: element => element,
+      findSendControl: () => ({ state: 'CONFIRMED_EMPTY_COMPOSER' }),
+    };
+  } });
+  const result = await f.send({ type: 'agent.prompt', requestId: 'delivery', payload: {
+    expectedDocumentId: f.context.ChatGptBridgeContentRuntime.documentId, expectedFrameId: 0,
+    expectedConversationUrl: root, expectedConversationId: null,
+    controllerMessageId: 'delivery', runId: 'run', text, timeoutMs: 4000, stableMs: 1000,
+  } });
+  assert.equal(clicks, 1);
+  return result;
+}
+
+test('root prompt observes the same turn through a temporary loss of page controls', async () => {
+  const result = await rootTurn();
+  assert.equal(result.ok, true, result.code);
+  assert.equal(result.text, 'Fixture answer');
+  assert.equal(result.evidence.conversationId, 'new-turn');
+  assert.equal(result.evidence.userMessageId, 'user');
+  assert.equal(result.evidence.assistantMessageId, 'assistant');
+});
+
+test('root observation still rejects missing controls and mismatched turn evidence', async () => {
+  for (const [input, code] of [
+    [{ persistentGap: true }, 'UI_CONTRACT_CHANGED'],
+    [{ wrongConversation: true }, 'MANUAL_INTERVENTION_DETECTED'],
+    [{ wrongUser: true }, 'MANUAL_INTERVENTION_DETECTED'],
+  ]) {
+    const result = await rootTurn(input);
+    assert.equal(result.ok, false);
+    assert.equal(result.code, code);
+    assert.equal(result.text, undefined);
+  }
+});
 
 test('all manifest files can be injected twice with one listener, document and provider registry', () => {
   const f = contentWorld();
@@ -126,6 +185,28 @@ test('concurrent callers on one tab share one document-pinned file injection', a
   assert.equal(f.injections.length, 1); assert.equal(f.probes.length, 1);
   assert.ok(replies.every(reply => reply.documentId === 'content-7'));
   assert.ok(f.pings.length <= 4);
+});
+
+test('new tab waits for its supported pending URL to commit before pinging', async () => {
+  const f = browserHarness(), model = f.models.get(7);
+  Object.assign(model, {url:undefined, pendingUrl:'https://chatgpt.com/', status:'loading', present:true, ready:true});
+  const firstRead = deferred();
+  const get = f.chrome.tabs.get;
+  f.chrome.tabs.get = async id => {
+    const tab = await get(id);
+    firstRead.resolve();
+    return tab;
+  };
+  const pending = f.runtime.waitForContentScript(7, 1500, true);
+  const settled = pending.then(value => ({value}), error => ({error}));
+  await firstRead.promise;
+  await delay(10);
+  assert.equal(f.pings.length, 0);
+  Object.assign(model, {url:model.pendingUrl, pendingUrl:undefined, status:'complete'});
+  f.chrome.tabs.onUpdated.emit(7, {url:model.url});
+  const result = await settled;
+  assert.ifError(result.error);
+  assert.equal(result.value.documentId, 'content-7');
 });
 
 test('automatic injection finishing before the manual probe prevents another file injection', async () => {

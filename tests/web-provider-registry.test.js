@@ -29,6 +29,16 @@ test("default Web provider registry preserves the existing ChatGPT URL contract"
   assert.equal(conversationIdFromUrl("https://chatgpt.com/c/example"), "example");
 });
 
+test("server and extension do not bind temporary local ChatGPT conversation IDs", () => {
+  for (const parse of [extractWebConversationId, conversationIdFromUrl]) {
+    for (const id of ["local-chatgpt:temporary", "local-chatgpt%3Atemporary", "WEB%3Atemporary"]) {
+      assert.equal(parse("https://chatgpt.com/c/" + id), null);
+    }
+    assert.equal(parse("https://chatgpt.com/c/6aeb2853-0a84-83ee-9660-b67ccbd58ee9"),
+      "6aeb2853-0a84-83ee-9660-b67ccbd58ee9");
+  }
+});
+
 
 test("default Web provider registries include Claude without accepting unrelated Claude pages", () => {
   assert.equal(CLAUDE_WEB_PROVIDER.rootUrl, "https://claude.ai/new");

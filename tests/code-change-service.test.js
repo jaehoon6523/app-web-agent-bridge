@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { setupAudit, assertionsFor } from "./helpers/audit-fixtures.js";
+import { dashboard as dashboardUi } from "./helpers/dashboard-ui.mjs";
+import { workflowForRun } from "../src/orchestration/preparation-service.js";
 
 test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately apply exactly the reviewed candidate",async(t)=>{
   const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
@@ -107,15 +109,34 @@ test("active code Worker accepts bounded natural-language intervention and rejec
   let current=f.service.get(started.runId);
   assert.equal(current.stage,"WORKER_RUNNING");
   assert.equal(current.workerTurnId,"worker-turn-live");
-  assert.ok(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.worker.intervene"));
+  current = f.service.update(current.runId, {events:[...current.events, {
+    eventId:"late-worker-telemetry", type:"WORKER_RUNTIME_EVENT", createdAt:new Date().toISOString(),
+    payload:{runtimeType:"TURN_COMPLETED",turnId:"previous-worker-turn"},
+  }]});
 
   await assert.rejects(f.dashboard.executeDurable({type:"code.worker.intervene",requestId:"scope-change",
     payload:{runId:current.runId,expectedVersion:current.version,turnId:current.workerTurnId,kind:"REQUIREMENTS_CHANGE",text:"Add another feature"}}),
   /new preparation/);
   current=f.service.get(started.runId);
-  const accepted=await f.dashboard.executeDurable({type:"code.worker.intervene",requestId:"guidance",
-    payload:{runId:current.runId,expectedVersion:current.version,turnId:current.workerTurnId,kind:"GUIDANCE",text:"Reuse the existing helper if it already fits."}});
-  assert.equal(accepted.status,"DELIVERED");
+  const read = async () => {
+    const state = await f.dashboard.snapshot(current.runId);
+    return {...state, workflow:workflowForRun(state.run)};
+  };
+  const projected = await read();
+  assert.ok(projected.commandCapabilities.includes("code.worker.intervene"));
+  assert.equal(projected.workerRuntime.turnId, "previous-worker-turn");
+  const ui = await dashboardUi(projected, async (_url, options) => {
+    const payload = await f.dashboard.executeDurable(JSON.parse(options.body));
+    Object.assign(projected, await read());
+    return {payload};
+  });
+  ui.elements.get("workerInterventionText").value = "Reuse the existing helper if it already fits.";
+  ui.elements.get("workerInterventionText").listeners.input();
+  const send = ui.elements.get("sendWorkerIntervention");
+  assert.equal(send.disabled, false);
+  await send.listeners.click();
+  assert.equal(ui.run("workflow.runVersion"), f.service.get(current.runId).version);
+  assert.equal(ui.run("snapshot.run.userInterventions[0].status"), "DELIVERED");
   assert.equal(steers.length,1);
   assert.equal(steers[0].turnId,"worker-turn-live");
   assert.match(steers[0].text,/does not modify approved requirements or acceptance criteria/u);
@@ -145,6 +166,14 @@ test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues
 
   await f.reopen();
   const current=f.service.get(held.runId);
+  f.options.webSession.activeTurnId = "other-review-turn";
+  try {
+    assert.equal(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.review.retry"), false);
+    const diagnosis = await f.service.command("run.reconcile", {runId:current.runId,expectedVersion:current.version});
+    assert.equal(diagnosis.allowedActions.includes("code.review.retry"), false);
+  } finally {
+    f.options.webSession.activeTurnId = null;
+  }
   assert.ok(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.review.retry"));
 
   const accepted=await f.dashboard.executeDurable({
@@ -267,6 +296,21 @@ test("finished run archive preserves evidence and version history and can be res
   const historyBefore=f.service.store.history(run.runId).length;
   assert.ok(f.service.snapshot(run.runId,{}).commandCapabilities.includes("run.archive"));
 
+  const assertActiveReviewBlocksHistory = async (record, operation) => {
+    assert.ok(record.reviewTurnId);
+    f.options.webSession.activeTurnId = record.reviewTurnId;
+    try {
+      const payload = {runId:record.runId,expectedVersion:record.version};
+      await assert.rejects(f.service.command(operation,payload), {code:"RUN_NOT_TERMINAL"});
+      await assert.rejects(f.service.command("run.delete",payload), {code:"RUN_NOT_TERMINAL"});
+      const capabilities = f.service.snapshot(record.runId,{}).commandCapabilities;
+      assert.equal(capabilities.includes(operation), false);
+      assert.equal(capabilities.includes("run.delete"), false);
+      assert.equal(f.service.get(record.runId).version, record.version);
+    } finally { f.options.webSession.activeTurnId = null; }
+  };
+  await assertActiveReviewBlocksHistory(run, "run.archive");
+
   const archived=await f.dashboard.executeDurable({type:"run.archive",requestId:"archive-run",
     payload:{runId:run.runId,expectedVersion:run.version}});
   assert.equal(archived.stage,"APPLIED");
@@ -276,6 +320,7 @@ test("finished run archive preserves evidence and version history and can be res
   let caps=f.service.snapshot(run.runId,{}).commandCapabilities;
   assert.ok(caps.includes("run.unarchive"));
   assert.ok(!caps.includes("run.archive"));
+  await assertActiveReviewBlocksHistory(archived, "run.unarchive");
 
   const restored=await f.dashboard.executeDurable({type:"run.unarchive",requestId:"unarchive-run",
     payload:{runId:archived.runId,expectedVersion:archived.version}});

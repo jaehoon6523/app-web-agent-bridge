@@ -22,7 +22,7 @@ function chatGptConversationId(value) {
   const markerIndex = Math.max(segments.lastIndexOf("c"), segments.lastIndexOf("uc"));
   if (markerIndex < 0 || markerIndex + 1 >= segments.length) return null;
   const id = decodeURIComponent(segments[markerIndex + 1]);
-  return id.length > 0 && !/^WEB:/iu.test(id) ? id : null;
+  return id.length > 0 && !/^(?:WEB|local-chatgpt):/iu.test(id) ? id : null;
 }
 
 export const CHATGPT_WEB_TARGET_PROVIDER = Object.freeze({

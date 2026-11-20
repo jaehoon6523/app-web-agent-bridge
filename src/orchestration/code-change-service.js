@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { closeSteps } from "../diagnostics/shutdown.js";
-import { CodeChangeStore } from "../persistence/code-change-store.js";
+import { CodeChangeStore, terminalCodeChangeStages as terminal } from "../persistence/code-change-store.js";
 import { GitChangeWorkspace } from "../repository/git-change-workspace.js";
 import { createRegisteredCodeWorker } from "../runtime/workers/registry.js";
 import { canonicalConversationUrl, extractConversationId } from "../runtime/web/binding.js";
@@ -24,7 +24,6 @@ import { workerProvenance } from "../domain/worker-provenance.js";
 import { createReviewerWebRuntime } from "./reviewer-web-runtime.js";
 import { hasMultiReviewAuthority, hasReviewerIndependenceAuthority, projectWorkerRuntime, retryableAuditReview, retryableWorkerTimeout } from "./code-change-runtime-policy.js";
 
-const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
 const REVIEWER_READ_DEGRADATION_CODES = new Set([
   "REVIEWER_PROVIDER_UNAVAILABLE",
@@ -53,6 +52,14 @@ export class CodeChangeService {
   reviewerWebForTurn(turnId) {
     if (typeof turnId !== "string" || !turnId) return null;
     return this.reviewerWebAdapters().find((adapter) => adapter.activeTurnId === turnId) ?? null;
+  }
+  canManageFinishedRun(run) {
+    return terminal.has(run.stage) && !this.jobs.has(run.runId) && !this.workers.has(run.runId)
+      && !this.reviewerWebForTurn(run.reviewTurnId);
+  }
+  canRetryReview(run) {
+    return (retryableAuditReview(run) || canResumeAcknowledgedReview(run))
+      && !this.jobs.has(run.runId) && !this.workers.has(run.runId) && !this.reviewerWebBusy();
   }
   update(id, changes) {
     const run = this.get(id);
@@ -508,10 +515,11 @@ export class CodeChangeService {
     if (classification === "RECOVERY_REQUIRED" && run.stage === "RECOVERY_REQUIRED"
       && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) {
       allowedActions.push("run.abandon");
-      if (canResumeAcknowledgedReview(run)) allowedActions.push("code.review.retry");
     }
-    if (classification === "RECOVERABLE" && retryableAuditReview(run)
-      && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("code.review.retry");
+    if ((classification === "RECOVERABLE" || (classification === "RECOVERY_REQUIRED" && canResumeAcknowledgedReview(run)))
+      && this.canRetryReview(run)) {
+      allowedActions.push(run.terminationReason === "USER_DECISION_REQUIRED" ? "code.decision.reply" : "code.review.retry");
+    }
     if (classification === "RECOVERABLE" && run.stage === "AWAITING_APPLY" && hasMultiReviewAuthority(run)) allowedActions.push("code.apply");
     return redactForEvidence({ runId: run.runId, classification, observations, allowedActions, readOnly: true, observedAt: new Date().toISOString() });
   }
@@ -537,8 +545,7 @@ export class CodeChangeService {
     const run = this.get(payload.runId);
     if (!run || run.version !== payload.expectedVersion) throw Object.assign(new Error("Run changed; refresh."), { code: "RUN_VERSION_CONFLICT" });
     if (type === "run.archive" || type === "run.unarchive") {
-      if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
-        || this.reviewerWebForTurn(run.reviewTurnId)) {
+      if (!this.canManageFinishedRun(run)) {
         throw Object.assign(new Error("Only settled finished runs can be archived or restored."), { code:"RUN_NOT_TERMINAL" });
       }
       const archiving = type === "run.archive";
@@ -580,8 +587,7 @@ export class CodeChangeService {
       return rebindReviewRole(this, run.runId, { role:payload.role, tabId:payload.selectedTabId });
     }
     if (type === "run.delete") {
-      if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
-        || this.reviewerWebForTurn(run.reviewTurnId)) {
+      if (!this.canManageFinishedRun(run)) {
         throw Object.assign(new Error("Only settled finished runs can be deleted."), { code:"RUN_NOT_TERMINAL" });
       }
       if (run.workspaceRoot && fs.existsSync(run.workspaceRoot)) {
@@ -772,7 +778,7 @@ export class CodeChangeService {
       const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
       if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
       const resumeAcknowledged = type === "code.review.retry" && canResumeAcknowledgedReview(run);
-      if ((!retryableAuditReview(run) && !resumeAcknowledged) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
+      if (!this.canRetryReview(run)) {
         throw new Error("Only a settled review hold or legacy single-review candidate can be re-audited.");
       }
       let decision = null;
@@ -997,7 +1003,7 @@ export class CodeChangeService {
           && ["JUDGE","CRITIC"].includes(record.coordination?.activeRole)
           && typeof reviewerProjections[record.coordination.activeRole]?.adapter?.rebind === "function"
           ? ["code.review.rebind"] : []),
-        ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
+        ...(this.canManageFinishedRun(record)
           ? ["run.delete", record.archivedAt ? "run.unarchive" : "run.archive"]
           : []),
         ...(record.stage === "WORKER_RUNNING" && typeof record.workerTurnId === "string" && record.workerTurnId
@@ -1005,7 +1011,7 @@ export class CodeChangeService {
           ? ["code.worker.intervene"] : []),
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
-        ...((retryableAuditReview(record) || canResumeAcknowledgedReview(record)) && !this.jobs.has(runId) && !this.workers.has(runId)
+        ...(this.canRetryReview(record)
           ? [record.terminationReason === "USER_DECISION_REQUIRED" ? "code.decision.reply" : "code.review.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 && hasMultiReviewAuthority(record) ? ["code.apply"] : [])] });

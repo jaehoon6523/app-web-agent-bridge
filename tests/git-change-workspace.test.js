@@ -9,7 +9,7 @@ import { GitChangeWorkspace } from "../src/repository/git-change-workspace.js";
 
 function repositoryFixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-git-test-"));
-  t.after(() => fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5 }));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
   const target = path.join(directory, "target");
   fs.mkdirSync(target);
   const git = (...args) => execFileSync("git", ["-C", target, ...args], { windowsHide: true });

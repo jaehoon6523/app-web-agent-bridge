@@ -19,9 +19,9 @@ export function inheritedPipeScript({pidFile, markerFile, stdinProtocol = false}
     rl.on('line',line=>{const m=JSON.parse(line);if(m.id!==undefined)process.stdout.write(JSON.stringify({id:m.id,result:{userAgent:'pipe-contract'}})+'\\n');});` : ''}`;
 }
 
-export async function waitForPipeHolder({pidFile,markerFile}) {
-  const deadline=performance.now()+3000;
-  while (!fs.existsSync(markerFile) || fs.statSync(markerFile).size < 2) {
+export async function waitForPipeHolder({pidFile,markerFile,timeoutMs = 3000}) {
+  const deadline=performance.now()+timeoutMs;
+  while (!fs.existsSync(pidFile) || !fs.existsSync(markerFile) || fs.statSync(markerFile).size < 2) {
     assert.ok(performance.now()<deadline,'owned descendant must perform real work before the closure oracle');
     await wait(10);
   }

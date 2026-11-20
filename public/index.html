@@ -26,7 +26,9 @@
       <button id="historyClearFilters" type="button" hidden>검색·필터 초기화</button>
       <p id="historyFilterSummary" class="muted" role="status"></p>
     </div>
-    <button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>진행 중인 작업 보기</button>
+    <button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p>
+    <button id="openActivePreparation" type="button" aria-describedby="newRunReason" hidden>진행 중인 준비 복구</button>
+    <button id="showUnfinishedRun" hidden>진행 중인 작업 보기</button>
     <nav id="runList" aria-label="실행 선택"></nav><p id="historyEmpty" class="muted" hidden>조건에 맞는 실행 기록이 없습니다.</p>
     </div>
   </aside>
@@ -44,7 +46,7 @@
       <li id="stepResult">완료 · 적용</li>
     </ol>
     <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="webBindingSignal">대화 탭 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
-    <section id="projectOverview" hidden aria-labelledby="overviewTitle"><h1 id="overviewTitle"></h1><p id="overviewPath" class="muted"></p><p id="overviewSummary"></p><div class="actions"><button id="newProjectTask" type="button" class="primary">이 프로젝트에서 새 작업</button><button id="openProjectBlocker" type="button" hidden>진행 중인 작업 보기</button></div><p id="overviewReason" class="muted" role="status"></p><h2>작업 기록</h2><div id="overviewTasks"></div></section>
+    <section id="projectOverview" hidden aria-labelledby="overviewTitle"><h1 id="overviewTitle"></h1><p id="overviewPath" class="muted"></p><p id="overviewConversation" class="muted"></p><p id="overviewSummary"></p><div class="actions"><button id="newProjectTask" type="button" class="primary">이 프로젝트에서 새 작업</button><button id="openProjectBlocker" type="button" hidden>진행 중인 작업 보기</button></div><p id="overviewReason" class="muted" role="status"></p><h2>작업 기록</h2><div id="overviewTasks"></div></section>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
       <div class="flow-heading">
         <h1 id="projectHeading">요구사항 정리</h1>
@@ -102,14 +104,17 @@
         <label for="criticReviewerProvider">Critic 감사 서비스</label><select id="criticReviewerProvider"><option value="CHATGPT_WEB">ChatGPT Web</option><option value="CLAUDE_WEB">Claude Web</option></select>
         <p class="muted">감사 서비스 설정은 이 작업에 고정됩니다.</p>
         <label><input id="autoApprovePreparation" type="checkbox"> 첫 대화에서 확인 질문 없이 요구사항이 준비되면 자동 승인하고 구현 시작</label>
+        <label><input id="acceptPlainTextDiscussion" type="checkbox" aria-describedby="plainTextDiscussionHelp"> 평문 응답을 대화로 수용</label>
+        <p id="plainTextDiscussionHelp" class="muted">구조화된 packet이 없는 응답도 확인 후 대화를 이어갑니다. 자동 승인하지 않습니다.</p>
         <button id="planRun" disabled type="submit" class="primary">요구사항 정리 시작</button><p id="followUpSource" class="muted" hidden></p>
         <button id="startRun" hidden type="button" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
       </form>
       <section id="discardPanel" hidden class="recovery-panel">
-        <h2>확인되지 않은 요청 정리</h2><p>응답 결과를 확인할 수 없을 때만 사용합니다. 같은 요청은 자동 재전송하지 않습니다.</p>
+        <h2 id="discardHeading">확인되지 않은 요청 정리</h2><p id="discardExplanation">응답 결과를 확인할 수 없을 때만 사용합니다. 같은 요청은 자동 재전송하지 않습니다.</p>
         <p id="discardDelivery" class="muted"></p>
-        <label><input id="discardUnresolved" type="checkbox"> 원래 ChatGPT 응답 결과를 확인하지 못했습니다.</label>
+        <label><input id="discardUnresolved" type="checkbox"> <span id="discardConsent">원래 ChatGPT 응답 결과를 확인하지 못했습니다.</span></label>
         <label><input id="discardNoResend" type="checkbox"> 이 요청을 자동 재전송하지 않겠습니다.</label>
+        <label id="discardPageRisk" hidden><input id="discardPageUnconfirmed" type="checkbox"> 원래 탭 상태를 확인할 수 없어도 전송 소유권을 해제하는 데 동의합니다.</label>
         <label for="discardReason">폐기 사유</label><textarea id="discardReason" rows="3"></textarea>
         <button id="discardDeliveryButton" type="button">확인되지 않은 요청 정리</button>
       </section>

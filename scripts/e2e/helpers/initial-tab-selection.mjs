@@ -115,6 +115,24 @@ export async function initialTabSelection(t, f, { stale = false, recovery = fals
   sameRequest((await refreshed).preparation, ids);
   choice = await visibleChoice(f, 3);
   await assertNoSend(extension);
+  if (!stale && !recovery) {
+    const before = readStore(f).contexts[ids.preparationId], firstFocus = extension.focusCalls.length;
+    const view = choice.locator(`.tab-choice-candidate:has(input[value="${chosen.id}"]) .tab-choice-view`);
+    const [http] = await Promise.all([
+      f.page.waitForResponse(r => r.request().method() === 'POST'
+        && new URL(r.url()).pathname === '/api/preparations/tab-focus'),
+      view.click(),
+    ]);
+    assert.equal(http.status(), 200);
+    const request = http.request().postDataJSON();
+    assert.equal(request.preparationId, ids.preparationId);
+    assert.equal(request.deliveryId, ids.deliveryId);
+    assert.equal(request.tabId, chosen.id);
+    assert.deepEqual(extension.focusCalls.slice(firstFocus), [{tabId:chosen.id},{windowId:3}]);
+    assert.deepEqual(readStore(f).contexts[ids.preparationId], before);
+    await assertNoSend(extension);
+    saveEvidence(f,'candidate-focus-boundary',{request,version:before.version,focus:extension.focusCalls.slice(firstFocus)});
+  }
 
   const rejected = [];
   if (stale) {

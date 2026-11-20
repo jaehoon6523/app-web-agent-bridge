@@ -1,4 +1,3 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -8,7 +7,7 @@ import {assertionsFor} from './helpers/audit-fixtures.js';
 import {parseFinalControllerPacketJsonEnvelope} from '../src/domain/controller-packet-envelope.js';
 import {redactControllerResponseText} from '../src/orchestration/web-delivery-receipts.js';
 import {DashboardController} from '../src/orchestration/dashboard-controller.js';
-import {fixture, reopen, stopAfterAck, assertRecovered} from './helpers/audit-recovery-fixtures.js';
+import {fixture, reopen, stopAfterAck, assertRecovered, privateRecoveryTest as test, tracePrivateRecovery} from './helpers/audit-recovery-fixtures.js';
 
 for (const boundary of ['acknowledged', 'received', 'processed']) {
   test(`redacted response survives ${boundary} interruption without retransmission or an invented PASS`, async t => {
@@ -23,8 +22,16 @@ for (const boundary of ['acknowledged', 'received', 'processed']) {
     });
     const update = f.service.update.bind(f.service);
     let interrupted = false;
+    const checkpoints = new Set();
     f.service.update = (runId, changes) => {
       const saved = update(runId, changes);
+      const checkpoint = changes.stage === 'CANDIDATE_CAPTURE' ? 'candidate.capture.persisted'
+        : changes.workerTurns?.some(turn => turn.status === 'completed') ? 'worker.turn.persisted'
+        : changes.stage === 'VERIFYING' && changes.candidate ? 'candidate.persisted' : null;
+      if (checkpoint && !checkpoints.has(checkpoint)) {
+        checkpoints.add(checkpoint);
+        tracePrivateRecovery(checkpoint, {serviceRunId:runId});
+      }
       if (!interrupted && ((boundary === 'acknowledged' && changes.webDeliveryReceipts?.at(-1)?.state === 'ACKNOWLEDGED')
         || (boundary === 'received' && changes.reviewArtifacts?.length)
         || (boundary === 'processed' && changes.requests?.some(item => item.status === 'PROCESSED')))) {

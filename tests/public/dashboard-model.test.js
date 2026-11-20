@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { dashboard } from "../helpers/dashboard-ui.mjs";
+import { workflowForRun } from "../../src/orchestration/preparation-service.js";
+import { RunPhase } from "../../src/domain/vocabulary.js";
 import { fileURLToPath } from "node:url";
 import {
   ACTORS,
@@ -154,6 +157,19 @@ test("dashboard accepts separate Judge and Critic bindings for the same web acto
   ] }), /Duplicate session/);
 });
 
+test("dashboard normalizes legacy Judge runtime without filling missing current roles", () => {
+  const judge = {provider:"CHATGPT_WEB", availability:"AVAILABLE"};
+  const critic = {provider:"CLAUDE_WEB", availability:"UNAVAILABLE"};
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:judge}).reviewerRuntimes, {JUDGE:judge,CRITIC:null});
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:judge,reviewerRuntimes:{CRITIC:critic}}).reviewerRuntimes,
+    {JUDGE:null,CRITIC:critic});
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:judge,reviewerRuntimes:null}).reviewerRuntimes,
+    {JUDGE:null,CRITIC:null});
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:{provider:"CHATGPT_WEB"}}).reviewerRuntimes,
+    {JUDGE:{provider:"CHATGPT_WEB"},CRITIC:null});
+  assert.throws(() => normalizeDashboardState({reviewerRuntimes:{JUDGE:[]}}), /reviewerRuntimes.JUDGE/);
+});
+
 test("human input, controller relay, and agent output remain visually distinguishable", () => {
   assert.equal(classifyMessageOrigin({ source: "HUMAN" }).label, "HUMAN INPUT");
   assert.equal(classifyMessageOrigin({ source: "CONTROLLER_RELAY" }).label, "CONTROLLER RELAY");
@@ -204,9 +220,23 @@ test("dashboard starts mutation controls disabled until a canonical state arrive
 test("ambiguous delivery is never wired to the direct retry command", async () => {
   const source = await readFile(path.join(publicDir, "app.js"), "utf8");
   assert.match(source, /자동 재전송하지 않습니다/u);
-  assert.match(source, /command\("run\.retry"/u);
   assert.doesNotMatch(source, /command\("delivery\.retry"/u);
   assert.doesNotMatch(source, /\["FAILED",\s*"AMBIGUOUS"\].*delivery\.retry/su);
+  const run = {runId:"retry-worker", version:7, phase:"RECOVERY_REQUIRED", objective:"Retry failed worker"};
+  const state = {run, runs:[run], workflow:workflowForRun(run), preparation:null,
+    commandCapabilities:["run.retry"], preflight:{checks:{extensionAuthenticated:true}}};
+  const ui = await dashboard(state);
+  assert.equal(ui.elements.get("retryRun").disabled, false);
+  await ui.elements.get("retryRun").listeners.click();
+  const command = ui.calls.find(call => call.url === "/api/commands");
+  assert.equal(command.body.type, "run.retry");
+  assert.equal(command.body.payload.runId, run.runId);
+  assert.equal(command.body.payload.expectedVersion, run.version);
+  state.commandCapabilities = [];
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("retryRun").disabled, true);
+  await ui.elements.get("retryRun").listeners.click();
+  assert.equal(ui.calls.filter(call => call.url === "/api/commands").length, 1);
 });
 
 test("contract: dashboard state preserves canonical workflow identity and versions", () => {
@@ -223,6 +253,50 @@ test("contract: dashboard state preserves canonical workflow identity and versio
     stage: "PREPARE", state: "DISCUSSING", preparationId: "prep_1",
     preparationVersion: 4, runId: null, runVersion: null,
   });
+});
+
+test("[데이터 검증] workflow and run must describe one identity, version and legal phase projection", () => {
+  const valid = {workflow:{stage:"WORK",state:"WORKER_RUNNING",runId:"A",runVersion:3},
+    run:{runId:"A",version:3,phase:"WORKER_RUNNING",objective:"작업 A"}};
+  for (const [name, change] of [
+    ["run ID", s => {s.run.runId="B";}],
+    ["run version", s => {s.run.version=2;}],
+    ["phase mapping", s => {s.run.phase="APPLIED";}],
+    ["unknown phase", s => {s.run.phase="INVENTED";}],
+    ["missing phase", s => {delete s.run.phase;}],
+    ["wrong phase type", s => {s.run.phase={};}],
+    ["missing run", s => {s.run=null;}],
+    ["missing objective", s => {delete s.run.objective;}],
+    ["wrong objective type", s => {s.run.objective=12;}],
+  ]) {
+    const input=structuredClone(valid); change(input);
+    assert.throws(() => normalizeDashboardState(input), /run|workflow|phase|objective/i, `[데이터 검증] ${name} 오류를 거부해야 함`);
+  }
+  for (const [phase,state] of [["CREATED","RUN_CREATED"],["CANDIDATE_CAPTURE","VERIFYING"],
+    ["REPORT_REPAIR","REVIEW_RUNNING"],["EVIDENCE_SUPPLEMENT","REVIEW_RUNNING"]]) {
+    assert.equal(normalizeDashboardState({...valid,workflow:{...valid.workflow,state},run:{...valid.run,phase}}).run.phase,phase);
+  }
+});
+
+test("[데이터 검증] preparation pointers require the matching object and positive version even during START", () => {
+  const valid={workflow:{stage:"START",state:"WAITING_WEB_RESPONSE",preparationId:"P",preparationVersion:2},
+    preparation:{preparationId:"P",version:2}};
+  for(const change of [s=>{s.preparation=null;},s=>{s.workflow.preparationVersion=0;s.preparation.version=0;},
+    s=>{s.workflow.preparationId=null;},s=>{s.preparation.preparationId="Q";}]) {
+    const input=structuredClone(valid);change(input);
+    assert.throws(()=>normalizeDashboardState(input),/preparation/i);
+  }
+});
+
+test("[데이터 검증] accepted run phases use the actual server workflowForRun projection", () => {
+  const phases = new Set([...Object.values(RunPhase), "PROVISIONING", "WORKER_RUNNING", "CANDIDATE_CAPTURE", "VERIFYING",
+    "REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK", "APPLYING", "STOPPING", "HOLD", "AWAITING_APPLY", "APPLIED", "INCONCLUSIVE"]);
+  for (const phase of phases) {
+    const run = {runId:"A",version:3,phase,objective:"Server projection contract"};
+    const workflow = workflowForRun(run), normalized = normalizeDashboardState({run,workflow});
+    assert.equal(normalized.workflow.state, workflow.state, phase);
+    assert.equal(normalized.workflow.stage, workflow.stage, phase);
+  }
 });
 
 test("contract: invalid workflow stage/state combinations fail closed", () => {
@@ -266,22 +340,4 @@ test("contract: preparation capabilities remain separate from run capabilities",
   assert.equal(value.commandCapabilities.has("web.inspect"), true);
   assert.equal(value.commandCapabilities.has("web.reconcile"), true);
   assert.equal(value.commandCapabilities.has("run.start"), false);
-});
-
-
-for (const variant of ['identity', 'version']) {
-  test(`fixed scope 1: rejects workflow/run ${variant} mismatch before projection`, () => {
-    const run = {runId:variant === 'identity' ? 'B' : 'A', version:variant === 'version' ? 4 : 3, phase:'WORKER_RUNNING'};
-    assert.throws(() => normalizeDashboardState({
-      workflow:{stage:'WORK',state:'WORKER_RUNNING',runId:'A',runVersion:3}, run,
-    }), /run identity\/version does not match workflow/);
-  });
-}
-test('fixed scope 1: matching workflow/run identities and versions remain usable', () => {
-  for (const [stage,state] of [['WORK','WORKER_RUNNING'],['RESULT','APPLIED']]) {
-    const value = normalizeDashboardState({workflow:{stage,state,runId:'A',runVersion:3},
-      run:{runId:'A',version:3,phase:state}});
-    assert.equal(value.run.runId,value.workflow.runId);
-    assert.equal(value.run.version,value.workflow.runVersion);
-  }
 });

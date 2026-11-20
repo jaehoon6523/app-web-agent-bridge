@@ -96,3 +96,24 @@ export function createRunActionLayout({ $, text }) {
       && $("reviewBindingRecoveryPanel").hidden && $("recoveryPanel").hidden;
   };
 }
+
+export function ensureOperatorNoteControls({ $, node }) {
+  if ($("operatorNotePanel")) return;
+  const panel = node("section", "", "flow-band");
+  panel.id = "operatorNotePanel"; panel.hidden = true;
+  panel.append(node("h2", "작업 메모 · 결정 기록"));
+  panel.append(node("p", "이 기록은 Worker나 감사자에게 전송되지 않으며 요구사항·감사 판정·적용 권한을 바꾸지 않습니다.", "muted"));
+  const kindLabel = node("label", "기록 종류"); kindLabel.setAttribute("for", "operatorNoteKind");
+  const kind = node("select", ""); kind.id = "operatorNoteKind";
+  const noteOption = node("option", "메모"); noteOption.value = "NOTE";
+  const decisionOption = node("option", "결정"); decisionOption.value = "DECISION";
+  kind.append(noteOption, decisionOption);
+  const textLabel = node("label", "내용"); textLabel.setAttribute("for", "operatorNoteText");
+  const input = node("textarea", ""); input.id = "operatorNoteText"; input.rows = 3; input.maxLength = 4000;
+  input.placeholder = "나중에 이 작업을 다시 볼 때 필요한 판단 근거나 인수인계 내용을 기록하세요.";
+  const add = node("button", "기록 추가"); add.id = "addOperatorNote"; add.type = "button"; add.disabled = true;
+  const status = node("p", "", "muted"); status.id = "operatorNoteStatus"; status.setAttribute("role", "status");
+  const list = node("div", ""); list.id = "operatorNoteList";
+  panel.append(kindLabel, kind, textLabel, input, add, status, list);
+  $("runSecondaryContent")?.append(panel);
+}

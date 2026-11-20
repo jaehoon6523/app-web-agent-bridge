@@ -76,11 +76,11 @@ try {
     && !document.getElementById('chooseFolder').disabled);
   await page.locator('#startPanel').waitFor({ state:'visible' });
   assert.match(await page.locator('#apiHealth').getAttribute('aria-label'), /서버 응답 확인됨/u);
-  await page.locator('.workspace-health > summary').press('Enter');
+  const systemStatus = page.getByText('시스템 상태', {exact:true});
+  await systemStatus.click();
   await page.locator('#apiHealthDetail').waitFor({ state:'visible' });
   assert.match(await page.locator('#apiHealthDetail').textContent(), /서버 응답 확인됨/u);
-  await page.locator('.workspace-health > summary').press('Enter');
-  await page.locator('#apiHealthDetail').waitFor({ state:'hidden' });
+  await systemStatus.click();
   assert.match(await page.locator('#sessionHealth').getAttribute('aria-label'), /인증됨/u);
   assert.match(await page.locator('#engineHealth').getAttribute('aria-label'), /런타임 준비 필요/u);
   assert.match(await page.locator('#channelHealth').getAttribute('aria-label'), /연결 대기/u);

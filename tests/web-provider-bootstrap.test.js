@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { recoverBootstrapAfterNavigation } from "../extension/runtime/bootstrap-recovery.js";
-import { createConversationBootstrapTab, reopenExactConversationTab } from "../extension/runtime/conversation-bootstrap.js";
+import { conversationTabCandidates, createConversationBootstrapTab } from "../extension/runtime/conversation-bootstrap.js";
 import { createExtensionStateStore } from "../extension/runtime/storage.js";
 import { createWebTargetProviderRegistry, resolveWebTargetProvider } from "../extension/runtime/provider-target.js";
 
@@ -47,35 +47,31 @@ test("provider resolver is fail-closed for unknown or mismatched providers", () 
 test("bootstrap creates the supplied provider root instead of a hard-coded ChatGPT URL", async () => {
   const provider = providerFixture();
   const calls = [];
-  const visibleTabs = [];
-  const root = { id:41, windowId:2, url:provider.rootUrl };
-  const chromeApi = {
-    tabs:{
-      query:async() => [...visibleTabs],
-      create:async(options) => { calls.push(options); visibleTabs.push(root); return { id:root.id }; },
+  let visible = [{ id:9, windowId:2, url:"https://example.test/chat/other" }];
+  const chromeApi = { windows:{ getAll:async () => [{ id:2, type:"normal", incognito:false, tabs:visible }] }, tabs:{
+    query:async () => visible,
+    create:async options => {
+      calls.push(options);
+      const tab = { id:41, windowId:2, url:provider.rootUrl };
+      visible = [...visible, tab];
+      return tab;
     },
-    windows:{ getAll:async() => [{ id:2, type:"normal", incognito:false, tabs:[...visibleTabs] }] },
-  };
-  const tab = await createConversationBootstrapTab(chromeApi, async(id) => {
-    assert.equal(id, root.id);
-  }, provider);
-  assert.deepEqual(tab, root);
-  assert.deepEqual(calls, [{ url:provider.rootUrl, active:true, windowId:root.windowId }]);
+  } };
+  const tab = await createConversationBootstrapTab(chromeApi, async() => {}, provider);
+  assert.equal(tab.url, provider.rootUrl);
+  assert.deepEqual(calls, [{ url:provider.rootUrl, active:true, windowId:2 }]);
 });
 
-test("exact conversation reopen validates with the supplied provider identity rules", async () => {
+test("exact conversation discovery uses the supplied provider identity rules", () => {
   const provider = providerFixture();
   const requested = {
     provider:"TEST_WEB",
     conversationUrl:"https://example.test/chat/abc",
     conversationId:"abc",
   };
-  const chromeApi = { tabs:{
-    create:async() => ({ id:7 }),
-    get:async(id) => ({ id, windowId:1, url:requested.conversationUrl }),
-  } };
-  const tab = await reopenExactConversationTab(chromeApi, async() => {}, requested, provider);
-  assert.equal(tab.url, requested.conversationUrl);
+  const tab = { id:7, url:requested.conversationUrl };
+  assert.deepEqual(conversationTabCandidates([tab, { id:8, url:"https://chatgpt.com/c/abc" }],
+    provider, requested.conversationUrl, requested.conversationId), [tab]);
 });
 
 test("bootstrap recovery promotes a Claude root to its durable conversation without resending", async () => {

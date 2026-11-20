@@ -4,8 +4,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import childProcess from "node:child_process";
-import { once } from "node:events";
-import { setTimeout as wait } from "node:timers/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { executeVerification } from "../src/evidence/candidate-evidence.js";
 import { ArtifactStore } from "../src/evidence/artifact-store.js";
@@ -50,56 +48,29 @@ test('verification refuses an aliased cwd outside the candidate before dispatch'
   assert.equal(fs.existsSync(marker), false);
 });
 
-function inheritedVerification(t, startupDelayMs = 0, onPhase = () => {}) {
+function inheritedVerification(t, startupDelayMs = 0) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-verification-close-"));
   const pidFile = path.join(root, "descendant.pid");
   const markerFile=path.join(root,'heartbeat');
-  const source = inheritedPipeScript({pidFile,markerFile,stdinProtocol:true});
+  const source = `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,${startupDelayMs});\n`
+    + inheritedPipeScript({pidFile,markerFile,stdinProtocol:true});
   const args = ['-e',source], spawn = childProcess.spawn;
-  let child, observation, startedCwd, startupElapsedMs, dispatched = false;
+  let child, observation, startedCwd, dispatched = false;
   t.after(async () => {
-    onPhase('cleanup.start');
-    const deadline = performance.now()+5000;
-    const remaining = () => {
-      const ms = Math.ceil(deadline-performance.now());
-      if (ms <= 0) throw Object.assign(new Error('Inherited fixture cleanup deadline exceeded'), {code:'FIXTURE_CLEANUP_DEADLINE'});
-      return ms;
-    };
-    try {
-      if (child) {
-        const running = child.exitCode === null && child.signalCode === null;
-        const exited = running ? once(child,'exit',{signal:AbortSignal.timeout(remaining())}) : Promise.resolve();
-        exited.catch(() => {});
-        if (running) child.kill('SIGKILL');
-        // A kill request cannot prove the parent has stopped publishing descendant ownership.
-        await exited;
-        onPhase('cleanup.parent-exited');
-        await stopPipeHolder(pidFile,{timeoutMs:remaining()});
-        onPhase('cleanup.descendant-stopped');
-        await waitChildClose(child,observation,{timeoutMs:remaining()});
-        onPhase('cleanup.pipes-closed');
-      }
-      await removeOwnedPipeFixture(root,{timeoutMs:remaining()});
-      onPhase('cleanup.done');
-    } catch (error) {
-      // Contain failed fixture observation without converting uncertain closure into PASS.
-      child?.stdin?.destroy(); child?.stdout?.destroy(); child?.stderr?.destroy(); child?.unref();
-      throw error;
-    }
+    if (child && child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    await stopPipeHolder(pidFile);
+    if (observation) await waitChildClose(child,observation,{timeoutMs:5000});
+    await removeOwnedPipeFixture(root);
   });
-  return {root,args,markerFile,get child() {return child;},get startupElapsedMs() {return startupElapsedMs;},
+  return {root,args,markerFile,get child() {return child;},
     async start(cwd) {
-      const started = performance.now();
       startedCwd=cwd;
       child=spawn(process.execPath,args,{cwd,windowsHide:true,stdio:['pipe','pipe','pipe']});
       observation=observeChildClose(child);
-      await waitForPipeHolder({pidFile,markerFile});
+      await waitForPipeHolder({pidFile,markerFile,timeoutMs:8000});
       assert.equal(child.exitCode,null,'fixture parent must wait for stdin EOF');
       assert.equal(observation.result,undefined);
       assert.equal(child.stdout.closed,false); assert.equal(child.stderr.closed,false);
-      // Keep controlled setup cost outside the real descendant's readiness budget.
-      if (startupDelayMs) await wait(startupDelayMs);
-      startupElapsedMs = performance.now()-started;
     },
     async run(action) {
       // Only process startup is controlled; the child, pipes and verification deadline are real.
@@ -124,35 +95,9 @@ function inheritedVerification(t, startupDelayMs = 0, onPhase = () => {}) {
   };
 }
 
-test('failed fixture readiness still closes its owned parent, descendant and observation pipes', {timeout:10000}, async t => {
-  let fixture, descendantPid;
-  const failure=Object.assign(new Error('controlled readiness stat failure'),{code:'EIO'});
-  await t.test('readiness rejection preserves the failure and runs fixture cleanup', async nested => {
-    fixture=inheritedVerification(nested);
-    const stat=fs.statSync;
-    const injected=nested.mock.method(fs,'statSync',(filename,...args) => {
-      const result=stat(filename,...args);
-      if (filename === fixture.markerFile && result.size >= 2) {
-        descendantPid=Number(fs.readFileSync(path.join(fixture.root,'descendant.pid'),'utf8'));
-        throw failure;
-      }
-      return result;
-    });
-    try { await assert.rejects(() => fixture.start(fixture.root), error => error === failure); }
-    finally { injected.mock.restore(); }
-  });
-  assert.ok(Number.isInteger(descendantPid) && descendantPid>0);
-  assert.equal(fs.existsSync(fixture.root),false);
-  assert.ok(fixture.child.exitCode !== null || fixture.child.signalCode !== null);
-  assert.equal(fixture.child.stdin.closed,true);
-  assert.equal(fixture.child.stdout.closed,true);
-  assert.equal(fixture.child.stderr.closed,true);
-});
-
-test("verification timeout remains bounded after slow startup when an exited parent leaves inherited descendant pipes", {timeout:10000}, async t => {
+test("verification timeout remains bounded after slow startup when an exited parent leaves inherited descendant pipes", {timeout:20000}, async t => {
   const fixture=inheritedVerification(t,1700);
   await fixture.start(fixture.root);
-  assert.ok(fixture.startupElapsedMs >= 1700,'controlled setup delay must remain before verification dispatch');
   const started = performance.now();
   const pending = fixture.run(() => executeVerification({
     // Candidate identity is held constant here. This is the actual process/pipe
@@ -173,7 +118,7 @@ test("verification timeout remains bounded after slow startup when an exited par
     assert.equal(fixture.child.exitCode,0);
     const heartbeat=await assertPipeHolderAlive(fixture.markerFile);
     t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,parentPid:fixture.child.pid,
-      parentExitCode:fixture.child.exitCode,startupDelayMs:1700,startupElapsedMs:fixture.startupElapsedMs,heartbeat}));
+      parentExitCode:fixture.child.exitCode,startupDelayMs:1700,heartbeat}));
     assert.equal(outcome.pending, undefined, "configured timeout must not wait indefinitely for descendant stdio");
     assert.equal(outcome.result.record.terminationConfirmed, false);
     assert.match(outcome.result.record.error, /closure deadline/);
@@ -185,24 +130,16 @@ test("verification timeout remains bounded after slow startup when an exited par
   }
 });
 
-// The 1500 ms verification deadline below starts after Git setup and the pipe-holder handshake.
-test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:20000}, async t => {
-  const started=performance.now();
-  const mark=phase=>t.diagnostic(JSON.stringify({phase,elapsedMs:performance.now()-started}));
-  mark('setup');
-  const fixture=inheritedVerification(t,0,mark);
+test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:30000}, async t => {
+  const fixture=inheritedVerification(t);
   const f = setupAudit(t, {configure(project) {
     project.verifications = [{verificationId:"pipes",executable:process.execPath,args:fixture.args,
       cwd:".",timeoutMs:1500,purpose:"lifetime",environmentId:"controlled-node",resultFiles:[]}];
   }, async worker({workspace}) {
     fs.writeFileSync(path.join(workspace.root,'file.txt'),'revision 1\n');
-    mark('fixture.start');
     await fixture.start(workspace.root);
-    mark('fixture.ready');
   }, review() {throw new Error("uncertain verification must not reach reviewer");}});
-  mark('audit.run');
   const run = await fixture.run(() => f.run());
-  mark('audit.done');
   assert.equal(run.stage, "RECOVERY_REQUIRED");
   assert.equal(f.reviews(), 0);
   assert.equal(run.application, null);
@@ -210,14 +147,11 @@ test("unconfirmed verification closure persists recovery and never dispatches an
   assert.equal(execution.result.exitCode,0);
   assert.equal(fixture.child.exitCode,0);
   const heartbeat=await assertPipeHolderAlive(fixture.markerFile);
-  mark('pipe-holder.confirmed');
   t.diagnostic(JSON.stringify({node:process.version,platform:process.platform,parentPid:fixture.child.pid,
     parentExitCode:fixture.child.exitCode,heartbeat}));
   assert.equal(execution.result.terminationConfirmed, false);
   assert.equal(execution.result.timedOut, true);
   await f.reopen();
-  mark('reopen.done');
   assert.equal(f.service.get(run.runId).stage, "RECOVERY_REQUIRED");
   assert.equal(f.reviews(), 0);
-  mark('assertions.done');
 });

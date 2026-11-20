@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
+import {fixtureMessage} from "./helpers/aud14-dom.js";
 
 const registrySource = fs.readFileSync(new URL("../extension/runtime/page-provider-registry.js", import.meta.url), "utf8");
 const contentSource = fs.readFileSync(new URL("../extension/content.js", import.meta.url), "utf8");
@@ -70,6 +71,35 @@ test("manifest loads the provider contract and ChatGPT page adapter before conte
   assert.ok(contentIndex > adapterIndex);
 });
 
+test("ChatGPT page adapter waits for a persistent conversation ID", () => {
+  const context = { URL };
+  context.globalThis = context;
+  vm.runInNewContext(registrySource, context);
+  vm.runInNewContext(fs.readFileSync(new URL("../extension/runtime/providers/chatgpt-page.js", import.meta.url), "utf8"), context);
+  const provider = context.WebBridgePageProviders.provider("CHATGPT_WEB");
+  for (const id of ["local-chatgpt:temporary", "local-chatgpt%3Atemporary", "WEB:temporary"]) {
+    assert.equal(provider.conversationIdFromUrl("https://chatgpt.com/c/" + id), null);
+  }
+  assert.equal(provider.conversationIdFromUrl("https://chatgpt.com/c/created"), "created");
+});
+
+test("ChatGPT search message units preserve marker text, order and unique stable IDs", () => {
+  const units=[['user','u1','[controller_message_id:d1]\n[run_id:prep_r1]'],['assistant','a1 a1','확인 질문']]
+    .map(([role,id,text])=>fixtureMessage(role,text,{search:true,explicit:false,id}).node);
+  const groups=Object.fromEntries(['composer','sendButton','stopButton','message','messageContainer','messageContent'].map(k=>[k,['test']]));
+  const context={URL,document:{querySelectorAll:()=>units},ChatGptBridgeSelectors:{version:'test',groups,resolveSendButtonState(){}},
+    ChatGptBridgeResponseText:{elementText:el=>el.textContent}};
+  context.globalThis=context;
+  vm.runInNewContext(registrySource,context);
+  vm.runInNewContext(fs.readFileSync(new URL('../extension/runtime/providers/chatgpt-page.js',import.meta.url),'utf8'),context);
+  const provider=context.WebBridgePageProviders.provider('CHATGPT_WEB');
+  assert.deepEqual(JSON.parse(JSON.stringify(provider.readMessages().map(({id,role,text,index})=>({id,role,text,index})))),[
+    {id:'u1',role:'user',text:'[controller_message_id:d1]\n[run_id:prep_r1]',index:0},
+    {id:'a1',role:'assistant',text:'확인 질문',index:1}]);
+  units[1].attrs['data-chatgpt-search-message-ids']='a1 a2';
+  assert.throws(()=>provider.readMessages(),{code:'AMBIGUOUS_PROMPT_BINDING'});
+});
+
 test("content orchestration no longer embeds ChatGPT DOM or URL rules", () => {
   for (const token of [
     "ChatGptBridgeSelectors",
@@ -82,5 +112,5 @@ test("content orchestration no longer embeds ChatGPT DOM or URL rules", () => {
     "document.querySelector(",
   ]) assert.equal(contentSource.includes(token), false, token);
   assert.match(contentSource, /WebBridgePageProviders/u);
-  assert.match(contentSource, /submitPrompt\(text, signal, \{ assertCanMutate \}\)/u);
+  assert.match(contentSource, /provider\.submitPrompt\(text, signal, \{ assertCanMutate, observe \}\)/u);
 });

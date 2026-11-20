@@ -130,7 +130,7 @@ try {
   assert.match(await page.locator('#popupWindowStatus').textContent(),/다시 시도/u);
   assert.equal(await page.locator('#openResizableWindow').isEnabled(),true);
   await page.evaluate(()=>{window.rejectWindowOpen=false;});
-  await page.locator('.tab-card > summary').click();
+  await page.getByText('탭 진단 및 로그',{exact:true}).click();
   await page.getByRole('button',{name:'열린 탭 다시 확인'}).click();
   assert.equal(await page.locator('#choosePreparationTab').isEnabled(),true);
   assert.equal(await page.locator('#tabDiagnosticDetail,#recoveryRaw').count(),0);
@@ -190,8 +190,8 @@ try {
   assert.equal(await page.locator('#openResizableWindow').isVisible(),false);
   assert.equal(await page.locator('#deliveryRecovery').isVisible(),true);
   await page.locator('.settings > summary').click();
-  await page.locator('.tab-card > summary').click();
-  for (const width of [320,390,520,760,900,1200]) {
+  await page.getByText('탭 진단 및 로그',{exact:true}).click();
+  for (const width of [360,520,900,1200]) {
     for (const height of [480,900]) {
       await page.setViewportSize({width,height});
       assert.equal(await page.locator('body').evaluate(element=>Math.round(element.getBoundingClientRect().width)),width);

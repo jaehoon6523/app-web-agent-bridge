@@ -14,14 +14,14 @@ export const verificationCatalog = [
     phase:'PREPARATION',browser:true}),
   stage('lint','lint'), stage('architecture','architecture:check'), stage('types','typecheck'),
   stage('spec','verify:spec',{receipt:'spec'}),
-  stage('discovery','test',{receipt:'gate',evidencePaths:['latest-test.log','latest-agent-diagnostics-complete','latest-server-response-deadline','latest-server-responsiveness','latest-verification-lifecycle','latest-verification-command','latest-source-checkout','latest-selector-repair-cli']}),
+  stage('discovery','test',{receipt:'gate',evidencePaths:['latest-test.log','latest-agent-diagnostics-complete','latest-server-response-deadline','latest-server-responsiveness','latest-verification-lifecycle','latest-verification-command','latest-source-checkout']}),
   stage('integration','test:integration'),
   stage('platform','test:platform',{receipt:'gate'}),
   stage('cleanup','test:runtime-cleanup-contract',{receipt:'gate'}),
   stage('windows-focused',null,{os:['win32'],nodeArgs:['scripts/run-tests.mjs',
     'tests/persistence-cleanup.test.js','tests/verification-lifecycle.test.js','tests/preparation-contention.test.js'],receipt:'gate'}),
   stage('platform-browser','test:platform:browser',{browser:true,receipt:'gate'}),
-  stage('e2e','test:e2e:ci',{browser:true,receipt:'e2e',evidencePaths:['ui-qa/e2e-startup','ui-qa/e2e-wave','ui-qa/e2e-diagnostics','ui-qa/startup-runner-failure.json','ui-qa/wave-runner-failure.json']}),
+  stage('e2e','test:e2e:ci',{browser:true,receipt:'e2e',evidencePaths:['ui-qa/e2e-startup','ui-qa/e2e-wave','ui-qa/startup-runner-failure.json','ui-qa/wave-runner-failure.json']}),
   stage('ui','test:ui',{browser:true,os:['linux'],evidencePaths:['ui-qa/failure.json']}),
   stage('browser','test:browser:core',{browser:true,os:['linux'],receipt:'gate'}),
   stage('tab-ux','test:tab-ux-browser',{browser:true,receipt:'gui',expectedScenarios:[...requiredGuiScenarios]}),
@@ -39,32 +39,18 @@ export function verificationPlan({scope='full',platform=process.platform}={}) {
     || new Set(specFiles).size!==specFiles.length)) throw Error('INVALID_SPEC_FILE_SET');
   const discoveryFiles=discovered.filter(file=>!specFiles.includes(file));
   // #154 exhausted the discovery stage budget while completing files normally.
-  // Split Windows discovery into bounded groups. They run sequentially unless
-  // verification explicitly requests concurrency. File deadlines, the complete
-  // test inventory and OS policy stay unchanged. Each group keeps 25 minutes.
+  // Split Windows discovery into bounded, sequential groups. File deadlines,
+  // the complete test inventory and OS policy stay unchanged. Each group keeps
+  // 25 minutes: their combined allowance grows from 25 to 100 minutes, while
+  // the CI job still has 90 minutes. Actual Windows elapsed time needs measurement.
   const catalog=verificationCatalog.filter(item=>item.scopes.includes(scope)).flatMap(item=>{
     if(item.id!=='discovery' || item.nodeArgs) return [item];
     const files=discoveryFiles;
-    if(platform!=='win32') return [{...item,command:null,nodeArgs:['scripts/run-tests.mjs',...files],isolatedGateOutput:true}];
-    // The ACK recovery files both provision real Git worktrees. Run them
-    // before the parallel groups so Windows process contention stays bounded.
-    const exclusive=['tests/audit-ack-recovery.test.js','tests/audit-ack-recovery-boundaries.test.js'];
-    if(!exclusive.every(file=>files.includes(file))) throw Error('MISSING_EXCLUSIVE_DISCOVERY_FILE');
-    const groups=Array.from({length:4},()=>[]);
-    // Keep the measured slow and fast files in their designated groups.
-    const fast='tests/prepared-session-target.test.js';
-    const slow='tests/runtime-cleanup/contract.test.js';
-    if(files.includes(fast)) groups[0].push(fast);
-    if(files.includes(slow)) groups[3].push(slow);
-    for(const file of files) {
-      if(exclusive.includes(file) || file===fast || file===slow) continue;
-      const smallest=groups.reduce((lightest,group)=>group.length<lightest.length?group:lightest);
-      smallest.push(file);
-    }
-    return [{...item,id:'discovery-serial',command:null,nodeArgs:['scripts/run-tests.mjs',...exclusive],
-      isolatedGateOutput:true,parallelEligible:false},
-    ...groups.map((files,index)=>({...item,id:index===0?'discovery':`discovery-${index+1}`,
-      command:null,nodeArgs:['scripts/run-tests.mjs',...files],isolatedGateOutput:true,parallelEligible:true}))];
+    if(platform!=='win32') return [{...item,command:null,nodeArgs:['scripts/run-tests.mjs',...files]}];
+    const groups=Array.from({length:Math.min(4,files.length)},()=>[]);
+    files.forEach((file,index)=>groups[index%groups.length].push(file));
+    return groups.map((files,index)=>({...item,id:index===0?'discovery':`discovery-${index+1}`,
+      command:null,nodeArgs:['scripts/run-tests.mjs',...files]}));
   });
   return catalog.map(item=>{
     const pkg=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));

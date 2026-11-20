@@ -2,13 +2,14 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import * as dashboardActionCapabilities from "../../public/dashboard-action-capabilities.js";
 import * as dashboardConnectionState from "../../public/dashboard-connection-state.js";
-import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks } from "../../public/dashboard-model.js";
+import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "../../public/dashboard-model.js";
 import * as dashboardRunListKnowledge from "../../public/dashboard-run-list-knowledge.js";
 import * as dashboardStartActions from "../../public/dashboard-start-actions.js";
 import { renderProjectOverview } from "../../public/project-overview-view.js";
-import { createRunActionLayout } from "../../public/run-action-layout.js";
+import { createRunActionLayout, ensureOperatorNoteControls } from "../../public/run-action-layout.js";
 import * as runContextView from "../../public/run-context-view.js";
 import { redactDiagnosticLog } from "../../public/diagnostic-export.js";
+import * as invalidAbandonment from "../../public/invalid-preparation-abandonment.js";
 
 function inlineModule(source) {
   const lines = [];
@@ -29,10 +30,13 @@ function inlineModule(source) {
 }
 
 function withRunKnowledge(state) {
-  if (!Array.isArray(state?.runs) || state.dataKnowledge != null) return state;
+  if (!Array.isArray(state?.runs)) return state;
+  const preparation = state.preparation;
   return {
     ...state,
-    dataKnowledge: { runs: { status: state.runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
+    ...(!Object.hasOwn(state, "activePreparation") && { activePreparation:preparation?.lifecycle === "ACTIVE"
+      ? { preparationId:preparation.preparationId, version:preparation.version } : null }),
+    dataKnowledge: state.dataKnowledge ?? { runs: { status: state.runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
   };
 }
 
@@ -115,8 +119,9 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     ...dashboardConnectionState,
     ...dashboardRunListKnowledge,
     ...dashboardStartActions,
+    ...invalidAbandonment,
     ...runContextView, redactDiagnosticLog,
-    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
+    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, ensureOperatorNoteControls, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},
