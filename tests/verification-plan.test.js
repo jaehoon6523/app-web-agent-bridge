@@ -24,9 +24,10 @@ test('CI and local use the same catalog including every previously omitted gate'
   assert.doesNotMatch(workflow,/run: npm run (?:check|test:)/u);
   for(const platform of ['linux','win32']) {
     const plan=verificationPlan({platform});
-    for(const id of ['discovery','integration','ui','browser','sabotage','native','tab-ux','cleanup','platform','e2e'])
+    for(const id of ['discovery','integration','ui','browser','sabotage','native','tab-ux','platform-browser','e2e'])
       assert.ok(plan.find(s=>s.id===id));
     assert.equal(new Set(plan.map(s=>s.id)).size,plan.length);
+    assert.ok(plan.every(s=>!['platform','cleanup','windows-focused'].includes(s.id)));
     assert.equal(plan.find(s=>s.id==='ui').applicable,platform==='linux');
   }
 });

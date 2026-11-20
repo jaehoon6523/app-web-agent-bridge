@@ -17,7 +17,6 @@ const contexts = new WeakMap();
 // Exercise the direct Node dispatch on every host, while keeping OS policy
 // changes local to this contract-test process.
 function controlledPlan() {
-  verificationCatalog.find(stage => stage.id === 'windows-focused').os = undefined;
   // Exercise Windows' generated direct-Node groups on every test host. Keep
   // process.platform intact: this models the plan, not a Windows OS runtime.
   if (process.platform !== 'win32') {
@@ -134,7 +133,6 @@ async function execute(t, mode) {
   assert.deepEqual(closed.stdout.match(/^peer discovery(?:-[234])?$/gmu),
     ['discovery','discovery-2','discovery-3','discovery-4'].map(id=>'peer '+id));
   assert.doesNotMatch(closed.stdout,/^FILE tests[\\/]/mu);
-  assert.match(closed.stdout,/^peer windows-focused$/mu);
   const code = closed.exitCode, signal = closed.signal;
   const result=JSON.parse(fs.readFileSync(path.join(root,'latest-verification.json'),'utf8'));
   const log=fs.readFileSync(path.join(root,'latest-verification.log'),'utf8');

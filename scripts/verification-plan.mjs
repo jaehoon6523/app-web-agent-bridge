@@ -4,8 +4,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {discoverTests} from './run-tests.mjs';
 const root=fileURLToPath(new URL('../',import.meta.url));
-// The same catalog drives local verification and CI. Explicit overlaps are
-// retained: platform/cleanup are focused contracts as well as full discovery.
+// The same catalog drives local verification and CI.
 const stage = (id, command, options = {}) => ({id, command, required:true,
   node:'>=22.5', timeoutMs:25*60*1000, scopes:['full'], needs:['dependencies'], evidence:[], ...options});
 export const verificationCatalog = [
@@ -16,10 +15,6 @@ export const verificationCatalog = [
   stage('spec','verify:spec',{receipt:'spec'}),
   stage('discovery','test',{receipt:'gate',evidencePaths:['latest-test.log','latest-agent-diagnostics-complete','latest-server-response-deadline','latest-server-responsiveness','latest-verification-lifecycle','latest-verification-command','latest-source-checkout']}),
   stage('integration','test:integration'),
-  stage('platform','test:platform',{receipt:'gate'}),
-  stage('cleanup','test:runtime-cleanup-contract',{receipt:'gate'}),
-  stage('windows-focused',null,{os:['win32'],nodeArgs:['scripts/run-tests.mjs',
-    'tests/persistence-cleanup.test.js','tests/verification-lifecycle.test.js','tests/preparation-contention.test.js'],receipt:'gate'}),
   stage('platform-browser','test:platform:browser',{browser:true,receipt:'gate'}),
   stage('e2e','test:e2e:ci',{browser:true,receipt:'e2e',evidencePaths:['ui-qa/e2e-startup','ui-qa/e2e-wave','ui-qa/startup-runner-failure.json','ui-qa/wave-runner-failure.json']}),
   stage('ui','test:ui',{browser:true,os:['linux'],evidencePaths:['ui-qa/failure.json']}),

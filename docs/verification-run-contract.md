@@ -10,10 +10,10 @@ observations. Native extension unavailability is required NOT_RUN and exits 2.
 FAIL exits 1; only all applicable required stages PASS exits 0.
 
 The full catalog contains dependency/browser preparation, lint, architecture,
-typecheck, full discovery, integration, focused platform, cleanup, Windows
-focused reproduction, platform browser, E2E, UI, browser core, tab UX, sabotage,
-and native extension. Focused platform/cleanup duplicate discovery deliberately:
-they preserve the prior CI contracts rather than assuming equivalence.
+typecheck, full discovery, integration, platform browser, E2E, UI, browser core,
+tab UX, sabotage, and native extension. Discovery runs the platform, cleanup,
+and Windows-focused files once. Standalone platform and cleanup commands
+remain available for focused runs. Integration keeps its shared-process run.
 Browser core and tab UX are independent stages so one cannot hide the other.
 The former Linux UI/browser/sabotage OS policy is retained; tab UX and native
 extend verification to both OSes and are not represented by historic results.
