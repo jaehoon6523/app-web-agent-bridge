@@ -1,4 +1,10 @@
 (function exposeResponseText(root) {
+  function isBarePreparationProposal(text) {
+    if (!text.startsWith("{")) return false;
+    try { return JSON.parse(text).type === "REQUIREMENTS_PROPOSAL"; }
+    catch { return false; }
+  }
+
   function elementText(element, selectors, selectorTelemetry) {
     let best = "";
     let bestSelector = null;
@@ -14,7 +20,8 @@
       }
     }
     const containerText = (element.innerText || element.textContent || "").trim();
-    if (containerText.includes("CONTROLLER_PACKET_BEGIN") && containerText.length > best.length) {
+    if (containerText.length > best.length && (containerText.includes("CONTROLLER_PACKET_BEGIN")
+      || /^답변시작\r?$/mu.test(containerText) || isBarePreparationProposal(containerText))) {
       selectorTelemetry.set("messageContent", "messageContainer:packet");
       return containerText;
     }

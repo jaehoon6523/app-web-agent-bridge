@@ -109,6 +109,7 @@ export async function extensionBrowser(t, {
   const contentResults = [];
   await background.exposeBinding('fixtureTabs', async (_source, operation, value) => {
     if (operation === 'query') return [...pages.keys()].map(tab);
+    if (operation === 'windows') return [{id:3,type:'normal',incognito:false,tabs:[...pages.keys()].map(tab)}];
     if (operation === 'get') return pages.has(value) ? tab(value) : null;
     if (operation === 'update') return tab(value.id);
     if (operation === 'create') {
@@ -140,7 +141,7 @@ export async function extensionBrowser(t, {
         create: options => fixtureTabs('create', options),
         sendMessage: (id, message) => fixtureTabs('sendMessage', { id, message }),
         onActivated: event(), onCreated: event(), onRemoved: event(), onUpdated: event() },
-      windows: { update: async () => {} },
+      windows: { getAll: () => fixtureTabs('windows'), update: async () => {} },
       scripting: { executeScript: async () => { throw new Error('Fixture content script is not ready'); } },
     };
   }, { manifest });
@@ -205,7 +206,9 @@ export async function extensionBrowser(t, {
           if (variant === 'roles') article.setAttribute('data-message-author-role', role);
           else { article.setAttribute('data-testid', 'conversation-turn-' + id);
             if (variant === 'classes') article.className = role === 'user' ? 'group/user-turn' : 'group/agent-turn';
-            else { const heading = document.createElement('h2'); heading.textContent = role === 'user' ? 'You said:' : 'ChatGPT said:'; article.append(heading); } }
+          }
+          const heading = document.createElement('h4'); heading.className = 'sr-only';
+          heading.textContent = role === 'user' ? 'You said:' : 'ChatGPT said:'; article.append(heading);
           const body = document.createElement('div'); body.setAttribute('data-message-content', ''); body.style.whiteSpace = 'pre-wrap'; body.textContent = text;
           article.append(body); document.querySelector('#messages').append(article);
           if (preserveHistory && record) {

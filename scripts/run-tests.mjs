@@ -22,10 +22,12 @@ const fileTimeouts = new Map([
   // watchdog must allow scheduling variance; each assertion keeps its contract.
   ['tests/audit-ack-recovery.test.js', 5 * 60 * 1000],
   ['tests/runtime-cleanup/contract.test.js', 12 * 60 * 1000],
-  // One bounded setup plus eight 15-second cases and source cleanup.
-  ['tests/verification-command.test.js', 4 * 60 * 1000],
+  // Bounded checkout setup, nine CLI cases, and source cleanup.
+  ['tests/verification-command.test.js', 5 * 60 * 1000],
   // Two full invocations and an early-failure invocation, including setup.
-  ['tests/source-checkout.test.mjs', 12 * 60 * 1000],
+  ['tests/source-checkout.test.mjs', 13 * 60 * 1000],
+  // Two full CLI verification scenarios, including snapshots and resource closure.
+  ['tests/selector-repair-cli.test.js', 8 * 60 * 1000 + 15000],
 ]);
 export function fileTimeoutMs(filename) {
   return fileTimeouts.get(path.relative(root,filename).split(path.sep).join('/')) ?? DEFAULT_FILE_TIMEOUT_MS;

@@ -46,7 +46,7 @@ function fixture(t) {
       return { completion: Promise.resolve({ turnId: active, binding, confidence: "CONFIRMED_BY_UI_STATE",
         trace: { requestId: active, actionId: active, bindingId: `${binding.sessionId}:${binding.runId}`,
           tabId: binding.tabId, documentId: binding.documentId, frameId: binding.frameId, result: "success" },
-        rawText: "<controller_packet>\n" + JSON.stringify(parsed) + "\n</controller_packet>" }) };
+        rawText: JSON.stringify(parsed) }) };
     },
     async inspectDelivery() { if (!binding) return { currentDeliveryId: null }; return { currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
       conversationId: binding.conversationId, conversationUrl: binding.conversationUrl, observedConversationUrl: binding.conversationUrl,
@@ -729,3 +729,21 @@ for (const mismatch of [{ conversationId: "other" }, { deliveryId: "other" }]) {
     assert.equal(f.calls.length, 1);
   });
 }
+
+test("new JSON format freezes before dispatch and legacy in-flight deliveries keep their parser", async (t) => {
+  const f = fixture(t);
+  const submit = f.web.submitTurn.bind(f.web);
+  t.mock.method(f.web, "submitTurn", async input => {
+    const reply = await submit(input);
+    return { completion:reply.completion.then(result => ({ ...result,
+      rawText:"<controller_packet>\n" + result.rawText + "\n</controller_packet>" })) };
+  });
+  const reserved = await f.start();
+  assert.equal(reserved.deliveries[0].responseFormat, "JSON_OBJECT_V1");
+  delete f.service.current.deliveries[0].responseFormat;
+  await settled(f.service);
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+  f.restart();
+  assert.equal(f.service.snapshot().deliveries[0].responseFormat, undefined);
+  assert.match(f.service.snapshot().deliveries[0].response.rawText, /^<controller_packet>/u);
+});

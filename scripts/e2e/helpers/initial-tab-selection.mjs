@@ -9,7 +9,7 @@ import { saveEvidence } from './lifecycle.mjs';
 
 const objective = 'Choose a tab for the first clock requirements request';
 const packet = preparationPackets[0];
-const responseText = `<controller_packet>\n${JSON.stringify(packet)}\n</controller_packet>`;
+const responseText = JSON.stringify(packet);
 const observe = (f, predicate) => waitForState(f.page, predicate, { timeout:20000 });
 function readStore(f) {
   const db = new DatabaseSync(path.join(f.server.workspace, '.agent-controller/preparations.sqlite'), { readOnly:true });
