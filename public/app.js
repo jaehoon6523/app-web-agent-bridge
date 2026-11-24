@@ -1,7 +1,7 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
 import { createPreparationTabChoice, renderPreparationTransmission, nextTabFocusState, createTabFocusActions } from "./preparation-tab-choice.js";
 import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation, userFacingError, userFacingStoredError, runCommandSuccessMessage, phaseReasons } from "./dashboard-status-view.js";
-import { renderInitialRequest } from "./preparation-view.js";
+import { renderInitialRequest, renderPreparationOutcome } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
 import { filterRunsForHistory, groupRunsByProject, normalizeDashboardState, runCommandRecoveryScope, recoverRunCommandLinks } from "./dashboard-model.js";
@@ -40,6 +40,10 @@ let tabFocusViewState = { key:null };
 let latestRunDiagnostic = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
+let preparationContentSignature = "";
+let preparationRecovery = null;
+let confirmedStateJson = "";
+let foregroundReads = 0;
 let requestedView = "";
 const unknownRequests = new Map();
 const runCommands = new Map();
@@ -205,14 +209,27 @@ async function request(url, options = {}) {
     throw error;
   }
 }
-async function refresh() {
+async function refresh({ background = false } = {}) {
+  if (background) {
+    if (!foregroundReads) await readDashboardState(true);
+    return;
+  }
+  foregroundReads++;
+  try { await readDashboardState(false); }
+  finally { foregroundReads--; }
+}
+async function readDashboardState(background) {
   if (!$("dashboardPageError").hidden) return;
   const current = ++sequence, target = selected;
   let phase = token ? "STATE" : "SESSION";
-  connected = false;
-  connectionState = markStateReadStarted(connectionState);
-  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
-  if (snapshot) render();
+  const keepConfirmed = background && connected && ["START", "PREPARE"].includes(workflow.stage);
+  let needsRender = !keepConfirmed;
+  if (!keepConfirmed) {
+    connected = false;
+    connectionState = markStateReadStarted(connectionState);
+    updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
+    if (snapshot) render();
+  }
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
@@ -223,7 +240,7 @@ async function refresh() {
       connectionState = markDashboardSessionAuthenticated(connectionState);
     }
     phase = "STATE";
-    const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
+    const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView ? "?view=start" : ""}`);
     if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
@@ -234,10 +251,17 @@ async function refresh() {
       {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = markStateReadReady(connectionState);
     connected = dashboardStateReady(connectionState);
+    const stateJson = JSON.stringify(result);
+    needsRender ||= stateJson !== confirmedStateJson;
+    confirmedStateJson = stateJson;
     snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]};
     workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
-    if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
-    renderPreparation(); lastConfirmed = new Date().toISOString();
+    if (preparation?.lifecycle === "ACTIVE" && preparation.deliveries?.some(item =>
+      item.deliveryId === preparation.webSession?.activeDeliveryId && item.cancelRequestedAt) && !target) {
+      requestedView = "closing";
+    } else if (!["START", "PREPARE"].includes(workflow.stage)
+      || (preparation?.lifecycle === "ACTIVE" && requestedView !== "closing")) requestedView = "";
+    lastConfirmed = new Date().toISOString();
     const runtimeUnavailable = result.runtimeAvailability?.ready === false;
     const extensionNeedsPreparation = workflow.stage === "PREPARE";
     text("connectionNotice", runtimeUnavailable
@@ -253,6 +277,7 @@ async function refresh() {
       const receipt = observed.requestResult;
       if (receipt?.requestId !== item.requestId) continue;
       if (["COMPLETED", "FAILED"].includes(receipt.status)) {
+        needsRender = true;
         runCommands.delete(runId); updateRunCommandStatus(); saveRunCommands();
         lastCommandResult = {runId, requestId:item.requestId,
           message:"요청 " + item.requestId + ": " + receipt.status + (receipt.error?.message ? " · " + receipt.error.message : "")};
@@ -267,12 +292,14 @@ async function refresh() {
       const receipt = observed.requestResult;
       if (receipt?.requestId !== requestId) continue;
       if (["COMPLETED", "FAILED", "NOT_FOUND"].includes(receipt.status)) {
+        needsRender = true;
         operations[operation] = "IDLE"; unknownRequests.delete(operation);
         text("projectStatus", "요청 " + requestId + ": " + receipt.status);
       }
     }
   } catch (error) {
     if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    needsRender = true;
     if (phase === "PROJECTION" && !error.code) Object.assign(error, {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = classifyDashboardFailure(connectionState, phase, {...error, message:userFacingError(error)});
     connected = dashboardStateReady(connectionState);
@@ -280,9 +307,9 @@ async function refresh() {
     text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음")
       + (snapshot?.run && (!target || snapshot.run.runId === target) ? " · 마지막 확인 데이터 표시 중입니다." : ""));
   }
-  render();
+  if (needsRender) render();
   pendingProjectDraft?.complete();
-  updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
+  if (needsRender) updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
   if (autoApprovalPreparationId
@@ -518,7 +545,23 @@ function render() {
     $("conversationUrl").readOnly = reuse;
   }
   const preparing = workflow.stage === "PREPARE";
-  renderInitialRequest(workflow, preparation, $, text, document, capabilities().has("preparation.cancel"));
+  const viewingPreparation = !overviewGroup && ["START", "PREPARE"].includes(workflow.stage);
+  const prepActions = currentPreparationActions();
+  renderPreparationOutcome($, preparation, {
+    visible: viewingPreparation, connected, extensionConnected: webConnected(),
+    canReconcile: caps.has("web.reconcile") && operations.webTurn === "IDLE",
+    canClose: prepActions.cancel && operations.preparationStart === "IDLE",
+    canApprove: prepActions.approve && operations.approval === "IDLE",
+    canReply: prepActions.reply && operations.webTurn === "IDLE",
+    canStart: startActions.canOpenNewRun,
+    closeLabel: preparing ? $("closeProject").textContent : $("cancelInitialPreparation").textContent,
+  });
+  const feedback = $("proposalFeedback");
+  if (preparing && viewingPreparation && preparation?.preparationId && feedback.dataset.preparationId !== preparation.preparationId) {
+    feedback.dataset.preparationId = preparation.preparationId;
+    feedback.value = "";
+  }
+  renderInitialRequest(workflow, preparation, $, text, document, caps.has("preparation.cancel"), preparationRecovery?.root);
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
   actionState("planRun", !startActions.canStartPreparation || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
@@ -921,7 +964,14 @@ function proposalControls() {
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
 }
 function renderPreparation() {
-  if (!preparation) { preparationSignature = ""; tabChoice.reset(); return; }
+  if (!preparation) {
+    preparationSignature = "";
+    preparationRecovery?.root.remove();
+    preparationRecovery = null;
+    document.querySelector(".preparation-tab-choice")?.remove();
+    tabChoice.reset();
+    return;
+  }
   const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
@@ -931,37 +981,58 @@ function renderPreparation() {
   text("planningFollowUp", preparation.followUp ? `이전 적용 작업: ${preparation.followUp.objective} · 요구사항은 이번에 다시 승인합니다.` : "");
   $("projectRoot").value = preparation.targetRoot;
   document.querySelector(".preparation-tab-choice")?.remove();
-  const summary = $("proposalSummary"); summary.replaceChildren();
-  const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
-  summary.append(node("h2", heading), node("p", agreement?.summary ?? "요구사항을 정리하고 있습니다."));
-  if ((agreement?.unresolvedQuestions ?? []).length) {
-    summary.append(node("p", "추가 확인 필요", "eyebrow"));
-    for (const question of agreement.unresolvedQuestions) summary.append(node("p", question));
-  }
-  const discussion = node("details", "", "discussion-fold");
-  discussion.append(node("summary", "이전 준비 대화"));
-  const discussionBody = node("div", "");
-  for (const turn of preparation.discussion ?? []) {
-    const row = node("article", "", "record");
-    row.append(node("strong", turn.actor === "USER" ? "사용자" : "웹 설계자"), node("pre", turn.content));
-    discussionBody.append(row);
-  }
-  discussion.append(discussionBody);
-  summary.append(discussion);
-  $("projectRequirements").replaceChildren();
-  for (const item of agreement?.requirements ?? []) {
-    const row = node("article", "", "record");
-    row.append(node("p", item.statement), node("p", item.acceptanceCriteria));
-    $("projectRequirements").append(row);
+  const summary = $("proposalSummary");
+  const contentSignature = JSON.stringify([preparation.preparationId, agreement, preparation.discussion]);
+  if (contentSignature !== preparationContentSignature) {
+    preparationContentSignature = contentSignature;
+    const content = $("proposalSummaryContent");
+    const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
+    content.replaceChildren(node("h2", heading), node("p", agreement?.summary ?? "요구사항을 정리하고 있습니다."));
+    if ((agreement?.unresolvedQuestions ?? []).length) {
+      content.append(node("p", "추가 확인 필요", "eyebrow"));
+      for (const question of agreement.unresolvedQuestions) content.append(node("p", question));
+    }
+    const discussion = $("preparationDiscussion");
+    if (discussion.dataset.preparationId !== preparation.preparationId) {
+      discussion.dataset.preparationId = preparation.preparationId;
+      discussion.open = false;
+    }
+    const discussionBody = $("preparationDiscussionBody");
+    discussionBody.replaceChildren();
+    for (const turn of preparation.discussion ?? []) {
+      const row = node("article", "", "record");
+      row.append(node("strong", turn.actor === "USER" ? "사용자" : "웹 설계자"), node("pre", turn.content));
+      discussionBody.append(row);
+    }
+    $("projectRequirements").replaceChildren();
+    for (const item of agreement?.requirements ?? []) {
+      const row = node("article", "", "record");
+      row.append(node("p", item.statement), node("p", item.acceptanceCriteria));
+      $("projectRequirements").append(row);
+    }
   }
   text("reviewerProviderSummary", `감사 provider · Judge ${preparation.reviewers?.JUDGE?.provider ?? "CHATGPT_WEB"} · Critic ${preparation.reviewers?.CRITIC?.provider ?? "CHATGPT_WEB"} · 준비 대화는 ChatGPT`);
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
-  const priorRecovery = document.querySelector(".session-recovery");
-  const recovery = node("details", "", "session-recovery");
-  recovery.dataset.preparationId = preparation.preparationId;
-  recovery.open = priorRecovery?.dataset.preparationId === preparation.preparationId && priorRecovery.open === true;
-  recovery.append(node("summary", "응답·전송 상태"));
+  if (preparationRecovery?.root.dataset.preparationId !== preparation.preparationId) {
+    preparationRecovery?.root.remove();
+    const root = node("details", "", "session-recovery");
+    root.dataset.preparationId = preparation.preparationId;
+    const content = node("div", ""), buttons = new Map();
+    root.append(node("summary", "응답·전송 상태"), content);
+    for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
+      const button = node("button", label);
+      button.type = "button";
+      button.dataset.webCommand = action;
+      button.addEventListener("click", () => webSessionCommand(action));
+      buttons.set(action, { button, label });
+      root.append(button);
+    }
+    preparationRecovery = { root, content, buttons };
+    $("preparationDiagnosticsBody").append(root);
+  }
+  const { content: recovery, buttons } = preparationRecovery;
+  recovery.replaceChildren();
   const rootReady = session?.bindingState === "ROOT_READY" && Number.isSafeInteger(session?.tabId)
     && typeof session?.documentId === "string" && session.documentId && session?.frameId === 0;
   const exactBound = session?.bindingState === "BOUND" && diagnostic.exactConversation === true;
@@ -987,7 +1058,10 @@ function renderPreparation() {
   }));
   const deliveries = preparation.deliveries ?? [];
   const displayedDelivery = deliveries.find(item => item.deliveryId === session?.activeDeliveryId) ?? deliveries.at(-1);
-  if (displayedDelivery && !tabCandidates.length) summary.prepend(renderPreparationTransmission(displayedDelivery));
+  if (displayedDelivery && !tabCandidates.length && !displayedDelivery.response?.rawText?.trim()
+    && !["ACK_PENDING", "COMPLETE"].includes(displayedDelivery.processingState)) {
+    summary.prepend(renderPreparationTransmission(displayedDelivery));
+  }
   if (displayedDelivery) {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
       RESPONSE_STARTED: "응답 생성 중", RESPONSE_COMPLETED: "응답 수신 · 검증 또는 수신 확인 필요",
@@ -1038,23 +1112,14 @@ function renderPreparation() {
     }
   }
   recovery.append(node("p", "선택자·문서 토큰·전송 상세·원시 응답은 진단 로그 내보내기에 포함됩니다."));
-  const webActionReason = (action) => {
-    if (!connected) return "최신 상태를 확인할 수 없습니다.";
-    if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
-    if (operations.webTurn !== "IDLE") return "다른 웹 요청을 처리 중입니다.";
-    if (!capabilities().has(action)) return "현재 서버 상태에서는 이 작업을 사용할 수 없습니다.";
-    return "";
-  };
-  for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
-    const button = node("button", action === "web.reconcile" && displayedDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
-    button.dataset.webCommand = action;
+  for (const [action, { button, label }] of buttons) {
+    const nextLabel = action === "web.reconcile" && displayedDelivery?.processingState === "ACK_PENDING"
+      ? "수신 확인 다시 처리" : label;
+    if (button.textContent !== nextLabel) button.textContent = nextLabel;
     const disabled = !capabilities().has(action) || operations.webTurn !== "IDLE";
     button.disabled = disabled;
     buttonReason(button, disabled ? disabledWebReason(action) : "");
-    button.addEventListener("click", () => webSessionCommand(action)); recovery.append(button);
   }
-  const diagnostics = $("preparationDiagnosticsBody");
-  diagnostics.replaceChildren(recovery);
   const error = preparation.error;
   const progress = { INITIALIZING: "ChatGPT 대화에 연결 중입니다.",
     WAITING_WEB_RESPONSE: "응답을 기다리고 있습니다.",
@@ -1091,6 +1156,7 @@ async function preparationMutation(operation, capability, url, payload = {}) {
   operations[operation] = "RUNNING"; render();
   try {
     await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId }) });
+    if (capability === "preparation.cancel" && !selected) requestedView = "closing";
     text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
     return true;
   } catch (error) {
@@ -1153,10 +1219,10 @@ $("reuseProjectConversation").addEventListener("input", () => {
   render();
 });
 $("reviseRequirements").addEventListener("click", async () => {
-  const content = $("proposalFeedback").value;
+  const feedback = $("proposalFeedback"), preparationId = workflow.preparationId, content = feedback.value;
   if (!content.trim()) { text("proposalStatus", "답변 또는 수정 요청을 입력하세요."); return; }
-  if (await preparationMutation("webTurn", "preparation.reply", "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/reply", { content })) {
-    if ($("proposalFeedback").value === content) $("proposalFeedback").value = "";
+  if (await preparationMutation("webTurn", "preparation.reply", "/api/preparations/" + encodeURIComponent(preparationId) + "/reply", { content })) {
+    if (feedback.dataset.preparationId === preparationId && feedback.value === content) feedback.value = "";
   }
 });
 $("projectForm").addEventListener("submit", async (event) => {
@@ -1173,6 +1239,10 @@ $("discardDeliveryButton").addEventListener("click", () => preparationMutation("
     reason: $("discardReason").value.trim(),
   }));
 $("reloadProject").addEventListener("click", refresh);
+$("reconcilePreparationOutcome").addEventListener("click", () => {
+  if (operations.webTurn === "IDLE" && webConnected() && capabilities().has("web.reconcile")
+    && !$("reconcilePreparationOutcome").hidden) return webSessionCommand("web.reconcile");
+});
 $("chooseFolder").addEventListener("click", async () => {
   if (!currentPreparationActions().chooseFolder || operations.folderPicker !== "IDLE") return;
   operations.folderPicker = "RUNNING"; render();
@@ -1361,7 +1431,7 @@ $("closeEvidence").addEventListener("click", () => $("evidenceDialog").close());
 $("nextEvidence").addEventListener("click", () => { if (evidencePage?.target === snapshot?.run?.runId) openEvidence(evidencePage.id, evidencePage.next); });
 $("refreshDashboard").addEventListener("click", () => { if ($("dashboardPageError").hidden) void refresh().catch(showDashboardPageError); });
 async function poll() {
-  try { await refresh(); }
+  try { await refresh({ background:true }); }
   catch (error) { connected = false; showDashboardPageError(error); }
   finally { if ($("dashboardPageError").hidden) setTimeout(poll, 2500); }
 }
