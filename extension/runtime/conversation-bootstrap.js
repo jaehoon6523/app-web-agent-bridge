@@ -45,7 +45,7 @@ export async function createConversationBootstrapTab(chromeApi, waitForContentSc
   if (before.root) return before.root;
   const created = await chromeApi.tabs.create({ url:provider.rootUrl, active:true, windowId:before.windowId });
   if (!Number.isSafeInteger(created?.id)) return null;
-  await waitForContentScript(created.id, 30_000, true);
+  await waitForContentScript(created.id, 30_000, true, provider.rootUrl);
   const after = await inspectRootTabs(chromeApi, provider, before.windowId, "AFTER_CREATE");
   if (after.windowId !== before.windowId || after.root?.id !== created.id) {
     throw new ExtensionStateError("WEB_TAB_INVENTORY_CHANGED", "The created tab changed before binding.",
@@ -64,7 +64,7 @@ export async function reopenExactConversationTab(chromeApi, waitForContentScript
   try {
     created = await chromeApi.tabs.create({ url:requested.conversationUrl, active:true });
     if (!Number.isSafeInteger(created?.id)) return null;
-    await waitForContentScript(created.id, 30_000, true);
+    await waitForContentScript(created.id, 30_000, true, requested.conversationUrl);
     const tab = await chromeApi.tabs.get(created.id);
     if (targetProvider.canonicalize(tab?.url) === requested.conversationUrl
       && targetProvider.conversationIdFromUrl(tab?.url) === requested.conversationId) return tab;

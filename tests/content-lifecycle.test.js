@@ -128,6 +128,38 @@ test('concurrent callers on one tab share one document-pinned file injection', a
   assert.ok(f.pings.length <= 4);
 });
 
+test('newly opened saved conversation survives an unanswered readiness probe on the same tab', async () => {
+  const f = browserHarness(), model = f.models.get(7);
+  const initialUrl = model.url;
+  Object.assign(model, { url:'about:blank', pendingUrl:initialUrl, status:'loading' });
+  const loading = deferred();
+  const getTab = f.chrome.tabs.get;
+  f.chrome.tabs.get = async id => {
+    const tab = await getTab(id);
+    loading.resolve();
+    return tab;
+  };
+  model.ping = () => f.pings.length === 1 ? new Promise(() => {}) :
+    { ok:true, ready:true, documentId:model.documentId, frameId:0 };
+  const outcome = f.runtime.waitForContentScript(7, 5000, true, initialUrl);
+  await loading.promise;
+  assert.deepEqual(f.pings, []);
+  Object.assign(model, { url:initialUrl, pendingUrl:undefined, status:'complete' });
+  f.chrome.tabs.onUpdated.emit(7, {url:initialUrl, status:'loading'});
+  assert.equal((await outcome).documentId, model.documentId);
+  assert.deepEqual(f.pings, [7, 7]);
+  assert.deepEqual(f.injections, []);
+});
+
+test('newly opened saved conversation refuses a different pending destination', async () => {
+  const f = browserHarness(), model = f.models.get(7);
+  model.pendingUrl = 'https://chatgpt.com/c/different';
+  await assert.rejects(f.runtime.waitForContentScript(7, 5000, true, model.url), {
+    code:'WEB_DOCUMENT_CHANGED',
+  });
+  assert.deepEqual(f.pings, []);
+});
+
 test('automatic injection finishing before the manual probe prevents another file injection', async () => {
   const f = browserHarness(); f.models.get(7).probe = () => { f.models.get(7).present = true; f.models.get(7).ready = true; };
   await f.runtime.waitForContentScript(7, 2000, true);
