@@ -298,6 +298,7 @@ test("refresh restores the completed root action trace without an active deliver
 });
 test("a stored response stays visibly unfinished while acknowledgement is pending", async () => {
   const state = prepared();
+  state.preparation.lifecycle = "ACTIVE";
   state.preparation.diagnostics = { exactConversation: true, canRecover: true, tabId: 8, pageReachable: true };
   state.preparation.deliveries = [{
     deliveryId: "d1", preparationId: "p1", sessionId: "s1", state: "RESPONSE_COMPLETED",
@@ -305,6 +306,10 @@ test("a stored response stays visibly unfinished while acknowledgement is pendin
     validation: { status: "CONFIRMED", checks: [] },
   }];
   const ui = await dashboard(state);
+  assert.equal(ui.elements.get("preparationOutcomeTitle").textContent, "수신 확인 대기");
+  assert.equal(ui.elements.get("preparationResponseState").textContent, "저장됨");
+  assert.equal(ui.elements.get("preparationAckState").textContent, "대기");
+  assert.match(ui.elements.get("preparationOutcomeReason").textContent, /수신 확인이 아직 끝나지/u);
   const output = renderedText(ui.elements.get("preparationDiagnosticsBody"));
   assert.match(output, /응답 검증·저장 완료 · 전송 정리 확인 필요/u);
   assert.doesNotMatch(output, /응답 처리 완료 · 성공 trace 보존됨/u);
@@ -312,6 +317,49 @@ test("a stored response stays visibly unfinished while acknowledgement is pendin
   assert.match(output, /진단 로그 내보내기/u);
   assert.doesNotMatch(output, /stored raw response/u);
   assert.equal(ui.run("preparation.deliveries[0].response.rawText"), "stored raw response");
+});
+test("preparation refresh preserves the reply draft and controls while closure awaits ACK", async () => {
+  const state = prepared(), context = state.preparation;
+  context.lifecycle = "ACTIVE";
+  const delivery = {
+    deliveryId:"d1", preparationId:"p1", sessionId:"s1", state:"RESPONSE_COMPLETED",
+    processingState:"ACK_PENDING", response:{rawText:"stored reply"},
+  };
+  context.deliveries = [delivery];
+  const ui = await dashboard(state);
+  const field = ui.elements.get("proposalFeedback");
+  const recoveryButton = ui.run('preparationRecovery.buttons.get("web.reconcile").button');
+  field.value = "한글 초안";
+  field.selectionStart = 1;
+  field.selectionEnd = 3;
+  ui.context.document.activeElement = field;
+  delivery.cancelRequestedAt = "2026-11-24T00:00:00Z";
+  await ui.run("refresh({ background:true })");
+  assert.equal(ui.elements.get("preparationResponseState").textContent, "저장됨");
+  assert.equal(ui.elements.get("preparationAckState").textContent, "대기");
+  assert.equal(ui.elements.get("preparationClosureState").textContent, "요청 보류");
+  assert.equal(ui.elements.get("preparationTabState").textContent, "종료 전");
+  assert.match(ui.elements.get("preparationOutcomeNext").textContent, /보류된 종료/u);
+  assert.equal(ui.elements.get("reconcilePreparationOutcome").hidden, true);
+  assert.equal(ui.elements.get("proposalFeedback"), field);
+  assert.equal(ui.context.document.activeElement, field);
+  assert.deepEqual([field.value, field.selectionStart, field.selectionEnd], ["한글 초안", 1, 3]);
+  assert.equal(ui.run('preparationRecovery.buttons.get("web.reconcile").button'), recoveryButton);
+  assert.ok(ui.calls.every(item => item.body === null || item.url === "/api/dashboard/session"));
+
+  Object.assign(delivery, {state:"ACKNOWLEDGED", processingState:"COMPLETE"});
+  context.lifecycle = "ABANDONED";
+  context.webSession.activeDeliveryId = null;
+  state.workflow = {...state.workflow, stage:"START", state:"START_IDLE"};
+  state.commandCapabilities = [];
+  context.tabCleanup = {deliveryId:"older-delivery", status:"CLOSED"};
+  await ui.run("refresh({ background:true })");
+  assert.equal(ui.elements.get("preparationAckState").textContent, "확인 완료");
+  assert.equal(ui.elements.get("preparationClosureState").textContent, "종료됨");
+  assert.equal(ui.elements.get("preparationTabState").textContent, "미확인");
+  context.tabCleanup = {deliveryId:"d1", status:"CLOSED"};
+  await ui.run("refresh({ background:true })");
+  assert.equal(ui.elements.get("preparationTabState").textContent, "닫힘 확인");
 });
 test("reconcile sends exact identity and never follows with a proposal", async () => {
   const ui = await dashboard(prepared());

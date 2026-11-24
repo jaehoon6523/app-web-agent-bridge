@@ -94,6 +94,14 @@ pre,code,time { font-family:"IBM Plex Mono",Consolas,monospace; } pre { white-sp
 .flow-band.error { border-color:var(--error); border-left-color:var(--error); }
 .flow-band h2 { margin:0 0 4px; font-size:15px; }
 .flow-band p { margin:0; color:var(--muted); }
+.preparation-outcome { margin:16px 0; padding:12px 0; border-block:1px solid var(--line); }
+.preparation-outcome h2 { margin:0; font-size:18px; }
+.preparation-outcome p { margin:6px 0 0; }
+.preparation-outcome dl { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(125px,100%),1fr)); gap:8px 16px; margin:10px 0; }
+.preparation-outcome dt { color:var(--muted); font-size:12px; }
+.preparation-outcome dd { margin:0; font-weight:600; }
+.preparation-outcome > button { margin-top:8px; }
+.preparation-outcome > button[aria-disabled="true"] { color:var(--muted); cursor:not-allowed; opacity:.55; }
 .flow-fold { margin-top:18px; }
 .flow-fold-body { padding:4px 2px 12px; }
 .flow-fold-body label:first-child { margin-top:8px; }

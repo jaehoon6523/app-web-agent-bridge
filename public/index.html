@@ -45,6 +45,20 @@
       <li id="stepResult">완료 · 적용</li>
     </ol>
     <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="webBindingSignal">대화 탭 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
+    <section id="preparationOutcome" class="preparation-outcome" aria-labelledby="preparationOutcomeTitle" hidden>
+      <div role="status" aria-live="polite" aria-atomic="true">
+        <h2 id="preparationOutcomeTitle" tabindex="-1"></h2>
+        <dl>
+          <div><dt>응답 저장</dt><dd id="preparationResponseState"></dd></div>
+          <div><dt>수신 확인 (ACK)</dt><dd id="preparationAckState"></dd></div>
+          <div><dt>협의 종료</dt><dd id="preparationClosureState"></dd></div>
+          <div><dt>탭 닫힘</dt><dd id="preparationTabState"></dd></div>
+        </dl>
+        <p id="preparationOutcomeReason"></p>
+        <p><strong>다음 행동</strong> <span id="preparationOutcomeNext"></span></p>
+      </div>
+      <button id="reconcilePreparationOutcome" type="button" hidden>수신 확인 다시 처리</button>
+    </section>
     <section id="projectOverview" hidden aria-labelledby="overviewTitle"><h1 id="overviewTitle"></h1><p id="overviewPath" class="muted"></p><p id="overviewSummary"></p><div class="actions"><button id="newProjectTask" type="button" class="primary">이 프로젝트에서 새 작업</button><button id="openProjectBlocker" type="button" hidden>진행 중인 작업 보기</button></div><p id="overviewReason" class="muted" role="status"></p><h2>작업 기록</h2><div id="overviewTasks"></div></section>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
       <div class="flow-heading">
@@ -64,7 +78,13 @@
         </details>
         <button id="proposeRequirements" type="button" hidden disabled>제안 요청</button>
         <p id="proposalStatus" class="flow-status" role="status"></p>
-        <div id="proposalSummary" class="flow-card"></div>
+        <div id="proposalSummary" class="flow-card">
+          <div id="proposalSummaryContent"></div>
+          <details class="discussion-fold" id="preparationDiscussion">
+            <summary>이전 준비 대화</summary>
+            <div id="preparationDiscussionBody"></div>
+          </details>
+        </div>
         <div id="proposalQuestion" class="flow-card">
           <label for="proposalFeedback">답변 · 수정 요청</label>
           <textarea id="proposalFeedback" rows="3" placeholder="확인 질문에 답하거나 합의 내용을 수정하세요."></textarea>
