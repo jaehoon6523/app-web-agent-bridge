@@ -1,12 +1,66 @@
 name: Bridge gates
 on:
-  push:
-    branches: [master]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: Full SHA of the release candidate to verify
+        required: true
+        type: string
 permissions:
   contents: read
 jobs:
+  pr-focused:
+    if: >-
+      github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft &&
+      (github.event.action != 'edited' || github.event.changes.base.ref.from != null)
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '22.14.0'
+          cache: npm
+      - run: npm ci
+      - name: Verify changed paths
+        env:
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/verify-pr-focused.mjs $env:PR_BASE $env:PR_HEAD
+  release-candidate:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.identity.outputs.sha }}
+    steps:
+      - name: Validate candidate input
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          if [[ ! "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]]; then
+            echo "::error::Enter a full lowercase Git commit SHA."
+            exit 1
+          fi
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.candidate_sha }}
+          persist-credentials: false
+      - name: Confirm release checkout
+        id: identity
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+        run: |
+          checked_out=$(git rev-parse HEAD)
+          test "$checked_out" = "$CANDIDATE_SHA"
+          echo "sha=$checked_out" >> "$GITHUB_OUTPUT"
+          printf 'Release candidate: `%s`\n' "$checked_out" >> "$GITHUB_STEP_SUMMARY"
   verification:
+    needs: release-candidate
     strategy:
       fail-fast: false
       matrix:
@@ -17,6 +71,9 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-candidate.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
@@ -27,7 +84,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: verification-${{ matrix.os }}-${{ matrix.node }}
+          name: verification-${{ needs.release-candidate.outputs.sha }}-${{ matrix.os }}-${{ matrix.node }}
           path: |
             .agent-controller/latest-verification.*
             .agent-controller/verification-runs/
@@ -35,10 +92,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   minimum-runtime:
+    needs: release-candidate
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.release-candidate.outputs.sha }}
+          persist-credentials: false
       - uses: actions/setup-node@v5
         with:
           node-version: '22.5.0'
@@ -47,7 +108,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: verification-minimum
+          name: verification-${{ needs.release-candidate.outputs.sha }}-minimum
           path: |
             .agent-controller/latest-verification.*
             .agent-controller/verification-runs/
