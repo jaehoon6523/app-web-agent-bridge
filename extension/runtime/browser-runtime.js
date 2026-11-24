@@ -58,10 +58,30 @@ export function createBrowserRuntime(chromeApi) {
     fail(entry, changed());
   }
   chromeApi.tabs.onUpdated?.addListener((tabId, change) => {
+    const entry = entries.get(tabId);
     if (change.status === "loading" || typeof change.url === "string") {
+      if (entry?.initialUrl && entry.waiters.size && (!change.url
+        || (change.url === "about:blank" && !entry.url)
+        || defaultWebTargetProviderRegistry.canonicalize(change.url) === entry.initialUrl)) {
+        // One Chrome navigation can emit several loading and URL updates.
+        // Keep the same waiter, and discard any reply from an earlier document.
+        entry.navigationVersion++;
+        entry.waitingForFirstCommit = true;
+        entry.url = null;
+        entry.chromeDocumentId = null;
+        entry.contentDocumentId = null;
+        entry.injectionAttempted = false;
+        entry.missingReceiver = false;
+        entry.error = null;
+        return;
+      }
       // The first commit has no previous document to invalidate.
-      if (entries.get(tabId)?.waitingForFirstCommit) return;
+      if (entry?.waitingForFirstCommit && !entry.initialUrl) return;
       invalidate(tabId);
+    } else if (change.status === "complete" && entry?.waitingForFirstCommit && !entry.running) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+      void tick(entry);
     }
   });
   chromeApi.tabs.onRemoved?.addListener(invalidate);
@@ -70,6 +90,12 @@ export function createBrowserRuntime(chromeApi) {
     const registry = defaultWebTargetProviderRegistry;
     const tab = await bounded(() => chromeApi.tabs.get(entry.tabId), 2000, "CONTENT_SCRIPT_TAB_TIMEOUT");
     if (!current(entry)) throw changed();
+    if (entry.initialUrl) {
+      const matchesTarget = url => registry.canonicalize(url) === entry.initialUrl;
+      const provisional = entry.waitingForFirstCommit && (!tab?.url || tab.url === "about:blank");
+      if ((!provisional && !matchesTarget(tab?.url)) || (tab?.pendingUrl && !matchesTarget(tab.pendingUrl))) throw changed();
+      if (provisional || tab.pendingUrl || tab.status === "loading") return null;
+    }
     if (!entry.url && tab?.status === "loading" && (!tab.url || tab.url === "about:blank")
       && registry.providerForUrl(tab.pendingUrl)) {
       entry.waitingForFirstCommit = true;
@@ -84,7 +110,7 @@ export function createBrowserRuntime(chromeApi) {
     return tab;
   }
 
-  async function inject(entry) {
+  async function inject(entry, navigationVersion) {
     entry.injectionAttempted = true;
     try {
       // Chrome's documentId pins injection to the document inspected here. The
@@ -94,6 +120,7 @@ export function createBrowserRuntime(chromeApi) {
         func: () => ({ url: location.href, initialized: Boolean(globalThis.ChatGptBridgeContentRuntime) }),
       }), 2000, "CONTENT_SCRIPT_INJECTION_TIMEOUT");
       if (!current(entry)) throw changed();
+      if (entry.navigationVersion !== navigationVersion) return;
       const top = inspected?.find(result => result.frameId === 0);
       if (!top?.documentId || top.result?.url !== entry.url) throw changed();
       entry.chromeDocumentId = top.documentId;
@@ -104,8 +131,10 @@ export function createBrowserRuntime(chromeApi) {
         target: { tabId: entry.tabId, documentIds: [entry.chromeDocumentId] },
         files: contentScriptFiles(chromeApi, entry.url),
       }), 5000, "CONTENT_SCRIPT_INJECTION_TIMEOUT");
+      if (entry.navigationVersion !== navigationVersion) return;
       if (!current(entry) || !results?.some(result => result.documentId === entry.chromeDocumentId)) throw changed();
     } catch (error) {
+      if (entry.navigationVersion !== navigationVersion) return;
       if (error?.code === "WEB_DOCUMENT_CHANGED") throw error;
       const failure = new BrowserRuntimeError("CONTENT_SCRIPT_INJECTION_FAILED",
         "Content script injection failed: " + error.message,
@@ -118,9 +147,10 @@ export function createBrowserRuntime(chromeApi) {
   async function tick(entry) {
     if (entry.running || !current(entry) || !entry.waiters.size) return;
     entry.running = true;
+    const navigationVersion = entry.navigationVersion;
     try {
       const tab = await readTab(entry);
-      if (!tab) return;
+      if (!tab || entry.navigationVersion !== navigationVersion) return;
       let response;
       try {
         entry.pingAttempts = (entry.pingAttempts ?? 0) + 1;
@@ -129,19 +159,28 @@ export function createBrowserRuntime(chromeApi) {
         2000, "CONTENT_SCRIPT_MESSAGE_TIMEOUT");
       } catch (error) {
         if (!current(entry)) throw changed();
+        if (entry.navigationVersion !== navigationVersion) return;
+        if (entry.initialUrl && error.code === "CONTENT_SCRIPT_MESSAGE_TIMEOUT") {
+          // An initial renderer may miss a readiness probe while the page hydrates.
+          // The original readiness deadline still bounds this work.
+          entry.lastInspectionError = { code:error.code };
+          return;
+        }
         const missingReceiver = /Could not establish connection\. Receiving end does not exist\.?$/u.test(error.message);
         if (!missingReceiver) throw error instanceof BrowserRuntimeError ? error
           : new BrowserRuntimeError("CONTENT_SCRIPT_CONNECTION_FAILED", error.message, { tabId: entry.tabId }, error);
         // Allow document_idle automatic injection one poll before falling back.
-        if (tab.status !== "loading" && entry.missingReceiver && !entry.injectionAttempted && entry.waiters.size) await inject(entry);
+        if (tab.status !== "loading" && entry.missingReceiver && !entry.injectionAttempted && entry.waiters.size) await inject(entry, navigationVersion);
+        if (entry.navigationVersion !== navigationVersion) return;
         entry.missingReceiver = true;
       }
       if (!current(entry)) throw changed();
+      if (entry.navigationVersion !== navigationVersion) return;
       if (response !== undefined) {
         if (!response?.ok || typeof response.documentId !== "string" || response.frameId !== 0) {
           throw new BrowserRuntimeError("CONTENT_SCRIPT_PROTOCOL_INVALID", "Content readiness reply has no exact document identity.");
         }
-        await readTab(entry);
+        if (!await readTab(entry) || entry.navigationVersion !== navigationVersion) return;
         if (entry.contentDocumentId && entry.contentDocumentId !== response.documentId) throw changed();
         entry.contentDocumentId = response.documentId;
         entry.responded = true;
@@ -169,7 +208,7 @@ export function createBrowserRuntime(chromeApi) {
     }
   }
 
-  function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false) {
+  function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false, initialUrl = null) {
     if (!Number.isSafeInteger(tabId) || !Number.isFinite(timeoutMs) || timeoutMs <= 0) {
       return Promise.reject(new TypeError("A tab ID and positive readiness timeout are required."));
     }
@@ -183,7 +222,9 @@ export function createBrowserRuntime(chromeApi) {
       // A new call after an idle interval prepares the current target afresh.
       // Injection history stays cached; only a navigation event resets it.
       entry.url = null;
-      entry.waitingForFirstCommit = false;
+      entry.initialUrl = initialUrl;
+      entry.navigationVersion = 0;
+      entry.waitingForFirstCommit = Boolean(initialUrl);
       entry.contentDocumentId = null;
       entry.chromeDocumentId = null;
       entry.responded = false;

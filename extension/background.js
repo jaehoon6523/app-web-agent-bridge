@@ -911,8 +911,8 @@ async function focusTab(tab) {
 async function focusBoundTab() {
   await focusTab(await requireExactBoundTab());
 }
-async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false) {
-  return browserRuntime.waitForContentScript(tabId, timeoutMs, requireComposer);
+async function waitForContentScript(tabId, timeoutMs = 20_000, requireComposer = false, initialUrl = null) {
+  return browserRuntime.waitForContentScript(tabId, timeoutMs, requireComposer, initialUrl);
 }
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "agent.progress") {
