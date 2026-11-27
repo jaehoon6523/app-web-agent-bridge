@@ -1361,11 +1361,9 @@ bindPreparationConversation($, text, () => preparation);
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
 let plainWorkerAvailable = null;
 let plainWorkerSubmitting = false;
-function showPlainWorker({ run }) {
-  $("openPlainWorker").hidden = false;
-  $("startPlainWorker").disabled = plainWorkerSubmitting || run?.status === "RUNNING";
-  if (!run) return;
-  const labels = { RUNNING: "진행 중", COMPLETED: "완료", FAILED: "실패" };
+let plainWorkerRead = 0;
+function showPlainWorkerTranscript({ run }) {
+  const labels = { RUNNING: "진행 중", COMPLETED: "완료", FAILED: "실패", LEGACY: "이전 기록 · 종료 상태 미확인" };
   text("plainWorkerStatus", [labels[run.status], run.runId, run.error].filter(Boolean).join(" · "));
   $("plainWorkerEvidence").hidden = !run.turns.length;
   text("plainWorkerTranscript", run.turns.map(turn => [
@@ -1373,6 +1371,47 @@ function showPlainWorker({ run }) {
     "송신 원문", turn.sent, "수신 원문", turn.received,
   ].join("\n")).join("\n\n"));
 }
+function showPlainWorker({ run, runs }) {
+  const select = $("plainWorkerRunSelect");
+  $("openPlainWorker").hidden = false;
+  $("startPlainWorker").disabled = plainWorkerSubmitting || runs.some(item => item.status === "RUNNING");
+  select.replaceChildren(new Option("Run 선택", ""), ...runs.map(item =>
+    new Option(`${item.runId} · ${item.status}`, item.runId)));
+  select.value = run?.runId ?? "";
+  if (!run) {
+    text("plainWorkerStatus", "저장된 Run이 없습니다.");
+    text("plainWorkerTimeline", "");
+    $("plainWorkerEvidence").hidden = true;
+    return;
+  }
+  showPlainWorkerTranscript({ run: { ...run, turns: run.turns.filter(turn => turn.receipt !== "ACK_CONFIRMED") } });
+  if (run.status === "INTERRUPTED") text("plainWorkerStatus", `중단됨 · ${run.runId} · 전송 결과를 확인해야 합니다. 자동 재전송하지 않습니다.`);
+  const turns = run.turns;
+  const worker = turns.filter(turn => turn.role === "WORKER" && turn.threadId);
+  const session = worker.length > 1
+    ? worker[0].threadId === worker.at(-1).threadId ? "첫·마지막 Worker 세션 일치" : "첫·마지막 Worker 세션 불일치"
+    : "Worker 세션 비교 대기";
+  const lines = [session];
+  for (const role of ["JUDGE", "CRITIC"]) {
+    const received = turns.filter(turn => turn.role === role && typeof turn.received === "string");
+    const acknowledged = new Set(turns.filter(turn => turn.role === role && turn.receipt === "ACK_CONFIRMED").map(turn => turn.turnId));
+    const persisted = received.filter(turn => turn.browserReceipt?.status === "PERSISTED").length;
+    lines.push(`${role} · 전송 Diff 해시 ${received[0]?.diffSha256 ?? "미확인"} · 응답 기록 ${received.length}건 · 브라우저 저장 영수증 ${persisted}/${received.length}건 확인 · ACK ${received.length && received.every(turn => acknowledged.has(turn.turnId)) ? "확인" : "미확인"}`);
+  }
+  lines.push(...turns.map(turn => [turn.role, turn.turnId, turn.receipt ?? "TRANSCRIPT_RECORDED", turn.diffSha256,
+    turn.browserReceipt?.status === "PERSISTED" ? `PERSISTED ${turn.browserReceipt.captureId}` : null]
+    .filter(Boolean).join(" · ")));
+  text("plainWorkerTimeline", lines.join("\n"));
+}
+async function refreshPlainWorker(runId = $("plainWorkerRunSelect").value) {
+  const read = ++plainWorkerRead;
+  const result = await request(`/api/plain-worker-loop${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`);
+  if (read === plainWorkerRead) showPlainWorker(result);
+}
+$("plainWorkerRunSelect").addEventListener("change", async event => {
+  try { await refreshPlainWorker(event.target.value); }
+  catch (error) { text("plainWorkerStatus", error.code ?? error.message); }
+});
 $("openPlainWorker").addEventListener("click", () => {
   const panel = $("plainWorkerPanel");
   panel.hidden = !panel.hidden;
@@ -1390,10 +1429,11 @@ $("startPlainWorker").addEventListener("click", async () => {
     return;
   }
   plainWorkerSubmitting = true;
+  plainWorkerRead++;
   $("startPlainWorker").disabled = true;
   try {
     const result = await request("/api/plain-worker-loop", { method: "POST", body: JSON.stringify({ objective, targetRoot }) });
-    showPlainWorker(result);
+    await refreshPlainWorker(result.run.runId);
   } catch (error) {
     text("plainWorkerStatus", error.code ?? error.message);
     $("startPlainWorker").disabled = false;
@@ -1807,7 +1847,7 @@ async function poll() {
     if (!openingPreparation) await refresh({ background:true });
     if (token && plainWorkerAvailable !== false && !plainWorkerSubmitting) {
       try {
-        showPlainWorker(await request("/api/plain-worker-loop"));
+        await refreshPlainWorker();
         plainWorkerAvailable = true;
       } catch (error) {
         if (error.status === 404) plainWorkerAvailable = false;

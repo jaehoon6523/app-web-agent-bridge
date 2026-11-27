@@ -135,7 +135,9 @@
       <label for="plainWorkerObjective">평문 작업 요청</label><textarea id="plainWorkerObjective" rows="4"></textarea>
       <label for="plainWorkerRoot">평문 작업 프로젝트 폴더</label><input id="plainWorkerRoot">
       <button id="startPlainWorker" type="button">평문 Worker 순환 시작</button>
+      <label for="plainWorkerRunSelect">저장된 Run</label><select id="plainWorkerRunSelect"><option value="">Run 선택</option></select>
       <p id="plainWorkerStatus" role="status"></p>
+      <div id="plainWorkerTimeline" aria-live="polite" style="white-space: pre-wrap; overflow-wrap: anywhere"></div>
       <details id="plainWorkerEvidence" hidden><summary>단계별 송수신 원문</summary><pre id="plainWorkerTranscript" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
     </section>
     <section id="startPanel"><h1 id="startHeading">새 작업</h1>

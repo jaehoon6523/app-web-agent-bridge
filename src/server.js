@@ -43,6 +43,7 @@ import { redactForEvidence } from "./security/redaction.js";
 import { canonicalJson } from "./domain/canonical-json.js";
 import { hasUnsettledDeliveries, observeExtensionRelease, reloadExtension } from "./runtime/web/live-update.js";
 import { runPlainWorkerLoop } from "./orchestration/plain-worker-loop.js";
+import { listPlainRuns, plainRunDirectory, savePlainRun } from "./plain-run-history.js";
 import { realpath } from "node:fs/promises";
 
 const filename = fileURLToPath(import.meta.url);
@@ -705,8 +706,23 @@ export function createBridgeServer({
     }
   };
   if (webSession) {
-    app.get("/api/plain-worker-loop", requireDashboardRead, (_req, res) => {
-      res.json({ run: plainWorkerRun });
+    const plainRunRoot = path.dirname(runtimeConfig.persistence.databasePath);
+    app.get("/api/plain-worker-loop", requireDashboardRead, async (req, res) => {
+      try {
+        if (req.query.runId !== undefined && (typeof req.query.runId !== "string" || !/^plain_[0-9a-f-]{36}$/u.test(req.query.runId))) {
+          return res.status(400).json({ code: "INVALID_PLAIN_RUN_ID" });
+        }
+        const runs = await listPlainRuns(plainRunRoot);
+        const selected = req.query.runId ? runs.find(item => item.runId === req.query.runId) : runs[0];
+        if (req.query.runId && !selected) return res.status(404).json({ code: "PLAIN_RUN_NOT_FOUND" });
+        const run = selected?.status === "RUNNING" && selected.runId !== plainWorkerRun?.runId
+          ? { ...selected, status: "INTERRUPTED" } : selected ?? null;
+        return res.json({ run, runs: runs.map(({ runId, status, startedAt }) => ({ runId,
+          status: status === "RUNNING" && runId !== plainWorkerRun?.runId ? "INTERRUPTED" : status, startedAt })) });
+      } catch (error) {
+        console.error("[bridge:plain-worker-read]", error);
+        return res.status(500).json({ code: "PLAIN_RUN_READ_FAILED" });
+      }
     });
     app.post("/api/plain-worker-loop", requireDashboardMutation, async (req, res) => {
       const { objective, targetRoot } = req.body ?? {};
@@ -726,20 +742,27 @@ export function createBridgeServer({
       if (webOperationBusy(live, 1) || hasUnsettledDeliveries(readDeliverySources(live))) {
         return res.status(409).json({ code: "PLAIN_WORKER_BUSY", message: "기존 작업 또는 전송이 진행 중입니다." });
       }
-      const run = { status: "RUNNING", runId: null, turns: [] };
+      const run = { status: "RUNNING", runId: `plain_${randomUUID()}`, startedAt: new Date().toISOString() };
+      const directory = plainRunDirectory(plainRunRoot, run.runId);
       plainWorkerRun = run;
-      const directory = path.join(path.dirname(runtimeConfig.persistence.databasePath), `plain-worker-${randomUUID()}`);
-      runPlainWorkerLoop({ web: webSession, config: { ...runtimeConfig, workspace }, objective: objective.trim(), directory,
-        onTurn: turn => { run.runId = turn.runId; run.turns.push(turn); },
-      }).then(runId => {
-        run.runId = runId;
+      try {
+        await savePlainRun(plainRunRoot, run);
+      } catch (error) {
+        plainWorkerRun = null;
+        console.error("[bridge:plain-worker-save]", error);
+        return res.status(500).json({ code: "PLAIN_RUN_SAVE_FAILED" });
+      }
+      runPlainWorkerLoop({ web: webSession, config: { ...runtimeConfig, workspace }, objective: objective.trim(),
+        directory, runId: run.runId }).then(async () => {
         run.status = "COMPLETED";
-      }, error => {
+        await savePlainRun(plainRunRoot, run);
+      }, async error => {
         console.error("[bridge:plain-worker]", error);
         run.status = "FAILED";
         run.error = error.code ?? "PLAIN_WORKER_FAILED";
-      });
-      return res.status(202).json({ run });
+        await savePlainRun(plainRunRoot, run);
+      }).catch(error => console.error("[bridge:plain-worker-save]", error));
+      return res.status(202).json({ run: { ...run, turns: [] } });
     });
   }
   if (plainWorkerMode) {

@@ -1,13 +1,26 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createWebSessionBinding } from "../runtime/web/binding.js";
 import { ADVISORY_FORMAT_INSTRUCTIONS, hasAdvisoryHeading } from "./preparation-plain-text.js";
 
-export async function runPlainRoleLoop(web, objective, record, workerTurn) {
-  const runId = `plain_${randomUUID()}`;
+function browserPersistenceReceipt(response) {
+  const receipt = response.evidence?.decisionEvidence;
+  if (receipt?.status !== "PERSISTED" || receipt.phase !== "COMPLETED" || receipt.deliveryId !== response.turnId
+    || response.evidence.conversationId !== response.binding.conversationId
+    || !/^[a-f0-9-]{36}$/u.test(receipt.captureId ?? "")
+    || !Number.isSafeInteger(receipt.persistedAt) || receipt.persistedAt <= 0
+    || !/^[a-f0-9]{64}$/u.test(receipt.manifestSha256 ?? "")
+    || receipt.response?.utf8Bytes !== Buffer.byteLength(response.rawText)
+    || receipt.response.sha256 !== createHash("sha256").update(response.rawText).digest("hex")) return null;
+  const { status, phase, deliveryId, captureId, persistedAt, manifestSha256 } = receipt;
+  return { status, phase, deliveryId, captureId, persistedAt, manifestSha256,
+    response: { utf8Bytes: receipt.response.utf8Bytes, sha256: receipt.response.sha256 } };
+}
+
+export async function runPlainRoleLoop(web, objective, record, workerTurn, runId = `plain_${randomUUID()}`) {
   const conversations = new Map();
   const usedConversations = new Set();
 
-  async function send(role, text) {
+  async function send(role, text, diffSha256 = null) {
     const previous = conversations.get(role);
     const sessionId = previous?.sessionId ?? `web_${runId}_${role}`;
     const turnId = `plain_turn_${randomUUID()}`;
@@ -47,19 +60,22 @@ export async function runPlainRoleLoop(web, objective, record, workerTurn) {
       throw new Error(`${role} response could not be attributed to its conversation.`);
     }
     await record({ runId, role, turnId, conversationId: returned.conversationId,
-      sent: text, received: response.rawText });
+      sessionId, sent: text, received: response.rawText, diffSha256,
+      receipt: "RESPONSE_SAVED", browserReceipt: browserPersistenceReceipt(response) });
     const ack = await web.acknowledgeDelivery({ turnId });
     if (ack?.currentDeliveryId !== null || ack.runId !== runId || ack.sessionId !== sessionId
       || ack.conversationUrl !== returned.conversationUrl) {
       throw new Error(`${role} delivery acknowledgement was not confirmed.`);
     }
+    if (workerTurn) await record({ runId, role, turnId, sessionId, conversationId: returned.conversationId,
+      receipt: "ACK_CONFIRMED" });
     conversations.set(role, returned);
     usedConversations.add(returned.conversationId);
     return response.rawText;
   }
 
   async function review(role, opening) {
-    const answer = await send(role, `${opening}\n\n${ADVISORY_FORMAT_INSTRUCTIONS}`);
+    const answer = await send(role, `${opening}\n\n${ADVISORY_FORMAT_INSTRUCTIONS}`, worker.diffSha256 ?? null);
     if (hasAdvisoryHeading(answer)) return answer;
     const corrected = await send(role, ADVISORY_FORMAT_INSTRUCTIONS);
     if (!hasAdvisoryHeading(corrected)) throw new Error(`${role} response format was not corrected.`);

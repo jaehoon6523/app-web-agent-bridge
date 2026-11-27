@@ -11,8 +11,8 @@ const outputSchema = {
   required: ["answer"], additionalProperties: false,
 };
 
-export async function runPlainWorkerLoop({ web, config, objective, directory, onTurn }) {
-  await mkdir(directory);
+export async function runPlainWorkerLoop({ web, config, objective, directory, runId, onTurn }) {
+  await mkdir(directory, { recursive: true });
   const transcript = path.join(directory, "transcript.jsonl");
   const artifacts = new ArtifactStore(path.join(directory, "artifacts"));
   const workspace = GitChangeWorkspace.create({ targetRoot: config.workspace,
@@ -47,8 +47,8 @@ export async function runPlainWorkerLoop({ web, config, objective, directory, on
       if (initial && (!patch.length || !Buffer.from(diff).equals(patch))) {
         throw new Error("The Worker must produce a nonempty UTF-8 Git Diff.");
       }
-      return { received: answer, diff };
-    });
+      return { received: answer, diff, diffSha256: result.capture.artifact.sha256 };
+    }, runId);
   } finally {
     await worker.close();
   }
