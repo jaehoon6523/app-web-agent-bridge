@@ -9,8 +9,13 @@ import { mergeDiagnosticIncident } from './diagnostic-schema.js';
 const sections = new Set(['server','repair','deliveryReview','extension','startup','deliveryRecovery']);
 const queues = new Map();
 const abandonedRecoveryPreparations = new Set();
+const pendingWriterReleases = new Map();
 const limit = 262144;
-const decode = text => { const value = JSON.parse(text); return value?.schemaVersion === 1 ? value : {}; };
+function decode(text) {
+  if (text.length === 0) return {};
+  const value = JSON.parse(text);
+  return value?.schemaVersion === 1 ? value : {};
+}
 // Synchronous compatibility reader for offline tools. The server uses the async reader.
 export function readAgentReport(directory) {
   const filename = path.join(directory,'runtime-latest.json');
@@ -60,7 +65,7 @@ async function recoveryObservation(recovery) {
     const match = names.length === 1 && recoveryOwnerPattern.exec(names[0]);
     if (!match) return {state:'INVALID',exists:true,identity:stat.ino};
     const marker = path.join(recovery,names[0]), owner = await io.lstat(marker);
-    if (!owner.isDirectory() || owner.isSymbolicLink() || (await io.readdir(marker)).length !== 0)
+    if (!owner.isDirectory() || owner.isSymbolicLink() || (await io.readdir(marker)).some(name => name !== 'claim.json'))
       return {state:'INVALID',exists:true,identity:stat.ino};
     const pid = Number(match[1]);
     return {state:ownerState(pid),exists:true,pid,token:match[2],marker:names[0],identity:stat.ino,markerIdentity:owner.ino};
@@ -85,6 +90,7 @@ async function removeEmptyRecoveryDirectory(directory) {
 }
 async function removeRecoveryDirectory(recovery, marker) {
   if (marker) {
+    await io.unlink(path.join(recovery,marker,'claim.json')).catch(error => { if (error.code !== 'ENOENT') throw error; });
     try { await removeEmptyRecoveryDirectory(path.join(recovery,marker)); }
     catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -207,7 +213,7 @@ async function reclaimDeadWriter(lock, observed, event) {
 /** @param {string} directory @param {string} section @param {any} record @param {any} [options] */
 export async function writeAgentReport(directory, section, record, {onDiagnostic} = {}) {
   if (!sections.has(section) && section !== 'incident') throw new TypeError('Unsupported diagnostic section.');
-  const filename = path.join(directory,'runtime-latest.json'), lock = filename+'.lock';
+  const filename = path.resolve(directory,'runtime-latest.json'), lock = filename+'.lock', writerGuard = lock+'.writer';
   const operationId = randomUUID(), started = performance.now();
   const event = (type,detail = {}) => emit(onDiagnostic,type,{operationId,section,...detail});
   const step = async (operation, work) => {
@@ -219,23 +225,34 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
       throw error;
     }
   };
-  let fd, temporary, result, failure;
+  let writerMarker, ownsLock = false, temporary, result, failure;
   const cleanupErrors = [];
   event('agent.report.write.started');
   try {
     await step('mkdir',() => io.mkdir(directory,{recursive:true,mode:0o700}));
+    const pending = pendingWriterReleases.get(writerGuard);
+    if (pending) await step('lock.writer.finishRelease',() => pending());
     await step('lock.recovery.preparations',() => pruneRecoveryPreparations(lock+'.recovery',event));
     await step('lock.recovery.observe',() => recoveryAvailable(lock+'.recovery',event));
-    try { fd = await step('lock.open',() => io.open(lock,'wx',0o600)); }
+    const previousOwner = await step('lock.observe',() => lockObservation(lock));
+    if (previousOwner.state === 'DEAD') await reclaimDeadWriter(lock,previousOwner,event);
+    await step('lock.writer.preparations',() => pruneRecoveryPreparations(writerGuard,event));
+    // Publish ownership before touching the compatibility lock file. Current
+    // writers cannot race its open against another current writer's unlink.
+    writerMarker = await step('lock.writer.acquire',() => acquireRecovery(writerGuard,event));
+    const token = randomUUID(), claim = path.join(writerGuard,writerMarker,'claim.json');
+    temporary = filename+'.'+token+'.tmp';
+    await step('lock.owner',() => io.writeFile(claim,JSON.stringify({pid:process.pid,token,temporary:path.basename(temporary)}),{flag:'wx',mode:0o600}));
+    const publish = () => step('lock.open',() => io.link(claim,lock));
+    try { await publish(); }
     catch (error) {
       if (!['EEXIST','EPERM'].includes(error.code)) throw error;
       const observed = await lockObservation(lock);
       event('agent.report.lock.observed',{operation:'open',path:lock,code:error.code,lockState:observed});
-      // EPERM alone is not contention. Missing/unreadable paths keep their real error.
       const contended = observed.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(observed.state);
       if (error.code === 'EPERM' && !contended) { error.lockState = observed; throw error; }
       if (observed.state === 'DEAD' && await reclaimDeadWriter(lock,observed,event)) {
-        try { fd = await step('lock.open',() => io.open(lock,'wx',0o600)); }
+        try { await publish(); }
         catch (retry) {
           const current = await lockObservation(lock);
           if (retry.code === 'EEXIST' || retry.code === 'EPERM' && current.exists === true && ['LIVE','DEAD','INITIALIZING'].includes(current.state)) throw busy(retry,current);
@@ -243,9 +260,7 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
         }
       } else throw busy(error,observed);
     }
-    const token = randomUUID();
-    temporary = filename+'.'+token+'.tmp';
-    await step('lock.owner',() => fd.writeFile(JSON.stringify({pid:process.pid,token,temporary:path.basename(temporary)})));
+    ownsLock = true;
     event('agent.report.lock.acquired',{path:lock});
     const previous = await step('read',() => readAgentReportAsync(directory)), diagnosticId = randomUUID();
     const value = {schemaVersion:1,updatedAt:new Date().toISOString(),diagnosticId,
@@ -274,10 +289,28 @@ export async function writeAgentReport(directory, section, record, {onDiagnostic
       try { await step(operation,work); }
       catch (error) { cleanupErrors.push({operation,code:error.code,syscall:error.syscall,path:error.path}); failure ??= error; }
     };
-    if (fd) {
+    if (ownsLock) {
       if (temporary) await cleanup('output.remove',async () => { try { await io.unlink(temporary); } catch (error) { if (error.code !== 'ENOENT') throw error; } });
-      await cleanup('lock.close',() => fd.close());
-      await cleanup('lock.remove',() => io.unlink(lock));
+    }
+    if (writerMarker) {
+      const retired = `${writerGuard}.prepare-${writerMarker.slice('owner-'.length)}`;
+      let releasing;
+      const release = () => releasing ??= (async () => {
+        try {
+          if (ownsLock) {
+            await step('lock.remove',() => io.unlink(lock));
+            ownsLock = false;
+          }
+          await io.rename(writerGuard,retired);
+        } catch (error) {
+          pendingWriterReleases.set(writerGuard,release);
+          throw error;
+        }
+        pendingWriterReleases.delete(writerGuard);
+        try { await removeRecoveryDirectory(retired,writerMarker); }
+        catch (error) { abandonedRecoveryPreparations.add(path.resolve(retired)); throw error; }
+      })().finally(() => { releasing = undefined; });
+      await cleanup('lock.writer.release',release);
     }
     if (failure && cleanupErrors.length) failure.cleanupErrors = [...failure.cleanupErrors ?? [],...cleanupErrors];
     event('agent.report.write.completed',{elapsedMs:performance.now()-started,status:failure ? 'FAIL' : 'PASS',code:failure?.code,cleanupErrors});

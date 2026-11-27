@@ -17,6 +17,7 @@ export const DEFAULT_EXTENSION_CONFIG = Object.freeze({
   completedDelivery: null,
   lastAcknowledgedDelivery: null,
   lastDeliveryDiscard: null,
+  invalidDeliveryArchives: {},
   deliveryScopes: {},
   lastActiveWebTarget: null,
   lastObservedUserMessageId: null,
@@ -55,6 +56,13 @@ const SCOPE_BINDING_KEYS = ["lastBoundRunId", "webProvider", "conversationUrl", 
 function deliveryScope(state) {
   return Object.fromEntries([...SCOPE_BINDING_KEYS, "currentDeliveryId", "completedDelivery",
     "lastObservedUserMessageId", "lastObservedAssistantMessageId"].map(key => [key, structuredClone(state[key])]));
+}
+
+function sharesDeliveryTarget(slot, target) {
+  if (slot.tabId !== null && slot.tabId === target.tabId) return true;
+  // Separate start tabs share a URL before either has a conversation ID.
+  return slot.conversationUrl !== null && slot.conversationUrl === target.conversationUrl
+    && (target.bindingStatus !== "ROOT_READY" || slot.tabId === null || target.tabId === null);
 }
 
 function normalizeDeliveryScopes(value) {
@@ -123,6 +131,7 @@ export function normalizeExtensionState(value = {}) {
       ? structuredClone(value.lastAcknowledgedDelivery) : null,
     lastDeliveryDiscard: value.lastDeliveryDiscard && typeof value.lastDeliveryDiscard === "object"
       ? structuredClone(value.lastDeliveryDiscard) : null,
+    invalidDeliveryArchives: structuredClone(value.invalidDeliveryArchives ?? {}),
     deliveryScopes: normalizeDeliveryScopes(value.deliveryScopes),
     lastActiveWebTarget: normalizeActiveTarget(
       value.lastActiveWebTarget !== undefined ? value.lastActiveWebTarget : value.lastActiveChatGptTarget,
@@ -198,9 +207,7 @@ export function createExtensionStateStore(storageArea) {
       }
       return mutate(async () => {
         const current = await readStoredState();
-        if (Object.values(current.deliveryScopes).some(slot => slot.currentDeliveryId
-          && ((slot.tabId !== null && slot.tabId === current.tabId)
-            || (slot.conversationUrl !== null && slot.conversationUrl === current.conversationUrl)))) {
+        if (Object.values(current.deliveryScopes).some(slot => sharesDeliveryTarget(slot, current))) {
           throw new ExtensionStateError("RECOVERY_REQUIRED", "Another session owns an unresolved delivery on this target.");
         }
         if (current.currentDeliveryId !== null) {
@@ -221,7 +228,8 @@ export function createExtensionStateStore(storageArea) {
       }
       return mutate(async () => {
         const current = await readStoredState();
-        if (Object.entries(expected).some(([key, value]) => key === "deliveryScopes" || key === "completedDelivery"
+        if (Object.entries(expected).some(([key, value]) => ["deliveryScopes", "completedDelivery", "invalidDeliveryArchives",
+          "lastAcknowledgedDelivery", "lastDeliveryDiscard"].includes(key)
           ? JSON.stringify(current[key]) !== JSON.stringify(value) : current[key] !== value)) {
           throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "The persisted owner changed; inspect it again.");
         }
@@ -243,6 +251,12 @@ export function createExtensionStateStore(storageArea) {
         const current = await readStoredState();
         const deliveryScopes = structuredClone(current.deliveryScopes);
         const changingSession = current.lastBoundSessionId !== patch.lastBoundSessionId;
+        if (patch.bindingStatus === "ROOT_READY" && (
+          (current.currentDeliveryId && (!changingSession || !current.lastBoundSessionId || sharesDeliveryTarget(current, patch)))
+          || Object.entries(deliveryScopes).some(([sessionId, slot]) =>
+            sessionId === patch.lastBoundSessionId || sharesDeliveryTarget(slot, patch)))) {
+          throw new ExtensionStateError("WEB_SESSION_BUSY", "This session or start tab owns an unresolved delivery.");
+        }
         if (!changingSession && current.currentDeliveryId && current.lastBoundRunId !== patch.lastBoundRunId) {
           throw new ExtensionStateError("DELIVERY_RECOVERY_MISMATCH", "An unresolved delivery cannot be reassigned to another run.");
         }

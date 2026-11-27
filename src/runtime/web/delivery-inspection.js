@@ -1,4 +1,4 @@
-import { WebProtocolError } from "./protocol.js";
+﻿import { WebProtocolError } from "./protocol.js";
 import { createWebSessionBinding } from "./binding.js";
 
 const RECONCILE_DIAGNOSTIC_CODES = new Set(["WEB_EXTENSION_ERROR", "WEB_RESPONSE_TIMEOUT", "EXTENSION_DISCONNECTED",
@@ -13,8 +13,9 @@ export function markReconcileDiagnostic(diagnostic, failureBoundary, responseTyp
 
 export async function inspectDeliveryRequest(state, { refreshCompleted = false, adoptManualFollowup = false, recoverSubmitted = null } = {},
   diagnosticRequestId = null) {
+  const requestType = recoverSubmitted?.documentId ? "web.delivery.inspect-pinned-root" : "web.delivery.inspect";
   const diagnostic = diagnosticRequestId ? { httpRequestId:diagnosticRequestId, extensionRequestId:null,
-    extensionRequestType:"web.delivery.inspect", sendOutcome:"NOT_ATTEMPTED", failureBoundary:"UNKNOWN",
+    extensionRequestType:requestType, sendOutcome:"NOT_ATTEMPTED", failureBoundary:"UNKNOWN",
     responseType:null, extensionErrorCode:null } : null;
   if (diagnostic) {
     const request = state.request, messageError = state.messageError;
@@ -40,27 +41,52 @@ export async function inspectDeliveryRequest(state, { refreshCompleted = false, 
   const payload = recoverSubmitted ? { recoverSubmitted } : refreshCompleted
     ? { refreshCompleted:true, ...(adoptManualFollowup ? { adoptManualFollowup:true } : {}) }
     : null;
-  const message = await state.request({ type:"web.delivery.inspect", ...(payload ? { payload } : {}) },
+  const message = await state.request({ type:requestType, ...(payload ? { payload } : {}) },
     new Set(["web.delivery.inspected", "web.session.error"]), refreshCompleted || recoverSubmitted ? 30_000 : 10_000);
   if (message.type === "web.session.error") throw state.messageError(message);
   if (recoverSubmitted) {
     const response = message.payload?.completedDelivery, next = response?.binding;
-    if (response?.turnId !== recoverSubmitted.currentDeliveryId || next?.sessionId !== recoverSubmitted.sessionId
-      || next?.runId !== recoverSubmitted.runId
-      || (next?.tabId !== recoverSubmitted.tabId && recoverSubmitted.allowTabRelocation !== true)
-      || next?.conversationUrl !== recoverSubmitted.conversationUrl || next?.conversationId !== recoverSubmitted.conversationId
-      || message.payload.currentDeliveryId !== response.turnId || response.confidence !== "CONFIRMED_BY_UI_STATE"
-      || message.payload.sessionId !== next.sessionId || message.payload.runId !== next.runId
-      || message.payload.tabId !== next.tabId || message.payload.documentId !== next.documentId
-      || message.payload.observedDocumentId !== next.documentId || message.payload.frameId !== next.frameId
-      || message.payload.observedConversationUrl !== next.conversationUrl || message.payload.conversationId !== next.conversationId
-      || message.payload.pageReachable !== true || message.payload.generating !== false
-      || message.payload.pageBusy !== false || message.payload.extensionBusy !== false
-      || typeof response.rawText !== "string" || !response.rawText.trim()
-      || !response.evidence?.userMessageId || !response.evidence?.assistantMessageId
-      || response.evidence.conversationUrl !== next.conversationUrl || response.evidence.conversationId !== next.conversationId
-      || response.evidence.documentId !== next.documentId || response.evidence.frameId !== next.frameId
-      || response.evidence.responseAssociation !== "DIRECT_DOM_ORDER") {
+    const destination = recoverSubmitted.replacement ?? recoverSubmitted;
+    const checks = {
+      turnId: response?.turnId === recoverSubmitted.currentDeliveryId,
+      sessionId: next?.sessionId === recoverSubmitted.sessionId,
+      runId: next?.runId === recoverSubmitted.runId,
+      tabIdRelocation: next?.tabId === recoverSubmitted.tabId || recoverSubmitted.allowTabRelocation === true,
+      conversationUrl: next?.conversationUrl === recoverSubmitted.conversationUrl,
+      conversationId: next?.conversationId === recoverSubmitted.conversationId,
+      payloadCurrentDeliveryId: message.payload.currentDeliveryId === response?.turnId,
+      confidence: response?.confidence === "CONFIRMED_BY_UI_STATE",
+      payloadSessionId: message.payload.sessionId === next?.sessionId,
+      payloadRunId: message.payload.runId === next?.runId,
+      payloadTabId: message.payload.tabId === next?.tabId,
+      payloadDocumentId: message.payload.documentId === next?.documentId,
+      payloadObservedDocumentId: message.payload.observedDocumentId === next?.documentId,
+      payloadFrameId: message.payload.frameId === next?.frameId,
+      payloadObservedConversationUrl: message.payload.observedConversationUrl === next?.conversationUrl,
+      payloadConversationId: message.payload.conversationId === next?.conversationId,
+      payloadPageReachable: message.payload.pageReachable === true,
+      payloadGenerating: message.payload.generating === false,
+      payloadPageBusy: message.payload.pageBusy === false,
+      payloadExtensionBusy: message.payload.extensionBusy === false,
+      rawTextString: typeof response?.rawText === "string",
+      rawTextNonEmpty: typeof response?.rawText === "string" && response.rawText.trim().length > 0,
+      evidenceUserMessageId: !!response?.evidence?.userMessageId,
+      evidenceAssistantMessageId: !!response?.evidence?.assistantMessageId,
+      evidenceConversationUrl: response?.evidence?.conversationUrl === next?.conversationUrl,
+      evidenceConversationId: response?.evidence?.conversationId === next?.conversationId,
+      evidenceDocumentId: response?.evidence?.documentId === next?.documentId,
+      evidenceFrameId: response?.evidence?.frameId === next?.frameId,
+      evidenceResponseAssociation: response?.evidence?.responseAssociation === "DIRECT_DOM_ORDER",
+      bindingPresent:Boolean(next),
+      pinnedIdentity: !recoverSubmitted.documentId || (next?.tabId === destination.tabId
+        && next?.documentId === destination.documentId && next?.windowId === destination.windowId && next?.frameId === destination.frameId
+        && response?.evidence?.userMessageId === recoverSubmitted.userMessageId
+        && response?.evidence?.assistantMessageId === recoverSubmitted.assistantMessageId),
+    };
+    const failedChecks = Object.keys(checks).filter(key => !checks[key]);
+    if (failedChecks.length) {
+      markReconcileDiagnostic(diagnostic, "INSPECTION_VALIDATION", message.type, "DELIVERY_RECOVERY_MISMATCH");
+      if (diagnostic) Object.assign(diagnostic, { failedChecks });
       throw new WebProtocolError("Recovered response identity mismatch", "DELIVERY_RECOVERY_MISMATCH");
     }
     state.acceptReturnedBinding(next, { expectedBinding:createWebSessionBinding({ ...next,

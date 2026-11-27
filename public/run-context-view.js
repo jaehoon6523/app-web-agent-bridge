@@ -100,9 +100,8 @@ function runtimeDetail(role, runtime) {
   return `${role}: provider ${runtime.provider ?? "미확인"} · provider 근거 ${runtime.providerEvidence ?? "미확인"} · model ${runtime.model ?? "관측 불가"} · model 근거 ${runtime.modelEvidence ?? "UNOBSERVED"}`;
 }
 
-export function reviewerRuntimeTechnicalSummary(reviewerRuntimes, legacyReviewerRuntime = null) {
-  const runtimes = reviewerRuntimes ?? (legacyReviewerRuntime ? { JUDGE:legacyReviewerRuntime } : {});
-  return `Reviewer 실행 출처 · ${runtimeDetail("Judge", runtimes.JUDGE)} / ${runtimeDetail("Critic", runtimes.CRITIC)}`;
+export function reviewerRuntimeTechnicalSummary(reviewerRuntimes) {
+  return `Reviewer 실행 출처 · ${runtimeDetail("Judge", reviewerRuntimes?.JUDGE)} / ${runtimeDetail("Critic", reviewerRuntimes?.CRITIC)}`;
 }
 
 export function createRunContextView({ $, text, labels, terminal, folderName, workerIdentity }) {
@@ -125,8 +124,7 @@ export function createRunContextView({ $, text, labels, terminal, folderName, wo
     text("runContext", run.requirements
       ? `${folderName(run.projectRef?.targetRoot)} · ${labels[run.phase] ?? run.phase} · 구현 ${run.iteration ?? 0}회`
       : `작업 기록 · ${labels[run.phase] ?? run.phase} · ${terminal.has(run.phase) ? "종료됨" : "진행 중"}`);
-    const reviewerRuntimes = snapshot?.reviewerRuntimes
-      ?? (snapshot?.reviewerRuntime ? { JUDGE:snapshot.reviewerRuntime } : {});
+    const reviewerRuntimes = snapshot?.reviewerRuntimes;
     renderRole("runWorkerRole", "Worker", workerRoleSummary(run, workerIdentity(run)));
     renderRole("runJudgeRole", "Judge", reviewerRoleSummary(run, reviewerRuntimes, "JUDGE"), run);
     renderRole("runCriticRole", "Critic", reviewerRoleSummary(run, reviewerRuntimes, "CRITIC"), run);

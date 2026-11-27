@@ -37,7 +37,8 @@ export async function reconcileTerminalDiscard({ input, inspect, getServices, we
     const confirmed = await check();
     if (!confirmed.extension.discardConfirmed) fail("DISCARD_UNCONFIRMED", "The extension's persisted discard receipt was not confirmed. Inspect and retry this same target.");
     await audit({ phase: "COMPLETED", input, idempotent: seen.extension.discardConfirmed });
-    return { discarded: true, deliveryId: input.currentDeliveryId, resultStatus: "UNKNOWN", disposalStatus: "BOTH_DISCARDED" };
+    return { discarded: true, deliveryId: input.currentDeliveryId,
+      resultStatus: "COMPLETION_RESPONSE_UNCONFIRMED", disposalStatus: "BOTH_DISCARDED" };
   } catch (error) {
     // A failed completion write also remains retryable from the durable receipt.
     try { await audit({ phase: "FAILED", input, code: error.code ?? "DISCARD_UNCONFIRMED", started }); }

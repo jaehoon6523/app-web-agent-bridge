@@ -33,6 +33,46 @@ export function excerpt(text, startLine = 1, endLine = startLine + 199) {
   return { content: lines.slice(startLine - 1, endLine).join("\n"), startLine, endLine: Math.min(endLine, lines.length), totalLines: lines.length,
     omittedBefore: startLine > 1, omittedAfter: endLine < lines.length };
 }
+
+function gitPatchPath(value) {
+  if (!value.startsWith('"')) return value.replace(/\t$/u, "");
+  const escapes = { a:7, b:8, t:9, n:10, v:11, f:12, r:13, '"':34, "\\":92 };
+  const bytes = [];
+  for (const token of value.slice(1, value.lastIndexOf('"')).match(/\\(?:[0-7]{3}|.)|[^\\]+/gu) ?? []) {
+    if (token[0] !== "\\") bytes.push(...Buffer.from(token));
+    else bytes.push(token.length === 4 ? parseInt(token.slice(1), 8) : escapes[token[1]]);
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+export function patchFileExcerpt(patch, path, startLine = 1, lineCount = 200) {
+  if (!Number.isSafeInteger(startLine) || startLine < 1 || !Number.isSafeInteger(lineCount) || lineCount < 1 || lineCount > 1000) {
+    throw new Error("Requested range must contain 1..1000 lines.");
+  }
+  let paths = [], inHunk = false;
+  const lines = patch.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
+    if (line.startsWith("diff --git ")) {
+      paths = [];
+      inHunk = false;
+    } else if (!inHunk && /^(?:--- |\+\+\+ )/u.test(line)) {
+      const name = gitPatchPath(line.slice(4));
+      if (name.startsWith("a/") || name.startsWith("b/")) paths.push(name.slice(2));
+    } else if (line.startsWith("@@ ")) {
+      if (paths.includes(path)) {
+        let fileEnd = index + 1;
+        while (fileEnd < lines.length && !lines[fileEnd].startsWith("diff --git ")) fileEnd++;
+        const first = Math.max(startLine, index + 1);
+        if (first > fileEnd) return null;
+        const endLine = Math.min(fileEnd, first + lineCount - 1);
+        return {content:lines.slice(first - 1, endLine).join("\n"), startLine:first, endLine, totalLines:lines.length,
+          omittedBefore:first > index + 1, omittedAfter:endLine < fileEnd};
+      }
+      inHunk = true;
+    }
+  }
+  return null;
+}
 function within(root, filename) {
   const absolute = fs.realpathSync.native(filename);
   const rel = path.relative(fs.realpathSync.native(root), absolute);

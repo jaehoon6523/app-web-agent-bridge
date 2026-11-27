@@ -51,15 +51,54 @@ export function hasMultiReviewAuthority(run) {
       && item.candidateId === run.candidate?.candidateId));
 }
 
+export function retryableUnsentInitialReview(run) {
+  const request = run?.requests?.[0];
+  const bindings = run?.conversationBindings;
+  return run?.stage === "RECOVERY_REQUIRED" && run.terminationReason === "EXECUTION_UNCERTAIN"
+    && run.workerTurns?.at(-1)?.status === "completed"
+    && run.coordination?.phase === "ROUND0" && run.coordination.activeRole === "JUDGE"
+    && run.requests?.length === 1 && request?.status === "INTENT" && request.role === "JUDGE"
+    && request.requestId === run.reviewTurnId && request.candidateId === run.candidate?.candidateId
+    && request.auditManifestHash === run.coordination.auditManifestHash
+    && bindings?.length === 2 && bindings.every(binding => binding.bindingStatus === "NEEDS_REBIND"
+      && binding.tabId == null && binding.documentId == null && binding.activeDeliveryId == null)
+    && !run.webDeliveryReceipts?.length && !run.reviewArtifacts?.length && !run.reviews?.length;
+}
+
+export function retryableInterruptedEnvelope(run) {
+  return run?.stage === "RECOVERY_REQUIRED" && run.terminationReason === "EXECUTION_UNCERTAIN"
+    && run.reviewTurnId == null && run.reviewRecovery?.status === "RESUMING"
+    && run.reviewRecovery.alternateEnvelope === true
+    && run.requests?.at(-1)?.requestId === run.reviewRecovery.targetRequestId
+    && run.error === "An acknowledged review was omitted from the recovery set; retransmission is refused.";
+}
+
 export function retryableAuditReview(run) {
+  if (run?.terminationReason === "REPORT_REPAIR_LIMIT" && (run.reviewRecovery?.alternateEnvelope === true
+    || run.requests?.find(item => item.requestId === run.reviewTurnId)?.alternateEnvelope === true)) return false;
+  const latestReview = run?.reviews?.at(-1);
+  const discardedReviewerDelivery = run?.terminationReason === "WEB_DELIVERY_DISCARDED"
+    && run.stage === "HOLD"
+    && run.webDeliveryDiscardIntent?.confirmed === true
+    && run.webDeliveryDiscardIntent?.runId === run.runId
+    && run.webDeliveryDiscardIntent?.currentDeliveryId
+    && (run.conversationBindings ?? []).some(binding => binding.sessionId === run.webDeliveryDiscardIntent.sessionId
+      && binding.activeDeliveryId == null);
+  const evidenceHold = (run?.terminationReason == null || discardedReviewerDelivery)
+    && latestReview?.decision === "HOLD"
+    && latestReview.report?.assessments?.some((assessment) => assessment.verdict === "UNDETERMINED"
+      && run.requirements?.items?.some((requirement) => requirement.requirementId === assessment.requirementId && requirement.required))
+    && (run.conversationBindings ?? []).every((binding) => !binding.activeDeliveryId);
   const retryableHold = run?.stage === "HOLD"
-    && ["REPORT_REPAIR_LIMIT","WEB_BINDING_REQUIRED","PLAN_REPAIR_LIMIT","PLAN_CONSENSUS_NOT_REACHED","USER_DECISION_REQUIRED"].includes(run.terminationReason)
-    && run.auditResult === "HOLD";
+    && (["REPORT_REPAIR_LIMIT","WEB_BINDING_REQUIRED","PLAN_REPAIR_LIMIT","PLAN_CONSENSUS_NOT_REACHED","USER_DECISION_REQUIRED"].includes(run.terminationReason)
+      || evidenceHold || (discardedReviewerDelivery && run.auditResult == null))
+    && (run.auditResult === "HOLD" || (discardedReviewerDelivery && run.auditResult == null));
   const reviewerTabSelectionPending = run?.terminationReason === "WEB_BINDING_REQUIRED"
     && (run?.coordination?.bindingCandidates?.length ?? 0) > 0;
   if (reviewerTabSelectionPending) return false;
   const legacyUpgrade = run?.stage === "AWAITING_APPLY" && !hasMultiReviewAuthority(run);
-  return Boolean(run?.schemaVersion === 3 && (retryableHold || legacyUpgrade)
+  return Boolean(run?.schemaVersion === 3 && (retryableHold || legacyUpgrade
+    || retryableUnsentInitialReview(run) || retryableInterruptedEnvelope(run))
     && run.application == null
     && run.stopRequested !== true
     && run.candidate?.candidateId

@@ -3,9 +3,10 @@ import { createAuditManifest } from "../domain/audit-manifest.js";
 import { requirementsRef } from "../domain/audit-contract.js";
 import { parseFinalControllerPacketJsonEnvelope } from "../domain/controller-packet-envelope.js";
 import { validateAuditResponse } from "../domain/code-review.js";
-import { assertionsToReviewReport, validateReviewAssertions } from "../domain/review-coordination.js";
+import { aggregateReviewReports, assertionsToReviewReport, validateReviewAssertions } from "../domain/review-coordination.js";
 import { redactForEvidence } from "../security/redaction.js";
 import { redactControllerResponseText, publicResponseBody, publicResponsePacket, privateResponseRecord } from "./web-delivery-receipts.js";
+import { retryableInterruptedEnvelope } from "./code-change-runtime-policy.js";
 
 const same = (a, b) => canonicalJson(a) === canonicalJson(b);
 const fail = (message) => { throw Object.assign(new Error(message), { code:"REVIEW_RECOVERY_REFUSED" }); };
@@ -31,6 +32,57 @@ function bindingIdentity(binding) {
     binding.actor ?? null, binding.conversationUrl, binding.conversationId];
 }
 function read(service, ref) { return service.artifactStore.read(ref?.sha256).toString("utf8"); }
+
+// Reads the sealed review boundary. Recovery helpers intentionally persist state and are not used here.
+export function readSettledRoleAssessments(service, run, review) {
+  const unavailable = () => ({status:"UNAVAILABLE", roles:[]});
+  if (!review?.auditManifestHash || review.candidateId !== run.candidate?.candidateId
+    || run.coordination?.auditManifestHash !== review.auditManifestHash || run.coordination?.activeRole
+    || ["REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK"].includes(run.stage)) return unavailable();
+  try {
+    const history = service.store.history(run.runId);
+    const committed = history.findIndex(record => record.reviews?.at(-1)?.reviewId === review.reviewId);
+    const basis = history[committed - 1];
+    if (!basis || !same(history[committed].reviews.at(-1), review)
+      || basis.candidate?.candidateId !== review.candidateId || basis.candidate.patchHash !== run.candidate.patchHash
+      || !same(basis.requirementsRef, review.requirementsRef)) return unavailable();
+    const manifest = only(basis.auditManifests, item => item.auditManifestId === review.auditManifestId
+      && item.auditManifestHash === review.auditManifestHash && item.candidateId === review.candidateId, "audit manifest");
+    if (!same(JSON.parse(read(service, manifest.contentRef)), createAuditManifest(basis))) return unavailable();
+    const priorReviewId = basis.reviews?.at(-1)?.reviewId;
+    const requestStart = priorReviewId && history.find(record => record.reviews?.at(-1)?.reviewId === priorReviewId);
+    const previousIds = new Set((requestStart?.requests ?? []).map(item => item.requestId));
+    const eligible = (basis.requests ?? []).filter(item => !previousIds.has(item.requestId)
+      && item.status === "PROCESSED" && item.candidateId === review.candidateId && item.patchHash === basis.candidate.patchHash
+      && item.auditManifestId === review.auditManifestId && item.auditManifestHash === review.auditManifestHash
+      && same(item.requirementsRef, review.requirementsRef));
+    const phase = eligible.some(item => item.phase === "ROUND1") ? "ROUND1" : "ROUND0";
+    const roles = ["JUDGE", "CRITIC"];
+    const reports = roles.map(role => {
+      const request = eligible.findLast(item => item.role === role && item.phase === phase);
+      if (!request || request.reportRef?.redacted !== true) fail("Role report unavailable.");
+      const artifact = only(basis.reviewArtifacts, item => item.requestId === request.requestId && item.role === role
+        && item.phase === phase && item.candidateId === request.candidateId && item.auditManifestHash === request.auditManifestHash,
+      "role artifact");
+      const receipt = only(basis.webDeliveryReceipts, item => item.deliveryId === request.requestId && item.role === role
+        && item.state === "ACKNOWLEDGED", "acknowledged role receipt");
+      if (request.reviewArtifactId !== artifact.reviewArtifactId || receipt.packetRef?.sha256 !== artifact.packetRef?.sha256
+        || receipt.sessionId !== review.reviewerIndependence?.bindings
+        ?.find(binding => binding.role === role)?.sessionId) fail("Role receipt differs from the review.");
+      const report = JSON.parse(read(service, request.reportRef));
+      const context = {...contextFor(basis, request.requestId), auditManifestHash:review.auditManifestHash};
+      const checked = validateReviewResponse({packet:JSON.parse(read(service, artifact.packetRef))}, context, role, artifact.reviewArtifactId);
+      if (!checked || !same(report, redactForEvidence(checked))) fail("Role report differs from the verified response.");
+      return report;
+    });
+    const aggregate = aggregateReviewReports(reports, contextFor(basis, review.requestId));
+    if (!same(redactForEvidence(aggregate), review.report)) return unavailable();
+    return {status:"AVAILABLE", roles:roles.map((role, index) => ({role,
+      assessments:reports[index].assessments.map(({requirementId, verdict, evidenceRefs}) => ({requirementId, verdict, evidenceRefs}))}))};
+  } catch {
+    return unavailable();
+  }
+}
 
 // This is also the normal post-ACK write. All three collections commit together.
 export function persistReviewResponse(service, runId, context, role, auditManifest, phase, response) {
@@ -224,6 +276,40 @@ export function canResumeAcknowledgedReview(run) {
     && !run.conversationBindings.some(item => item.activeDeliveryId));
 }
 
+export function criticReviewContinuation(run) {
+  const interruptedEnvelope = retryableInterruptedEnvelope(run);
+  if ((!interruptedEnvelope && (run?.stage !== "HOLD"
+    || !["WEB_BINDING_REQUIRED", "REPORT_REPAIR_LIMIT"].includes(run.terminationReason)))
+    || run.conversationBindings?.length !== 2 || run.conversationBindings.some(binding => binding.activeDeliveryId)) return null;
+  const critic = run.conversationBindings.find(binding => binding.role === "CRITIC");
+  const auditManifestHash = run.coordination?.auditManifestHash;
+  const candidateId = run.candidate?.candidateId;
+  const requestId = interruptedEnvelope ? run.reviewRecovery.targetRequestId : run.reviewTurnId;
+  const request = run.requests.find(item => item.requestId === requestId);
+  const receipts = run.webDeliveryReceipts ?? [];
+  if (!candidateId || !auditManifestHash || request?.role !== "CRITIC" || request.phase !== "ROUND0"
+    || request.candidateId !== candidateId || request.auditManifestHash !== auditManifestHash
+    || receipts.some(receipt => receipt.state !== "ACKNOWLEDGED")) return null;
+  const judgeReceipts = receipts.filter(receipt => receipt.role === "JUDGE");
+  const [receipt] = judgeReceipts;
+  if (judgeReceipts.length !== 1
+    || !run.requests.some(item => item.requestId === receipt.deliveryId && item.role === "JUDGE"
+      && item.phase === "ROUND0" && item.status === "PROCESSED" && item.candidateId === candidateId
+      && item.auditManifestHash === auditManifestHash)) return null;
+  const unbound = run.terminationReason === "WEB_BINDING_REQUIRED" && run.coordination.activeRole === "CRITIC"
+    && request.status === "INTENT" && receipts.length === 1 && critic?.bindingStatus === "NEEDS_REBIND"
+    && critic.tabId == null && critic.conversationId == null;
+  const malformed = (interruptedEnvelope || (run.terminationReason === "REPORT_REPAIR_LIMIT" && run.coordination.phase === "BLOCKED"
+    && run.error === "Controller packet rejected (CONTROLLER_PACKET_MISSING)."
+    && run.reviewRecovery?.alternateEnvelope !== true)) && critic?.bindingStatus === "BOUND"
+    && receipts.some(item => item.deliveryId === request.requestId && item.role === "CRITIC")
+    && receipts.filter(item => item.role === "CRITIC").every(item => item.validation === "REJECTED_FORMAT");
+  if (!unbound && !malformed) return null;
+  // Restoring the Judge below verifies the response, report, ACK lineage and manifest before any Critic send.
+  return { status:"RESUMING", candidateId, auditManifestHash, targetRequestId:request.requestId,
+    requestIds:[receipt.deliveryId], failures:[], ...(malformed ? { alternateEnvelope:true } : {}) };
+}
+
 export function restoredReviewForRole(service, runId, role, manifest, phase) {
   const run = service.get(runId), recovery = run.reviewRecovery;
   if (recovery?.status !== "RESUMING") return null;
@@ -233,9 +319,11 @@ export function restoredReviewForRole(service, runId, role, manifest, phase) {
   const request = [...run.requests].reverse().find(item => recovery.requestIds.includes(item.requestId)
     && item.role === role && item.phase === phase);
   if (!request) {
+    const retryRejectedFormat = recovery.alternateEnvelope === true && role === "CRITIC" && phase === "ROUND0";
     if (run.requests.some(item => item.role === role && item.phase === phase
       && item.candidateId === run.candidate.candidateId && item.auditManifestHash === manifest.auditManifestHash
-      && (run.webDeliveryReceipts ?? []).some(receipt => receipt.deliveryId === item.requestId && receipt.state === "ACKNOWLEDGED"))) {
+      && (run.webDeliveryReceipts ?? []).some(receipt => receipt.deliveryId === item.requestId && receipt.state === "ACKNOWLEDGED"
+        && !(retryRejectedFormat && receipt.validation === "REJECTED_FORMAT")))) {
       fail("An acknowledged review was omitted from the recovery set; retransmission is refused.");
     }
     return null;

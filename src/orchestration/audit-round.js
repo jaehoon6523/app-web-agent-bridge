@@ -11,11 +11,11 @@ import { evidenceRecord, excerpt, executeVerification } from "../evidence/candid
 import { redactForEvidence } from "../security/redaction.js";
 import { canonicalConversationUrl, createWebSessionBinding, extractConversationId } from "../runtime/web/binding.js";
 import { webConversationProviderForUrl } from "../runtime/web/provider-registry.js";
-import { buildCodeReviewPrompt, buildPlanProposalPrompt, buildPlanReviewPrompt, buildReviewDiscussionPrompt } from "./code-change-prompts.js";
+import { buildCodeReviewPrompt, buildPlanProposalPrompt, buildPlanReviewPrompt } from "./code-change-prompts.js";
 
 const REVIEW_ROLES = Object.freeze(["JUDGE", "CRITIC"]);
 const MAX_PLAN_ROUNDS = 2;
-const BINDING_WAIT_CODES = new Set(["NEEDS_REBIND","AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED","AUTH_REQUIRED","EXPLICIT_REBIND_REQUIRED","WEB_SESSION_BINDING_MISMATCH","WEB_DOCUMENT_CHANGED","ROOT_NOT_READY","SESSION_AUTH_REQUIRED","EXTENSION_NOT_AUTHENTICATED","WEB_RESPONSE_TIMEOUT"]);
+const BINDING_WAIT_CODES = new Set(["NEEDS_REBIND","AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED","AUTH_REQUIRED","EXPLICIT_REBIND_REQUIRED","WEB_SESSION_BINDING_MISMATCH","WEB_DOCUMENT_CHANGED","ROOT_NOT_READY","SESSION_AUTH_REQUIRED","EXTENSION_NOT_AUTHENTICATED","WEB_RESPONSE_TIMEOUT","CONTENT_SCRIPT_MESSAGE_TIMEOUT","CONTENT_SCRIPT_UNAVAILABLE"]);
 const REVIEW_TAB_SELECTION_CODES = new Set(["AMBIGUOUS","STORED_AMBIGUOUS_REBIND_REQUIRED"]);
 
 /**
@@ -182,6 +182,9 @@ async function activateRole(service, runId, role) {
     returned = await service.wait(runId, web.resume({
       binding:webBinding(record),
       createNewConversation:record.conversationId === null,
+      ...(role === "JUDGE" && run.preparationId && run.conversationId === record.conversationId
+        ? { sourcePreparationSessionId:`web_${run.preparationId}`, focus:record.tabId == null } : {}),
+      ...(run.reviewerTabCleanup?.[role]?.status === "CLOSED" ? { openSavedConversation:true } : {}),
     }));
   } catch (error) {
     const typedError = coordinationError(error);
@@ -351,7 +354,7 @@ async function submitRoleTurn(service, runId, role, requestId, prompt, parseResp
     historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,
       lastObservedAssistantMessageId:response.binding.lastObservedAssistantMessageId } };
   service.update(runId, { conversationBindings:replaceBinding(run.conversationBindings, settled),
-    ...markWebDeliveryAcknowledged(service, runId, requestId) });
+    ...markWebDeliveryAcknowledged(service, runId, requestId, acknowledgement) });
   return response;
 }
 
@@ -385,6 +388,7 @@ async function activateSettledRole(service, runId, role) {
     returned = await waitSettledReviewTurn(service, runId, web.resume({
       binding:webBinding(record),
       createNewConversation:false,
+      ...(run.reviewerTabCleanup?.[role]?.status === "CLOSED" ? { openSavedConversation:true } : {}),
     }));
   } catch (error) {
     const typedError = coordinationError(error);
@@ -410,27 +414,10 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
   const active = { ...binding, activeDeliveryId:discussionId, updatedAt:new Date().toISOString() };
   service.update(runId, { conversationBindings:replaceBinding(service.get(runId).conversationBindings, active) });
   const current = service.get(runId);
-  const data = {
-    kind:"REVIEW_DISCUSSION",
-    role,
-    discussionId,
-    runId,
-    candidateId:current.candidate.candidateId,
-    requirementsRef:current.requirementsRef,
-    objective:current.objective,
-    auditResult:current.auditResult,
-    findings:current.findings,
-    userText:text,
-    priorDiscussion:(current.reviewDiscussions ?? []).filter((item) =>
-      item.candidateId === current.candidate.candidateId && item.role === role && item.status === "DELIVERED")
-      .slice(-10).map(({ discussionId:itemId, text:userText, response, createdAt }) =>
-        ({ discussionId:itemId, userText, response, createdAt })),
-  };
-  const prompt = buildReviewDiscussionPrompt(redactForEvidence(data));
   let handle;
   try {
     handle = await web.submitTurn({
-      runId, turnId:discussionId, controllerMessageId:discussionId, text:prompt,
+      runId, turnId:discussionId, controllerMessageId:discussionId, text, plainText:true,
       timeoutMs:current.policy.turnTimeoutMs,
       parseResponse:(raw) => ({ body:raw, packetText:"", packet:{ type:"REVIEW_DISCUSSION_TEXT" } }),
     });
@@ -464,12 +451,12 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
     }
     latest = service.get(runId); record = bindingForRole(latest, role);
     assertDeliveryOwner(record, returned, discussionId);
-    service.update(runId, { ...markWebDeliveryAcknowledged(service, runId, discussionId), conversationBindings:replaceBinding(latest.conversationBindings, {
+    service.update(runId, { ...markWebDeliveryAcknowledged(service, runId, discussionId, acknowledgement), conversationBindings:replaceBinding(latest.conversationBindings, {
       ...record, activeDeliveryId:null, updatedAt:new Date().toISOString(),
       historyAnchor:{ lastObservedUserMessageId:response.binding.lastObservedUserMessageId,
         lastObservedAssistantMessageId:response.binding.lastObservedAssistantMessageId },
     }) });
-    return { discussionId, role, response:(response.rawText ?? response.text ?? response.body ?? "").trim() };
+    return { discussionId, role, response:response.rawText ?? response.text ?? response.body ?? "" };
   } catch (error) {
     throw Object.assign(new Error(error.message), {
       code:error.code ?? "REVIEW_DISCUSSION_FAILED",
@@ -482,6 +469,8 @@ export async function discussReviewRole(service, runId, { role, discussionId, te
 async function reviewRole(service, runId, workspace, role, auditManifest, phase, sharedArtifacts = []) {
   const restored = restoredReviewForRole(service, runId, role, auditManifest, phase);
   if (restored) return restored;
+  let alternateEnvelope = role === "CRITIC" && phase === "ROUND0"
+    && service.get(runId).reviewRecovery?.alternateEnvelope === true;
   let repairs = 0, feedback = null;
   while (true) {
     service.assertActive(runId);
@@ -496,21 +485,27 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
       try { return { ...item, excerpt:excerpt(service.artifactStore.read(item.contentRef.sha256).toString("utf8"), 1, 80) }; }
       catch (error) { return { ...item, unavailable:error.message }; }
     });
+    const evidenceIds = new Set(evidence.map((item) => item.evidenceId));
+    const evidenceSupplements = (run.supplementResults ?? []).flatMap(({ candidateId, requestId, role, results }) =>
+      (candidateId == null || candidateId === context.candidateId)
+        ? [{ requestId, role, results:(results ?? []).filter((item) => evidenceIds.has(item.evidenceId)) }]
+        : []).filter((item) => item.results.length > 0);
     const data = { role, phase, context, auditManifest, objective:run.objective, candidate:run.candidate,
       userDecisions:(run.userDecisions ?? []).filter((item) => item.candidateId === context.candidateId),
       userReviewDiscussions:(run.reviewDiscussions ?? []).filter((item) =>
         item.candidateId === context.candidateId && item.status === "DELIVERED")
         .map(({ discussionId, role:discussionRole, text, response, createdAt }) =>
           ({ discussionId, role:discussionRole, text, response, createdAt })),
-      candidateDiff, candidateDiffHash, evidence, sharedArtifacts,
+      candidateDiff, candidateDiffHash, evidence, evidenceSupplements, sharedArtifacts,
       registeredVerifications:run.verifications.map(({ verificationId,purpose }) => ({ verificationId,purpose })), feedback };
-    const prompt = buildCodeReviewPrompt(redactForEvidence(data));
+    const prompt = buildCodeReviewPrompt(redactForEvidence(data), { alternateEnvelope });
     const promptRef = service.artifactStore.put(prompt, { mimeType:"text/plain", redacted:true });
-    run = service.update(runId, { stage:repairs ? "REPORT_REPAIR" : "REVIEW_RUNNING", reviewTurnId:requestId,
+    run = service.update(runId, { stage:feedback?.kind === "REPORT_REPAIR" ? "REPORT_REPAIR" : "REVIEW_RUNNING", reviewTurnId:requestId,
       coordination:{ phase, activeRole:role, auditManifestHash:auditManifest.auditManifestHash },
       requests:[...run.requests, { requestId, role, phase, candidateId:context.candidateId,
         auditManifestId:auditManifest.auditManifestId, auditManifestHash:auditManifest.auditManifestHash,
         requirementsRef:context.requirementsRef, patchHash:candidateDiffHash, status:"INTENT", promptRef,
+        ...(alternateEnvelope ? { alternateEnvelope:true } : {}),
         createdAt:new Date().toISOString() }] });
     const response = await submitRoleTurn(service, runId, role, requestId, prompt);
     service.assertActive(runId);
@@ -521,11 +516,21 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
     try {
       report = validateReviewResponse(response, context, role, artifact.reviewArtifactId);
     } catch (error) {
+      const missingEnvelope = error.message === "Controller packet rejected (CONTROLLER_PACKET_MISSING).";
+      if (role === "CRITIC" && missingEnvelope && !alternateEnvelope && repairs < run.policy.maxFormatRepairs) {
+        alternateEnvelope = true;
+        repairs++;
+        feedback = { kind:"REPORT_REPAIR", error:error.message,
+          candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash, candidateDiffHash };
+        continue;
+      }
       feedback = { kind:"REPORT_REPAIR", error:error.message,
         instruction:"Keep the same candidate and auditManifestHash. Return corrected reasoning and final control packet.",
         candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash, candidateDiffHash,
         previousResponse:service.artifactStore.read(artifact.responseRef.sha256).toString("utf8") };
-      if (repairs++ >= run.policy.maxFormatRepairs) throw Object.assign(new Error(error.message), { code:"REPORT_REPAIR_LIMIT" });
+      if (alternateEnvelope || repairs++ >= run.policy.maxFormatRepairs) {
+        throw Object.assign(new Error(error.message), { code:"REPORT_REPAIR_LIMIT" });
+      }
       continue;
     }
     if (report) {
@@ -539,7 +544,9 @@ async function reviewRole(service, runId, workspace, role, auditManifest, phase,
     }
     service.update(runId, { stage:"EVIDENCE_SUPPLEMENT", evidenceRounds:nextEvidenceRound });
     feedback = { kind:"EVIDENCE_RESULTS", results:await supplement(service, runId, workspace, response.packet) };
-    service.update(runId, { supplementResults:[...service.get(runId).supplementResults, { requestId, role, ...feedback }] });
+    service.update(runId, { supplementResults:[...service.get(runId).supplementResults, {
+      requestId, role, candidateId:context.candidateId, auditManifestHash:auditManifest.auditManifestHash, ...feedback,
+    }] });
     if (feedback.results.some((item) => item.status === "NEEDS_USER_DECISION")) throw Object.assign(new Error("Reviewer requires a user decision."), { code:"USER_DECISION_REQUIRED", missingInformation:feedback.results });
     const refreshedManifest = createAuditManifest(service.get(runId));
     if (refreshedManifest.auditManifestHash !== auditManifest.auditManifestHash) {
@@ -753,6 +760,7 @@ export async function auditCandidate(service, runId, workspace) {
       stage:result.decision === "PASS" ? "AWAITING_APPLY" : result.decision === "HOLD" ? "HOLD"
         : run.iteration >= run.policy.maxIterations ? "INCONCLUSIVE" : "REWORK",
       terminationReason:result.decision === "REWORK" && run.iteration >= run.policy.maxIterations ? "ITERATION_LIMIT" : null });
+    await closeSettledReviewerTabs(service, runId);
   } catch (error) {
     const typedError = coordinationError(error);
     if (typedError.code === "AUDIT_MANIFEST_INVALIDATED") {
@@ -776,5 +784,39 @@ export async function auditCandidate(service, runId, workspace) {
       return;
     }
     throw error;
+  }
+}
+
+export async function closeSettledReviewerTabs(service, runId) {
+  const run = service.get(runId);
+  const finalReview = run.reviews.at(-1);
+  const receipts = run.webDeliveryReceipts ?? [];
+  if (!["AWAITING_APPLY", "INCONCLUSIVE"].includes(run.stage) || !["PASS", "REWORK"].includes(finalReview?.decision)
+    || finalReview.candidateId !== run.candidate?.candidateId || run.stopRequested
+    || !REVIEW_ROLES.every(role => finalReview.reviewerRoles?.includes(role))
+    || run.conversationBindings.some(binding => binding.activeDeliveryId)
+    || receipts.some(receipt => !["ACKNOWLEDGED", "RECOVERY_DISCARDED"].includes(receipt.state))) return;
+  for (const role of REVIEW_ROLES) {
+    const current = service.get(runId);
+    if (current.stage !== run.stage || current.candidate?.candidateId !== run.candidate?.candidateId
+      || current.stopRequested || current.conversationBindings.some(binding => binding.activeDeliveryId)) return;
+    const binding = bindingForRole(run, role);
+    const receipt = receipts.findLast(item => item.role === role && item.sessionId === binding.sessionId);
+    if (receipt?.state !== "ACKNOWLEDGED" || receipt.bridgeOwnedTab !== true || !receipt.responseRef?.sha256
+      || receipt.conversationUrl !== binding.conversationUrl
+      || run.reviewerTabCleanup?.[role]?.deliveryId === receipt.deliveryId) continue;
+    const web = service.reviewerWeb(role, binding.provider ?? null);
+    if (typeof web?.closePreparationTab !== "function") continue;
+    let result;
+    try {
+      result = await web.closePreparationTab({ runId, sessionId:binding.sessionId, deliveryId:receipt.deliveryId,
+        tabId:binding.tabId, windowId:binding.windowId, documentId:binding.documentId,
+        conversationId:binding.conversationId, conversationUrl:binding.conversationUrl });
+    } catch (error) { result = { status:"UNCONFIRMED", reason:coordinationError(error).code ?? "CLOSE_UNCONFIRMED" }; }
+    try {
+      const latest = service.get(runId);
+      service.update(runId, { reviewerTabCleanup:{ ...latest.reviewerTabCleanup,
+        [role]:{ ...result, deliveryId:receipt.deliveryId, at:new Date().toISOString() } } });
+    } catch { /* Tab cleanup cannot change a committed audit result. */ }
   }
 }

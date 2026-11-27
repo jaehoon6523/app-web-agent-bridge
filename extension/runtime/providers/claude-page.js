@@ -345,14 +345,16 @@
     throw new PageProviderError("MESSAGE_SEND_FAILED", "Claude send control did not become enabled.", evidence());
   }
 
-  async function submitPrompt(text, signal, { assertCanMutate } = {}) {
+  async function submitPrompt(text, signal, { assertCanMutate, observe } = {}) {
     const composer = await waitForVisible("composer", 30_000, signal);
     assertCanMutate?.();
     composer.element.focus();
     setNativeValue(composer.element, text);
     await sleep(250, signal);
+    observe?.("SEND_CONTROL");
     const sendButton = await waitForEnabledSend(signal);
     assertCanMutate?.();
+    observe?.("SEND_ATTEMPTED");
     sendButton.element.click();
   }
 

@@ -204,16 +204,22 @@ export class CodexProcessManager extends EventEmitter {
       peer?.close(new CodexTransportClosedError("Codex app-server closed by controller"));
       try {
         if (proc) {
+          // Closing the JSONL reader pauses stdout. Drain it so EOF cleanup can finish writing.
+          proc.stdout?.resume();
+          let exitedBeforeDeadline = false;
           try {
             const result = await waitChildClose(proc,this.#ownedProcess.observation,{timeoutMs:3000,
-              request:()=>{if(proc.exitCode===null && proc.signalCode===null)proc.stdin.end();}});
+              request:()=>{if(proc.exitCode===null && proc.signalCode===null)proc.stdin.end();},
+              onDeadline:()=>{exitedBeforeDeadline = proc.exitCode !== null || proc.signalCode !== null;}});
             // An earlier abnormal exit is already surfaced to the run/session.
             // Cleanup still drains its pipes; only our EOF request requires exit 0.
             if (requestedEOF && (result.code !== 0 || result.signal !== null)) throw new CodexTransportClosedError("Codex app-server did not exit cleanly after stdin EOF");
           } catch(error) {
             if(error.code==='CHILD_CLOSE_DEADLINE') {
               proc.stdout?.destroy(); proc.stderr?.destroy();
-              throw new CodexTransportClosedError("Codex app-server did not exit after stdin EOF");
+              throw new CodexTransportClosedError(exitedBeforeDeadline
+                ? "Codex app-server exited but stdio remained open after stdin EOF"
+                : "Codex app-server did not exit after stdin EOF", { cause: error });
             }
             throw error;
           }

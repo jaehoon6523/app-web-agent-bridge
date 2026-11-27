@@ -1,7 +1,14 @@
-import { sha256CanonicalJson } from "../domain/canonical-json.js";
+import { sha256CanonicalJson, sha256Text } from "../domain/canonical-json.js";
 
 export function historyHash(runId, version, recordHash, previousHash) {
   return sha256CanonicalJson({kind:"CODE_CHANGE_HISTORY", runId, version, recordHash, previousHash});
+}
+
+function hasCanonicalKeyOrder(value) {
+  if (value === null || typeof value !== "object") return true;
+  if (Array.isArray(value)) return value.every(hasCanonicalKeyOrder);
+  const keys = Object.keys(value);
+  return keys.every((key, index) => (index === 0 || keys[index - 1] < key) && hasCanonicalKeyOrder(value[key]));
 }
 
 // Iterate within one SQLite snapshot; do not load every cumulative JSON version
@@ -27,10 +34,13 @@ export function verifyHistory(database, current, {migrate = false, checkCancelle
   for (let row = first.get(runId); row; row = next.get(runId, row.version)) {
     checkCancelled();
     version++;
-    const record = JSON.parse(String(row.record_json));
+    const json = String(row.record_json), record = JSON.parse(json);
+    // Check the stored canonical representation before hashing it directly.
+    const recordHash = hasCanonicalKeyOrder(record) && JSON.stringify(record) === json
+      ? sha256Text(json) : sha256CanonicalJson(record);
     const entryHash = historyHash(runId, version, row.record_hash, previousHash);
     if (row.run_id !== runId || Number(row.version) !== version || record.runId !== runId
-      || record.version !== version || sha256CanonicalJson(record) !== row.record_hash
+      || record.version !== version || recordHash !== row.record_hash
       || (!legacy && (row.previous_hash !== previousHash || row.entry_hash !== entryHash))) {
       throw new Error("Code change history integrity check failed.");
     }

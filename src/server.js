@@ -5,8 +5,12 @@ import { diagnosticFailure } from "./diagnostics/diagnostic-schema.js";
 import { createAutomaticAgentReport } from "./diagnostics/agent-report.js";
 import { ResourceClosureError, isResourceClosureFailure } from "./persistence/resource-closure.js";
 import { PreparationService } from "./orchestration/preparation-service.js";
+import { readSettledRoleAssessments } from "./orchestration/review-response-recovery.js";
+import { hasPersistedWorkForAbandonment } from "./persistence/abandonment-safety.js";
+import { historyWorkerClosureEvidence } from "./persistence/code-change-history-job.js";
 import { installDeliveryOwnershipInspection } from "./orchestration/delivery-ownership.js";
-import { createDeliveryRecoveryActions } from "./orchestration/delivery-recovery-actions.js";
+import { assertQueuedPreparationAck, createDeliveryRecoveryActions } from "./orchestration/delivery-recovery-actions.js";
+import { randomUUID } from "node:crypto";
 import { createExtensionIdentityPairing } from "./runtime/web/extension-pairing.js";
 import { collectSelectorDiagnostics } from "./orchestration/selector-diagnostics.js";
 import { handleMessageDomInspection } from "./orchestration/message-dom-inspection.js";
@@ -21,6 +25,7 @@ import process from "node:process";
 import { performance } from "node:perf_hooks";
 import express from "express";
 import { WebSocket, WebSocketServer } from "ws";
+import { installDecisionEvidenceStorage } from "./evidence/decision-evidence-store.js";
 import { loadConfig } from "./config.js";
 import { AuditProjectSettings } from "./orchestration/audit-project-settings.js";
 import { defaultReviewerConfiguration } from "./orchestration/reviewer-settings.js";
@@ -36,6 +41,9 @@ import { nowIso } from "./utils.js";
 import { DashboardController } from "./orchestration/dashboard-controller.js";
 import { redactForEvidence } from "./security/redaction.js";
 import { canonicalJson } from "./domain/canonical-json.js";
+import { hasUnsettledDeliveries, observeExtensionRelease, reloadExtension } from "./runtime/web/live-update.js";
+import { runPlainWorkerLoop } from "./orchestration/plain-worker-loop.js";
+import { realpath } from "node:fs/promises";
 
 const filename = fileURLToPath(import.meta.url);
 const dirname = path.dirname(filename);
@@ -95,12 +103,17 @@ export function createBridgeServer({
     ? new WebExtensionTransport({ ...runtimeConfig.webExtension,
         expectedExtensionIdentity: extensionPairing.identity })
     : null;
+  if (extensionTransport) installDecisionEvidenceStorage(extensionTransport,
+    path.join(runtimeConfig.workspace ?? process.cwd(), ".agent-controller"),
+    receipt => console.info("[bridge:decision-evidence]", receipt));
   const webSession = extensionTransport
     ? new ChatGptWebSessionAdapter({
         transport: extensionTransport,
         responseTimeoutMs: runtimeConfig.relay.webResponseTimeoutMs,
       })
     : null;
+  const plainWorkerMode = process.env.BRIDGE_ISOLATED_PLAIN_WORKER === "1";
+  let plainWorkerRun = null;
   const reviewerWebProviders = extensionTransport && webSession
     ? createReviewerWebProviderSessions({
         transport:extensionTransport,
@@ -153,12 +166,36 @@ export function createBridgeServer({
   let liveRuntime = null;
   let liveRuntimePromise = null;
   const runtimeClosureFailures = [];
+  let runtimeAttempt = 0;
   let closing = false;
+  let updating = false;
+  let autoAckInFlight = false;
+  let lastAutoAckAttempt = null;
+  let preparationAckEvidence = null;
+  let dashboardMutations = 0;
+  const extensionRelease = observeExtensionRelease(extensionTransport);
+  const releaseStatus = () => ({
+    serverVersion:process.env.BRIDGE_MANAGED_RELEASE ?? null,
+    serverProcessId:process.pid,
+    extensionVersion:extensionRelease()?.version ?? null,
+    extensionBootId:extensionRelease()?.bootId ?? null,
+    runtimeReady:liveRuntime !== null && preparationService !== null,
+  });
   const runtimeInitialization = new AbortController();
 
-  function retainRuntimeClosureFailure(error) {
+  function retainRuntimeClosureFailure(error, attempt) {
     if (error?.code === "LIVE_RUNTIME_CLEANUP_FAILED" && isResourceClosureFailure(error)
-      && !runtimeClosureFailures.includes(error)) runtimeClosureFailures.push(error);
+      && !runtimeClosureFailures.includes(error)) {
+      runtimeClosureFailures.push(error);
+      diagnostics.emit("runtime.initialization.closure", {
+        attempt,
+        operationCode:diagnosticErrorCode(error.operationError),
+        resources:error.resourceFailures.map(failure => ({
+          owner:failure.resourceOwner, stage:failure.failureStage, code:diagnosticErrorCode(failure.error),
+          closureEvidence:failure.closureEvidence ?? null,
+        })),
+      });
+    }
   }
 
   async function getLiveRuntime() {
@@ -174,7 +211,8 @@ export function createBridgeServer({
       return liveRuntime;
     }
     if (liveRuntimePromise === null) {
-      diagnostics.emit("runtime.initialization.started");
+      const attempt = ++runtimeAttempt;
+      diagnostics.emit("runtime.initialization.started", {attempt});
       let initialization;
       try {
         initialization = createLiveRuntime({
@@ -185,20 +223,20 @@ export function createBridgeServer({
           onDiagnostic:event => diagnostics.emit(event.type, event),
         });
       } catch (error) {
-        retainRuntimeClosureFailure(error);
-        diagnostics.emit("runtime.initialization.failed",{code:diagnosticErrorCode(error)});
+        retainRuntimeClosureFailure(error, attempt);
+        diagnostics.emit("runtime.initialization.failed",{attempt, code:diagnosticErrorCode(error)});
         throw error;
       }
       liveRuntimePromise = initialization
         .then((runtime) => {
           liveRuntime = runtime;
-          diagnostics.emit("runtime.initialization.completed");
+          diagnostics.emit("runtime.initialization.completed", {attempt});
           return runtime;
         })
         .catch((error) => {
           // Operation rejection alone does not prove failed resource closure.
-          retainRuntimeClosureFailure(error);
-          diagnostics.emit("runtime.initialization.failed",{code:diagnosticErrorCode(error)});
+          retainRuntimeClosureFailure(error, attempt);
+          diagnostics.emit("runtime.initialization.failed",{attempt, code:diagnosticErrorCode(error)});
           throw error;
         })
         .finally(() => {
@@ -277,6 +315,17 @@ export function createBridgeServer({
     try {
       verifyDashboardOrigin(req.get("origin"));
       verifyDashboardAuthorization(req.get("authorization"));
+      if (updating || autoAckInFlight || plainWorkerRun?.status === "RUNNING") return res.status(503).json({code:"RUN_BUSY", message:"Bridge가 작업 또는 전송 상태를 확인하고 있습니다."});
+      dashboardMutations++;
+      let pending = true;
+      const finished = () => {
+        if (!pending) return;
+        pending = false;
+        dashboardMutations--;
+        if (preparationAckEvidence?.pending && !dashboardMutations) scheduleAutoAck();
+      };
+      res.once("finish", finished);
+      res.once("close", finished);
       next();
     } catch (error) {
       sendDashboardAuthFailure(res, error, 401);
@@ -291,7 +340,14 @@ export function createBridgeServer({
     transport: extensionTransport,
   });
   const commandReceipts = new Map();
+  let invalidAbandonmentInFlight = false;
+  let deliveryRecoveryInFlight = 0;
+  const runBusy = () => Object.assign(new Error("진행 중인 작업을 먼저 종료하세요."), {code:"RUN_BUSY"});
   let preparationService = null;
+  async function prepareManagedRelease() {
+    await getLiveRuntime();
+    preparations();
+  }
   function preparations() {
     if (closing) throw Object.assign(new Error("Server is shutting down."), {code:"SERVER_CLOSING"});
     if (preparationService) return preparationService;
@@ -303,16 +359,35 @@ export function createBridgeServer({
         onFailure:event => {void agentReport.incident(event,"PREPARATION_SERVICE","PREPARE");},
         web: webSession,
         available: () => Boolean(extensionTransport?.authenticated),
-        assertStart: async () => {
+        checkTarget: GitChangeWorkspace.checkTarget,
+        /** @param {string | null} conversationUrl
+         * @param {{preparationOnly?: boolean, targetRoot?: string}} [options]
+         */
+        assertStart: async (conversationUrl, { preparationOnly = false, targetRoot } = {}) => {
           const live = await getLiveRuntime();
-          if (dashboard.isDispatching() || live.codeChanges?.busy() || live.store.listRuns().some((r) => !isTerminalRunPhase(r.phase))) {
-            throw Object.assign(new Error("진행 중인 작업을 먼저 종료하세요."), { code: "RUN_BUSY" });
+          if (live.codeChanges?.pendingReviewFor(conversationUrl)) {
+            throw Object.assign(new Error("이 대화에 미확인 검토 전송이 있습니다. 기존 전송 상태를 확인하거나 다른 대화를 선택하세요."),
+              { code:"REVIEW_DELIVERY_PENDING" });
           }
+          if (dashboard.preparationBlocked(live, { preparationOnly, targetRoot })) throw runBusy();
+        },
+        assertInvalidAbandonment: () => {
+          if (liveRuntimePromise || runtimeClosureFailures.some(error => error.resourceFailures.length === 0
+            || error.resourceFailures.some(failure => !historyWorkerClosureEvidence(failure.error)))) {
+            throw Object.assign(new Error("Runtime initialization or resource closure has an unconfirmed owner."),
+              {code:"ABANDONMENT_OWNER_UNCONFIRMED"});
+          }
+          if (closing || dashboard.isDispatching() || deliveryRecoveryInFlight
+            || [...commandReceipts.values()].some(receipt => !receipt.completed)
+            || liveRuntime?.codeChanges?.jobs?.size || liveRuntime?.codeChanges?.workers?.size
+            || liveRuntime?.codeChanges?.reviewerWebBusy?.() || webSession?.activeTurnId
+            || hasPersistedWorkForAbandonment(runtimeConfig.persistence.databasePath)) throw runBusy();
         },
         findRun: async (id) => (await getLiveRuntime()).codeChanges?.get(id) ?? null,
         approve: async (context) => {
           const live = await getLiveRuntime();
           if (!live.codeChanges || !livePreflight().readyForDiscussion) throw new Error("CLI와 웹 연결 상태를 확인하세요.");
+          if (dashboard.preparationBlocked(live, { targetRoot:context.targetRoot })) throw runBusy();
           const repository = GitChangeWorkspace.prepareTarget(context.targetRoot);
           const projectId = context.preparationId;
           const project = {
@@ -343,17 +418,120 @@ export function createBridgeServer({
   }
 
 
-  const deliverySources = async () => {
+  const readDeliverySources = (live) => {
     const contexts = Object.values(preparations().data.contexts);
-    const live = await getLiveRuntime();
     return { contexts, runs: live.codeChanges?.list() ?? [], discussionStore: live.store };
   };
+  function webOperationBusy(live, ownMutations = 0) {
+    return closing || updating || autoAckInFlight || dashboardMutations > ownMutations
+      || plainWorkerRun?.status === "RUNNING" || dashboard.isDispatching() || deliveryRecoveryInFlight
+      || invalidAbandonmentInFlight || pairingMutation || [...commandReceipts.values()].some(receipt => !receipt.completed)
+      || preparations().jobs.size || live.codeChanges?.jobs.size || live.codeChanges?.workers.size
+      || live.codeChanges?.reviewerWebBusy() || webSession?.activeTurnId;
+  }
+  async function recoverStoredAck(live) {
+    const peer = extensionRelease();
+    if (!peer?.bootId || !extensionTransport.responsive || webOperationBusy(live)) return;
+    const candidates = readDeliverySources(live).runs.flatMap(run => (run.conversationBindings ?? []).flatMap(binding => {
+      const id = binding.activeDeliveryId;
+      return id && run.reviewDiscussions?.some(item => item.discussionId === id && item.status === "UNCONFIRMED")
+        && run.webDeliveryReceipts?.some(item => item.deliveryId === id && item.state === "ACK_PENDING")
+        ? [{ currentDeliveryId:id, runId:run.runId, sessionId:binding.sessionId, conversationUrl:binding.conversationUrl }]
+        : [];
+    }));
+    const service = preparations(), preparation = service.current, session = preparation?.webSession;
+    const delivery = preparation?.lifecycle === "ACTIVE"
+      ? preparation.deliveries.find(item => item.deliveryId === session.activeDeliveryId
+        && item.cancelRequestedAt && item.processingState === "ACK_PENDING" && item.response?.rawText)
+      : null;
+    const queued = delivery && session.conversationUrl
+      ? { currentDeliveryId:delivery.deliveryId, runId:preparation.preparationId,
+        sessionId:session.sessionId, conversationUrl:session.conversationUrl }
+      : null;
+    if (candidates.length + Number(Boolean(queued)) !== 1) return;
+    const target = queued ?? candidates[0];
+    const evidence = preparationAckEvidence;
+    const revision = queued && evidence?.deliveryId === queued.currentDeliveryId ? evidence.revision : 0;
+    const attempt = queued ? `preparation:${queued.currentDeliveryId}:${peer.bootId}:${revision}`
+      : `advisory:${target.currentDeliveryId}:${peer.bootId}`;
+    if (attempt === lastAutoAckAttempt) return;
+    if (revision) evidence.pending = false;
+    autoAckInFlight = true;
+    lastAutoAckAttempt = attempt;
+    try {
+      if (queued) {
+        const snapshot = await deliveryRecovery.inspect(queued);
+        assertQueuedPreparationAck(snapshot, delivery.response.rawText);
+        if (extensionRelease()?.bootId !== peer.bootId) {
+          throw Object.assign(new Error("The extension reconnected during ACK verification."), {code:"EXTENSION_CHANGED"});
+        }
+        await service.execute("web.reconcile", {
+          requestId:randomUUID(), preparationId:queued.runId, expectedVersion:preparation.version,
+          sessionId:queued.sessionId, conversationId:session.conversationId,
+          conversationUrl:queued.conversationUrl, deliveryId:queued.currentDeliveryId,
+        });
+      } else {
+        await deliveryRecovery.acknowledge(target, {automatic:true});
+      }
+      console.info("[bridge.ack]", JSON.stringify({status:"RECOVERED", deliveryId:target.currentDeliveryId}));
+    } catch (error) {
+      console.info("[bridge.ack]", JSON.stringify({status:"DEFERRED", deliveryId:target.currentDeliveryId,
+        code:error.code ?? "ACK_UNCONFIRMED"}));
+    } finally {
+      autoAckInFlight = false;
+      if (preparationAckEvidence && preparationAckEvidence !== evidence) scheduleAutoAck();
+    }
+  }
+  async function prepareUpdate(version) {
+    const live = await getLiveRuntime();
+    const peer = extensionRelease();
+    if (!peer || peer.reloadProtocol !== 1 || !peer.bootId || !extensionTransport.responsive) {
+      return {status:"BUSY", reason:"EXTENSION_NOT_READY"};
+    }
+    if (!webOperationBusy(live) && hasUnsettledDeliveries(readDeliverySources(live))) await recoverStoredAck(live);
+    if (webOperationBusy(live) || hasUnsettledDeliveries(readDeliverySources(live))) {
+      return {status:"BUSY", reason:"ACTIVE_WORK_OR_DELIVERY"};
+    }
+    if (extensionRelease()?.bootId !== peer.bootId) return {status:"BUSY", reason:"EXTENSION_NOT_READY"};
+    updating = true;
+    try {
+      const result = await reloadExtension(extensionTransport, peer, version);
+      if (result.status !== "RELOADED") updating = false;
+      return result;
+    } catch (error) {
+      updating = false;
+      throw error;
+    }
+  }
+  const deliverySources = async () => readDeliverySources(await getLiveRuntime());
   let pairingMutation = false;
-  app.get("/api/extension-pairing", requireDashboardRead, (_req, res) => {
+  async function pairingOwnerBusy() {
+    if (extensionTransport.authenticated || dashboard.isDispatching()) return true;
+    const live = await getLiveRuntime();
+    const { contexts, runs, discussionStore } = readDeliverySources(live);
+    return extensionTransport.authenticated || dashboard.isDispatching()
+      || preparations().busy || contexts.some(context => context.webSession?.activeDeliveryId
+        || (context.deliveries ?? []).some(delivery => delivery.processingState === "ACK_PENDING"))
+      || runs.some(run => (run.conversationBindings ?? []).some(binding => binding.activeDeliveryId)
+        || (run.webDeliveryReceipts ?? []).some(receipt => receipt.state === "ACK_PENDING"))
+      || (discussionStore?.listRuns?.() ?? []).some(run => !isTerminalRunPhase(run.phase)
+        || discussionStore.listAgentSessions(run.runId).some(session => session.activeTurnId))
+      || preparations().jobs.size || live.codeChanges?.jobs.size || live.codeChanges?.workers.size
+      || live.codeChanges?.busy() || live.codeChanges?.reviewerWebBusy();
+  }
+  app.get("/api/extension-pairing", requireDashboardRead, async (_req, res) => {
     if (!extensionPairing || !extensionTransport) return res.status(503).json({ code: "PAIRING_UNAVAILABLE" });
+    const candidate = extensionTransport.pendingPairing;
+    let approvalAvailable = false;
+    if (candidate && !pairingMutation) {
+      try {
+        approvalAvailable = !(await pairingOwnerBusy()) && !pairingMutation
+          && extensionTransport.pendingPairing?.identity === candidate.identity;
+      } catch { /* Approval requires a readable ownership state. */ }
+    }
     res.json({ status: extensionTransport.authenticated ? "CONNECTED" : extensionTransport.pendingPairing ? "PENDING" : "NONE",
       currentIdentity: extensionPairing.identity, candidate: extensionTransport.pendingPairing,
-      authenticated: extensionTransport.authenticated });
+      authenticated: extensionTransport.authenticated, approvalAvailable });
   });
   app.post("/api/extension-pairing", requireDashboardMutation, async (req, res) => {
     if (!extensionPairing || !extensionTransport) return res.status(503).json({ code: "PAIRING_UNAVAILABLE" });
@@ -366,20 +544,7 @@ export function createBridgeServer({
         || req.body?.unresolvedStateConfirmed !== true) {
         throw Object.assign(new Error("The verified candidate or operator confirmation changed."), { code: "PAIRING_CHANGED" });
       }
-      if (extensionTransport.authenticated || dashboard.isDispatching()) {
-        throw Object.assign(new Error("An extension or controller operation is active."), { code: "WEB_SESSION_BUSY" });
-      }
-      const { contexts, runs, discussionStore } = await deliverySources();
-      const live = await getLiveRuntime();
-      if (preparations().busy || contexts.some(context => context.webSession?.activeDeliveryId)
-        || contexts.some(context => (context.deliveries ?? []).some(delivery =>
-          delivery.processingState === "ACK_PENDING"))
-        || runs.some(run => (run.conversationBindings ?? []).some(binding => binding.activeDeliveryId))
-        || runs.some(run => (run.webDeliveryReceipts ?? []).some(receipt => receipt.state === "ACK_PENDING"))
-        || (discussionStore?.listRuns?.() ?? []).some(run => !isTerminalRunPhase(run.phase)
-          || discussionStore.listAgentSessions(run.runId).some(session => session.activeTurnId))
-        || preparations().jobs.size || live.codeChanges?.jobs.size || live.codeChanges?.workers.size
-        || live.codeChanges?.busy() || live.codeChanges?.reviewerWebBusy()) {
+      if (await pairingOwnerBusy()) {
         throw Object.assign(new Error("An active delivery or operation prevents extension pairing."), { code: "WEB_SESSION_BUSY" });
       }
       if (extensionTransport.pendingPairing?.identity !== candidate.identity) {
@@ -400,6 +565,31 @@ export function createBridgeServer({
       observe: record => agentReport?.observeRecovery(record),
     }),
     getServices: async () => ({ preparationService: preparations(), codeChanges: (await getLiveRuntime()).codeChanges }) });
+  function scheduleAutoAck() {
+    setImmediate(() => {
+      if (closing) return;
+      void getLiveRuntime().then(recoverStoredAck).catch(() => {});
+    });
+  }
+  extensionTransport?.on("state", state => {
+    if (!state.authenticated) {
+      preparationAckEvidence = null;
+      if (lastAutoAckAttempt?.startsWith("preparation:")) lastAutoAckAttempt = null;
+    }
+  });
+  extensionTransport?.on("message", message => {
+    if (message.type === "extension.hello") scheduleAutoAck();
+    if (message.type !== "extension.delivery.evidence-changed") return;
+    const { deliveryId, runId, sessionId, revision } = message.payload ?? {};
+    const current = preparationService?.current;
+    if (!deliveryId || !sessionId || current?.lifecycle !== "ACTIVE"
+      || runId !== current.preparationId || sessionId !== current.webSession.sessionId
+      || deliveryId !== current.webSession.activeDeliveryId
+      || !current.deliveries.some(delivery => delivery.deliveryId === deliveryId && delivery.cancelRequestedAt)
+      || !Number.isSafeInteger(revision) || revision <= (preparationAckEvidence?.revision ?? 0)) return;
+    preparationAckEvidence = { deliveryId, revision, pending:true };
+    scheduleAutoAck();
+  });
 
   function requireDashboardRead(req, res, next) {
     try {
@@ -462,12 +652,18 @@ export function createBridgeServer({
     catch (error) { await agentReport.deliveryFailure(error); res.status(503).json({ code: "DELIVERY_INSPECTION_UNAVAILABLE", error: "전송 기록을 확인할 수 없습니다. 기록을 보존했습니다." }); }
   });
   app.post("/api/delivery-review/discard", requireDashboardMutation, async (req, res) => {
+    if (invalidAbandonmentInFlight) { res.status(409).json({code:"RUN_BUSY"}); return; }
+    deliveryRecoveryInFlight++;
     try { res.json(await deliveryRecovery.discard(req.body)); }
     catch (error) { res.status(409).json({ code: error.code ?? "DELIVERY_RECOVERY_FAILED", error: redactForEvidence(error.message) }); }
+    finally { deliveryRecoveryInFlight--; }
   });
   app.post("/api/delivery-review/ack", requireDashboardMutation, async (req, res) => {
+    if (invalidAbandonmentInFlight) { res.status(409).json({code:"RUN_BUSY"}); return; }
+    deliveryRecoveryInFlight++;
     try { res.json(await deliveryRecovery.acknowledge(req.body)); }
     catch (error) { res.status(409).json({ code: error.code ?? "ACK_UNCONFIRMED", error: redactForEvidence(error.message) }); }
+    finally { deliveryRecoveryInFlight--; }
   });
 
   app.post("/api/project/folder", requireDashboardMutation, async (_req, res) => {
@@ -480,14 +676,20 @@ export function createBridgeServer({
     }));
   }
   const preparationRoute = (type) => async (req, res) => {
+    let ownsAbandonment = false;
     try {
       const input = { ...req.body, ...(req.params.id ? { preparationId: req.params.id } : {}) };
       const command = type === "web" ? input.command : type;
       if (typeof command !== "string" || (type === "web" && !["web.inspect", "web.focus", "web.stop", "web.reconcile", "web.rebind"].includes(command))) {
         throw Object.assign(new Error("Invalid Web command."), { code: "INVALID_COMMAND" });
       }
+      if (type === "preparation.discard" && input.abandonInvalidResponseConfirmed === true) {
+        if (invalidAbandonmentInFlight) throw runBusy();
+        ownsAbandonment = invalidAbandonmentInFlight = true;
+      }
       diagnostics.stage(req, "preparation.mutation.started");
       const result = await preparations().execute(command, input);
+      if (type === "preparation.cancel" && result.lifecycle === "ACTIVE") res.once("finish", scheduleAutoAck);
       diagnostics.stage(req, "preparation.mutation.completed");
       res.status(type === "preparation.start" || type === "preparation.reply" ? 202 : 200).json(result);
     } catch (error) {
@@ -498,8 +700,52 @@ export function createBridgeServer({
         preparationId: preparationService?.current?.preparationId ?? null,
         runId: preparationService?.current?.resultingRunId ?? null, details: error.details ?? null,
       });
+    } finally {
+      if (ownsAbandonment) invalidAbandonmentInFlight = false;
     }
   };
+  if (webSession) {
+    app.get("/api/plain-worker-loop", requireDashboardRead, (_req, res) => {
+      res.json({ run: plainWorkerRun });
+    });
+    app.post("/api/plain-worker-loop", requireDashboardMutation, async (req, res) => {
+      const { objective, targetRoot } = req.body ?? {};
+      if (typeof objective !== "string" || !objective.trim() || objective.length > 16_000
+        || typeof targetRoot !== "string" || !path.isAbsolute(targetRoot)) {
+        return res.status(400).json({ code: "INVALID_PLAIN_WORKER_INPUT" });
+      }
+      const workspace = await realpath(targetRoot).catch(() => null);
+      if (!workspace) return res.status(400).json({ code: "INVALID_PLAIN_WORKER_PROJECT" });
+      if (plainWorkerMode && workspace !== await realpath(runtimeConfig.workspace)) {
+        return res.status(400).json({ code: "ISOLATED_PROJECT_MISMATCH" });
+      }
+      if (!extensionTransport?.authenticated || !webSession) {
+        return res.status(409).json({ code: "EXTENSION_NOT_AUTHENTICATED" });
+      }
+      const live = await getLiveRuntime();
+      if (webOperationBusy(live, 1) || hasUnsettledDeliveries(readDeliverySources(live))) {
+        return res.status(409).json({ code: "PLAIN_WORKER_BUSY", message: "기존 작업 또는 전송이 진행 중입니다." });
+      }
+      const run = { status: "RUNNING", runId: null, turns: [] };
+      plainWorkerRun = run;
+      const directory = path.join(path.dirname(runtimeConfig.persistence.databasePath), `plain-worker-${randomUUID()}`);
+      runPlainWorkerLoop({ web: webSession, config: { ...runtimeConfig, workspace }, objective: objective.trim(), directory,
+        onTurn: turn => { run.runId = turn.runId; run.turns.push(turn); },
+      }).then(runId => {
+        run.runId = runId;
+        run.status = "COMPLETED";
+      }, error => {
+        console.error("[bridge:plain-worker]", error);
+        run.status = "FAILED";
+        run.error = error.code ?? "PLAIN_WORKER_FAILED";
+      });
+      return res.status(202).json({ run });
+    });
+  }
+  if (plainWorkerMode) {
+    app.post(["/api/commands", "/api/preparations", "/api/preparations/web", "/api/preparations/:id/:action"],
+      requireDashboardMutation, (_req, res) => res.status(409).json({ code: "ISOLATED_PLAIN_WORKER_ONLY" }));
+  }
   app.post("/api/preparations", requireDashboardMutation, preparationRoute("preparation.start"));
   app.post("/api/preparations/tab-focus", requireDashboardMutation, async (req, res) => {
     try { res.json(await preparations().focusCandidateTab(req.body ?? {})); }
@@ -519,9 +765,13 @@ export function createBridgeServer({
 
   app.post("/api/commands", requireDashboardMutation, async (req, res) => {
     try {
+      if (invalidAbandonmentInFlight) throw runBusy();
       if (!req.body || typeof req.body.type !== "string" || typeof req.body.requestId !== "string") {
         res.status(400).json({ error: "Command type and requestId are required." });
         return;
+      }
+      if (/^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(req.body.requestId)) {
+        diagnostics.stage(req, "command.request.correlated", {commandRequestId:req.body.requestId});
       }
       if (req.body.type === "run.start") throw new Error("작업 시작은 준비 합의 승인으로만 가능합니다.");
       const requestHash = canonicalJson(req.body);
@@ -546,6 +796,7 @@ export function createBridgeServer({
       const payload = await receipt.result;
       res.json({ type: "command.result", requestId: req.body.requestId, payload });
     } catch (error) {
+      if (error.code === "REVIEW_DISCUSSION_UNCONFIRMED") res.once("finish", scheduleAutoAck);
       res.status(error.code === "RUN_VERSION_CONFLICT" || error.code === "RUN_BUSY" ? 409 : 400)
         .json({ type: "command.error", requestId: req.body?.requestId,
           payload: { message: redactForEvidence(error.message), code: error.code || "COMMAND_FAILED" } });
@@ -559,6 +810,13 @@ export function createBridgeServer({
     const webReady = preflight.checks.extensionAuthenticated && web?.sessionReady === true;
     const bound = webReady && web?.binding?.bindingStatus === "BOUND";
     const discussionRuntimeReady = Boolean(codexReady && bound);
+    const preparation = preparationService?.current;
+    const activePreparation = preparation?.lifecycle === "ACTIVE" ? preparation : null;
+    const preparationBinding = webReady && activePreparation
+      && web?.binding?.runId === activePreparation.preparationId
+      && web.binding.sessionId === activePreparation.webSession.sessionId
+      && ["ROOT_READY", "BOUND"].includes(web.binding.bindingStatus)
+      ? web.binding.bindingStatus : null;
     res.json({
       ok: true,
       at: nowIso(),
@@ -573,7 +831,14 @@ export function createBridgeServer({
       liveSessionBindingReady: Boolean(bound),
       discussionRuntimeReady,
       liveOrchestrationReady: discussionRuntimeReady,
+      discussionCodexStatus:liveRuntime?.manager?.status ?? "ON_DEMAND",
+      preparation: {
+        dependenciesReady:liveRuntime !== null && preparationService !== null && preflight.checks.extensionAuthenticated,
+        tabStatus:!preflight.checks.extensionAuthenticated ? "EXTENSION_DISCONNECTED"
+          : preparationBinding ?? (activePreparation ? "BINDING_UNCONFIRMED" : "BINDS_ON_START"),
+      },
       webConnected: preflight.checks.extensionAuthenticated,
+      release:releaseStatus(),
       liveCompositionConfigured: preflight.checks.discussionCodexExecutableConfigured,
     });
   });
@@ -583,6 +848,24 @@ export function createBridgeServer({
   app.post("/api/runs/start", requireDashboardMutation, (_req, res) => res.status(410).json({
     code: "PREPARATION_API_REQUIRED", message: "Start a run by approving a preparation.",
   }));
+  app.get("/api/review-assessments", requireDashboardRead, async (req, res) => {
+    const {runId, candidateId, reviewId} = req.query;
+    if (![runId, candidateId, reviewId].every(value => typeof value === "string" && value.length > 0 && value.length <= 200)) {
+      return res.status(400).json({error:"A run, candidate and review must be specified."});
+    }
+    res.set("Cache-Control", "no-store");
+    try {
+      const service = (await getLiveRuntime()).codeChanges;
+      const run = service?.get(runId);
+      const review = run?.reviews?.at(-1);
+      if (!run || run.candidate?.candidateId !== candidateId || review?.reviewId !== reviewId
+        || review.candidateId !== candidateId) return res.status(404).json({error:"Review not found for the current candidate."});
+      const result = readSettledRoleAssessments(service, run, review);
+      return res.json({runId, candidateId, reviewId, auditManifestHash:review.auditManifestHash, ...result});
+    } catch {
+      return res.status(503).json({error:"Review assessments are unavailable."});
+    }
+  });
   app.get("/api/state", requireDashboardRead, async (req, res) => {
     try {
       if (req.query.runId !== undefined && typeof req.query.runId !== "string") {
@@ -592,7 +875,8 @@ export function createBridgeServer({
       const service = preparations();
       diagnostics.emit("state.snapshot.started");
       const baseSnapshot = await dashboard.snapshot(req.query.runId || null,
-        event => diagnostics.stage(req, event.type, event));
+        event => diagnostics.stage(req, event.type, event),
+        service.current?.lifecycle === "ACTIVE" ? service.current.targetRoot : undefined);
       diagnostics.emit("state.snapshot.completed");
       diagnostics.emit("state.projection.started");
       const snapshot = await service.project(baseSnapshot,
@@ -607,9 +891,10 @@ export function createBridgeServer({
             const live = await getLiveRuntime();
             const receipt = live.codeChanges?.store?.receipt(req.query.requestId);
             if (receipt) {
+              const settled = receipt.status === "COMPLETED";
               snapshot.requestResult = {
                 requestId:req.query.requestId,
-                status:receipt.status === "COMPLETED" ? "COMPLETED" : "PROCESSING",
+                status:settled ? (JSON.parse(String(receipt.result_json)).error ? "FAILED" : "COMPLETED") : "PROCESSING",
               };
             }
           }
@@ -808,6 +1093,9 @@ export function createBridgeServer({
     server,
     webSession,
     socketInventory:diagnostics.socketInventory,
+    prepareUpdate,
+    releaseStatus,
+    prepareManagedRelease,
   });
 }
 
@@ -824,6 +1112,7 @@ export async function main(runtimeConfig = undefined, { onDiagnostic } = {}) {
   }
   const pendingStages = new Set(), failedStages = new Set();
   const report = event => {
+    if (event.type === "runtime.initialization.closure") console.error(`[bridge.runtime] ${JSON.stringify(event)}`);
     if (event.type.startsWith("shutdown.")) {
       if (event.type === "shutdown.stage.start") pendingStages.add(event.stage);
       if (event.type === "shutdown.stage.done" || event.type === "shutdown.stage.error") pendingStages.delete(event.stage);
@@ -894,6 +1183,18 @@ export async function main(runtimeConfig = undefined, { onDiagnostic } = {}) {
   const onSigterm = () => void gracefulShutdown("SIGTERM");
   const onProcessMessage = message => {
     if (message && typeof message === "object" && "type" in message && message.type === "bridge.shutdown") void gracefulShutdown("IPC");
+    if (!process.env.BRIDGE_MANAGED_RELEASE || !message || typeof message !== "object") return;
+    if (message.type === "bridge.update" && typeof message.version === "string"
+      && /^\d+(?:\.\d+){1,3}$/u.test(message.version)) {
+      void bridge.prepareUpdate(message.version).then(result => {
+        process.send?.({type:"bridge.update.result", version:message.version, ...result});
+        if (result.status === "RELOADED") void gracefulShutdown("UPDATE");
+      }).catch(error => process.send?.({type:"bridge.update.result", version:message.version, status:"FAILED", reason:error.message}));
+    }
+    if (message.type === "bridge.release") {
+      void bridge.prepareManagedRelease().then(() => process.send?.({type:"bridge.release.status", ...bridge.releaseStatus()}))
+        .catch(() => process.send?.({type:"bridge.release.status", ...bridge.releaseStatus()}));
+    }
   };
   process.once("SIGINT", onSigint);
   process.once("SIGTERM", onSigterm);

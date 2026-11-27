@@ -5,6 +5,7 @@ import { verifyHistories } from "./code-change-history.js";
 const cancellation = new Int32Array(workerData.cancellation);
 let database, transaction = false, verifiedVersions = 0;
 let verified, failure;
+let databaseClosed = false;
 const cleanup = [];
 const fixedErrorMessages = new Set([
   "Code change history has missing versions.",
@@ -42,10 +43,17 @@ try {
   failure = error;
 } finally {
   try { if (transaction) database.exec("ROLLBACK"); } catch (error) { cleanup.push(error); }
-  try { database?.close(); } catch (error) { cleanup.push(error); }
+  try {
+    if (database) {
+      database.close();
+      databaseClosed = true;
+    }
+  } catch (error) { cleanup.push(error); }
   const errors = [failure, ...cleanup].filter(error => error !== undefined);
   const error = cleanup.length ? {message:"Code change history operation and cleanup failed.",
     code:"CODE_CHANGE_HISTORY_CLEANUP_FAILED", errors:errors.map(safeError)} : failure && safeError(failure);
-  parentPort.postMessage(error ? {ok:false, error, cleanupFailed:cleanup.length > 0} : {ok:true, verified});
+  parentPort.postMessage(error
+    ? {ok:false, error, cleanupFailed:cleanup.length > 0, databaseClosed}
+    : {ok:true, verified});
   parentPort.close();
 }

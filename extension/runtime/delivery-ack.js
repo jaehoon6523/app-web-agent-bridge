@@ -1,6 +1,6 @@
 import { errorPayload } from "./document-binding.js";
 
-export async function handleDeliveryAcknowledgement({ store, turnGate, message, send, broadcastPopupState }) {
+export async function handleDeliveryAcknowledgement({ store, turnGate, message, send, broadcastPopupState, ownsPreparationTab = null }) {
   let held;
   try {
     held = turnGate?.reserve(message.requestId);
@@ -19,6 +19,7 @@ export async function handleDeliveryAcknowledgement({ store, turnGate, message, 
         runId: before.lastBoundRunId,
         conversationUrl: before.conversationUrl,
         conversationId: before.conversationId,
+        ...(await ownsPreparationTab?.(after) ? { bridgeOwnedTab:true } : {}),
       },
     });
   } catch (error) {

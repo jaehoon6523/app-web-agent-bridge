@@ -39,6 +39,8 @@ function dashboardRunSummary(run) {
     objective:run?.objective ?? "",
     phase:run?.phase ?? run?.status ?? "UNKNOWN",
     targetRoot:run?.projectRef?.targetRoot ?? run?.targetRoot ?? null,
+    preparationId:run?.preparationId ?? null,
+    conversationUrl:run?.conversationUrl ?? null,
     parentRunId:run?.followUp?.runId ?? run?.parentRunId ?? null,
     createdAt:run?.createdAt ?? null,
     updatedAt:run?.updatedAt ?? null,
@@ -74,7 +76,22 @@ export class DashboardController {
 
   isDispatching() { return this.#starting || this.#jobs.size > 0; }
 
-  async snapshot(runId = null, onDiagnostic = this.#onDiagnostic) {
+  /** @param {any} live
+   * @param {{preparationOnly?: boolean, codeRuns?: any[], discussionRuns?: any[], targetRoot?: string}} [options]
+   */
+  preparationBlocked(live, { preparationOnly = false, codeRuns, discussionRuns, targetRoot } = {}) {
+    return this.isDispatching() || Boolean(this.#webSession?.activeTurnId)
+      || Boolean(live.codeChanges?.busy?.({ preparationOnly, runs:codeRuns, targetRoot }))
+      || (discussionRuns ?? live.store.listRuns()).some((run) => !isTerminalRunPhase(run.phase));
+  }
+
+  #discussionDeleteBlock(run) {
+    if (!isTerminalRunPhase(run.phase)) return {code:"RUN_NOT_TERMINAL", message:"Only finished runs can be deleted."};
+    if (this.#jobs.has(run.runId)) return {code:"RUN_BUSY", message:"Wait for the run to finish."};
+    return null;
+  }
+
+  async snapshot(runId = null, onDiagnostic = this.#onDiagnostic, targetRoot = undefined) {
     const snapshotId = ++this.#snapshotSequence;
     let stepSequence = 0;
     // Fixed stage names and local counters only; never include run contents,
@@ -141,6 +158,8 @@ export class DashboardController {
     const store = live.store;
     const codeRuns = read("code-runs", () => live.codeChanges?.list() ?? []);
     const discussionRuns = read("discussion-runs", () => [...store.listRuns()]);
+    const preparationStartBlocked = this.preparationBlocked(live, { preparationOnly:true, codeRuns, discussionRuns });
+    const preparationApprovalBlocked = preparationStartBlocked || this.preparationBlocked(live, { codeRuns, discussionRuns, targetRoot });
     const codeSnapshots = codeRuns.map((r, index) => {
       const preflight = read("preflight", () => this.#preflight());
       return read("code-run", () => live.codeChanges.snapshot(r.runId, preflight).run,
@@ -155,6 +174,8 @@ export class DashboardController {
       const snapshot = read("code-run", () => live.codeChanges.snapshot(codeRun.runId, preflight), {scope:"selected"});
       return {
         ...snapshot,
+        preparationStartBlocked,
+        preparationApprovalBlocked,
         runs:read("summaries", () => runs.map(dashboardRunSummary)),
         runtimeAvailability:{ ready:true, code:null, message:null },
         dataKnowledge:{ runs:{ status:runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
@@ -173,7 +194,7 @@ export class DashboardController {
       if (run.activeActor && runtimes) commands.push("run.interrupt");
       if (run.activeActor === "CODEX_AGENT" && runtimes?.CODEX_AGENT?.steer) commands.push("run.steer");
     }
-    if (run && isTerminalRunPhase(run.phase)) commands.push("run.delete");
+    if (run && !this.#discussionDeleteBlock(run)) commands.push("run.delete");
     if (run && !run.activeActor && !this.#jobs.has(run.runId)) {
       commands.push("web.session.focus", "web.session.rebind");
     }
@@ -181,6 +202,8 @@ export class DashboardController {
     const inputs = run ? read("turn-inputs", () => store.listAgentTurnInputs(run.runId)) : [];
     return {
       run,
+      preparationStartBlocked,
+      preparationApprovalBlocked,
       runs:read("summaries", () => runs.map(dashboardRunSummary)),
       sessions: sessions.map((session) => ({
         ...session,
@@ -290,9 +313,9 @@ export class DashboardController {
     const input = { runId: run.runId, expectedVersion: run.version };
     const sessions = live.composition.getRuntimeSessions(run.runId);
     switch (type) {
-      case "run.delete":
-        if (!isTerminalRunPhase(run.phase)) reject("Only finished runs can be deleted.", "RUN_NOT_TERMINAL");
-        if (this.#jobs.has(run.runId)) reject("Wait for the run to finish.", "RUN_BUSY");
+      case "run.delete": {
+        const blocker = this.#discussionDeleteBlock(run);
+        if (blocker) reject(blocker.message, blocker.code);
         const runArtifacts = live.store.listArtifactHashes(run.runId);
         live.store.deleteRun(run.runId);
         const remainingArtifacts = live.store.listArtifactHashes();
@@ -303,6 +326,7 @@ export class DashboardController {
         if (this.#drafts.has(run.runId)) this.#drafts.delete(run.runId);
         this.#errors.delete(run.runId);
         return { runId: run.runId, deleted: true };
+      }
       case "run.pause": return live.composition.runService.pause(input);
       case "run.resume":
         if (this.#errors.has(run.runId)) reject("Inspect the failed run before restarting.", "RECOVERY_REQUIRED");

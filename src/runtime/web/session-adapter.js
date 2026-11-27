@@ -7,7 +7,7 @@ import { inspectDeliveryRequest, markReconcileDiagnostic } from "./delivery-insp
 import { parseFinalControllerPacket } from "./controller-packet.js";
 import { assertDeliveryDiscardResponse, assertWebSessionProviderBinding, resolveWebSessionProvider, safeParseExtensionJson, socketIsOpen } from "./session-support.js";
 import { WEB_BRIDGE_PROTOCOL_VERSION, WebAuthenticationState, WebBindingStatus, WebCompletionConfidence, WebProtocolError, assertProtocolEnvelope } from "./protocol.js";
-/** @typedef {{httpRequestId:string, extensionRequestId:string|null, extensionRequestType:"web.delivery.inspect", sendOutcome:"NOT_ATTEMPTED"|"CALLING"|"CALL_RETURNED"|"CALL_THROWN", failureBoundary:"TIMEOUT"|"CONNECTION_CLOSED"|"SEND_FAILURE"|"EXTENSION_ERROR_RESPONSE"|"INSPECTION_VALIDATION"|"INSPECTION_PRE_DISPATCH"|"UNKNOWN", responseType:string|null, extensionErrorCode:string|null}} ReconcileReceiptDiagnostics */
+/** @typedef {{httpRequestId:string, extensionRequestId:string|null, extensionRequestType:"web.delivery.inspect"|"web.delivery.inspect-pinned-root", sendOutcome:"NOT_ATTEMPTED"|"CALLING"|"CALL_RETURNED"|"CALL_THROWN", failureBoundary:"TIMEOUT"|"CONNECTION_CLOSED"|"SEND_FAILURE"|"EXTENSION_ERROR_RESPONSE"|"INSPECTION_VALIDATION"|"INSPECTION_PRE_DISPATCH"|"UNKNOWN", responseType:string|null, extensionErrorCode:string|null}} ReconcileReceiptDiagnostics */
 /**
  * @typedef {object} WebSessionBindingValue
  * @property {string} sessionId
@@ -93,10 +93,12 @@ export class WebExtensionTransport extends EventEmitter {
       return;
     }
     if (this.#socket && this.#socket !== socket) {
+      const previous = this.#socket;
       if (this.authenticated) {
         this.emit("diagnostic", Object.freeze({ type: "STALE_EXTENSION_CONNECTION_REPLACED" }));
+        this.#onClose(previous);
       }
-      this.#closeSocket(this.#socket, 4001, "Replaced by a newer extension connection");
+      this.#closeSocket(previous, 4001, "Replaced by a newer extension connection");
     }
     this.#socket = socket;
     this.#clearActivityTimer();
@@ -379,8 +381,8 @@ export class WebSessionAdapter {
     }
   }
 
-  /** @param {{binding?: WebSessionBindingValue, focus?: boolean, createNewConversation?: boolean}} [input] */
-  async resume({ binding, focus = false, createNewConversation = false } = {}) {
+  /** @param {{binding?: WebSessionBindingValue, focus?: boolean, createNewConversation?: boolean, openSavedConversation?: boolean, sourcePreparationSessionId?: string}} [input] */
+  async resume({ binding, focus = false, createNewConversation = false, openSavedConversation = false, sourcePreparationSessionId } = {}) {
     validateWebSessionBinding(binding); assertWebSessionProviderBinding(binding, this.#provider);
     if (!this.#transport.authenticated) {
       throw new WebProtocolError("Web extension is not authenticated", "EXTENSION_NOT_AUTHENTICATED");
@@ -400,6 +402,8 @@ export class WebSessionAdapter {
         payload: this.#bindingPayload(binding, {
           focus,
           ...(createNewConversation ? { createNewConversation: true } : {}),
+          ...(openSavedConversation ? { openSavedConversation: true } : {}),
+          ...(sourcePreparationSessionId ? { sourcePreparationSessionId } : {}),
         }),
       }, new Set(["web.session.ready", "web.session.error"]), 60_000);
       if (message.type === "web.session.error") throw this.#messageError(message);
@@ -474,8 +478,9 @@ export class WebSessionAdapter {
    *   controllerMessageId?: string,
    *   runId?: string,
    *   text?: string,
+   *   plainText?: boolean,
    *   timeoutMs?: number,
-   *   stableMs?: number
+   *   stableMs?: number, preparationVersion?: number,
    *   parseResponse?: Function
    * }} [input]
    */
@@ -484,8 +489,9 @@ export class WebSessionAdapter {
     controllerMessageId,
     runId,
     text,
+    plainText = false,
     timeoutMs = this.#responseTimeoutMs,
-    stableMs,
+    stableMs, preparationVersion,
     parseResponse = this.#parseResponse,
   } = {}) {
     let binding;
@@ -519,15 +525,15 @@ export class WebSessionAdapter {
     let response;
     try {
       response = this.#request({
-        type: "web.prompt",
+        type: plainText ? "web.prompt.plain" : "web.prompt",
         requestId: turnId,
         payload: {
           controllerMessageId,
           runId,
           sessionId: binding.sessionId,
           text,
-          timeoutMs,
-          ...(Number.isSafeInteger(stableMs) ? { stableMs } : {}),
+          timeoutMs, ...(Number.isSafeInteger(stableMs) ? { stableMs } : {}),
+          ...(Number.isSafeInteger(preparationVersion) ? { preparationVersion } : {}),
         },
       }, new Set(["web.prompt.result", "web.prompt.error", "web.prompt.cancelled"]), timeoutMs + 15_000, turnId);
     } catch (error) {
@@ -680,15 +686,28 @@ export class WebSessionAdapter {
     }
     return message.payload;
   }
-  async discardDelivery(expected) {
+  async closePreparationTab(expected) {
+    this.#beginSessionOperation("CLOSE_PREPARATION");
+    try {
+      const message = await this.#request({ type:"web.session.close-preparation", payload:expected },
+        new Set(["web.session.preparation-closed", "web.session.error"]), 10_000);
+      if (message.type === "web.session.error") throw this.#messageError(message);
+      if (message.payload?.status === "CLOSED" && message.payload.tabId === expected.tabId) {
+        this.#ready = false;
+        return { status:"CLOSED", tabId:expected.tabId };
+      }
+      return { status:"SKIPPED", reason:message.payload?.status === "SKIPPED" ? message.payload.reason : "CLOSE_UNCONFIRMED" };
+    } finally { this.#sessionOperation = null; }
+  }
+  async discardDelivery(expected, invalid = false) {
     if (this.#activeTurnId !== null || this.#sessionOperation !== null || this.#pending.size > 0)
       throw new WebProtocolError("A Web session operation is already active", "WEB_SESSION_BUSY");
     if (this.#ambiguousTurnId !== null && this.#ambiguousTurnId !== expected?.currentDeliveryId) this.#assertNoAmbiguousTurn();
-    this.#sessionOperation = "DISCARD"; try {
-      const message = await this.#request({ type: "web.delivery.discard", payload: expected },
-        new Set(["web.delivery.discarded", "web.session.error"]), 10_000);
+    this.#sessionOperation = invalid ? "ABANDON_INVALID" : "DISCARD"; try {
+      const message = await this.#request({ type: invalid ? "web.delivery.abandon-invalid" : "web.delivery.discard", payload: expected },
+        new Set([invalid ? "web.delivery.invalid-abandoned" : "web.delivery.discarded", "web.session.error"]), 10_000);
       if (message.type === "web.session.error") throw this.#messageError(message);
-      assertDeliveryDiscardResponse(message.payload, expected);
+      assertDeliveryDiscardResponse(message.payload, expected, invalid);
       if (this.#ambiguousTurnId === expected?.currentDeliveryId) this.#ambiguousTurnId = null;
       this.#ready = false; return message.payload;
     } finally { this.#sessionOperation = null; }
@@ -866,7 +885,7 @@ export class WebSessionAdapter {
     });
     const timer = setTimeout(() => {
       this.#pending.delete(requestId);
-      if (message.type === "web.prompt") {
+      if (message.type === "web.prompt" || message.type === "web.prompt.plain") {
         this.#ambiguousTurnId = requestId;
         rejectRequest(new WebProtocolError(
           "Web prompt timed out after submission; its outcome is ambiguous",
@@ -961,7 +980,7 @@ export class WebSessionAdapter {
     this.#ready = false;
     for (const [requestId, pending] of this.#pending.entries()) {
       clearTimeout(pending.timer);
-      if (pending.requestType === "web.prompt") {
+      if (pending.requestType === "web.prompt" || pending.requestType === "web.prompt.plain") {
         this.#ambiguousTurnId = requestId;
         pending.reject(new WebProtocolError(
           "Web extension disconnected after prompt submission; its outcome is ambiguous",
@@ -1021,7 +1040,6 @@ export class WebSessionAdapter {
     }
   }
 }
-
 export class ChatGptWebSessionAdapter extends WebSessionAdapter {
   constructor(options = {}) {
     super({ ...options, provider:"CHATGPT_WEB" });

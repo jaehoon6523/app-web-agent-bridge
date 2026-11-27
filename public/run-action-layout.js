@@ -37,16 +37,17 @@ export function createRunActionLayout({ $, text }) {
     });
   }
 
-  function restorePrimaryActions() {
-    const slot = $("runPrimaryActionSlot");
+  function restorePrimaryActions(primary, destination) {
+    const slots = [$("runPrimaryActionSlot"), $("applyInspectorActionSlot")];
     for (const id of primaryActionIds) {
       const element = $(id), home = primaryActionHomes.get(id);
-      if (!element || !home || element.parentElement !== slot) continue;
+      if (!element || !home || !slots.includes(element.parentElement)
+        || (element === primary && element.parentElement === destination)) continue;
       if (home.nextSibling?.parentElement === home.parent) home.parent.insertBefore(element, home.nextSibling);
       else home.parent.append(element);
       element.classList.remove("primary");
     }
-    slot?.querySelectorAll(".action-reason").forEach((item) => item.remove());
+    for (const slot of slots) slot?.querySelectorAll(".action-reason").forEach((item) => item.remove());
   }
 
   function projectActionVisibility(run) {
@@ -66,7 +67,6 @@ export function createRunActionLayout({ $, text }) {
 
   /** @param {any} run */
   return function syncRunInformationArchitecture(run) {
-    restorePrimaryActions();
     const visibility = projectActionVisibility(run);
     const decisionVisible = !$("decisionPanel").hidden;
     const primaryId = decisionVisible ? "submitDecision"
@@ -75,11 +75,16 @@ export function createRunActionLayout({ $, text }) {
       : visibility.retry && !$("retryRun").disabled ? "retryRun"
       : null;
     const primary = primaryId ? $(primaryId) : null;
-    $("runPrimaryTier").hidden = !primary;
+    const inspectorSlot = $("applyInspectorActionSlot");
+    const inInspector = primaryId === "applyCode" && inspectorSlot && !$("applyInspector")?.hidden;
+    const destination = inInspector ? inspectorSlot : $("runPrimaryActionSlot");
+    restorePrimaryActions(primary, destination);
+    if (inspectorSlot) inspectorSlot.hidden = !inInspector;
+    $("runPrimaryTier").hidden = !primary || Boolean(inInspector);
     if (primary) {
       const inlineReason = $(`${primaryId}ActionReason`);
       if (inlineReason) inlineReason.hidden = true;
-      $("runPrimaryActionSlot").append(primary);
+      if (primary.parentElement !== destination) destination.append(primary);
       primary.classList.add("primary");
       const reason = primaryId === "submitDecision"
         ? ($("decisionStatus")?.textContent?.trim() || "감사자의 확인 질문에 답변하면 현재 변경사항의 독립 검토를 재개합니다.")
@@ -95,4 +100,25 @@ export function createRunActionLayout({ $, text }) {
     $("runRecoveryTier").hidden = $("reviewDiscussionRecovery").hidden
       && $("reviewBindingRecoveryPanel").hidden && $("recoveryPanel").hidden;
   };
+}
+
+export function ensureOperatorNoteControls({ $, node }) {
+  if ($("operatorNotePanel")) return;
+  const panel = node("section", "", "flow-band");
+  panel.id = "operatorNotePanel"; panel.hidden = true;
+  panel.append(node("h2", "작업 메모 · 결정 기록"));
+  panel.append(node("p", "이 기록은 Worker나 감사자에게 전송되지 않으며 요구사항·감사 판정·적용 권한을 바꾸지 않습니다.", "muted"));
+  const kindLabel = node("label", "기록 종류"); kindLabel.setAttribute("for", "operatorNoteKind");
+  const kind = node("select", ""); kind.id = "operatorNoteKind";
+  const noteOption = node("option", "메모"); noteOption.value = "NOTE";
+  const decisionOption = node("option", "결정"); decisionOption.value = "DECISION";
+  kind.append(noteOption, decisionOption);
+  const textLabel = node("label", "내용"); textLabel.setAttribute("for", "operatorNoteText");
+  const input = node("textarea", ""); input.id = "operatorNoteText"; input.rows = 3; input.maxLength = 4000;
+  input.placeholder = "나중에 이 작업을 다시 볼 때 필요한 판단 근거나 인수인계 내용을 기록하세요.";
+  const add = node("button", "기록 추가"); add.id = "addOperatorNote"; add.type = "button"; add.disabled = true;
+  const status = node("p", "", "muted"); status.id = "operatorNoteStatus"; status.setAttribute("role", "status");
+  const list = node("div", ""); list.id = "operatorNoteList";
+  panel.append(kindLabel, kind, textLabel, input, add, status, list);
+  $("runSecondaryContent")?.append(panel);
 }

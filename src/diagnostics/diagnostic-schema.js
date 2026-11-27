@@ -1,6 +1,7 @@
 // Shared, content-free projection for controller files and offline extension exports.
 const uuidPattern = '[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}';
-const identityPattern = new RegExp('^(?:(?:web_)?prep_|(?:run|session|web|delivery|request|turn)_)?' + uuidPattern + '$', 'u');
+const identityPattern = new RegExp('^(?:(?:(?:web_)?prep_|(?:run|session|web|delivery|request|turn|code|audit_judge|audit_critic)_)?'
+  + uuidPattern + '|web_code_' + uuidPattern + '(?:_(?:judge|critic))?)$', 'u');
 export const diagnosticToken = value => typeof value === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/u.test(value) ? value : null;
 export const diagnosticId = value => typeof value === 'string' && identityPattern.test(value) ? value : null;
 export const diagnosticNumber = value => Number.isSafeInteger(value) && value >= 0 ? value : null;

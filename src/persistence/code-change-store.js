@@ -10,6 +10,7 @@ import { setTimeout as wait } from "node:timers/promises";
 
 const changed = () => Object.assign(new Error("Code change history must be verified before use."), {code:"CODE_CHANGE_HISTORY_UNVERIFIED"});
 const same = (left, right) => left !== null && left.data === right.data && left.changes === right.changes && left.schema === right.schema;
+export const terminalCodeChangeStages = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 
 export class CodeChangeStore {
   #verified = new Map();
@@ -19,7 +20,7 @@ export class CodeChangeStore {
   #preparing = null;
   #closed = false;
   #closing = null;
-  #closureFailure = null;
+  #closureFailures = [];
   constructor(filename, {busyTimeoutMs = 5000, onDiagnostic = null, verification = "synchronous"} = {}) {
     if (!["synchronous", "background"].includes(verification) || (verification === "background" && filename === ":memory:")) {
       throw new TypeError("History verification requires a supported mode and a shared database file.");
@@ -161,7 +162,7 @@ export class CodeChangeStore {
   }
   #startJob(options) {
     const job = new CodeChangeHistoryJob(this.filename, options);
-    job.closed.catch(error => { this.#closureFailure = error; });
+    job.closed.catch(error => { this.#closureFailures.push(error); });
     return job;
   }
   /** @param {{signal?: AbortSignal}} [options] */
@@ -270,7 +271,7 @@ export class CodeChangeStore {
       }
       const before = this.#mutationStamp();
       const stage = this.#checked(row).stage;
-      if (!["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"].includes(stage)) {
+      if (!terminalCodeChangeStages.has(stage)) {
         throw Object.assign(new Error("Only finished runs can be deleted."), { code:"RUN_NOT_TERMINAL" });
       }
       let changes = Number(this.database.prepare("DELETE FROM main.code_change_history WHERE run_id=?").run(runId).changes);
@@ -339,14 +340,16 @@ export class CodeChangeStore {
         // A failed operation is not itself failed closure. A retry waiter must
         // nevertheless settle before the owner reports that closure is done.
         await preparing?.catch(() => {});
-        if (this.#closureFailure && !errors.includes(this.#closureFailure)) errors.push(this.#closureFailure);
+        for (const error of this.#closureFailures) if (!errors.includes(error)) errors.push(error);
         if (databaseFailure) errors.push(databaseFailure);
         if (job) this.#emit("history-background.closed", {forced:Boolean(job.forced)});
         if (errors.length === 1) throw errors[0];
         if (errors.length) throw new AggregateError(errors, "Code change store closure failed.", {cause:errors[0]});
       })();
-    } else if (databaseFailure || this.#closureFailure) {
-      this.#closing = Promise.reject(databaseFailure || this.#closureFailure);
+    } else if (databaseFailure || this.#closureFailures.length) {
+      const errors = databaseFailure ? [...this.#closureFailures, databaseFailure] : this.#closureFailures;
+      this.#closing = Promise.reject(errors.length === 1 ? errors[0]
+        : new AggregateError(errors, "Code change store closure failed.", {cause:errors[0]}));
     }
     // Preserve rejection for callers while avoiding an unobserved rejection
     // when a synchronous owner initiates cleanup before awaiting its result.

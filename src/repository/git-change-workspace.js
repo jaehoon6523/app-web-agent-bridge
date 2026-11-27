@@ -52,7 +52,7 @@ function tree(root, baseCommit) {
 }
 
 export class GitChangeWorkspace {
-  static prepareTarget(targetRoot) {
+  static checkTarget(targetRoot) {
     if (typeof targetRoot !== "string" || !path.isAbsolute(targetRoot)) throw new Error("프로젝트 폴더를 선택하세요.");
     const root = fs.realpathSync.native(targetRoot);
     if (!fs.statSync(root).isDirectory() || path.parse(root).root === root) throw new Error("드라이브 전체가 아닌 프로젝트 폴더를 선택하세요.");
@@ -67,7 +67,7 @@ export class GitChangeWorkspace {
         }
         if (parent === path.dirname(parent)) break;
       }
-      git(root, ["init", "--quiet"]);
+      return { targetRoot:root, baseCommit:null };
     }
     repositoryRoot(root);
     let existingHead;
@@ -76,11 +76,16 @@ export class GitChangeWorkspace {
         throw new Error("기존 Git 이력이 있습니다. 작업할 브랜치를 선택한 뒤 다시 준비하세요.");
       }
     }
-    if (existingHead) {
-      const status = GitChangeWorkspace.inspectTarget(root);
-      if (status.status) throw new Error("기존 저장소에 저장되지 않은 변경이 있습니다. 변경 내용을 커밋한 뒤 다시 준비하세요. 파일은 변경하지 않았습니다.");
-      return { targetRoot: root, createdInitialCommit: false, baseCommit: existingHead };
+    if (existingHead && GitChangeWorkspace.inspectTarget(root).status) {
+      throw Object.assign(new Error("저장소에 미커밋 변경이 있습니다. 변경을 보존하려면 깨끗한 작업 사본을 선택하세요."),
+        { code:"TARGET_REPOSITORY_DIRTY" });
     }
+    return { targetRoot:root, baseCommit:existingHead ?? null };
+  }
+  static prepareTarget(targetRoot) {
+    const { targetRoot:root, baseCommit } = GitChangeWorkspace.checkTarget(targetRoot);
+    if (baseCommit) return { targetRoot:root, createdInitialCommit:false, baseCommit };
+    if (!fs.existsSync(path.join(root, ".git"))) git(root, ["init", "--quiet"]);
     // Keep local credentials and generated dependencies out of the initial snapshot.
     const excludePath = path.resolve(root, git(root, ["rev-parse", "--git-path", "info/exclude"]).toString("utf8").trim());
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
@@ -99,7 +104,8 @@ export class GitChangeWorkspace {
   }
   static inspectTarget(targetRoot) {
     const root = repositoryRoot(targetRoot);
-    return { targetRoot: root, head: head(root), status: git(root, ["status", "--porcelain=v1", "--untracked-files=all"]).toString("utf8"),
+    return { targetRoot: root, head: head(root), status: git(root, ["status", "--porcelain=v1", "--untracked-files=all"],
+      { env:{ GIT_OPTIONAL_LOCKS:"0" } }).toString("utf8"),
       observedAt: new Date().toISOString() };
   }
   static preflight(targetRoot) {

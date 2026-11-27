@@ -68,7 +68,9 @@ export function persistWebDeliveryReceipt(service, runId, role, deliveryId, resp
     || response.binding?.sessionId !== binding.sessionId || response.binding?.runId !== runId) {
     throw Object.assign(new Error("Reviewer response changed its reserved delivery owner."), { code: "DELIVERY_BINDING_MISMATCH" });
   }
-  const publicText = redactControllerResponseText(response.rawText ?? response.body ?? "");
+  const rawText = response.rawText ?? response.body ?? "";
+  const publicText = response.packet?.type === "REVIEW_DISCUSSION_TEXT"
+    ? redactForEvidence(rawText) : redactControllerResponseText(rawText);
   const privateResponseRef = service.artifactStore.putPrivateResponse(
     privateResponseRecord(runId, role, deliveryId, binding.sessionId, response));
   const responseRef = service.artifactStore.put(publicText,
@@ -95,8 +97,9 @@ export function persistWebDeliveryReceipt(service, runId, role, deliveryId, resp
   return receipt;
 }
 
-export function markWebDeliveryAcknowledged(service, runId, deliveryId) {
+export function markWebDeliveryAcknowledged(service, runId, deliveryId, acknowledgement = null) {
   const run = service.get(runId);
   return { webDeliveryReceipts: (run.webDeliveryReceipts ?? []).map(receipt =>
-    receipt.deliveryId === deliveryId ? { ...receipt, state: "ACKNOWLEDGED" } : receipt) };
+    receipt.deliveryId === deliveryId ? { ...receipt, state: "ACKNOWLEDGED",
+      ...(acknowledgement?.bridgeOwnedTab === true ? { bridgeOwnedTab:true } : {}) } : receipt) };
 }

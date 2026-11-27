@@ -17,7 +17,7 @@ function projectObservation(result) {
   const count = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
   const selectors = ["[data-message-author-role]", "[data-chatgpt-search-unit-key]", "article[data-testid^='conversation-turn-']"];
   const contentSelectors = ["[data-markdown-text-tone='user-message']", "[data-markdown-text-style='assistant-message']",
-    "[data-testid='collapsible-user-message-content']", "[data-message-content]", ".markdown"];
+    "[data-testid='collapsible-user-message-content']", "[data-message-content]", ".markdown", "[data-search-result-target]"];
   const node = value => ({ tagName:token(value?.tagName), attributes:Object.fromEntries([
     "data-message-id", "data-testid", "data-message-content", "data-message-author-role",
     "data-chatgpt-search-unit-key", "data-chatgpt-search-message-ids", "id"].map(key => {

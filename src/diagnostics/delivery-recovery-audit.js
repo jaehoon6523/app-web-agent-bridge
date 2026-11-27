@@ -15,7 +15,8 @@ export function createDeliveryRecoveryAudit({ directory, observe = async record 
       reasonHash:digest(input.reason?.trim()), noAutomaticResend:input.noAutomaticResendConfirmed === true,
       terminalDiscardConfirmed:input.terminalDiscardConfirmed === true,
       pageStateUnconfirmedConfirmed:input.pageStateUnconfirmedConfirmed === true,
-      resultStatus:"UNKNOWN", disposalStatus:event.phase === "COMPLETED" ? "BOTH_DISCARDED" : "UNVERIFIED",
+      resultStatus:event.phase === "COMPLETED" ? "COMPLETION_RESPONSE_UNCONFIRMED" : "UNKNOWN",
+      disposalStatus:event.phase === "COMPLETED" ? "BOTH_DISCARDED" : "UNVERIFIED",
       idempotent:event.idempotent === true };
     try {
       await fs.mkdir(directory,{recursive:true,mode:0o700});
@@ -23,7 +24,8 @@ export function createDeliveryRecoveryAudit({ directory, observe = async record 
       try { await file.writeFile(JSON.stringify(record)+"\n"); await file.sync(); }
       finally { await file.close(); }
     } catch {
-      await observe({...record,phase:"FAILED",code:"DELIVERY_AUDIT_WRITE_FAILED",disposalStatus:"UNVERIFIED"});
+      await observe({...record,phase:"FAILED",code:"DELIVERY_AUDIT_WRITE_FAILED",
+        resultStatus:"UNKNOWN",disposalStatus:"UNVERIFIED"});
       throw Object.assign(new Error("Recovery audit could not be persisted; inspect this target before retrying."),{code:"DELIVERY_AUDIT_WRITE_FAILED"});
     }
     await observe(record);

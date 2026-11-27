@@ -28,11 +28,11 @@ export function showDashboardPageError(error) {
   console.error("Dashboard page failed:", error);
 }
 
-export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading = false }) {
+export function updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading = false, background = false }) {
   if (document.getElementById("dashboardPageError")?.hidden === false) return;
   const put = (id, value) => { document.getElementById(id).textContent = value; };
   document.getElementById("runPanel").dataset.loadState = phase === "READY" ? "READY" : connectionState.lastError ? "ERROR" : "LOADING";
-  if (loading && snapshot && !connectionState.lastError) put("connectionNotice", target && target !== snapshot.run?.runId
+  if (loading && !background && snapshot && !connectionState.lastError) put("connectionNotice", target && target !== snapshot.run?.runId
     ? `작업 ${target} 조회 중입니다.` : "작업 상태 조회 중 · 마지막 확인 데이터 표시 중입니다.");
   const labels = { SESSION:"대시보드 인증 확인", STATE:"작업 상태 조회", PROJECTION:"화면 데이터 확인", READY:"최신 상태 확인 완료" };
   put("dashboardAddress", window.location.origin);
@@ -52,3 +52,44 @@ export function updateDashboardDiagnostics({ phase, connectionState, snapshot, l
   put("dashboardLastConfirmed", lastConfirmed ? new Date(lastConfirmed).toLocaleString("ko-KR") : "없음");
   if (error || runtime?.ready === false) document.getElementById("connectionDiagnostics").open = true;
 }
+
+const errorCopy = Object.freeze({
+  UNKNOWN_RESULT:"진행 중이던 요청의 결과를 확인할 수 없습니다. 같은 요청을 자동으로 다시 보내지 않습니다. 연결을 복구한 뒤 상태를 확인하세요.",
+  RUN_VERSION_CONFLICT:"작업 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 시도하세요.",
+  PREPARATION_VERSION_REQUIRED:"이 화면은 준비 버전을 보내야 합니다. 페이지를 새로고침하세요.",
+  PREPARATION_VERSION_CONFLICT:"준비 상태가 변경되었습니다. 최신 내용을 확인한 뒤 다시 시도하세요.",
+  RUN_BUSY:"다른 작업이 진행 중입니다. 현재 작업을 확인한 뒤 다시 시도하세요.",
+  WEB_BLOCKED:"브라우저 확장 연결을 확인한 뒤 다시 시도하세요.",
+  RECOVERY_REQUIRED:"현재 작업 상태를 먼저 확인해야 합니다. 복구 안내에 따라 상태를 확인하세요.",
+  WORKER_TURN_CHANGED:"Worker 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 보내세요.",
+  WORKER_INTERVENTION_UNAVAILABLE:"현재 Worker에 메시지를 전달할 수 있는 상태가 아닙니다. Worker 실행 상태를 확인하세요.",
+  REVIEW_DISCUSSION_RECOVERY_REQUIRED:"이전 감사자 요청의 결과가 확인되지 않았습니다. 기존 요청을 먼저 확인하거나 정리하세요.",
+  REVIEW_DISCUSSION_BINDING_REQUIRED:"감사자의 기존 대화 연결을 확인한 뒤 다시 시도하세요.",
+  WEB_SESSION_PROVIDER_MISMATCH:"설정한 감사 서비스와 실제 연결이 다릅니다. 감사자 대화 연결을 다시 확인하세요.",
+  INVALID_INPUT:"입력 내용을 확인하세요.",
+});
+export function userFacingError(error, fallback = "요청을 처리하지 못했습니다. 최신 상태를 확인하고 필요하면 진단 로그를 내보내세요.") {
+  const code = typeof error?.code === "string" ? error.code : null;
+  if (code && errorCopy[code]) return errorCopy[code];
+  const message = typeof error?.message === "string" ? error.message.trim() : "";
+  if (message && /[가-힣]/u.test(message)) return message;
+  return fallback;
+}
+export function userFacingStoredError(value, fallback) {
+  const message = typeof value === "string" ? value.trim() : "";
+  if (!message) return fallback;
+  return /[가-힣]/u.test(message) ? message : fallback;
+}
+
+export const phaseReasons = {
+  CREATED:"작업이 접수되었습니다.",
+  PROVISIONING:"격리된 작업 환경을 준비하고 있습니다.",
+  WORKER_RUNNING:"Worker가 승인된 요구사항을 구현하고 있습니다.",
+  CANDIDATE_CAPTURE:"구현 결과를 검토할 변경사항으로 고정하고 있습니다.",
+  VERIFYING:"고정된 변경사항의 검증 근거를 확인하고 있습니다.",
+  REVIEW_RUNNING:"Judge와 Critic이 현재 변경사항을 독립적으로 검토하고 있습니다.",
+  REPORT_REPAIR:"검토 응답을 확인하고 있습니다.",
+  EVIDENCE_SUPPLEMENT:"현재 변경사항의 검토 근거를 보완하고 있습니다.",
+  REWORK:"검토 지적을 반영하기 위한 수정 절차를 진행합니다.",
+  APPLYING:"검토를 통과한 변경사항을 프로젝트에 적용하고 있습니다.",
+};

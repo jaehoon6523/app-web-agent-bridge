@@ -2,6 +2,11 @@ import { Worker } from "node:worker_threads";
 
 export const HISTORY_VERIFICATION_DEADLINE_MS = 60_000;
 const CANCELLATION_DEADLINE_MS = 2_000;
+const confirmedClosures = new WeakMap();
+
+export function historyWorkerClosureEvidence(error) {
+  return confirmedClosures.get(error);
+}
 
 function restoreError(detail) {
   const errors = detail.errors?.map(restoreError);
@@ -18,6 +23,7 @@ export class CodeChangeHistoryJob {
     this.worker = new Worker(new URL("./code-change-history-worker.js", import.meta.url), {
       workerData:{filename, migrate, cancellation:this.cancellation.buffer},
     });
+    const threadId = this.worker.threadId;
     let output, fault;
     this.closed = new Promise((resolve, reject) => {
       this.worker.once("exit", code => {
@@ -26,7 +32,17 @@ export class CodeChangeHistoryJob {
         signal?.removeEventListener("abort", abort);
         if (this.forced) reject(Object.assign(new Error("History verifier required forced cleanup.", {cause:this.cancelReason}), {code:"CODE_CHANGE_HISTORY_FORCED_CLEANUP"}));
         else if (code !== 0 || fault) reject(Object.assign(new Error("History verifier exited abnormally.", {cause:fault}), {code:"CODE_CHANGE_HISTORY_WORKER_EXIT"}));
-        else if (output?.cleanupFailed) reject(Object.assign(new Error("History verifier cleanup failed.", {cause:restoreError(output.error)}), {code:"CODE_CHANGE_HISTORY_CLEANUP_FAILED"}));
+        else if (output?.cleanupFailed) {
+          // Both observations belong to this exact Worker. An exit alone does
+          // not confirm native close, and a close report alone does not confirm exit.
+          const closureEvidence = output.databaseClosed === true
+            ? Object.freeze({threadId, exitCode:code, confirmedAt:new Date().toISOString()})
+            : undefined;
+          const error = Object.assign(new Error("History verifier cleanup failed.", {cause:restoreError(output.error)}),
+            {code:"CODE_CHANGE_HISTORY_CLEANUP_FAILED"});
+          if (closureEvidence) confirmedClosures.set(error, closureEvidence);
+          reject(error);
+        }
         else resolve(undefined);
       });
     });

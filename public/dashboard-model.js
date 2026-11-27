@@ -198,11 +198,48 @@ function normalizeSessions(value) {
   return sessions;
 }
 
+function normalizeActivePreparation(value, preparation, workflow) {
+  const visibleActive = preparation?.lifecycle === "ACTIVE";
+  if (value === undefined) {
+    // Older history responses expose only the preparation linked to the selected run.
+    if (visibleActive) return Object.freeze({ preparationId:preparation.preparationId, version:preparation.version });
+    if (workflow?.stage === "START" && workflow.state === "START_IDLE") return null;
+    return undefined;
+  }
+  const active = optionalObject(value, "activePreparation");
+  if (active && (typeof active.preparationId !== "string" || !active.preparationId
+    || !Number.isSafeInteger(active.version) || active.version < 1)) {
+    throw new TypeError("activePreparation identity/version is invalid.");
+  }
+  if ((visibleActive || (active && active.preparationId === preparation?.preparationId))
+    && (!visibleActive || active?.preparationId !== preparation.preparationId || active.version !== preparation.version)) {
+    throw new TypeError("activePreparation identity/version does not match the visible preparation.");
+  }
+  if (active && workflow?.stage === "START" && workflow.state === "START_IDLE") {
+    throw new TypeError("activePreparation conflicts with START_IDLE.");
+  }
+  return active ? Object.freeze({ preparationId:active.preparationId, version:active.version }) : null;
+}
+
+function normalizeReviewerRuntimes(value) {
+  const runtimes = value.reviewerRuntimes === undefined
+    ? { JUDGE:value.reviewerRuntime }
+    : optionalObject(value.reviewerRuntimes, "reviewerRuntimes");
+  const judge = optionalObject(runtimes?.JUDGE, "reviewerRuntimes.JUDGE");
+  const critic = optionalObject(runtimes?.CRITIC, "reviewerRuntimes.CRITIC");
+  return Object.freeze({
+    JUDGE:judge && Object.freeze({ ...judge }),
+    CRITIC:critic && Object.freeze({ ...critic }),
+  });
+}
+
 export function normalizeDashboardState(value) {
   if (value == null) {
     return Object.freeze({
       run: null,
       preparation: null,
+      activePreparation: undefined,
+      reviewerRuntimes: normalizeReviewerRuntimes({}),
       preflight: null,
       workflow: normalizeWorkflow(null),
       sessions: new Map(),
@@ -252,6 +289,8 @@ export function normalizeDashboardState(value) {
   return Object.freeze({
     workflow,
     preparation,
+    activePreparation: normalizeActivePreparation(value.activePreparation, preparation, value.workflow),
+    reviewerRuntimes: normalizeReviewerRuntimes(value),
     preflight: optionalObject(value.preflight, "preflight"),
     run,
     sessions: normalizeSessions(value.sessions),

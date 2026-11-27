@@ -1,18 +1,29 @@
 <!doctype html>
 <html lang="ko">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>작업 관리 · Web Agent Bridge</title><link rel="stylesheet" href="styles.css"></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>작업 관리 · Web Agent Bridge</title><link rel="stylesheet" href="styles.css"><link rel="stylesheet" href="workspace.css"></head>
 <body>
 <a class="skip-link" href="#mainContent">작업 화면으로 이동</a>
 <noscript><p class="page-error">JavaScript가 꺼져 있어 대시보드를 사용할 수 없습니다. 브라우저 설정에서 JavaScript를 허용하세요.</p></noscript>
-<header class="top"><div class="brand"><strong>Web Agent Bridge</strong><span>작업 준비 · 구현 · 독립 검토</span></div><div id="systemHealth" class="signals system-health" aria-label="시스템 상태">
+<header class="top"><div class="brand"><strong>Web Agent Bridge</strong></div><details class="workspace-health"><summary>시스템 상태</summary><div id="systemHealth" class="signals system-health" aria-label="시스템 상태">
   <div class="health-card"><span id="apiHealth" class="health">서버</span><p id="apiHealthDetail">확인 전</p></div><span aria-hidden="true">/</span>
   <div class="health-card"><span id="sessionHealth" class="health">대시보드</span><p id="sessionHealthDetail">확인 전</p></div><span aria-hidden="true">/</span>
   <div class="health-card"><span id="engineHealth" class="health">Worker</span><p id="engineHealthDetail">확인 전</p></div><span aria-hidden="true">/</span>
   <div class="health-card"><span id="channelHealth" class="health">확장</span><p id="channelHealthDetail">확인 전</p></div>
-</div></header>
-<div class="layout">
-  <aside class="history">
-    <h2>실행 기록</h2>
+</div></details><button id="openStudioSearch" type="button" aria-keyshortcuts="Control+k Meta+k">빠른 이동</button><details class="studio-layout-controls">
+  <summary>패널 배치</summary>
+  <div>
+    <label><input id="studioExplorerToggle" type="checkbox" checked> 프로젝트 탐색 표시</label>
+    <label for="studioExplorerWidth">탐색 너비</label><input id="studioExplorerWidth" type="range" min="176" max="340" step="8" value="240">
+    <label><input id="studioInspectorToggle" type="checkbox" checked> 우측 Inspector 배치</label>
+    <label for="studioInspectorWidth">Inspector 너비</label><input id="studioInspectorWidth" type="range" min="224" max="424" step="8" value="280">
+  </div>
+</details></header>
+<div id="studioWorkspace" class="layout">
+  <aside class="history" aria-labelledby="studioExplorerTitle">
+    <span id="studioExplorerGrip" class="studio-panel-grip" aria-hidden="true"></span>
+    <h2 id="studioExplorerTitle" class="studio-pane-title">프로젝트와 작업</h2>
+    <button id="toggleProjectNavigation" type="button" aria-controls="projectNavigation" aria-expanded="false">프로젝트 보기</button>
+    <div id="projectNavigation">
     <div class="history-tools">
       <label for="historySearch">검색</label><input id="historySearch" type="search" placeholder="작업명 · 작업 ID · 프로젝트 경로">
       <label for="historyStatusFilter">상태</label><select id="historyStatusFilter">
@@ -24,18 +35,19 @@
       <button id="historyClearFilters" type="button" hidden>검색·필터 초기화</button>
       <p id="historyFilterSummary" class="muted" role="status"></p>
     </div>
-    <button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p><button id="showUnfinishedRun" hidden>진행 중인 작업 보기</button>
+    <button id="newRun" disabled>새 작업</button><p id="newRunReason" class="muted"></p>
+    <button id="openPlainWorker" type="button" hidden aria-controls="plainWorkerPanel" aria-expanded="false">새 평문 작업</button>
+    <button id="openActivePreparation" type="button" aria-describedby="newRunReason" hidden>진행 중인 준비 복구</button>
+    <button id="showUnfinishedRun" hidden>진행 중인 작업 보기</button>
     <nav id="runList" aria-label="실행 선택"></nav><p id="historyEmpty" class="muted" hidden>조건에 맞는 실행 기록이 없습니다.</p>
+    </div>
   </aside>
   <main id="mainContent">
+    <div class="studio-workspace-header"><span class="studio-pane-title">작업 공간</span><span id="studioWorkspacePath" class="studio-path"></span></div>
     <section class="connection-panel" aria-labelledby="connectionHeading">
       <div class="connection-heading"><div><h2 id="connectionHeading">연결 상태</h2><p class="muted">서버 응답, 대시보드 인증, 실행 준비를 각각 확인합니다.</p></div><button id="refreshDashboard" type="button">상태 다시 확인</button></div>
       <p id="connectionNotice" role="status" aria-live="polite">대시보드 인증과 작업 상태를 확인하고 있습니다.</p>
       <p id="dashboardPageError" class="page-error" role="alert" hidden></p>
-      <label><input id="includeRawDiagnostic" type="checkbox" /> 원시 응답·대화 내용 포함 (공유 전 검토 필요)</label>
-      <button id="exportDiagnosticLog" type="button">진단 로그 내보내기</button>
-      <p id="diagnosticExportStatus" class="muted" role="status">기술 상세와 원시 응답은 로그 파일로 확인할 수 있습니다.</p>
-      <details id="connectionDiagnostics"><summary>연결 진단</summary><dl><dt>현재 주소</dt><dd id="dashboardAddress"></dd><dt>확인 단계</dt><dd id="dashboardPhase">초기 로딩</dd><dt>오류 코드</dt><dd id="dashboardErrorCode">없음</dd><dt>런타임 준비</dt><dd id="dashboardRuntimeDetail">확인 전</dd><dt>마지막 상태 확인</dt><dd id="dashboardLastConfirmed">없음</dd><dt>최근 오류</dt><dd id="dashboardLastError">없음</dd></dl></details>
     </section>
     <ol id="workflow" class="workflow" aria-label="작업 단계">
       <li id="stepCollect">요구사항 정리</li>
@@ -44,8 +56,21 @@
       <li id="stepWork">작업 진행<span id="stepWorkBadge" class="step-badge" hidden aria-label="판단 대기 중"></span></li>
       <li id="stepResult">완료 · 적용</li>
     </ol>
-    <details class="connection-details"><summary>브릿지 연결 정보</summary><div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="webBindingSignal">대화 탭 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div></details>
-    <section id="projectOverview" hidden aria-labelledby="overviewTitle"><h1 id="overviewTitle"></h1><p id="overviewPath" class="muted"></p><p id="overviewSummary"></p><div class="actions"><button id="newProjectTask" type="button" class="primary">이 프로젝트에서 새 작업</button><button id="openProjectBlocker" type="button" hidden>진행 중인 작업 보기</button></div><p id="overviewReason" class="muted" role="status"></p><h2>작업 기록</h2><div id="overviewTasks"></div></section>
+    <section id="preparationOutcome" class="preparation-outcome" aria-labelledby="preparationOutcomeTitle" hidden>
+      <div role="status" aria-live="polite" aria-atomic="true">
+        <h2 id="preparationOutcomeTitle" tabindex="-1"></h2>
+        <dl>
+          <div><dt>응답 저장</dt><dd id="preparationResponseState"></dd></div>
+          <div><dt>수신 확인 (ACK)</dt><dd id="preparationAckState"></dd></div>
+          <div><dt>협의 종료</dt><dd id="preparationClosureState"></dd></div>
+          <div><dt>탭 닫힘</dt><dd id="preparationTabState"></dd></div>
+        </dl>
+        <p id="preparationOutcomeReason"></p>
+        <p><strong>다음 행동</strong> <span id="preparationOutcomeNext"></span></p>
+      </div>
+      <button id="reconcilePreparationOutcome" type="button" hidden>수신 확인 다시 처리</button>
+    </section>
+    <section id="projectOverview" hidden aria-labelledby="overviewTitle"><h1 id="overviewTitle"></h1><p id="overviewPath" class="muted"></p><p id="overviewConversation" class="muted"></p><p id="overviewSummary"></p><div class="actions"><button id="newProjectTask" type="button" class="primary">이 프로젝트에서 새 작업</button><button id="openProjectBlocker" type="button" hidden>진행 중인 작업 보기</button></div><p id="overviewReason" class="muted" role="status"></p><h2>작업 기록</h2><div id="overviewTasks"></div></section>
     <section id="projectPanel" hidden aria-labelledby="projectHeading">
       <div class="flow-heading">
         <h1 id="projectHeading">요구사항 정리</h1>
@@ -53,37 +78,50 @@
       </div>
       <div id="preparationException" class="flow-band" hidden></div>
       <form id="projectForm" novalidate>
-        <details class="flow-fold">
-          <summary>작업 입력 정보</summary>
-          <div class="flow-fold-body">
-            <label for="projectRoot">프로젝트 폴더</label><input id="projectRoot" readonly>
-            <label for="planningObjective">첫 부탁</label><textarea id="planningObjective" rows="3" readonly></textarea>
-            <label for="planningUrl">ChatGPT 대화 URL</label><input id="planningUrl" type="url" readonly>
-            <p id="planningFollowUp" class="muted" hidden></p>
-          </div>
-        </details>
+        <div class="workspace-objective">
+          <h2>요청한 작업</h2>
+          <p id="preparationObjective"></p>
+          <p id="preparationProjectPath" class="muted"></p>
+        </div>
         <button id="proposeRequirements" type="button" hidden disabled>제안 요청</button>
         <p id="proposalStatus" class="flow-status" role="status"></p>
-        <div id="proposalSummary" class="flow-card"></div>
+        <div id="proposalSummary" class="flow-card">
+          <div id="proposalSummaryContent"></div>
+          <details class="discussion-fold" id="preparationDiscussion">
+            <summary>이전 준비 대화</summary>
+            <div id="preparationDiscussionBody"></div>
+          </details>
+          <details id="preparationStoredResponse" hidden>
+            <summary>저장된 응답 원문</summary>
+            <p id="preparationStoredResponseState" class="muted"></p>
+            <pre id="preparationStoredResponseBody"></pre>
+          </details>
+        </div>
+        <details class="flow-fold" id="requirementsFold" open>
+          <summary>요구사항 및 완료 기준</summary>
+          <div class="flow-fold-body">
+            <div id="projectRequirements"></div>
+            <aside id="preparationRequirementInspector" class="flow-band" aria-labelledby="preparationRequirementTitle" hidden>
+              <h3 id="preparationRequirementTitle"></h3>
+              <p id="preparationRequirementAcceptance"></p>
+              <p id="preparationRequirementState" class="muted"></p>
+            </aside>
+            <p id="reviewerProviderSummary" class="muted"></p>
+            <p class="muted">검증 방식: 코드 스냅샷 검토 · 실행 테스트 없음 · 최대 구현 3회 · 전체 30분</p>
+          </div>
+        </details>
         <div id="proposalQuestion" class="flow-card">
           <label for="proposalFeedback">답변 · 수정 요청</label>
           <textarea id="proposalFeedback" rows="3" placeholder="확인 질문에 답하거나 합의 내용을 수정하세요."></textarea>
           <button id="reviseRequirements" type="button" disabled>답변 보내기</button>
         </div>
-        <details class="flow-fold" id="requirementsFold">
-          <summary>작업 정보 · 합의한 완료 기준</summary>
-          <div class="flow-fold-body">
-            <div id="projectRequirements"></div>
-            <p id="reviewerProviderSummary" class="muted"></p>
-            <p class="muted">검증 방식: 코드 스냅샷 검토 · 실행 테스트 없음 · 최대 구현 3회 · 전체 30분</p>
-          </div>
-        </details>
         <div class="actions">
           <button id="saveProject" type="submit" class="primary" disabled>합의 승인하고 작업 시작</button>
           <button id="closeProject" type="button" disabled>요구사항 정리 취소</button>
           <button id="reloadProject" type="button" class="quiet-action">상태 다시 확인</button>
         </div>
         <p id="projectStatus" role="status"></p>
+        <button id="openPreparationConversation" type="button">작업과 대화 정보</button>
         <details id="preparationDiagnostics" class="technical-diagnostics">
           <summary>대화 상태와 복구</summary>
           <div id="preparationDiagnosticsBody"></div>
@@ -91,8 +129,21 @@
         </details>
       </form>
     </section>
-    <section id="startPanel"><h1>시작</h1>
+    <section id="plainWorkerPanel" hidden>
+      <h1>새 평문 작업</h1>
+      <p>격리 작업 사본의 변경 Diff가 ChatGPT Web 의견부와 비판부에 전송됩니다.</p>
+      <label for="plainWorkerObjective">평문 작업 요청</label><textarea id="plainWorkerObjective" rows="4"></textarea>
+      <label for="plainWorkerRoot">평문 작업 프로젝트 폴더</label><input id="plainWorkerRoot">
+      <button id="startPlainWorker" type="button">평문 Worker 순환 시작</button>
+      <p id="plainWorkerStatus" role="status"></p>
+      <details id="plainWorkerEvidence" hidden><summary>단계별 송수신 원문</summary><pre id="plainWorkerTranscript" style="white-space: pre-wrap; overflow-wrap: anywhere"></pre></details>
+    </section>
+    <section id="startPanel"><h1 id="startHeading">새 작업</h1>
       <p class="muted">작업과 프로젝트 폴더를 입력하세요. 기존 대화 URL은 선택입니다.</p>
+      <section id="startProgress" hidden aria-live="polite" aria-atomic="true">
+        <span class="waiting-indicator" aria-hidden="true"></span>
+        <h2 id="startProgressTitle"></h2><p id="startProgressDetail"></p>
+      </section>
       <form id="startForm"><label for="objective">이번에 맡길 작업</label><textarea id="objective" rows="4" required placeholder="예: 채팅 앱에서 메시지를 보낼 수 있게 해 줘."></textarea>
         <label for="startRoot">프로젝트 폴더</label><input id="startRoot" required placeholder="폴더를 선택하거나 경로를 입력하세요"><button id="chooseFolder" disabled type="button">파일 탐색기에서 폴더 선택</button><p id="folderStatus" class="muted" role="status"></p><p class="muted">승인 후 Git 작업을 준비합니다.</p>
         <label for="conversationUrl">기존 ChatGPT 대화 URL (선택)</label><input id="conversationUrl" type="url" placeholder="비워 두면 새 대화를 엽니다">
@@ -102,25 +153,32 @@
         <label for="criticReviewerProvider">Critic 감사 서비스</label><select id="criticReviewerProvider"><option value="CHATGPT_WEB">ChatGPT Web</option><option value="CLAUDE_WEB">Claude Web</option></select>
         <p class="muted">감사 서비스 설정은 이 작업에 고정됩니다.</p>
         <label><input id="autoApprovePreparation" type="checkbox"> 첫 대화에서 확인 질문 없이 요구사항이 준비되면 자동 승인하고 구현 시작</label>
+        <label><input id="acceptPlainTextDiscussion" type="checkbox" aria-describedby="plainTextDiscussionHelp"> 평문 응답을 대화로 수용</label>
+        <p id="plainTextDiscussionHelp" class="muted">구조화된 packet이 없는 응답도 확인 후 대화를 이어갑니다. 자동 승인하지 않습니다.</p>
+        <label><input id="plainTextAdvisory" type="checkbox" aria-describedby="plainTextAdvisoryHelp"> 새 평문 자문 시작</label>
+        <p id="plainTextAdvisoryHelp" class="muted">기존 대화 URL을 비워 두고 첫 목표를 입력하세요. 독립 기술 자문 역할과 첫 목표를 평문으로 보내며 협의 중에는 구현을 시작하지 않습니다.</p>
         <button id="planRun" disabled type="submit" class="primary">요구사항 정리 시작</button><p id="followUpSource" class="muted" hidden></p>
         <button id="startRun" hidden type="button" disabled>구현·감사 시작</button><p id="startReason" class="muted"></p>
       </form>
-      <section id="startProgress" hidden aria-live="polite" aria-atomic="true">
-        <span class="waiting-indicator" aria-hidden="true"></span>
-        <h2 id="startProgressTitle"></h2><p id="startProgressDetail"></p>
-      </section>
       <section id="discardPanel" hidden class="recovery-panel">
-        <h2>확인되지 않은 요청 정리</h2><p>응답 결과를 확인할 수 없을 때만 사용합니다. 같은 요청은 자동 재전송하지 않습니다.</p>
+        <h2 id="discardHeading">확인되지 않은 요청 정리</h2><p id="discardExplanation">응답 결과를 확인할 수 없을 때만 사용합니다. 같은 요청은 자동 재전송하지 않습니다.</p>
         <p id="discardDelivery" class="muted"></p>
-        <label><input id="discardUnresolved" type="checkbox"> 원래 ChatGPT 응답 결과를 확인하지 못했습니다.</label>
+        <label><input id="discardUnresolved" type="checkbox"> <span id="discardConsent">원래 ChatGPT 응답 결과를 확인하지 못했습니다.</span></label>
         <label><input id="discardNoResend" type="checkbox"> 이 요청을 자동 재전송하지 않겠습니다.</label>
+        <label id="discardPageRisk" hidden><input id="discardPageUnconfirmed" type="checkbox"> 원래 탭 상태를 확인할 수 없어도 전송 소유권을 해제하는 데 동의합니다.</label>
         <label for="discardReason">폐기 사유</label><textarea id="discardReason" rows="3"></textarea>
         <button id="discardDeliveryButton" type="button">확인되지 않은 요청 정리</button>
       </section>
       <div id="startRecovery"></div>
       <button id="cancelInitialPreparation" type="button" hidden>요청 취소</button>
     </section>
-    <section id="runPanel" hidden><h1 id="runStageHeading">작업</h1><div class="run-header"><p id="runContext" class="eyebrow"></p><h1 id="runObjective"></h1><p id="runFollowUp" class="muted"></p><button id="openFollowUp" type="button" hidden>이전 적용 작업 보기</button><strong id="runStatus"></strong><p id="runReason"></p><div id="runRoleSummary" class="run-role-summary" aria-label="현재 역할과 provider 상태"><p id="runWorkerRole" class="run-role health"></p><p id="runJudgeRole" class="run-role health"></p><p id="runCriticRole" class="run-role health"></p></div><p id="runTime" class="muted"></p></div>
+    <section id="runPanel" hidden><div class="run-header"><p id="runStageHeading" class="eyebrow">작업</p><p id="runContext" class="muted"></p><h1 id="runObjective"></h1><p id="runFollowUp" class="muted"></p><button id="openFollowUp" type="button" hidden>이전 적용 작업 보기</button><strong id="runStatus"></strong><p id="runReason"></p><div id="runRoleSummary" class="run-role-summary" aria-label="현재 역할과 provider 상태"><p id="runWorkerRole" class="run-role health"></p><p id="runJudgeRole" class="run-role health"></p><p id="runCriticRole" class="run-role health"></p></div><p id="runTime" class="muted"></p></div>
+      <section id="runWorkerConsole" class="flow-band" aria-labelledby="runWorkerConsoleTitle" hidden>
+        <h2 id="runWorkerConsoleTitle">Worker 실행</h2>
+        <p id="runWorkerConsoleState"></p>
+        <p id="runWorkerConsoleCandidate" class="muted"></p>
+        <p id="runWorkerConsoleFailure" class="muted" hidden></p>
+      </section>
       <section id="runPrimaryTier" class="run-action-tier run-action-primary" hidden>
         <p class="eyebrow">다음 행동</p><div id="runPrimaryActionSlot" class="actions"></div><p id="runPrimaryActionReason" class="muted"></p>
       </section>
@@ -166,14 +224,109 @@
         <p class="muted">삭제한 실행·감사 기록은 복구할 수 없습니다. 적용된 코드는 유지됩니다.</p>
       </details>
       <details id="runTechnicalTier" class="run-action-tier technical-diagnostics"><summary>실행 기술 정보</summary><div id="runTechnicalSlot"><p id="workerProvenance" class="muted"></p></div></details>
-      <p id="commandResult" role="status"></p>
-      <div class="tabs" role="group" aria-label="기록 종류"><button id="showConversation" aria-pressed="true">작업 대화·결정</button><button id="showAudit" aria-pressed="false">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
+      <p id="commandResult" class="studio-command-feedback" role="status"></p>
+      <div class="tabs" role="group" aria-label="열람 중인 작업 기록"><button id="showConversation" aria-pressed="true">작업 대화·결정</button><button id="showPreparationHistory" aria-pressed="false">협의 기록</button><button id="showAudit" aria-pressed="false">감사 지적·근거</button><button id="showLog" aria-pressed="false">진행 기록</button></div>
       <section id="conversationPanel"><h2>작업 대화와 판단 기록</h2><p class="muted">적용 여부는 감사 판정과 적용 상태에서 확인하세요.</p><div id="conversationTimeline"></div></section>
-      <section id="auditPanel" hidden><h2>요구사항별 판정</h2><div id="assessments"></div><h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>변경사항·검증 근거</h2><div id="evidenceList"></div><details><summary>고정 기준과 변경사항 상세</summary><pre id="candidateDetails"></pre></details></section>
+      <section id="preparationHistoryPanel" hidden><h2>확정 당시 협의 기록</h2><div id="preparationHistoryTimeline"></div></section>
+      <section id="auditPanel" hidden>
+        <section id="candidateHistory" aria-labelledby="candidateHistoryTitle" hidden>
+          <h2 id="candidateHistoryTitle">변경 후보 이력</h2>
+          <p id="candidateHistoryEmpty" class="muted">아직 기록된 변경 후보가 없습니다.</p>
+          <ul id="candidateHistoryList"></ul>
+        </section>
+        <h2>요구사항별 판정</h2><p class="muted">Controller 종합 판정</p><div id="assessments"></div>
+        <section id="roleReviewPanel" hidden aria-labelledby="roleReviewTitle">
+          <h3 id="roleReviewTitle">Judge·Critic 개별 판정</h3>
+          <button id="loadRoleReviews" type="button">검증된 개별 판정 조회</button>
+          <p id="roleReviewStatus" class="muted" role="status"></p>
+          <div id="roleReviewResults"></div>
+        </section>
+        <h2>감사 지적과 해결 이력</h2><div id="findings"></div><h2>변경사항·검증 근거</h2><div id="evidenceList"></div><details><summary>고정 기준과 변경사항 상세</summary><pre id="candidateDetails"></pre></details>
+      </section>
       <section id="logPanel" hidden><div id="eventLog" role="log" aria-label="실제 진행 기록"></div></section>
     </section>
+      <details id="connectionDiagnostics" class="workspace-diagnostics"><summary>연결 진단 및 로그</summary>
+      <label><input id="includeRawDiagnostic" type="checkbox" /> 원시 응답·대화 내용 포함 (공유 전 검토 필요)</label>
+      <button id="exportDiagnosticLog" type="button">진단 로그 내보내기</button>
+      <p id="diagnosticExportStatus" class="muted" role="status">기술 상세와 원시 응답은 로그 파일로 확인할 수 있습니다.</p>
+      <dl><dt>현재 주소</dt><dd id="dashboardAddress"></dd><dt>확인 단계</dt><dd id="dashboardPhase">초기 로딩</dd><dt>오류 코드</dt><dd id="dashboardErrorCode">없음</dd><dt>런타임 준비</dt><dd id="dashboardRuntimeDetail">확인 전</dd><dt>마지막 상태 확인</dt><dd id="dashboardLastConfirmed">없음</dd><dt>최근 오류</dt><dd id="dashboardLastError">없음</dd></dl></details>
   </main>
+  <aside id="studioInspector" class="studio-inspector" aria-labelledby="studioInspectorTitle">
+    <span id="studioInspectorGrip" class="studio-panel-grip" aria-hidden="true"></span>
+    <div id="studioInspectorScroll" class="apply-inspector-scroll">
+      <h2 id="studioInspectorTitle" class="studio-pane-title">Inspector</h2>
+      <section id="studioContext" class="studio-inspector-section" aria-labelledby="studioContextTitle">
+        <h3 id="studioContextTitle">현재 작업</h3>
+        <dl>
+          <div><dt>단계</dt><dd id="studioContextStage"></dd></div>
+          <div id="studioContextIdentityRow" hidden><dt>선택 ID</dt><dd><code id="studioContextIdentity"></code></dd></div>
+          <div id="studioContextDetailRow" hidden><dt id="studioContextDetailLabel"></dt><dd id="studioContextDetail"></dd></div>
+        </dl>
+      </section>
+      <section id="applyInspector" class="apply-inspector studio-inspector-section" aria-labelledby="applyInspectorTitle" hidden>
+        <h3 id="applyInspectorTitle">적용 판단</h3>
+        <p id="applyInspectorStatus" class="apply-inspector-state"></p>
+        <dl>
+          <div><dt>현재 후보</dt><dd><code id="applyInspectorCandidate"></code></dd></div>
+          <div><dt>감사 판정</dt><dd id="applyInspectorReview"></dd></div>
+          <div id="applyInspectorReceiptRow" hidden><dt>서버 적용 기록</dt><dd id="applyInspectorReceipt"></dd></div>
+        </dl>
+        <div id="applyInspectorActionSlot" class="actions" hidden></div>
+        <section aria-labelledby="applyInspectorEvidenceTitle">
+          <h4 id="applyInspectorEvidenceTitle">후보 근거</h4>
+          <p id="applyInspectorSelection" class="muted" role="status"></p>
+          <button id="clearApplyInspectorSelection" type="button" hidden>후보 전체 근거 보기</button>
+          <div id="applyInspectorEvidence"></div>
+          <section id="inspectorEvidenceReader" aria-labelledby="inspectorEvidenceTitle" hidden>
+            <h5 id="inspectorEvidenceTitle"></h5>
+            <pre id="inspectorEvidenceContent" tabindex="0"></pre>
+            <p id="inspectorEvidenceRange" class="muted"></p>
+            <div class="actions"><button id="nextInspectorEvidence" type="button">다음 구간</button><button id="copyInspectorEvidence" type="button">원문 복사</button><button id="closeInspectorEvidence" type="button">원문 닫기</button></div>
+            <p id="inspectorCopyStatus" class="muted" role="status"></p>
+          </section>
+        </section>
+        <details id="applyInspectorIdentity" hidden><summary>감사 매니페스트</summary><code id="applyInspectorManifest"></code></details>
+        <details id="applyInspectorFiles" hidden><summary>변경 파일</summary><div id="applyInspectorFileTypes"></div><ul id="applyInspectorFileList"></ul></details>
+      </section>
+    </div>
+  </aside>
 </div>
+<footer class="studio-statusbar" aria-label="브릿지 연결 정보">
+  <div class="signals"><span id="serverSignal">서버 · 확인 전</span><span id="cliSignal">CLI · 확인 전</span><span id="webSignal">웹 · 확인 전</span><span id="webBindingSignal">대화 탭 · 확인 전</span><span id="refreshSignal">런 · 확인 전</span></div>
+  <button id="openStudioDiagnostics" type="button">상세 진단</button>
+</footer>
+<dialog id="preparationConversationSheet" class="workspace-sheet" aria-labelledby="preparationConversationHeading">
+  <form method="dialog"><button type="submit" autofocus>닫기</button></form>
+  <h2 id="preparationConversationHeading">작업과 대화 정보</h2>
+            <label for="projectRoot">프로젝트 폴더</label><input id="projectRoot" readonly>
+            <label for="planningObjective">첫 부탁</label><textarea id="planningObjective" rows="3" readonly></textarea>
+            <label for="planningUrl">ChatGPT 대화 URL</label><input id="planningUrl" type="url" readonly>
+            <div class="actions"><a id="openPlanningConversation" target="_blank" rel="noopener noreferrer" hidden>ChatGPT 대화 열기</a><button id="copyPlanningConversation" type="button" hidden>URL 복사</button></div><p id="planningCopyStatus" class="muted" role="status"></p>
+            <p id="planningFollowUp" class="muted" hidden></p>
+  <section id="preparationSavedConversation" hidden>
+    <h3>프로젝트에 저장된 대화</h3>
+    <a id="preparationSavedConversationLink" target="_blank" rel="noopener noreferrer"></a>
+  </section>
+</dialog>
 <dialog id="evidenceDialog"><button id="closeEvidence">닫기</button><h2 id="evidenceTitle">증거 원문</h2><pre id="evidenceContent"></pre><p id="evidenceRange" class="muted"></p><button id="nextEvidence">다음 구간</button></dialog>
+<dialog id="applyDecisionDialog" class="studio-confirm" aria-labelledby="applyDecisionTitle">
+  <h2 id="applyDecisionTitle">현재 후보 적용 확인</h2>
+  <dl><div><dt>대상 프로젝트</dt><dd id="applyDecisionTarget"></dd></div><div><dt>검토한 후보</dt><dd><code id="applyDecisionCandidate"></code></dd></div></dl>
+  <div class="actions"><button id="cancelApplyDecision" type="button" autofocus>돌아가기</button><button id="confirmApplyDecision" type="button" class="primary">이 후보 적용</button></div>
+</dialog>
+<dialog id="deleteRunDialog" class="studio-confirm" aria-labelledby="deleteRunTitle" aria-describedby="deleteRunDescription">
+  <h2 id="deleteRunTitle">종료된 작업 기록 삭제</h2>
+  <p id="deleteRunDescription">이 작업의 기록·감사 근거·임시 작업 사본을 삭제합니다. 적용된 프로젝트 코드는 유지됩니다.</p>
+  <dl><div><dt>작업</dt><dd id="deleteRunTarget"></dd></div><div><dt>실행 ID</dt><dd><code id="deleteRunIdentity"></code></dd></div></dl>
+  <div class="actions"><button id="cancelDeleteRun" type="button" autofocus>돌아가기</button><button id="confirmDeleteRun" type="button" class="studio-danger">이 기록 삭제</button></div>
+</dialog>
+<dialog id="studioSearchDialog" aria-labelledby="studioSearchTitle">
+  <h2 id="studioSearchTitle">빠른 이동</h2>
+  <label for="studioSearchQuery">작업명·실행 ID·현재 요구사항·Finding</label>
+  <input id="studioSearchQuery" type="search" autofocus>
+  <p id="studioSearchStatus" class="muted" role="status"></p>
+  <div id="studioSearchResults" class="studio-search-results"></div>
+  <form method="dialog"><button type="submit">닫기</button></form>
+</dialog>
 <script type="module" src="dashboard-bootstrap.js"></script>
 </body></html>

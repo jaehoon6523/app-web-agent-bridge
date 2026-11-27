@@ -1,8 +1,10 @@
 import { webConversationProvider, webConversationProviderForUrl } from "./provider-registry.js";
 import { WebProtocolError } from "./protocol.js";
 
-export function assertDeliveryDiscardResponse(payload, expected) {
-  if (payload?.result !== "discarded" || ["currentDeliveryId", "sessionId", "runId", "conversationUrl"]
+export function assertDeliveryDiscardResponse(payload, expected, invalid = false) {
+  const identity = ["currentDeliveryId", "sessionId", "runId", "conversationUrl"];
+  if (invalid) identity.push("intentHash", "requestId", "conversationId", "responseSha256", "responseBytes");
+  if ((!invalid && payload?.result !== "discarded") || !payload || identity
     .some(key => payload[key] !== expected?.[key])) {
     throw new WebProtocolError("Discard confirmation identifies a different delivery", "DELIVERY_RECOVERY_MISMATCH");
   }

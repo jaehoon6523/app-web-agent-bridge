@@ -1,6 +1,10 @@
+import { createHash } from "node:crypto";
 import { isTerminalDiscard, reconcileTerminalDiscard } from "./terminal-delivery-reconciliation.js";
 import { inspectDeliveryOwnership } from "./delivery-ownership.js";
+import { terminalCodeChangeStages } from "../persistence/code-change-store.js";
 import { webBinding } from "./audit-round.js";
+import { markWebDeliveryAcknowledged } from "./web-delivery-receipts.js";
+import { redactForEvidence } from "../security/redaction.js";
 
 function fail(code, message) { throw Object.assign(new Error(message), { code }); }
 function exact(owner, expected) {
@@ -12,37 +16,102 @@ function receiptMatches(observed, name, expected) {
   return observed.currentDeliveryId === null && exact({ ...observed, currentDeliveryId: expected.currentDeliveryId }, expected)
     && exact({ ...receipt, currentDeliveryId: receipt?.deliveryId }, expected);
 }
+function acknowledgementBlock({ server, extension }) {
+  const record = server.records[0];
+  if (server.status !== "MATCHED" || record?.kind !== "REVIEW" || !record.active
+    || record.processingState !== "ACK_PENDING" || !record.responseStored
+    || (!extension.exact && !extension.ackConfirmed)) {
+    return {code:"DELIVERY_RESPONSE_REQUIRED", message:"Only this durably stored reviewer response can be acknowledged."};
+  }
+  if (extension.extensionBusy || extension.pageBusy || extension.generating) {
+    return {code:"WEB_SESSION_BUSY", message:"A generation is active."};
+  }
+  if (server.otherActive || extension.otherActive) {
+    return {code:"WEB_SESSION_BUSY", message:"Another delivery owns an active session."};
+  }
+  return null;
+}
+function reviewerOperationActive(codeChanges, runId) {
+  return codeChanges.jobs.has(runId) || codeChanges.workers.has(runId) || codeChanges.reviewerWebBusy();
+}
 
-export function createDeliveryRecoveryActions({ getSources, getServices, web, audit = async () => {} }) {
+export function assertQueuedPreparationAck({ server, extension }, rawText) {
+  const record = server.records[0];
+  if (server.status !== "MATCHED" || record?.kind !== "PREPARATION" || !record.active
+    || record.processingState !== "ACK_PENDING" || !record.responseStored
+    || typeof rawText !== "string" || !rawText.trim()) {
+    fail("DELIVERY_RESPONSE_REQUIRED", "The exact preparation response must already be stored.");
+  }
+  if (server.otherActive || extension.otherActive || extension.extensionBusy !== false
+    || extension.pageBusy !== false || extension.generating !== false || extension.activeRequestId) {
+    fail("WEB_SESSION_BUSY", "Delivery or browser ownership is unsettled.");
+  }
+  const hash = createHash("sha256").update(rawText, "utf8").digest("hex");
+  if (!extension.ackConfirmed && (!extension.exact || !extension.pageIdentityConfirmed
+    || extension.responseFingerprint?.sha256 !== hash)) {
+    fail("DELIVERY_RECOVERY_MISMATCH", "The extension must prove this exact delivery and response.");
+  }
+}
+
+export function createDeliveryRecoveryActions({ getSources, getServices, web, audit = async event => { void event; } }) {
   let mutation = false;
   async function inspect(expected) {
     const server = await inspectDeliveryOwnership(expected, getSources);
     const observed = await web.inspectDelivery();
-    const completed = observed.completedDelivery?.turnId === expected.currentDeliveryId;
+    const exactOwner = exact(observed, expected);
+    const pageIdentityConfirmed = observed.pageReachable === true && observed.observedConversationUrl === expected.conversationUrl
+      && observed.observedDocumentId === observed.documentId && typeof observed.documentId === "string";
+    const otherActive = (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId);
+    const { binding, rawText } = observed.completedDelivery ?? {};
+    const completed = exactOwner && exact({ ...binding, currentDeliveryId:observed.completedDelivery?.turnId }, expected);
+    const record = server.status === "MATCHED" ? server.records[0] : null;
+    const responseFingerprint = ["PREPARATION", "REVIEW"].includes(record?.kind)
+      && record.active && record.responseStored && !server.otherActive && !otherActive
+      && completed
+      && typeof rawText === "string" && rawText.length > 0
+      ? { bytes: Buffer.byteLength(rawText, "utf8"), sha256: createHash("sha256").update(rawText, "utf8").digest("hex") }
+      : null;
     const durableAck = server.status === "MATCHED" && server.records[0]?.processingState === "ACK_PENDING"
       && server.records[0]?.responseStored === true;
-    const settled = server.status === "MATCHED" && !server.records[0]?.active;
-    return { server, extension: { currentDeliveryId: observed.currentDeliveryId,
+    const settled = record?.active === false;
+    const discardConfirmed = receiptMatches(observed, "lastDeliveryDiscard", expected);
+    const closed = isTerminalDiscard(record) && record.responseStored === false && discardConfirmed
+      && !["ACK_PENDING", "ACKNOWLEDGED"].includes(record.processingState);
+    const extension = { currentDeliveryId: observed.currentDeliveryId,
       sessionId: observed.sessionId, runId: observed.runId, conversationUrl: observed.conversationUrl,
       terminalDiscardProtocol: observed.terminalDiscardProtocol,
       tabId: observed.tabId, documentId: observed.documentId, frameId: observed.frameId,
       pageReachable: observed.pageReachable,
-      pageIdentityConfirmed: observed.pageReachable === true && observed.observedConversationUrl === expected.conversationUrl
-        && observed.observedDocumentId === observed.documentId && typeof observed.documentId === "string", pageBusy: observed.pageBusy, generating: observed.generating,
-      otherActive: (observed.scopedDeliveries ?? []).some(slot => slot.deliveryId),
+      pageIdentityConfirmed, pageBusy: observed.pageBusy, generating: observed.generating,
+      activeRequestId: observed.activeRequestId,
+      activeRequestMatches: exactOwner && pageIdentityConfirmed && observed.activeRequestId === expected.currentDeliveryId,
+      otherActive, responseFingerprint,
       hasCompletedDelivery: observed.hasCompletedDelivery,
-      resultStatus: server.records[0]?.responseStored ? "RESPONSE_STORED" : "UNKNOWN",
-      extensionBusy: observed.extensionBusy, exact: exact(observed, expected),
-      discardConfirmed: receiptMatches(observed, "lastDeliveryDiscard", expected),
+      resultStatus: record?.responseStored ? "RESPONSE_STORED" : closed ? "COMPLETION_RESPONSE_UNCONFIRMED" : "UNKNOWN",
+      extensionBusy: observed.extensionBusy, exact: exactOwner,
+      discardConfirmed,
       ackConfirmed: receiptMatches(observed, "lastAcknowledgedDelivery", expected),
       recordMissing: observed.currentDeliveryId === null && exact({ ...observed, currentDeliveryId: expected.currentDeliveryId }, expected)
         && !(observed.scopedDeliveries ?? []).some(slot => slot.deliveryId === expected.currentDeliveryId || slot.sessionId === expected.sessionId)
         && !receiptMatches(observed, "lastDeliveryDiscard", expected) && !receiptMatches(observed, "lastAcknowledgedDelivery", expected),
-      phase: settled && isTerminalDiscard(server.records[0])
-        && !["ACK_PENDING", "ACKNOWLEDGED"].includes(server.records[0]?.processingState) && receiptMatches(observed, "lastDeliveryDiscard", expected) ? "DISCARDED"
-        : settled && server.records[0]?.state === "ACKNOWLEDGED" && receiptMatches(observed, "lastAcknowledgedDelivery", expected) ? "ACKNOWLEDGED"
-          : durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED" : "UNRESOLVED" } };
+      phase: closed ? "DISCARDED"
+        : settled && record.state === "ACKNOWLEDGED" && receiptMatches(observed, "lastAcknowledgedDelivery", expected) ? "ACKNOWLEDGED"
+          : durableAck ? "ACK_PENDING" : completed ? "RESPONSE_OBSERVED" : "UNRESOLVED" };
+    let canAcknowledge = false;
+    if (!mutation && !acknowledgementBlock({ server, extension })) {
+      const { codeChanges } = await getServices();
+      canAcknowledge = !mutation && Boolean(codeChanges) && !reviewerOperationActive(codeChanges, expected.runId);
+    }
+    return { server, extension, canAcknowledge };
   }
+
+  async function confirmDiscard(input) {
+    await web.discardDelivery(input);
+    if (!receiptMatches(await web.inspectDelivery(), "lastDeliveryDiscard", input)) {
+      fail("DISCARD_UNCONFIRMED", "The extension's persisted discard receipt was not confirmed.");
+    }
+  }
+
   async function discard(input) {
     if (mutation) fail("WEB_SESSION_BUSY", "Another delivery recovery action is active.");
     if (input.unresolvedResultConfirmed !== true || input.noAutomaticResendConfirmed !== true
@@ -50,6 +119,7 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
       fail("DISCARD_CONFIRMATION_REQUIRED", "Confirm the unresolved result, no automatic resend and a discard reason.");
     }
     mutation = true;
+    let auditStarted = false;
     try {
       const inspected = await inspect(input), record = inspected.server.records[0];
       if (inspected.server.status === "MATCHED" && (record?.responseStored === true
@@ -69,7 +139,8 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
       }
       if (input.terminalDiscardConfirmed !== true && inspected.server.status === "MATCHED"
         && isTerminalDiscard(record) && inspected.extension.discardConfirmed) {
-        return { discarded: true, deliveryId: input.currentDeliveryId };
+        return { discarded:true, deliveryId:input.currentDeliveryId,
+          resultStatus:"COMPLETION_RESPONSE_UNCONFIRMED", disposalStatus:"BOTH_DISCARDED" };
       }
       if (inspected.server.status === "MATCHED" && isTerminalDiscard(record)) {
         return await reconcileTerminalDiscard({ input, inspect, getServices, web, audit });
@@ -91,9 +162,14 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         const context = preparationService.data.contexts[input.runId];
         const delivery = context?.deliveries.find(item => item.deliveryId === input.currentDeliveryId);
         if (!delivery || context.webSession.activeDeliveryId !== input.currentDeliveryId) fail("DELIVERY_RECOVERY_MISMATCH", "Preparation owner changed.");
+        await audit({ phase:"STARTED", input }); auditStarted = true;
+        if (preparationService.jobs.size) fail("WEB_SESSION_BUSY", "A preparation operation is active.");
+        if (preparationService.data.contexts[input.runId] !== context || context.webSession.activeDeliveryId !== input.currentDeliveryId) {
+          fail("DELIVERY_RECOVERY_MISMATCH", "Preparation owner changed during audit recording.");
+        }
         delivery.discardIntent = { at, reason, status: "PENDING_VERIFICATION" };
         await preparationService.touch(context);
-        try { await web.discardDelivery({ ...input, reason }); }
+        try { await confirmDiscard({ ...input, reason }); }
         catch (error) {
           // The extension may have persisted the receipt despite a lost reply.
           delivery.discardIntent = { ...delivery.discardIntent, status: "VERIFY_REQUIRED", lastErrorCode: error.code ?? "DISCARD_UNCONFIRMED" };
@@ -113,8 +189,14 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         const run = codeChanges.get(input.runId);
         const binding = run?.conversationBindings.find(item => item.sessionId === input.sessionId);
         if (!binding || binding.activeDeliveryId !== input.currentDeliveryId) fail("DELIVERY_RECOVERY_MISMATCH", "Reviewer owner changed.");
+        await audit({ phase:"STARTED", input }); auditStarted = true;
+        if (reviewerOperationActive(codeChanges, input.runId)) fail("WEB_SESSION_BUSY", "A reviewer or worker operation is active.");
+        if (!codeChanges.get(input.runId)?.conversationBindings.some(item => item.sessionId === input.sessionId
+          && item.activeDeliveryId === input.currentDeliveryId)) {
+          fail("DELIVERY_RECOVERY_MISMATCH", "Reviewer owner changed during audit recording.");
+        }
         codeChanges.update(input.runId, { webDeliveryDiscardIntent: { ...input, reason, at, status: "PENDING_VERIFICATION" } });
-        try { await web.discardDelivery({ ...input, reason }); }
+        try { await confirmDiscard({ ...input, reason }); }
         catch (error) {
           // Preserve uncertainty: an extension write may have succeeded before the reply failed.
           try { codeChanges.update(input.runId, { webDeliveryDiscardIntent: {
@@ -126,38 +208,62 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         if (!latest.conversationBindings.some(item => item.sessionId === input.sessionId && item.activeDeliveryId === input.currentDeliveryId)) {
           fail("DELIVERY_RECOVERY_MISMATCH", "Reviewer owner changed during discard.");
         }
-        codeChanges.update(input.runId, { stage: "HOLD", terminationReason: "WEB_DELIVERY_DISCARDED",
+        const nextStage = terminalCodeChangeStages.has(latest.stage) ? {} : {
+          stage: "HOLD", terminationReason: "WEB_DELIVERY_DISCARDED",
           error: "The operator discarded an unresolved reviewer delivery. Inspect the run before continuing.",
+        };
+        codeChanges.update(input.runId, { ...nextStage,
           conversationBindings: latest.conversationBindings.map(item => item.sessionId === input.sessionId
             ? { ...item, activeDeliveryId: null, bindingStatus: "NEEDS_REBIND" } : item),
-          webDeliveryDiscardIntent: { ...input, reason, at, status: "CONFIRMED", confirmed: true },
+          webDeliveryDiscardIntent: { ...input, reason, at, status: "CONFIRMED", confirmed: true,
+            resultStatus:"COMPLETION_RESPONSE_UNCONFIRMED" },
           webDeliveryReceipts: (latest.webDeliveryReceipts ?? []).map(item => item.deliveryId === input.currentDeliveryId
             ? { ...item, state: "DISCARDED" } : item) });
       } else fail("DELIVERY_RECOVERY_UNAVAILABLE", "Use the existing discussion recovery controls for this delivery.");
-      return { discarded: true, deliveryId: input.currentDeliveryId };
+      await audit({ phase:"COMPLETED", input });
+      return { discarded:true, deliveryId:input.currentDeliveryId,
+        resultStatus:"COMPLETION_RESPONSE_UNCONFIRMED", disposalStatus:"BOTH_DISCARDED" };
+    } catch (error) {
+      if (auditStarted) {
+        try { await audit({ phase:"FAILED", input, code:error.code ?? "DISCARD_UNCONFIRMED" }); }
+        catch { /* Preserve the original recovery error. */ }
+      }
+      throw error;
     } finally { mutation = false; }
   }
-  async function acknowledge(input) {
+  async function acknowledge(input, { automatic = false } = {}) {
     if (mutation) fail("WEB_SESSION_BUSY", "Another delivery recovery action is active.");
     mutation = true;
     try {
       const inspected = await inspect(input), record = inspected.server.records[0];
       if (inspected.server.status === "MATCHED" && !record?.active && record?.state === "ACKNOWLEDGED"
         && inspected.extension.ackConfirmed) return { acknowledged: true, deliveryId: input.currentDeliveryId };
-      if (inspected.server.status !== "MATCHED" || record?.kind !== "REVIEW" || !record.active
-        || record.processingState !== "ACK_PENDING" || !record.responseStored
-        || (!inspected.extension.exact && !inspected.extension.ackConfirmed)) {
-        fail("DELIVERY_RESPONSE_REQUIRED", "Only this durably stored reviewer response can be acknowledged.");
-      }
-      if (inspected.extension.extensionBusy || inspected.extension.pageBusy || inspected.extension.generating) fail("WEB_SESSION_BUSY", "A generation is active.");
-      if (inspected.server.otherActive || inspected.extension.otherActive) fail("WEB_SESSION_BUSY", "Another delivery owns an active session.");
+      const blocker = acknowledgementBlock(inspected);
+      if (blocker) fail(blocker.code, blocker.message);
       const { codeChanges } = await getServices(), run = codeChanges.get(input.runId);
       const receipt = run.webDeliveryReceipts.find(item => item.deliveryId === input.currentDeliveryId);
-      if (codeChanges.jobs.has(input.runId) || codeChanges.workers.has(input.runId) || codeChanges.reviewerWebBusy()) fail("WEB_SESSION_BUSY", "A reviewer operation is active.");
+      if (reviewerOperationActive(codeChanges, input.runId)) fail("WEB_SESSION_BUSY", "A reviewer operation is active.");
       if (!receipt || !codeChanges.artifactStore.verify(receipt.responseRef.sha256)
         || !codeChanges.artifactStore.verify(receipt.packetRef.sha256)) fail("DELIVERY_RESPONSE_REQUIRED", "Durable response evidence is unavailable.");
       const owner = run.conversationBindings.find(item => item.sessionId === input.sessionId);
       if (!owner || owner.activeDeliveryId !== input.currentDeliveryId || owner.conversationUrl !== input.conversationUrl) fail("DELIVERY_RECOVERY_MISMATCH", "The reviewer owner changed before ACK.");
+      const discussion = run.reviewDiscussions?.find(item => item.discussionId === input.currentDeliveryId);
+      let advisoryText = discussion?.response;
+      if (automatic || (discussion && advisoryText == null)) {
+        const raw = codeChanges.artifactStore.readPrivateResponse(receipt.privateResponseRef);
+        if (!discussion || raw.version !== 1 || raw.runId !== input.runId || raw.deliveryId !== input.currentDeliveryId
+          || raw.sessionId !== input.sessionId || raw.role !== owner.role || raw.packet?.type !== "REVIEW_DISCUSSION_TEXT"
+          || typeof raw.rawText !== "string" || !raw.rawText.trim()) fail("DELIVERY_RESPONSE_REQUIRED", "The stored advisory response identity is unverified.");
+        if (automatic && !inspected.extension.ackConfirmed) {
+          const live = inspected.extension;
+          const hash = createHash("sha256").update(raw.rawText, "utf8").digest("hex");
+          if (!live.exact || !live.pageIdentityConfirmed || live.extensionBusy !== false || live.pageBusy !== false
+            || live.generating !== false || live.activeRequestId || live.responseFingerprint?.sha256 !== hash) {
+            fail("DELIVERY_RECOVERY_MISMATCH", "The extension's completed response does not match the stored advisory response.");
+          }
+        }
+        advisoryText = redactForEvidence(raw.rawText.trim());
+      }
       const reviewer = codeChanges.reviewerWeb?.(record.role, owner.provider ?? null) ?? web;
       let binding = (await reviewer.inspect()).binding;
       // Process restart loses the adapter binding, not the durable delivery.
@@ -176,10 +282,16 @@ export function createDeliveryRecoveryActions({ getSources, getServices, web, au
         sessionId: input.sessionId, runId: input.runId, conversationUrl: input.conversationUrl });
       const latest = codeChanges.get(input.runId);
       if (!latest.conversationBindings.some(item => item.sessionId === input.sessionId && item.activeDeliveryId === input.currentDeliveryId)) fail("DELIVERY_RECOVERY_MISMATCH", "The reviewer owner changed during ACK.");
-      codeChanges.update(input.runId, { stage: "HOLD", terminationReason: "WEB_DELIVERY_ACK_RECOVERED",
-        error: "The stored response was acknowledged. Inspect its review evidence before continuing the run.",
+      codeChanges.update(input.runId, {
+        ...(discussion ? {
+          reviewDiscussions:latest.reviewDiscussions.map(item => item.discussionId === input.currentDeliveryId
+            ? { ...item, status:"DELIVERED", error:null, updatedAt:new Date().toISOString(),
+                response:advisoryText }
+            : item),
+        } : { stage:"HOLD", terminationReason:"WEB_DELIVERY_ACK_RECOVERED",
+          error:"The stored response was acknowledged. Inspect its review evidence before continuing the run." }),
         conversationBindings: latest.conversationBindings.map(item => item.sessionId === input.sessionId ? { ...item, activeDeliveryId: null } : item),
-        webDeliveryReceipts: latest.webDeliveryReceipts.map(item => item.deliveryId === input.currentDeliveryId ? { ...item, state: "ACKNOWLEDGED" } : item) });
+        ...markWebDeliveryAcknowledged(codeChanges, input.runId, input.currentDeliveryId, ack) });
       return { acknowledged: true, deliveryId: input.currentDeliveryId };
     } finally { mutation = false; }
   }

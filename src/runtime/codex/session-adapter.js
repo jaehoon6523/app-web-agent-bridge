@@ -12,6 +12,7 @@ import {
 import {
   CodexAuthoritativeOutputInvalidError,
   CodexAuthoritativeOutputMissingError,
+  CodexApprovalError,
   CodexConfigurationError,
   CodexProtocolError,
   CodexSessionStateError,
@@ -206,7 +207,7 @@ export class CodexSessionAdapter {
   get pendingApprovals() {
     return Object.freeze(
       (this.#manager.approvalBridge?.pendingApprovals || [])
-        .filter((request) => request.threadId === this.#threadId),
+        .filter((request) => request.threadId === this.#threadId && request.turnId === this.activeTurnId),
     );
   }
 
@@ -501,6 +502,9 @@ export class CodexSessionAdapter {
   /** @param {{requestId?: any, turnId?: any, decision?: any}} [input] */
   respondToApproval({ requestId, turnId, decision } = {}) {
     this.#assertOpen();
+    if (turnId !== this.activeTurnId || !turnId) {
+      throw new CodexApprovalError("Approval response does not belong to the active turn.", "CODEX_APPROVAL_CORRELATION_MISMATCH");
+    }
     return this.#manager.respondToApproval({
       requestId,
       threadId: this.#threadId,
@@ -658,6 +662,10 @@ export class CodexSessionAdapter {
   /** @param {any} request */
   #handleApproval(request) {
     if (request.threadId !== this.#threadId) return;
+    if (request.turnId !== this.activeTurnId) {
+      this.#manager.approvalBridge.rejectStale(request);
+      return;
+    }
     this.#events.emit("runtimeEvent", this.#normalizer.normalizeApproval(request));
   }
 

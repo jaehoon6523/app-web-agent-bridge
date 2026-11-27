@@ -5,7 +5,8 @@
 export class ResourceClosureError extends AggregateError {
   /** @param {{resourceOwner:string, failureStage:string, operationError:any,
    * cleanupErrors:any[], cause?:any, errors?:any[],
-   * resourceFailures?:Array<{resourceOwner:string, failureStage:string, error:any}>, code?:string}} input */
+   * resourceFailures?:Array<{resourceOwner:string, failureStage:string, error:any,
+   * closureEvidence?:Readonly<{threadId:number, exitCode:number, confirmedAt:string}>}>, code?:string}} input */
   constructor({resourceOwner, failureStage, operationError, cleanupErrors,
     cause = operationError, errors = [operationError, ...cleanupErrors], resourceFailures,
     code = "RESOURCE_CLOSURE_FAILED"}) {

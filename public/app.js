@@ -1,11 +1,12 @@
 import { exportDiagnosticLog } from "./diagnostic-export.js";
+import { renderInvalidAbandonment, invalidAbandonmentInput } from "./invalid-preparation-abandonment.js";
 import { createPreparationTabChoice, renderPreparationTransmission } from "./preparation-tab-choice.js";
-import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation } from "./dashboard-status-view.js";
-import { renderInitialRequest } from "./preparation-view.js";
+import { updateDashboardDiagnostics, showDashboardPageError, bindingPresentation, phaseReasons, userFacingError, userFacingStoredError } from "./dashboard-status-view.js";
+import { renderInitialRequest, renderPreparationOutcome, renderPreparationResponse, readPreparationOptions, renderPreparationConversation, bindPreparationConversation, renderWorkspaceHeading } from "./preparation-view.js";
 import { renderConversation } from "./conversation-view.js";
 import { renderProjectOverview } from "./project-overview-view.js";
 import { filterRunsForHistory, groupRunsByProject, normalizeDashboardState } from "./dashboard-model.js";
-import { createRunActionLayout } from "./run-action-layout.js";
+import { createRunActionLayout, ensureOperatorNoteControls } from "./run-action-layout.js";
 import { projectRunListKnowledge } from "./dashboard-run-list-knowledge.js";
 import { projectDashboardStartActions } from "./dashboard-start-actions.js";
 import { projectPreparationActions, projectReviewerActions, projectRunCommandActions, reviewerProviderMatches } from "./dashboard-action-capabilities.js";
@@ -22,22 +23,31 @@ const $ = (id) => document.getElementById(id);
 let token = "", snapshot = null, selected = "", connected = false;
 let connectionState = initialDashboardConnectionState();
 let workflow = { stage: "START", state: "START_IDLE", preparationId: null, preparationVersion: null, runId: null, runVersion: null };
-let sequence = 0, lastConfirmed = null, evidencePage = null;
+let sequence = 0, lastConfirmed = null, evidencePage = null, evidenceRequest = 0;
+let applyDecision = null, deleteDecision = null;
+let roleReviewRead = null;
+let foregroundReads = 0, confirmedStateJson = null;
 let renderedRecords = "", recoveryRunId = null;
 let decisionSignature = "", interventionRunId = null;
 let agreement = null, preparation = null;
 let projectConversationRoot = null, reviewDiscussionRunId = null;
 let followUpSource = null;
 let pendingProjectDraft = null;
+let openingPreparation = false;
 let reviewerSelectionRoot = null;
 let projectViewRoot = sessionStorage.getItem("bridge.project.view") || null;
 let historyQuery = sessionStorage.getItem("bridge.history.query") || "";
 let historyScope = sessionStorage.getItem("bridge.history.scope") || "ALL";
+let historyRenderKey = "", inspectorOwner = "";
+const inspectorScrollPositions = new Map();
 const tabChoiceFailures = new Map();
 const tabChoice = createPreparationTabChoice();
 let latestRunDiagnostic = null;
 const operations = { folderPicker: "IDLE", preparationStart: "IDLE", webTurn: "IDLE", approval: "IDLE", runCommand: "IDLE" };
 let preparationSignature = "";
+let preparationContentSignature = "";
+let preparationRecovery = null;
+let discardTarget = null;
 let requestedView = "";
 const unknownRequests = new Map();
 
@@ -47,49 +57,12 @@ const { bindHealthInteractions, health, signal, runAppearance, workerRuntimeStat
   getSnapshot:() => snapshot, getLastConfirmed:() => lastConfirmed,
 });
 bindHealthInteractions();
-const { renderAudit, renderLog } = createDashboardAuditPresentation({
-  $, text, node, time, openFindings, openEvidence,
+const { renderApplyInspector, renderAudit, renderLog, selectInspector, recordPatchPage } = createDashboardAuditPresentation({
+  $, text, node, time, openFindings, openEvidence, closeInspectorEvidence,
   getConnectionState:() => connectionState, getSnapshot:() => snapshot, getOperations:() => operations,
 });
 const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED", "COMPLETE"]);
 const labels = { CREATED:"접수됨", PROVISIONING:"작업 환경 준비 중", WORKER_RUNNING:"구현·수정 중", CANDIDATE_CAPTURE:"변경사항 고정 중", VERIFYING:"검증 중", REVIEW_RUNNING:"독립 검토 중", REPORT_REPAIR:"검토 응답 확인 중", EVIDENCE_SUPPLEMENT:"검토 근거 보완 중", REWORK:"수정 대기", HOLD:"확인 필요", AWAITING_APPLY:"감사 통과·적용 대기", APPLYING:"적용 중", APPLIED:"적용됨", INCONCLUSIVE:"미해결 상태로 종료", CANCELLED:"사용자 중단", RECOVERY_REQUIRED:"복구 확인 필요", FAILED:"오류 종료", STOPPING:"중단 확인 중", COMPLETE:"이전 작업 기록" };
-const phaseReasons = {
-  CREATED:"작업이 접수되었습니다.",
-  PROVISIONING:"격리된 작업 환경을 준비하고 있습니다.",
-  WORKER_RUNNING:"Worker가 승인된 요구사항을 구현하고 있습니다.",
-  CANDIDATE_CAPTURE:"구현 결과를 검토할 변경사항으로 고정하고 있습니다.",
-  VERIFYING:"고정된 변경사항의 검증 근거를 확인하고 있습니다.",
-  REVIEW_RUNNING:"Judge와 Critic이 현재 변경사항을 독립적으로 검토하고 있습니다.",
-  REPORT_REPAIR:"검토 응답을 확인하고 있습니다.",
-  EVIDENCE_SUPPLEMENT:"현재 변경사항의 검토 근거를 보완하고 있습니다.",
-  REWORK:"검토 지적을 반영하기 위한 수정 절차를 진행합니다.",
-  APPLYING:"검토를 통과한 변경사항을 프로젝트에 적용하고 있습니다.",
-};
-const errorCopy = Object.freeze({
-  UNKNOWN_RESULT:"진행 중이던 요청의 결과를 확인할 수 없습니다. 같은 요청을 자동으로 다시 보내지 않습니다. 연결을 복구한 뒤 상태를 확인하세요.",
-  RUN_VERSION_CONFLICT:"작업 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 시도하세요.",
-  RUN_BUSY:"다른 작업이 진행 중입니다. 현재 작업을 확인한 뒤 다시 시도하세요.",
-  WEB_BLOCKED:"브라우저 확장 연결을 확인한 뒤 다시 시도하세요.",
-  RECOVERY_REQUIRED:"현재 작업 상태를 먼저 확인해야 합니다. 복구 안내에 따라 상태를 확인하세요.",
-  WORKER_TURN_CHANGED:"Worker 상태가 변경되었습니다. 최신 상태를 확인한 뒤 다시 보내세요.",
-  WORKER_INTERVENTION_UNAVAILABLE:"현재 Worker에 메시지를 전달할 수 있는 상태가 아닙니다. Worker 실행 상태를 확인하세요.",
-  REVIEW_DISCUSSION_RECOVERY_REQUIRED:"이전 감사자 요청의 결과가 확인되지 않았습니다. 기존 요청을 먼저 확인하거나 정리하세요.",
-  REVIEW_DISCUSSION_BINDING_REQUIRED:"감사자의 기존 대화 연결을 확인한 뒤 다시 시도하세요.",
-  WEB_SESSION_PROVIDER_MISMATCH:"설정한 감사 서비스와 실제 연결이 다릅니다. 감사자 대화 연결을 다시 확인하세요.",
-  INVALID_INPUT:"입력 내용을 확인하세요.",
-});
-function userFacingError(error, fallback = "요청을 처리하지 못했습니다. 최신 상태를 확인하고 필요하면 진단 로그를 내보내세요.") {
-  const code = typeof error?.code === "string" ? error.code : null;
-  if (code && errorCopy[code]) return errorCopy[code];
-  const message = typeof error?.message === "string" ? error.message.trim() : "";
-  if (message && /[가-힣]/u.test(message)) return message;
-  return fallback;
-}
-function userFacingStoredError(value, fallback) {
-  const message = typeof value === "string" ? value.trim() : "";
-  if (!message) return fallback;
-  return /[가-힣]/u.test(message) ? message : fallback;
-}
 const reasons = { RECOVERY_ABANDONED:"사용자가 외부 종료와 대상 상태를 확인하고 실행을 폐기했습니다. 감사 기록과 작업 사본은 보존됩니다.", ITERATION_LIMIT:"구현 회차 한도에 도달했습니다. 남은 필수 지적을 확인하세요.", EVIDENCE_LIMIT:"증거 보완 한도에 도달했습니다. 부족한 자료를 확인하세요.", REPORT_REPAIR_LIMIT:"감사 보고서 보완 한도에 도달했습니다.", USER_DECISION_REQUIRED:"명세·검증 범위에 대한 사용자 판단이 필요합니다.", TOTAL_TIME_LIMIT:"전체 시간 한도에 도달했습니다. 외부 실행 상태를 확인해야 합니다.", STOP_UNCERTAIN:"중단을 요청했으나 외부 작업 종료를 확인하지 못했습니다.", USER_STOP:"후속 구현·감사·적용 배정을 중단했습니다." };
 function text(id, value) { $(id).textContent = value ?? ""; }
 function folderName(targetRoot) {
@@ -143,27 +116,7 @@ function ensureReviewerBindingRecoveryControls() {
   $("reviewBindingRecoveryHost")?.append(panel);
 }
 ensureReviewerBindingRecoveryControls();
-function ensureOperatorNoteControls() {
-  if ($("operatorNotePanel")) return;
-  const panel = node("section", "", "flow-band");
-  panel.id = "operatorNotePanel"; panel.hidden = true;
-  panel.append(node("h2", "작업 메모 · 결정 기록"));
-  panel.append(node("p", "이 기록은 Worker나 감사자에게 전송되지 않으며 요구사항·감사 판정·적용 권한을 바꾸지 않습니다.", "muted"));
-  const kindLabel = node("label", "기록 종류"); kindLabel.setAttribute("for", "operatorNoteKind");
-  const kind = node("select", ""); kind.id = "operatorNoteKind";
-  const noteOption = node("option", "메모"); noteOption.value = "NOTE";
-  const decisionOption = node("option", "결정"); decisionOption.value = "DECISION";
-  kind.append(noteOption, decisionOption);
-  const textLabel = node("label", "내용"); textLabel.setAttribute("for", "operatorNoteText");
-  const input = node("textarea", ""); input.id = "operatorNoteText"; input.rows = 3; input.maxLength = 4000;
-  input.placeholder = "나중에 이 작업을 다시 볼 때 필요한 판단 근거나 인수인계 내용을 기록하세요.";
-  const add = node("button", "기록 추가"); add.id = "addOperatorNote"; add.type = "button"; add.disabled = true;
-  const status = node("p", "", "muted"); status.id = "operatorNoteStatus"; status.setAttribute("role", "status");
-  const list = node("div", ""); list.id = "operatorNoteList";
-  panel.append(kindLabel, kind, textLabel, input, add, status, list);
-  $("runSecondaryContent")?.append(panel);
-}
-ensureOperatorNoteControls();
+ensureOperatorNoteControls({ $, node });
 
 const syncRunInformationArchitecture = createRunActionLayout({ $, text });
 
@@ -205,7 +158,11 @@ async function request(url, options = {}) {
       if (error.name === "TimeoutError" || error.name === "AbortError") throw error;
       throw Object.assign(new Error(`서버 응답을 해석할 수 없습니다 (${response.status}).`), { code:"INVALID_SERVER_RESPONSE", status:response.status, responseReceived:true });
     }
-    if (!response.ok) throw Object.assign(new Error(body?.payload?.message || body?.error?.message || body?.message || body?.error || `요청 실패 (${response.status})`), { ...(typeof body?.error === "object" ? body.error : body), status:response.status, responseReceived:true });
+    if (!response.ok) {
+      const detail = body?.type === "command.error" ? body.payload : typeof body?.error === "object" ? body.error : body;
+      throw Object.assign(new Error(detail?.message || body?.error || `요청 실패 (${response.status})`),
+        { ...detail, status:response.status, responseReceived:true });
+    }
     return body;
   } catch (error) {
     if (error.name === "TimeoutError" || error.name === "AbortError" || (!response && error instanceof TypeError)) {
@@ -217,70 +174,115 @@ async function request(url, options = {}) {
     throw error;
   }
 }
-async function refresh() {
+async function refresh(options = {}) {
+  if (options.background) {
+    if (!foregroundReads) await readDashboardState(options);
+    return;
+  }
+  foregroundReads++;
+  try { await readDashboardState(options); }
+  finally { foregroundReads--; }
+}
+async function readDashboardState({ renewSession = true, recoveryTarget = null, background = false } = {}) {
   if (!$("dashboardPageError").hidden) return;
-  const current = ++sequence, target = selected;
+  const current = ++sequence;
+  let target = selected, sourceProject = projectViewRoot;
+  const isCurrent = () => $("dashboardPageError").hidden && current === sequence && target === selected
+    && (!recoveryTarget || sourceProject === projectViewRoot);
   let phase = token ? "STATE" : "SESSION";
-  connected = false;
-  connectionState = markStateReadStarted(connectionState);
-  updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true });
-  if (snapshot) render();
+  const keepConfirmed = background && connected;
+  let needsRender = !keepConfirmed;
+  if (!keepConfirmed) {
+    connected = false;
+    connectionState = markStateReadStarted(connectionState);
+    updateDashboardDiagnostics({ phase, connectionState, snapshot, lastConfirmed, target, loading:true, background });
+    if (snapshot) render();
+  }
   try {
     if (!token) {
       connectionState = markDashboardSessionPending(connectionState);
       const session = await request("/api/dashboard/session", { method:"POST", body:"{}" });
-      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+      if (!isCurrent()) return;
       if (typeof session?.token !== "string" || !session.token.trim()) throw Object.assign(new Error("대시보드 인증 응답에 토큰이 없습니다."), { code:"DASHBOARD_SESSION_INVALID", status:200, responseReceived:true });
       token = session.token;
       connectionState = markDashboardSessionAuthenticated(connectionState);
     }
     phase = "STATE";
-    const result = await request(`/api/state${target ? `?runId=${encodeURIComponent(target)}` : requestedView === "start" ? "?view=start" : ""}`);
-    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    const query = recoveryTarget ? "?view=start"
+      : target ? `?runId=${encodeURIComponent(target)}` : requestedView ? "?view=start" : "";
+    const result = await request(`/api/state${query}`);
+    if (!isCurrent()) return;
     phase = "PROJECTION";
     if (!result || !Array.isArray(result.runs) || !Array.isArray(result.commandCapabilities) || !result.preflight || typeof result.preflight !== "object") throw Object.assign(new Error("서버 상태 응답 형식을 확인하세요."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     if (!result.workflow) throw Object.assign(new Error("서버가 WORKFLOW_CONTRACT 상태를 제공하지 않습니다. 준비 API와 workflow projection 구현이 필요합니다."), { code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true });
     projectRunListKnowledge(result);
     const canonical = normalizeDashboardState(result);
-    if (target && canonical.run?.runId !== target) throw Object.assign(new Error("조회한 작업과 응답 작업이 일치하지 않습니다."),
+    if (recoveryTarget) {
+      const active = canonical.activePreparation;
+      if (canonical.preparation?.lifecycle !== "ACTIVE" || active?.preparationId !== recoveryTarget.preparationId
+        || active.version < recoveryTarget.version || !["START", "PREPARE"].includes(canonical.workflow.stage)) {
+        throw Object.assign(new Error("진행 중인 준비가 바뀌었습니다. 상태를 다시 확인하세요."),
+          {code:"PREPARATION_NAVIGATION_CHANGED", status:200, responseReceived:true});
+      }
+      pendingProjectDraft?.cancel();
+      followUpSource = null;
+      projectConversationRoot = null;
+      target = selected = "";
+    } else if (target && canonical.run?.runId !== target) throw Object.assign(new Error("조회한 작업과 응답 작업이 일치하지 않습니다."),
       {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = markStateReadReady(connectionState);
     connected = dashboardStateReady(connectionState);
+    const stateJson = JSON.stringify(result);
+    needsRender ||= stateJson !== confirmedStateJson;
+    confirmedStateJson = stateJson;
     snapshot = {...result, ...canonical, sessions:[...canonical.sessions.values()], commandCapabilities:[...canonical.commandCapabilities]};
     workflow = canonical.workflow; preparation = canonical.preparation; agreement = preparation?.agreement ?? null;
-    if (workflow.stage !== "START" || preparation?.lifecycle === "ACTIVE") requestedView = "";
-    renderPreparation(); lastConfirmed = new Date().toISOString();
+    if (preparation?.lifecycle === "ACTIVE" && preparation.deliveries?.some(item =>
+      item.deliveryId === preparation.webSession?.activeDeliveryId && item.cancelRequestedAt) && !target) {
+      requestedView = "closing";
+    } else if (!["START", "PREPARE"].includes(workflow.stage)
+      || (preparation?.lifecycle === "ACTIVE" && requestedView !== "closing")) requestedView = "";
+    lastConfirmed = new Date().toISOString();
+    if (recoveryTarget) { sourceProject = null; selectProject(null); }
     const runtimeUnavailable = result.runtimeAvailability?.ready === false;
     const extensionNeedsPreparation = workflow.stage === "PREPARE";
-    text("connectionNotice", runtimeUnavailable
+    if (needsRender) text("connectionNotice", runtimeUnavailable
       ? "서버·대시보드 정상 · 실행 런타임 준비 필요"
       : !extensionNeedsPreparation || result.preflight?.checks?.extensionAuthenticated === true ? ""
       : "웹 확장이 연결 대기 중입니다. 브라우저의 확장 팝업을 열어 서버 주소와 인증 상태를 확인한 뒤 다시 상태를 확인하세요.");
-    for (const [operation, requestId] of unknownRequests) {
+    for (const [operation, {requestId, runId}] of unknownRequests) {
+      phase = "STATE";
       const observed = await request("/api/state?requestId=" + encodeURIComponent(requestId));
-      if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+      if (!isCurrent()) return;
       const receipt = observed.requestResult;
       if (receipt?.requestId !== requestId) continue;
-      if (["COMPLETED", "FAILED", "NOT_FOUND"].includes(receipt.status)) {
+      if (["COMPLETED", "FAILED"].includes(receipt.status)) {
+        needsRender = true;
         operations[operation] = "IDLE"; unknownRequests.delete(operation);
-        text("projectStatus", "요청 " + requestId + ": " + receipt.status);
+        if (operation !== "runCommand" || (snapshot?.run?.runId === runId && !projectViewRoot)) {
+          text(operation === "runCommand" ? "commandResult" : "projectStatus", "요청 " + requestId + ": " + receipt.status);
+        }
       }
     }
   } catch (error) {
-    if (!$("dashboardPageError").hidden || current !== sequence || target !== selected) return;
+    if (!isCurrent()) return;
+    needsRender = true;
     if (phase === "PROJECTION" && !error.code) Object.assign(error, {code:"DASHBOARD_STATE_INVALID", status:200, responseReceived:true});
     connectionState = classifyDashboardFailure(connectionState, phase, {...error, message:userFacingError(error)});
     connected = dashboardStateReady(connectionState);
-    if (phase === "STATE" && [401, 403].includes(error.status)) token = "";
+    if (phase === "STATE" && [401, 403].includes(error.status)) {
+      token = "";
+      if (renewSession && error.status === 401) return refresh({ renewSession:false, recoveryTarget });
+    }
     text("connectionNotice", connectionNoticeFor(connectionState, lastConfirmed ? time(lastConfirmed) : "없음")
       + (snapshot?.run && (!target || snapshot.run.runId === target) ? " · 마지막 확인 데이터 표시 중입니다." : ""));
   }
-  render();
+  if (needsRender) render();
   pendingProjectDraft?.complete();
-  updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
+  if (needsRender) updateDashboardDiagnostics({ phase:connected ? "READY" : phase, connectionState, snapshot, lastConfirmed });
   const autoApprovalPreparationId = preparation?.autoApproveOnReady === true ? preparation.preparationId : null;
   const autoApprovalKey = autoApprovalPreparationId ? `bridge:auto-approve:${autoApprovalPreparationId}` : null;
-  if (autoApprovalPreparationId
+  if (!recoveryTarget && autoApprovalPreparationId
     && sessionStorage.getItem(autoApprovalKey) !== "attempted"
     && preparation?.lifecycle === "ACTIVE"
     && agreement?.status === "READY"
@@ -341,6 +343,28 @@ function render() {
   if (!$("dashboardPageError").hidden) return;
   renderPreparation();
   const run = selected && snapshot?.run?.runId !== selected ? null : snapshot?.run;
+  const roleTarget = roleReviewTarget(run);
+  $("roleReviewPanel").hidden = !roleTarget;
+  if (roleReviewRead?.targetKey !== roleTarget?.key) {
+    roleReviewRead = null;
+    $("roleReviewResults").replaceChildren();
+    text("roleReviewStatus", "");
+  }
+  $("loadRoleReviews").disabled = !roleTarget || !connected || roleReviewRead?.pending === true;
+  if (applyDecision && (applyDecision.runId !== run?.runId || applyDecision.version !== workflow.runVersion
+    || applyDecision.candidateId !== run?.candidate?.candidateId || !capabilities().has("code.apply"))) {
+    applyDecision = null;
+    $("applyDecisionDialog").close();
+  }
+  if (deleteDecision && (deleteDecision.runId !== run?.runId || deleteDecision.version !== workflow.runVersion
+    || !capabilities().has("run.delete"))) {
+    deleteDecision = null;
+    $("deleteRunDialog").close();
+  }
+  if (evidencePage?.candidateId && (evidencePage.target !== run?.runId
+    || evidencePage.candidateId !== run?.candidate?.candidateId)) {
+    closeInspectorEvidence(false);
+  }
   const preflight = snapshot?.preflight, caps = capabilities();
   $("runPanel").dataset.runId = run?.runId ?? "";
   if (!run) { text("runObjective", ""); text("runStatus", ""); }
@@ -351,7 +375,7 @@ function render() {
     waiting.id = "proposalWaiting"; waiting.setAttribute("role", "status"); waiting.setAttribute("aria-live", "polite");
     $("startForm").append(waiting);
   }
-  $("projectForm").prepend($("proposalWaiting"));
+  if ($("proposalWaiting").parentElement !== $("projectForm")) $("projectForm").prepend($("proposalWaiting"));
   $("proposalWaiting").hidden = workflow.stage !== "PREPARE" || !["INITIALIZING", "WAITING_WEB_RESPONSE"].includes(workflow.state);
   proposalControls();
   renderPreparationPersistence();
@@ -377,7 +401,7 @@ function render() {
     stateAvailable:knowledge.stateRead.currentlyAvailable,
     runPresent:Boolean(run),
     commandCapabilities:[...caps],
-    workerTurnAvailable:Boolean(snapshot?.workerRuntime?.turnId ?? run?.workerTurnId),
+    workerTurnAvailable:Boolean(run?.workerTurnId),
     archived:Boolean(run?.archivedAt),
   });
   const reviewerActionsFor = (role, exactBindingAvailable = false, exactDiscardDeliveryAvailable = false) => projectReviewerActions({
@@ -401,19 +425,19 @@ function render() {
     ? projectRunListKnowledge(snapshot)
     : Object.freeze({ status:"NOT_OBSERVED", count:null, runs:null });
   const runsKnown = ["AVAILABLE_EMPTY", "AVAILABLE_NONEMPTY"].includes(runListKnowledge.status);
-  const allRuns = runListKnowledge.runs ?? [], unfinished = runsKnown ? allRuns.find((r) => !terminal.has(r.phase)) : null;
+  const allRuns = runListKnowledge.runs ?? [], unfinished = runsKnown
+    ? allRuns.find((r) => r.blocksNewRun ?? !terminal.has(r.phase)) : null;
   const busy = Boolean(unfinished);
+  const preparationStartBlocked = snapshot?.preparationStartBlocked ?? busy;
+  const activePreparation = snapshot?.activePreparation;
   const startActions = projectDashboardStartActions({ stateAvailable:knowledge.stateRead.currentlyAvailable, runListKnowledge,
     runtimeAvailable:snapshot?.runtimeAvailability?.ready === true, extensionAuthenticated:checks?.extensionAuthenticated === true,
-    preparationStartCapability:caps.has("preparation.start"), hasUnfinishedRun:busy, workflowStage:workflow.stage,
-    preparationActive:preparation?.lifecycle === "ACTIVE" });
+    preparationStartCapability:caps.has("preparation.start"), hasUnfinishedRun:preparationStartBlocked, workflowStage:workflow.stage,
+    preparationActive:activePreparation === undefined ? undefined : activePreparation !== null });
   syncReviewerProviderControls();
-  const reviewerProvidersLocked = workflow.stage !== "START" || operations.preparationStart !== "IDLE" || !connected || busy;
+  const reviewerProvidersLocked = workflow.stage !== "START" || operations.preparationStart !== "IDLE" || !connected || preparationStartBlocked;
   $("judgeReviewerProvider").disabled = reviewerProvidersLocked;
   $("criticReviewerProvider").disabled = reviewerProvidersLocked;
-  $("planRun").disabled = (operations.runCommand !== "IDLE") || !startActions.canStartPreparation || (operations.webTurn !== "IDLE");
-  $("newRun").disabled = (operations.runCommand !== "IDLE") || !startActions.canOpenNewRun;
-  text("newRunReason", !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다." : busy ? "진행 중인 작업을 먼저 확인하세요." : "");
   $("showUnfinishedRun").hidden = !busy;
   $("showUnfinishedRun").disabled = (operations.runCommand !== "IDLE") || !connected;
   $("historySearch").value = historyQuery;
@@ -427,7 +451,7 @@ function render() {
   const historyBaseCount = historyScope === "ARCHIVED" ? archivedHistoryRuns.length : activeHistoryRuns.length;
   text("historyFilterSummary", !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다."
     : filtersActive ? `${historyBaseCount}건 중 ${filteredRuns.length}건 표시` : `전체 ${activeHistoryRuns.length}건 · 보관 ${archivedHistoryRuns.length}건`);
-  const list = $("runList"); list.replaceChildren();
+  const list = $("runList");
   const groups = runsKnown ? groupRunsByProject(activeHistoryRuns) : [];
   if (runsKnown) for (const record of snapshot?.projectConversations ?? []) {
     if (record.targetRoot && !groups.some((item) => item.targetRoot === record.targetRoot)) groups.push({ targetRoot:record.targetRoot, runs:[] });
@@ -447,22 +471,30 @@ function render() {
   }
   $("historyEmpty").hidden = runsKnown && historyGroups.length > 0;
   text("historyEmpty", runsKnown ? "조건에 맞는 실행 기록이 없습니다." : "작업 기록 조회 불가 · 현재 실행 목록을 확인할 수 없습니다.");
-  for (const group of historyGroups) {
-    const section = node("section", "", "project-history");
-    const projectHeadingLink = Boolean(group.targetRoot && historyScope !== "ARCHIVED");
-    const heading = group.targetRoot
-      ? node(projectHeadingLink ? "button" : "h3", folderName(group.targetRoot),
-        projectHeadingLink ? `project-open${projectViewRoot === group.targetRoot ? " active" : ""}` : "")
-      : node("h3", "기타 작업");
-    if (group.targetRoot) heading.title = group.targetRoot;
-    if (projectHeadingLink) heading.addEventListener("click", () => selectProject(group.targetRoot));
-    section.append(heading);
-    for (const r of group.runs) {
-      const button = node("button", r.objective, `run-item${workflow.stage !== "START" && r.runId === run?.runId ? " active" : ""}`);
-      button.append(node("small", labels[r.phase] ?? r.phase, `health ${runAppearance(r.phase)}`));
-      button.addEventListener("click", () => openRun(r.runId)); section.append(button);
+  const selectedHistoryRun = workflow.stage !== "START" ? run?.runId : null;
+  const historyKey = JSON.stringify([projectViewRoot, historyScope, selectedHistoryRun, connected, historyGroups.map(group =>
+    [group.targetRoot, group.runs.map(item => [item.runId, item.objective, item.phase])])]);
+  if (historyRenderKey !== historyKey) {
+    historyRenderKey = historyKey;
+    list.replaceChildren();
+    for (const group of historyGroups) {
+      const section = node("section", "", "project-history");
+      const projectHeadingLink = Boolean(group.targetRoot && historyScope !== "ARCHIVED");
+      const heading = group.targetRoot
+        ? node(projectHeadingLink ? "button" : "h3", folderName(group.targetRoot),
+          projectHeadingLink ? `project-open${projectViewRoot === group.targetRoot ? " active" : ""}` : "")
+        : node("h3", "기타 작업");
+      if (group.targetRoot) heading.title = group.targetRoot;
+      if (projectHeadingLink) heading.addEventListener("click", () => selectProject(group.targetRoot));
+      section.append(heading);
+      for (const r of group.runs) {
+        const button = node("button", r.objective, `run-item${r.runId === selectedHistoryRun ? " active" : ""}`);
+        if (r.runId === selectedHistoryRun) button.setAttribute("aria-current", "true");
+        button.append(node("small", labels[r.phase] ?? r.phase, `health ${runAppearance(r.phase)}`));
+        button.addEventListener("click", () => openRun(r.runId)); section.append(button);
+      }
+      list.append(section);
     }
-    list.append(section);
   }
   const overviewGroup = projectViewRoot ? groups.find((item) => item.targetRoot === projectViewRoot) : null;
   $("projectOverview").hidden = !overviewGroup;
@@ -491,17 +523,17 @@ function render() {
   text("runStageHeading", resultStage ? "결과" : "작업");
   $("startPanel").hidden = Boolean(overviewGroup) || workflow.stage !== "START";
   $("followUpSource").hidden = !followUpSource;
-  text("followUpSource", followUpSource ? `이어서 작업: ${followUpSource.objective} · 새 부탁과 요구사항은 다시 승인합니다.${$("startRoot").value !== followUpSource.targetRoot ? " 폴더가 달라졌습니다. 원래 프로젝트를 선택하세요." : ""}` : "");
+  text("followUpSource", followUpSource ? `이어서 작업: ${followUpSource.objective} · 새 부탁과 요구사항은 다시 승인합니다. · 원본 작업 ID ${followUpSource.runId}${$("startRoot").value !== followUpSource.targetRoot ? " 폴더가 달라졌습니다. 원래 프로젝트를 선택하세요." : ""}` : "");
   if (workflow.stage !== "START") projectConversationRoot = null;
   if (workflow.stage === "START") {
     const root = $("startRoot").value.trim();
     const saved = snapshot?.projectConversations?.find((item) => item.targetRoot === root && item.conversationId);
     if (projectConversationRoot !== root) {
       const previous = snapshot?.projectConversations?.find((item) => item.targetRoot === projectConversationRoot);
-      if ($("reuseProjectConversation").checked || previous?.conversationUrl === $("conversationUrl").value) $("conversationUrl").value = "";
+      if ($("reuseProjectConversation").checked || previous?.conversationUrl === $("conversationUrl").value || followUpSource?.conversationUrl === $("conversationUrl").value) $("conversationUrl").value = "";
       projectConversationRoot = root;
       $("reuseProjectConversation").checked = Boolean(saved);
-      if (saved) $("conversationUrl").value = saved.conversationUrl;
+      $("conversationUrl").value = saved?.conversationUrl ?? (followUpSource?.targetRoot === root ? followUpSource.conversationUrl ?? "" : $("conversationUrl").value);
     }
     $("projectConversationPanel").hidden = !saved;
     text("projectConversationDetail", saved ? `저장된 대화: ${saved.conversationUrl} · 마지막 확인 ${time(saved.updatedAt)}` : "");
@@ -512,10 +544,56 @@ function render() {
     $("conversationUrl").readOnly = reuse;
   }
   const preparing = workflow.stage === "PREPARE";
-  renderInitialRequest(workflow, preparation, $, text, document, capabilities().has("preparation.cancel"));
+  const viewingPreparation = !overviewGroup && ["START", "PREPARE"].includes(workflow.stage);
+  const prepActions = currentPreparationActions();
+  renderPreparationOutcome($, preparation, {
+    visible: viewingPreparation, connected, extensionConnected: webConnected(),
+    canReconcile: caps.has("web.reconcile") && operations.webTurn === "IDLE",
+    canClose: prepActions.cancel && operations.preparationStart === "IDLE",
+    canApprove: prepActions.approve && operations.approval === "IDLE",
+    canReply: prepActions.reply && operations.webTurn === "IDLE",
+    canStart: startActions.canOpenNewRun,
+    closeLabel: preparing ? $("closeProject").textContent : $("cancelInitialPreparation").textContent,
+  });
+  const feedback = $("proposalFeedback");
+  if (preparing && viewingPreparation && preparation?.preparationId && feedback.dataset.preparationId !== preparation.preparationId) {
+    feedback.dataset.preparationId = preparation.preparationId;
+    feedback.value = "";
+  }
+  renderWorkspaceHeading($, text, preparation, checks, preparing && !overviewGroup, snapshot?.projectConversations);
+  renderInitialRequest(workflow, preparation, $, text, document, caps.has("preparation.cancel"), preparationRecovery?.root);
   $("projectPanel").hidden = Boolean(overviewGroup) || !preparing;
   $("runPanel").hidden = Boolean(overviewGroup) || !["WORK", "RESULT"].includes(workflow.stage) || !run;
-  actionState("planRun", !startActions.canStartPreparation || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE",
+  const shownRun = $("runPanel").hidden ? null : run;
+  const shownPreparation = $("projectPanel").hidden ? null : preparation;
+  const workspacePath = overviewGroup?.targetRoot ?? shownRun?.targetRoot ?? shownPreparation?.targetRoot ?? "";
+  const workspaceIdentity = shownRun?.runId ?? shownPreparation?.preparationId ?? "";
+  const scrollOwner = JSON.stringify([overviewGroup?.targetRoot, shownRun?.runId,
+    shownRun?.candidate?.candidateId, shownPreparation?.preparationId]);
+  const inspectorScroll = $("studioInspectorScroll");
+  const inspectorOwnerChanged = inspectorOwner !== scrollOwner;
+  if (inspectorOwnerChanged) {
+    if (inspectorOwner) inspectorScrollPositions.set(inspectorOwner, inspectorScroll.scrollTop);
+    inspectorOwner = scrollOwner;
+  }
+  text("studioWorkspacePath", workspacePath);
+  $("studioWorkspacePath").title = workspacePath;
+  text("studioContextTitle", overviewGroup ? "프로젝트 기록" : shownPreparation ? "협의" : "현재 작업");
+  text("studioContextStage", overviewGroup ? "이력 열람" : shownRun ? labels[shownRun.phase] ?? shownRun.phase : $(userStep).textContent.trim());
+  $("studioContextIdentityRow").hidden = !workspaceIdentity;
+  text("studioContextIdentity", workspaceIdentity);
+  $("studioContextIdentity").title = workspaceIdentity;
+  const contextDetail = shownPreparation && !$("preparationOutcome").hidden ? $("preparationOutcomeNext").textContent
+    : shownRun?.phase === "RECOVERY_REQUIRED" || shownRun?.phase === "FAILED"
+      ? reasons[shownRun.terminationReason] ?? userFacingStoredError(shownRun.error, "확인된 오류 사유가 없습니다.")
+      : shownRun?.phase === "WORKER_RUNNING" && snapshot?.workerRuntime?.turnId === shownRun.workerTurnId && shownRun.workerTurnId
+        ? workerRuntimeStatus(snapshot.workerRuntime).detail : "";
+  $("studioContextDetailRow").hidden = !contextDetail;
+  text("studioContextDetailLabel", shownPreparation ? "다음 행동" : shownRun?.phase === "WORKER_RUNNING" ? "Worker 관측" : "확인할 사항");
+  text("studioContextDetail", contextDetail);
+  if (!shownRun) $("applyInspector").hidden = true;
+  actionState("planRun", !startActions.canStartPreparation || operations.preparationStart !== "IDLE" || operations.folderPicker !== "IDLE"
+    || operations.runCommand !== "IDLE" || operations.webTurn !== "IDLE",
     runtimeUnavailable ? "실행 런타임 준비가 필요합니다."
       : !knowledge.stateRead.currentlyAvailable || !runsKnown ? "최신 상태와 작업 기록을 확인한 뒤 준비 대화를 시작할 수 있습니다."
         : !webConnected() ? "브릿지 확장 인증이 확인되지 않아 전송할 수 없습니다. ChatGPT 탭은 연결 후 자동으로 엽니다."
@@ -535,15 +613,20 @@ function render() {
   }
   $("chooseFolder").disabled = !currentPreparationActions().chooseFolder || operations.folderPicker !== "IDLE";
   $("newRun").disabled = !startActions.canOpenNewRun || operations.preparationStart !== "IDLE" || operations.runCommand !== "IDLE";
+  $("openActivePreparation").hidden = !activePreparation || (!overviewGroup
+    && ["START", "PREPARE"].includes(workflow.stage) && workflow.preparationId === activePreparation.preparationId);
+  $("openActivePreparation").disabled = !knowledge.stateRead.currentlyAvailable || openingPreparation;
   text("newRunReason", !knowledge.stateRead.currentlyAvailable ? "최신 상태 확인 후 새 작업을 시작할 수 있습니다."
     : !runsKnown ? "작업 기록 조회 불가 · 현재 실행 목록을 확인한 뒤 새 작업을 시작할 수 있습니다."
     : workflow.stage === "PREPARE" ? "현재 준비를 유지합니다. 종료하려면 ‘준비 취소’를 선택하세요."
     : preparation?.lifecycle === "ACTIVE" && preparation.error?.code === "WEB_TAB_SELECTION_REQUIRED"
       ? "현재 준비 요청에 사용할 ChatGPT 탭을 선택해야 합니다."
-    : preparation?.lifecycle === "ACTIVE" ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
-    : busy ? "진행 중인 작업을 먼저 종료하세요."
-    : "새 작업의 폴더와 요청을 입력할 수 있습니다. 준비 대화 시작에는 웹 연결이 필요합니다.");
-  if (overviewGroup) renderProjectOverview({ group:overviewGroup, busyRun:unfinished, allRuns, $, text, node, folderName, labels, runAppearance, terminal, time, connected, newRunDisabled:$("newRun").disabled, openRun });
+    : activePreparation ? "현재 요청의 응답 또는 처리 결과를 확인 중입니다."
+    : preparationStartBlocked ? "진행 중인 작업을 먼저 확인하세요."
+    : activePreparation === undefined ? "현재 준비 상태를 확인한 뒤 새 작업을 시작할 수 있습니다."
+    : !webConnected() ? "준비 대화를 시작하려면 웹 확장 인증이 필요합니다."
+    : busy ? "새 협의를 시작할 수 있습니다. 구현을 시작하려면 기존 작업의 복구 상태를 확인하세요." : "");
+  if (overviewGroup) renderProjectOverview({ group:overviewGroup, projectConversation:snapshot?.projectConversations?.find(item => item.targetRoot === overviewGroup.targetRoot), busyRun:unfinished, allRuns, $, text, node, folderName, labels, runAppearance, terminal, time, connected, newRunDisabled:$("newRun").disabled, openRun });
   if (workflow.stage === "START" && workflow.state !== "CONNECTING_WEB"
     && !preparation?.error && !checks?.extensionAuthenticated) {
     text("startReason", "입력은 가능합니다. 브릿지 확장이 인증되면 준비 대화를 시작할 수 있습니다. ChatGPT 탭은 자동으로 엽니다.");
@@ -672,7 +755,7 @@ function render() {
   const interventionActive = run?.phase === "WORKER_RUNNING";
   const interventionKind = $("workerInterventionKind").value;
   const interventionText = $("workerInterventionText").value.trim();
-  const interventionTurnId = snapshot?.workerRuntime?.turnId ?? run?.workerTurnId ?? null;
+  const interventionTurnId = run?.workerTurnId ?? null;
   const scopeChange = interventionKind === "REQUIREMENTS_CHANGE";
   $("workerInterventionPanel").hidden = !interventionActive;
   $("sendWorkerIntervention").disabled = !interventionActive || operations.runCommand !== "IDLE"
@@ -721,24 +804,22 @@ function render() {
       : !recoveryConfirmed ? "외부 작업 종료·대상 저장소 상태 확인·실행 폐기를 한 번에 확인하세요."
       : "확인 기록 후 이 실행을 폐기할 수 있습니다.";
     actionState("abandonRun", abandonBlocked, abandonReason, abandonReason);
+  } else {
+    $("abandonRun").disabled = true;
+    $("abandonRun").title = "";
+  }
+  if (caps.has("code.review.retry")) {
+    $("retryRun").textContent = "독립 검토 다시 시작";
+    const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 감사를 다시 시도할 수 있습니다."
+      : !reviewerActionsFor(null).retryReview ? "브라우저 확장과 해당 감사자의 대화 연결을 복구해야 현재 변경사항의 독립 검토를 다시 시작할 수 있습니다."
+      : "Worker를 다시 실행하지 않고 현재 후보를 같은 요구사항으로 다시 감사합니다. REWORK 판정이면 기존 수정 루프를 이어갑니다.";
+    actionState("retryRun", operations.runCommand !== "IDLE" || !reviewerActionsFor(null).retryReview, retryReason, retryReason);
+  } else if (run?.phase === "RECOVERY_REQUIRED") {
     const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 다시 시도할 수 있습니다."
       : caps.has("run.retry") ? "실패한 격리 작업 공간을 정리하고 같은 요구사항으로 Worker를 다시 실행합니다."
       : "변경사항이 고정되기 전 Worker 실패가 안전하게 확인된 경우에만 Worker를 다시 실행할 수 있습니다.";
     actionState("retryRun", (operations.runCommand !== "IDLE") || !runActions.retryWorker, retryReason, retryReason);
-  } else if (run?.phase === "HOLD" && caps.has("code.review.retry")) {
-    $("abandonRun").disabled = true;
-    $("abandonRun").title = "";
-    $("retryRun").textContent = "독립 검토 다시 시작";
-    const needsReviewerTabSelection = caps.has("code.review.rebind");
-    const retryReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리가 끝나야 감사를 다시 시도할 수 있습니다."
-      : needsReviewerTabSelection ? "감사자 대화 탭이 여러 개입니다. 먼저 위 복구 영역에서 사용할 탭을 선택하세요."
-      : !webConnected() ? "브라우저 확장과 해당 감사자의 대화 연결을 복구해야 현재 변경사항의 독립 검토를 다시 시작할 수 있습니다."
-      : "Worker를 다시 실행하지 않고 현재 후보를 같은 요구사항으로 다시 감사합니다. REWORK 판정이면 기존 수정 루프를 이어갑니다.";
-    actionState("retryRun", (operations.runCommand !== "IDLE") || needsReviewerTabSelection
-      || !reviewerActionsFor(null).retryReview, retryReason, retryReason);
   } else {
-    $("abandonRun").disabled = true;
-    $("abandonRun").title = "";
     $("retryRun").disabled = true;
     $("retryRun").title = "";
   }
@@ -748,7 +829,27 @@ function render() {
   }
   $("archiveRun").textContent = run?.archivedAt ? "보관 해제" : "기록 보관";
   $("archiveRun").disabled = operations.runCommand !== "IDLE" || !runActions.archiveRun;
-  if (!run) return;
+  $("runWorkerConsole").hidden = !["PROVISIONING", "WORKER_RUNNING", "CANDIDATE_CAPTURE", "VERIFYING", "FAILED", "RECOVERY_REQUIRED"].includes(run?.phase);
+  if (!$("runWorkerConsole").hidden) {
+    const worker = snapshot.workerRuntime;
+    const currentTurn = Boolean(run.workerTurnId) && worker?.turnId === run.workerTurnId;
+    const state = currentTurn ? workerRuntimeStatus(worker).detail : "이 Worker의 최신 활동은 확인되지 않았습니다.";
+    text("runWorkerConsoleState", `${labels[run.phase]} · ${state}`);
+    text("runWorkerConsoleCandidate", run.candidate?.candidateId ? `고정 후보 · ${run.candidate.candidateId}` : "고정 후보 없음");
+    const lastTurn = run.workerTurns?.at(-1);
+    const workerError = lastTurn?.metadata?.error;
+    const failure = lastTurn?.turnId === run.workerTurnId && lastTurn?.status === "failed"
+      ? (workerError === "External turn timed out; execution state requires recovery."
+        ? "Worker 응답 시간이 초과됐습니다. 복구 조치를 확인하세요."
+        : userFacingStoredError(workerError, "Worker 실행이 실패했습니다.")) : "";
+    $("runWorkerConsoleFailure").hidden = !failure;
+    text("runWorkerConsoleFailure", failure);
+  }
+  if (!run) {
+    $("applyInspector").hidden = true;
+    if (inspectorOwnerChanged) inspectorScroll.scrollTop = inspectorScrollPositions.get(scrollOwner) ?? 0;
+    return;
+  }
   $("continueProject").hidden = run.phase !== "APPLIED" || Boolean(run.archivedAt);
   $("continueProject").disabled = $("newRun").disabled;
   text("runFollowUp", run.followUp ? `이전 적용 작업: ${run.followUp.objective} · ${run.followUp.runId}` : "");
@@ -798,7 +899,7 @@ function render() {
     $("workerProvenance")?.after(reviewerRuntimeStatus);
   }
   text("reviewerRuntimeStatus",
-    reviewerRuntimeTechnicalSummary(snapshot?.reviewerRuntimes, snapshot?.reviewerRuntime));
+    reviewerRuntimeTechnicalSummary(snapshot?.reviewerRuntimes));
   let reviewIndependenceStatus = $("reviewIndependenceStatus");
   if (!reviewIndependenceStatus) {
     reviewIndependenceStatus = node("p", "", "muted");
@@ -834,6 +935,8 @@ function render() {
     : run.phase === "AWAITING_APPLY" ? "현재 적용할 수 없습니다. 상태를 확인하세요."
     : "검토 통과 후 적용할 수 있습니다.";
   actionState("applyCode", (operations.runCommand !== "IDLE") || !runActions.applyCode, applyReason, applyReason);
+  if (!$("runPanel").hidden) renderApplyInspector(run, applyReason);
+  if (inspectorOwnerChanged) inspectorScroll.scrollTop = inspectorScrollPositions.get(scrollOwner) ?? 0;
 
   const exportReason = (operations.runCommand !== "IDLE") ? "현재 요청 처리 중입니다."
     : !connected ? "최신 상태 확인 후 다운로드할 수 있습니다."
@@ -843,16 +946,31 @@ function render() {
   text("commandReason", "");
   syncRunInformationArchitecture(run);
   const signature = JSON.stringify([run, snapshot?.events, snapshot?.messages, snapshot?.assessments, snapshot?.findings, snapshot?.evidence, connected, (operations.runCommand !== "IDLE")]);
-  if (renderedRecords !== signature) { renderedRecords = signature; renderConversation(run, $("conversationTimeline"), node, time); renderAudit(); renderLog(); }
+  if (renderedRecords !== signature) {
+    renderedRecords = signature;
+    renderConversation(run, $("conversationTimeline"), node, time);
+    const history = $("preparationHistoryTimeline");
+    history.replaceChildren();
+    for (const turn of run.preparationSnapshot?.discussion ?? []) {
+      const entry = node("article", "", "record");
+      entry.append(node("strong", turn.actor === "USER" ? "사용자" : "웹 설계자"), node("pre", turn.content));
+      history.append(entry);
+    }
+    if (!history.children.length) history.append(node("p", "이 실행에 저장된 협의 기록이 없습니다.", "muted"));
+    renderAudit();
+    renderLog();
+  }
 }
 async function command(type, payload = {}) {
   if (operations.runCommand !== "IDLE" || !capabilities().has(type)) return;
   const run = snapshot?.run, target = run?.runId;
+  const sourceSelection = selected, sourceProject = projectViewRoot;
+  const stillViewing = () => snapshot?.run?.runId === target && selected === sourceSelection && projectViewRoot === sourceProject;
   const body = { type, requestId:crypto.randomUUID(), payload:{ ...payload, runId:workflow.runId, expectedVersion:workflow.runVersion } };
   operations.runCommand = "RUNNING"; render();
   try {
     const result = await request("/api/commands", { method:"POST", body:JSON.stringify(body) });
-    if (snapshot?.run?.runId === target) {
+    if (stillViewing()) {
       const successMessage = {
         "code.worker.intervene": "현재 Worker turn에 내용을 전달했고 실행 기록에 남겼습니다.",
         "code.decision.reply": "답변을 기록하고 같은 후보를 독립 검토 중입니다.",
@@ -870,25 +988,71 @@ async function command(type, payload = {}) {
         "run.delete": "종료된 작업 기록을 삭제했습니다.",
       }[type] ?? "요청을 처리했습니다. 최신 실행 상태를 확인하세요.";
       text("commandResult", successMessage);
+      $("commandResult").dataset.tone = "notice";
+      if (type === "run.delete") { selected = null; requestedView = "start"; }
     }
-    if (type === "run.delete") { selected = null; requestedView = "start"; }
     return result.payload;
   } catch (error) {
-    if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", body.requestId); }
-    text("commandResult", userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요."));
+    if (error.code === "UNKNOWN_RESULT") { operations.runCommand = "UNKNOWN_RESULT"; unknownRequests.set("runCommand", {requestId:body.requestId,runId:target}); }
+    if (stillViewing()) {
+      text("commandResult", userFacingError(error, "요청을 처리하지 못했습니다. 최신 실행 기록과 연결 상태를 확인하세요."));
+      $("commandResult").dataset.tone = "error";
+    }
   } finally { if (operations.runCommand !== "UNKNOWN_RESULT") operations.runCommand = "IDLE"; await refresh(); }
 }
-async function openEvidence(id, startLine = 1) {
+function restoreEvidenceFocus(page) {
+  if (!page?.source || page.target !== snapshot?.run?.runId
+    || (page.candidateId && page.candidateId !== snapshot.run.candidate?.candidateId)) return;
+  const source = $(page.source);
+  const trigger = Array.from(source?.querySelectorAll("button") ?? [])
+    .find(button => button.dataset.evidenceId === page.id && button.dataset.patchPath === page.patchPath
+      && button.dataset.evidenceStart === page.evidenceStart && !button.disabled);
+  trigger?.focus();
+}
+
+function closeInspectorEvidence(restoreFocus = true) {
+  evidenceRequest++;
+  if (evidencePage?.candidateId) {
+    if (restoreFocus) restoreEvidenceFocus(evidencePage);
+    evidencePage = null;
+  }
+  $("inspectorEvidenceReader").hidden = true;
+  text("inspectorCopyStatus", "");
+}
+
+async function openEvidence(id, startLine = 1, candidateId = undefined, source = "", patchPath, endLine) {
+  if (operations.runCommand !== "IDLE") return;
   const target = snapshot?.run?.runId;
-  const result = await command("evidence.get", { evidenceId:id, startLine, endLine:startLine + 199 });
-  if (!result || snapshot?.run?.runId !== target) return;
-  evidencePage = { id, next:result.endLine + 1, target };
-  text("evidenceTitle", `${result.kind} · ${id}`); text("evidenceContent", result.content);
-  text("evidenceRange", `${result.startLine}–${result.endLine} / ${result.totalLines}줄${result.omittedAfter ? " · 다음 구간 있음" : ""}`);
-  actionState("nextEvidence", !result.omittedAfter,
-    "이 근거의 마지막 구간입니다. 더 불러올 내용이 없습니다.",
-    "다음 근거 구간을 불러옵니다.");
-  if (!$("evidenceDialog").open) $("evidenceDialog").showModal();
+  const requestId = ++evidenceRequest;
+  const result = await command("evidence.get", { evidenceId:id, startLine, endLine:endLine ?? startLine + 199, patchPath });
+  if (requestId !== evidenceRequest || !result || snapshot?.run?.runId !== target) return;
+  if (candidateId && (snapshot.run.candidate?.candidateId !== candidateId || result.candidateId !== candidateId)) return;
+  if (patchPath !== undefined && (result.patchPath !== patchPath || result.kind !== "PATCH")) return;
+  const missingLocation = result.patchLocationFound === false;
+  const hasNext = endLine === undefined && result.omittedAfter;
+  evidencePage = { id, next:hasNext ? result.endLine + 1 : null, target, candidateId, source, patchPath,
+    evidenceStart:endLine === undefined ? undefined : String(startLine) };
+  const range = missingLocation ? "" : `${result.startLine}–${result.endLine} / ${result.totalLines}줄${hasNext ? " · 다음 구간 있음" : ""}`;
+  if (candidateId) {
+    if (patchPath === undefined) recordPatchPage(snapshot.run, result);
+    const path = patchPath ?? result.result?.path;
+    text("inspectorEvidenceTitle", `${result.kind}${path ? " · " + path : ""}`);
+    text("inspectorEvidenceContent", missingLocation ? "이 파일의 텍스트 변경 구간을 원본 Diff에서 확인할 수 없습니다." : result.content);
+    text("inspectorCopyStatus", "");
+    $("copyInspectorEvidence").disabled = missingLocation || !result.content;
+    text("inspectorEvidenceRange", range);
+    $("nextInspectorEvidence").disabled = !hasNext;
+    $("inspectorEvidenceReader").hidden = false;
+    $("inspectorEvidenceContent").focus();
+  } else {
+    $("inspectorEvidenceReader").hidden = true;
+    text("evidenceTitle", `${result.kind} · ${id}`); text("evidenceContent", result.content);
+    text("evidenceRange", range);
+    actionState("nextEvidence", !result.omittedAfter,
+      "이 근거의 마지막 구간입니다. 더 불러올 내용이 없습니다.",
+      "다음 근거 구간을 불러옵니다.");
+    if (!$("evidenceDialog").open) $("evidenceDialog").showModal();
+  }
 }
 
 function proposalControls() {
@@ -902,11 +1066,15 @@ function proposalControls() {
   actionState("saveProject", approvalDisabled,
     !caps.has("preparation.approve")
       ? agreement?.status === "READY"
-        ? "응답 정리 또는 연결 확인이 끝나야 작업을 시작할 수 있습니다."
+        ? snapshot?.preparationApprovalBlocked
+          ? "기존 작업의 복구 또는 종료를 확인한 뒤 구현을 시작할 수 있습니다."
+          : "응답 정리 또는 연결 확인이 끝나야 작업을 시작할 수 있습니다."
         : "확인 질문을 모두 정리해 요구사항 검토 단계가 되어야 작업을 시작할 수 있습니다."
       : "작업 시작 요청을 처리 중입니다.",
     "현재 요구사항을 승인하고 작업을 시작합니다.");
   const cancelDisabled = !actions.cancel || operations.preparationStart !== "IDLE";
+  $("closeProject").textContent = preparation?.state === "FAILED" && agreement?.status === "APPROVED"
+    ? "합의 보존하고 준비 닫기" : "요구사항 정리 취소";
   actionState("closeProject", cancelDisabled,
     !connected ? "최신 상태 확인 후 준비를 종료할 수 있습니다."
       : !caps.has("preparation.cancel") ? "현재 응답 또는 전송 처리가 끝난 뒤 준비를 취소할 수 있습니다."
@@ -919,54 +1087,110 @@ function proposalControls() {
     ["RECOVERY_REQUIRED", "AMBIGUOUS", "WEB_BLOCKED"].includes(preparation.state)
     || ["DELIVERY_RECOVERY_UNCONFIRMED", "REBIND_DURING_ACTIVE_DELIVERY"].includes(preparation.error?.code)
   ));
+  const invalidAbandonment = caps.has("preparation.abandonInvalid"), pendingAbandonment = activeDelivery?.invalidAbandonmentIntent;
+  const nextDiscardTarget = discardVisible ? JSON.stringify([preparation.preparationId, activeDelivery.deliveryId, invalidAbandonment, pendingAbandonment?.requestId]) : null;
+  if (nextDiscardTarget !== discardTarget) {
+    discardTarget = nextDiscardTarget;
+    $("discardUnresolved").checked = false;
+    $("discardNoResend").checked = false;
+    $("discardReason").value = "";
+    $("discardPageUnconfirmed").checked = false;
+  }
   $("discardPanel").hidden = !discardVisible;
+  renderInvalidAbandonment($, invalidAbandonment, pendingAbandonment);
   text("discardDelivery", discardVisible ? `준비 ID: ${preparation.preparationId} · 전송 ID: ${activeDelivery.deliveryId} · 세션: ${activeDelivery.sessionId} · 대화: ${activeDelivery.conversationId ?? preparation.webSession?.conversationUrl ?? "확인되지 않음"}` : "");
-  $("discardDeliveryButton").disabled = !discardVisible || !actions.discard || operations.preparationStart !== "IDLE"
-    || !$("discardUnresolved").checked || !$("discardNoResend").checked || $("discardReason").value.trim().length < 3;
+  $("discardDeliveryButton").disabled = !discardVisible || !actions.discard || (operations.preparationStart !== "IDLE"
+    && !(pendingAbandonment && operations.preparationStart === "UNKNOWN_RESULT"))
+    || (!pendingAbandonment && (!$("discardUnresolved").checked || !$("discardNoResend").checked || (invalidAbandonment && !$("discardPageUnconfirmed").checked) || $("discardReason").value.trim().length < 3));
   for (const button of document.querySelectorAll("[data-web-command]")) button.disabled = !caps.has(button.dataset.webCommand) || operations.webTurn !== "IDLE";
 }
 function renderPreparation() {
-  if (!preparation) { preparationSignature = ""; tabChoice.reset(); return; }
+  if (!preparation) {
+    $("preparationStoredResponse").hidden = true;
+    text("preparationStoredResponseBody", "");
+    $("preparationRequirementInspector").hidden = true;
+    preparationSignature = "";
+    preparationRecovery?.root.remove();
+    preparationRecovery = null;
+    document.querySelector(".preparation-tab-choice")?.remove();
+    tabChoice.reset();
+    return;
+  }
   const signature = JSON.stringify([preparation, operations.webTurn, [...capabilities()], [...tabChoiceFailures]]);
   if (signature === preparationSignature) return;
   preparationSignature = signature;
-  $("planningObjective").value = preparation.objective;
-  $("planningUrl").value = preparation.webSession?.conversationUrl ?? preparation.conversationUrl ?? "";
+  const requirementInspector = $("preparationRequirementInspector");
+  if (requirementInspector.dataset.version !== JSON.stringify([preparation.preparationId, preparation.version])) requirementInspector.hidden = true;
+  renderPreparationConversation($, text, preparation);
   $("planningFollowUp").hidden = !preparation.followUp;
   text("planningFollowUp", preparation.followUp ? `이전 적용 작업: ${preparation.followUp.objective} · 요구사항은 이번에 다시 승인합니다.` : "");
-  $("projectRoot").value = preparation.targetRoot;
   document.querySelector(".preparation-tab-choice")?.remove();
-  const summary = $("proposalSummary"); summary.replaceChildren();
-  const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
-  summary.append(node("h2", heading), node("p", agreement?.summary ?? "요구사항을 정리하고 있습니다."));
-  if ((agreement?.unresolvedQuestions ?? []).length) {
-    summary.append(node("p", "추가 확인 필요", "eyebrow"));
-    for (const question of agreement.unresolvedQuestions) summary.append(node("p", question));
-  }
-  const discussion = node("details", "", "discussion-fold");
-  discussion.append(node("summary", "이전 준비 대화"));
-  const discussionBody = node("div", "");
-  for (const turn of preparation.discussion ?? []) {
-    const row = node("article", "", "record");
-    row.append(node("strong", turn.actor === "USER" ? "사용자" : "웹 설계자"), node("pre", turn.content));
-    discussionBody.append(row);
-  }
-  discussion.append(discussionBody);
-  summary.append(discussion);
-  $("projectRequirements").replaceChildren();
-  for (const item of agreement?.requirements ?? []) {
-    const row = node("article", "", "record");
-    row.append(node("p", item.statement), node("p", item.acceptanceCriteria));
-    $("projectRequirements").append(row);
+  const summary = $("proposalSummary");
+  const contentSignature = JSON.stringify([preparation.preparationId, agreement, preparation.discussion]);
+  if (contentSignature !== preparationContentSignature) {
+    preparationContentSignature = contentSignature;
+    const content = $("proposalSummaryContent");
+    const heading = agreement?.status === "READY" ? "합의된 작업 범위" : "현재 정리된 범위";
+    content.replaceChildren(node("h2", heading), node("p", agreement?.summary ?? "요구사항을 정리하고 있습니다."));
+    if ((agreement?.unresolvedQuestions ?? []).length) {
+      content.append(node("p", "추가 확인 필요", "eyebrow"));
+      for (const question of agreement.unresolvedQuestions) content.append(node("p", question));
+    }
+    const discussion = $("preparationDiscussion");
+    if (discussion.dataset.preparationId !== preparation.preparationId) {
+      discussion.dataset.preparationId = preparation.preparationId;
+      discussion.open = false;
+    }
+    const discussionBody = $("preparationDiscussionBody");
+    discussionBody.replaceChildren();
+    for (const turn of preparation.discussion ?? []) {
+      const row = node("article", "", "record");
+      row.append(node("strong", turn.actor === "USER" ? "사용자" : "웹 설계자"), node("pre", turn.content));
+      discussionBody.append(row);
+    }
+    $("projectRequirements").replaceChildren();
+    for (const item of agreement?.requirements ?? []) {
+      const row = node("article", "", "record");
+      row.append(node("strong", item.statement), node("p", item.acceptanceCriteria, "muted"));
+      const preparationId = preparation.preparationId;
+      const inspect = node("button", `${item.requirementId ?? "요구사항"} · 명세 상세`);
+      inspect.type = "button";
+      inspect.addEventListener("click", () => {
+        if (preparation?.preparationId !== preparationId || !agreement?.requirements?.some(req =>
+          req.statement === item.statement && req.acceptanceCriteria === item.acceptanceCriteria)) return;
+        requirementInspector.dataset.version = JSON.stringify([preparationId, preparation.version]);
+        text("preparationRequirementTitle", item.statement);
+        text("preparationRequirementAcceptance", item.acceptanceCriteria);
+        text("preparationRequirementState", agreement.status === "APPROVED" ? "확정된 명세"
+          : agreement.status === "READY" ? "검토할 명세 · 사용자 승인 대기" : "협의 중인 명세");
+        requirementInspector.hidden = false;
+      });
+      row.append(inspect);
+      $("projectRequirements").append(row);
+    }
   }
   text("reviewerProviderSummary", `감사 provider · Judge ${preparation.reviewers?.JUDGE?.provider ?? "CHATGPT_WEB"} · Critic ${preparation.reviewers?.CRITIC?.provider ?? "CHATGPT_WEB"} · 준비 대화는 ChatGPT`);
   const session = preparation.webSession;
   const diagnostic = preparation.diagnostics ?? session?.diagnostics ?? {};
-  const priorRecovery = document.querySelector(".session-recovery");
-  const recovery = node("details", "", "session-recovery");
-  recovery.dataset.preparationId = preparation.preparationId;
-  recovery.open = priorRecovery?.dataset.preparationId === preparation.preparationId && priorRecovery.open === true;
-  recovery.append(node("summary", "응답·전송 상태"));
+  if (preparationRecovery?.root.dataset.preparationId !== preparation.preparationId) {
+    preparationRecovery?.root.remove();
+    const root = node("details", "", "session-recovery");
+    root.dataset.preparationId = preparation.preparationId;
+    const content = node("div", ""), buttons = new Map();
+    root.append(node("summary", "응답·전송 상태"), content);
+    for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
+      const button = node("button", label);
+      button.type = "button";
+      button.dataset.webCommand = action;
+      button.addEventListener("click", () => webSessionCommand(action));
+      buttons.set(action, { button, label });
+      root.append(button);
+    }
+    preparationRecovery = { root, content, buttons };
+    $("preparationDiagnosticsBody").append(root);
+  }
+  const { content: recovery, buttons } = preparationRecovery;
+  recovery.replaceChildren();
   const rootReady = session?.bindingState === "ROOT_READY" && Number.isSafeInteger(session?.tabId)
     && typeof session?.documentId === "string" && session.documentId && session?.frameId === 0;
   const exactBound = session?.bindingState === "BOUND" && diagnostic.exactConversation === true;
@@ -988,7 +1212,24 @@ function renderPreparation() {
   }));
   const deliveries = preparation.deliveries ?? [];
   const displayedDelivery = deliveries.find(item => item.deliveryId === session?.activeDeliveryId) ?? deliveries.at(-1);
-  if (displayedDelivery && !tabCandidates.length) summary.prepend(renderPreparationTransmission(displayedDelivery));
+  const storedResponse = $("preparationStoredResponse");
+  const rawText = displayedDelivery?.response?.rawText;
+  const identifiedResponse = displayedDelivery?.validation?.status === "CONFIRMED"
+    && ["ACK_PENDING", "COMPLETE"].includes(displayedDelivery.processingState) && Boolean(rawText?.trim());
+  const responseKey = identifiedResponse ? JSON.stringify([preparation.preparationId, displayedDelivery.deliveryId]) : "";
+  if (storedResponse.dataset.delivery !== responseKey) {
+    storedResponse.dataset.delivery = responseKey;
+    storedResponse.open = false;
+  }
+  storedResponse.hidden = !identifiedResponse;
+  const shownResponse = identifiedResponse ? rawText : "";
+  if ($("preparationStoredResponseBody").textContent !== shownResponse) text("preparationStoredResponseBody", shownResponse);
+  text("preparationStoredResponseState", !identifiedResponse ? ""
+    : displayedDelivery.processingState === "ACK_PENDING" ? "응답 저장됨 · 수신 확인 대기" : "응답 저장과 수신 확인 완료");
+  if (displayedDelivery && !tabCandidates.length && !displayedDelivery.response?.rawText?.trim()
+    && !["ACK_PENDING", "COMPLETE"].includes(displayedDelivery.processingState)) {
+    summary.prepend(renderPreparationTransmission(displayedDelivery));
+  }
   if (displayedDelivery) {
     const states = { RESERVED: "연결 확인 중 · 미전송", DISPATCHING: "전송 확인 중", SUBMITTED: "응답 대기",
       RESPONSE_STARTED: "응답 생성 중", RESPONSE_COMPLETED: "응답 수신 · 검증 또는 수신 확인 필요",
@@ -1001,29 +1242,17 @@ function renderPreparation() {
       : displayedDelivery.processingState === "ACK_PENDING" ? "응답 검증·저장 완료 · 전송 정리 확인 필요"
         : states[displayedDelivery.state] ?? "처리 상태 미확인";
     recovery.append(node("p", status, responseSettled ? "recovery-guidance ok" : "recovery-guidance warn"));
+    const cleanup = preparation.tabCleanup?.deliveryId === displayedDelivery.deliveryId ? preparation.tabCleanup : null;
+    if (displayedDelivery.deliveryId) recovery.append(node("p", `전송 · ${displayedDelivery.deliveryId}`, "muted"));
+    if (displayedDelivery.bridgeOwnedPreparationTab === true) recovery.append(node("p", "탭 소유권 · Bridge", "muted"));
+    if (cleanup?.status === "CLOSED") recovery.append(node("p", `탭 닫힘 영수증 · 탭 ${cleanup.tabId ?? "확인 전"}`, "muted"));
+    if (displayedDelivery.cancelRequestedAt && !responseSettled) {
+      recovery.append(node("p", "종료 요청을 저장했습니다. 이 전송의 수신 확인이 끝나면 협의가 자동으로 종료됩니다."));
+    }
     const confidenceReason = displayedDelivery.response?.confidenceReason
       ?? displayedDelivery.response?.evidence?.confidenceReason
       ?? null;
-    const packet = displayedDelivery.response?.packet;
-    if (packet?.type === "REQUIREMENTS_PROPOSAL") {
-      const questionCount = (packet.questions ?? []).length;
-      const requirementCount = (packet.items ?? []).length;
-      recovery.append(node("p", `내용 해석: 요구사항 ${requirementCount}개와 확인 질문 ${questionCount}개를 인지함`, "recovery-guidance ok"));
-      recovery.append(node("p", `packet 양식: 정상 · REQUIREMENTS_PROPOSAL / 확인 질문 ${questionCount}개`, "diagnostic-row health ok"));
-      recovery.append(node("p", questionCount === 0
-        ? "요구사항 상태: 요구사항 합의 완료 · 승인 가능"
-        : "요구사항 상태: 추가 합의 필요 · 확인 질문에 답변 필요",
-      questionCount === 0 ? "diagnostic-row health ok" : "diagnostic-row health warn"));
-    } else if (packet) {
-      recovery.append(node("p", `내용 해석: packet은 확인됨 · ${packet.type ?? "알 수 없는 유형"}`, "diagnostic-row health warn"));
-      recovery.append(node("p", "packet 양식: 현재 준비 단계에서 기대한 REQUIREMENTS_PROPOSAL이 아님", "diagnostic-row health error"));
-    } else if (displayedDelivery.response && !packet) {
-      recovery.append(node("p", "내용 해석: 확인 불가 · 응답 packet을 해석하지 못함", "recovery-guidance error"));
-      const formatError = displayedDelivery.validation?.formatError;
-      recovery.append(node("p", formatError
-        ? `packet 양식: ${formatError.code} · ${formatError.message}`
-        : "packet 양식: 부족하거나 파싱되지 않음", "diagnostic-row health error"));
-    }
+    renderPreparationResponse(recovery, displayedDelivery, node);
     if (displayedDelivery.response?.confidence === "HEURISTIC") {
       recovery.append(node("p", "응답 전달 검증: 확인 불가 · 이번 요청에 대한 응답인지 DOM 순서로 확정하지 못함", "recovery-guidance error"));
       recovery.append(node("p", confidenceReason === "VIRTUALIZED_USER_DOM_UNCERTAIN"
@@ -1039,23 +1268,17 @@ function renderPreparation() {
     }
   }
   recovery.append(node("p", "선택자·문서 토큰·전송 상세·원시 응답은 진단 로그 내보내기에 포함됩니다."));
-  const webActionReason = (action) => {
-    if (!connected) return "최신 상태를 확인할 수 없습니다.";
-    if (snapshot?.preflight?.checks?.extensionAuthenticated !== true) return "브라우저 확장 연결이 필요합니다.";
-    if (operations.webTurn !== "IDLE") return "다른 웹 요청을 처리 중입니다.";
-    if (!capabilities().has(action)) return "현재 서버 상태에서는 이 작업을 사용할 수 없습니다.";
-    return "";
-  };
-  for (const [label, action] of [["대화 열기", "web.focus"], ["상태 확인", "web.inspect"], ["생성 종료", "web.stop"], ["응답 다시 확인", "web.reconcile"]]) {
-    const button = node("button", action === "web.reconcile" && displayedDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label); button.type = "button";
-    button.dataset.webCommand = action;
+  for (const [action, { button, label }] of buttons) {
+    const recheck = action === "web.reconcile" && displayedDelivery?.state === "FAILED"
+      && displayedDelivery.unsent === true && displayedDelivery.tabRecheck
+      && capabilities().has(action);
+    const nextLabel = recheck ? "탭 다시 확인하고 전송 계속"
+      : action === "web.reconcile" && displayedDelivery?.processingState === "ACK_PENDING" ? "수신 확인 다시 처리" : label;
+    if (button.textContent !== nextLabel) button.textContent = nextLabel;
     const disabled = !capabilities().has(action) || operations.webTurn !== "IDLE";
     button.disabled = disabled;
     buttonReason(button, disabled ? disabledWebReason(action) : "");
-    button.addEventListener("click", () => webSessionCommand(action)); recovery.append(button);
   }
-  const diagnostics = $("preparationDiagnosticsBody");
-  diagnostics.replaceChildren(recovery);
   const error = preparation.error;
   const progress = { INITIALIZING: "ChatGPT 대화에 연결 중입니다.",
     WAITING_WEB_RESPONSE: "응답을 기다리고 있습니다.",
@@ -1083,19 +1306,23 @@ function renderPreparation() {
       node("p", error.message)
     );
   }
-  text("proposalStatus", error ? "" : progress[workflow.state] ?? workflow.state);
+  text("proposalStatus", error ? "" : progress[workflow.state] ?? "최신 준비 상태를 확인하세요.");
 }
 async function preparationMutation(operation, capability, url, payload = {}) {
-  if (operations[operation] !== "IDLE" || !capabilities().has(capability)) return false;
+  if ((operations[operation] !== "IDLE" && !(payload.abandonInvalidResponseConfirmed && payload.requestId
+    && operations[operation] === "UNKNOWN_RESULT")) || !capabilities().has(capability)) return false;
   if (["preparation.start", "preparation.reply"].includes(capability) && !webConnected()) return false;
-  const requestId = crypto.randomUUID();
+  const requestId = payload.requestId ?? crypto.randomUUID();
+  const version = capability === "preparation.start" ? {} : { expectedVersion:workflow.preparationVersion };
   operations[operation] = "RUNNING"; render();
   try {
-    await request(url, { method: "POST", body: JSON.stringify({ ...payload, requestId }) });
+    await request(url, { method: "POST", body: JSON.stringify({ ...version, ...payload, requestId }) });
+    if (capability === "preparation.cancel" && !selected) requestedView = "closing";
+    if (capability === "preparation.start" && requestedView === "closing") requestedView = "start";
     text("projectStatus", "요청을 접수했습니다. 서버 상태를 확인합니다.");
     return true;
   } catch (error) {
-    if (error.code === "UNKNOWN_RESULT") { operations[operation] = "UNKNOWN_RESULT"; unknownRequests.set(operation, requestId); }
+    if (error.code === "UNKNOWN_RESULT") { operations[operation] = "UNKNOWN_RESULT"; unknownRequests.set(operation, {requestId}); }
     const message = userFacingError(error);
     if (capability === "web.rebind" && error.code !== "UNKNOWN_RESULT") tabChoiceFailures.set(payload.deliveryId, message);
     text("projectStatus", message); text("startReason", message);
@@ -1121,9 +1348,8 @@ async function beginPreparation() {
   if (!objective.trim() || !targetRoot || !/^https:\/\/chatgpt\.com\/(?:c\/[^/?#\s]+)?\/?$/u.test(conversationUrl)) {
     text("startReason", "첫 부탁과 프로젝트 폴더를 입력하고 기존 대화 URL 형식을 확인하세요."); return;
   }
-  const autoApprove = $("autoApprovePreparation").checked;
   await preparationMutation("preparationStart", "preparation.start", "/api/preparations",
-    { objective, targetRoot, conversationUrl, autoApproveOnReady: autoApprove,
+    { objective, targetRoot, conversationUrl, ...readPreparationOptions($),
       reviewers:{
         JUDGE:{ provider:$("judgeReviewerProvider").value },
         CRITIC:{ provider:$("criticReviewerProvider").value },
@@ -1131,7 +1357,53 @@ async function beginPreparation() {
       ...(followUpSource ? { followUpRunId:followUpSource.runId } : {}),
       reuseProjectConversation:$("reuseProjectConversation").checked && !$("projectConversationPanel").hidden });
 }
+bindPreparationConversation($, text, () => preparation);
 $("startForm").addEventListener("submit", (event) => { event.preventDefault(); return beginPreparation(); });
+let plainWorkerAvailable = null;
+let plainWorkerSubmitting = false;
+function showPlainWorker({ run }) {
+  $("openPlainWorker").hidden = false;
+  $("startPlainWorker").disabled = plainWorkerSubmitting || run?.status === "RUNNING";
+  if (!run) return;
+  const labels = { RUNNING: "진행 중", COMPLETED: "완료", FAILED: "실패" };
+  text("plainWorkerStatus", [labels[run.status], run.runId, run.error].filter(Boolean).join(" · "));
+  $("plainWorkerEvidence").hidden = !run.turns.length;
+  text("plainWorkerTranscript", run.turns.map(turn => [
+    turn.role, turn.runId, turn.threadId ?? turn.conversationId, turn.turnId,
+    "송신 원문", turn.sent, "수신 원문", turn.received,
+  ].join("\n")).join("\n\n"));
+}
+$("openPlainWorker").addEventListener("click", () => {
+  const panel = $("plainWorkerPanel");
+  panel.hidden = !panel.hidden;
+  $("openPlainWorker").setAttribute("aria-expanded", String(!panel.hidden));
+  if (!panel.hidden) {
+    $("plainWorkerRoot").value ||= $("startRoot").value;
+    $("plainWorkerObjective").focus();
+  }
+});
+$("startPlainWorker").addEventListener("click", async () => {
+  if (plainWorkerSubmitting) return;
+  const objective = $("plainWorkerObjective").value.trim(), targetRoot = $("plainWorkerRoot").value.trim();
+  if (!objective || !targetRoot) {
+    text("plainWorkerStatus", "작업 요청과 격리 프로젝트 폴더를 입력하세요.");
+    return;
+  }
+  plainWorkerSubmitting = true;
+  $("startPlainWorker").disabled = true;
+  try {
+    const result = await request("/api/plain-worker-loop", { method: "POST", body: JSON.stringify({ objective, targetRoot }) });
+    showPlainWorker(result);
+  } catch (error) {
+    text("plainWorkerStatus", error.code ?? error.message);
+    $("startPlainWorker").disabled = false;
+  } finally {
+    plainWorkerSubmitting = false;
+  }
+});
+$("plainTextAdvisory")?.addEventListener("change", (event) => {
+  text("planRun", event.target.checked ? "평문 자문 시작" : "요구사항 정리 시작");
+});
 $("startRoot").addEventListener("input", render);
 $("historySearch").addEventListener("input", () => {
   historyQuery = $("historySearch").value;
@@ -1154,26 +1426,35 @@ $("reuseProjectConversation").addEventListener("input", () => {
   render();
 });
 $("reviseRequirements").addEventListener("click", async () => {
-  const content = $("proposalFeedback").value;
+  const feedback = $("proposalFeedback"), preparationId = workflow.preparationId, content = feedback.value;
   if (!content.trim()) { text("proposalStatus", "답변 또는 수정 요청을 입력하세요."); return; }
-  if (await preparationMutation("webTurn", "preparation.reply", "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/reply", { content })) {
-    if ($("proposalFeedback").value === content) $("proposalFeedback").value = "";
+  if (await preparationMutation("webTurn", "preparation.reply", "/api/preparations/" + encodeURIComponent(preparationId) + "/reply", { content })) {
+    if (feedback.dataset.preparationId === preparationId && feedback.value === content) feedback.value = "";
   }
 });
 $("projectForm").addEventListener("submit", async (event) => {
   event.preventDefault();
-  await preparationMutation("approval", "preparation.approve", "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/approve");
+  await preparationMutation("approval", "preparation.approve",
+    "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/approve");
 });
 $("closeProject").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",
   "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/cancel"));
-for (const id of ["discardUnresolved", "discardNoResend", "discardReason"]) $(id).addEventListener("input", render);
-$("discardDeliveryButton").addEventListener("click", () => preparationMutation("preparationStart", "preparation.discard",
-  "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/discard", {
-    unresolvedResultConfirmed: $("discardUnresolved").checked,
-    noAutomaticResendConfirmed: $("discardNoResend").checked,
-    reason: $("discardReason").value.trim(),
-  }));
+for (const id of ["discardUnresolved", "discardNoResend", "discardReason", "discardPageUnconfirmed"]) $(id).addEventListener("input", render);
+$("discardDeliveryButton").addEventListener("click", () => {
+  if ($("discardDeliveryButton").disabled) return;
+  return preparationMutation("preparationStart", "preparation.discard",
+    "/api/preparations/" + encodeURIComponent(workflow.preparationId) + "/discard", capabilities().has("preparation.abandonInvalid") ? invalidAbandonmentInput($, preparation) : {
+      deliveryId:preparation.webSession.activeDeliveryId,
+      unresolvedResultConfirmed: $("discardUnresolved").checked,
+      noAutomaticResendConfirmed: $("discardNoResend").checked,
+      reason: $("discardReason").value.trim(),
+    });
+});
 $("reloadProject").addEventListener("click", refresh);
+$("reconcilePreparationOutcome").addEventListener("click", () => {
+  if (operations.webTurn === "IDLE" && webConnected() && capabilities().has("web.reconcile")
+    && !$("reconcilePreparationOutcome").hidden) return webSessionCommand("web.reconcile");
+});
 $("chooseFolder").addEventListener("click", async () => {
   if (!currentPreparationActions().chooseFolder || operations.folderPicker !== "IDLE") return;
   operations.folderPicker = "RUNNING"; render();
@@ -1186,6 +1467,13 @@ $("chooseFolder").addEventListener("click", async () => {
   finally { operations.folderPicker = "IDLE"; render(); }
 });
 $("newRun").addEventListener("click", () => { if (!$("newRun").disabled) { pendingProjectDraft?.cancel(); followUpSource = null; selectProject(null); projectConversationRoot = null; selected = ""; requestedView = "start"; refresh(); } });
+$("openActivePreparation").addEventListener("click", async () => {
+  const button = $("openActivePreparation");
+  if (button.hidden || button.disabled) return;
+  openingPreparation = true;
+  try { await refresh({ recoveryTarget:snapshot.activePreparation }); }
+  finally { openingPreparation = false; render(); }
+});
 async function startProjectDraft(root, source) {
   pendingProjectDraft?.cancel();
   const fields = ["startRoot", "objective", "conversationUrl", "judgeReviewerProvider", "criticReviewerProvider"];
@@ -1198,7 +1486,7 @@ async function startProjectDraft(root, source) {
   followUpSource = source; projectConversationRoot = null; selected = ""; requestedView = "start";
   $("startRoot").value = root;
   $("objective").value = "";
-  $("conversationUrl").value = source ? "https://chatgpt.com/" : "";
+  $("conversationUrl").value = "";
   selectProject(null);
   const initialized = fields.map(id => $(id).value);
   let edited = false;
@@ -1244,7 +1532,7 @@ $("continueProject").addEventListener("click", () => {
   if ($("continueProject").disabled) return;
   const root = snapshot?.run?.projectRef?.targetRoot;
   if (!root || snapshot?.run?.phase !== "APPLIED") return;
-  return startProjectDraft(root, { runId:snapshot.run.runId, objective:snapshot.run.objective, targetRoot:root });
+  return startProjectDraft(root, { runId:snapshot.run.runId, objective:snapshot.run.objective, targetRoot:root, conversationUrl:snapshot.run.conversationUrl });
 });
 $("openFollowUp").addEventListener("click", () => { if (!$("openFollowUp").disabled) openRun(snapshot.run.followUp.runId); });
 $("cancelInitialPreparation").addEventListener("click", () => preparationMutation("preparationStart", "preparation.cancel",
@@ -1266,9 +1554,8 @@ $("reconcileRun").addEventListener("click", async () => {
     : "진단에 실패했습니다. 위 명령 결과와 연결 상태를 확인하세요.");
 });
 $("retryRun").addEventListener("click", () => {
-  const caps = capabilities();
-  if (caps.has("code.review.retry")) command("code.review.retry");
-  else command("run.retry");
+  if ($("retryRun").disabled) return;
+  return command(capabilities().has("code.review.retry") ? "code.review.retry" : "run.retry");
 });
 $("submitDecision").addEventListener("click", () => {
   if ($("submitDecision").disabled) return;
@@ -1283,10 +1570,10 @@ $("reviewDiscussionNoResend").addEventListener("input", render);
 $("reviewDiscussionDiscardReason").addEventListener("input", render);
 $("sendReviewDiscussion").addEventListener("click", async () => {
   if ($("sendReviewDiscussion").disabled) return;
-  const textValue = $("reviewDiscussionText").value.trim();
+  const textValue = $("reviewDiscussionText").value;
   const role = $("reviewDiscussionRole").value;
   const result = await command("code.review.discuss", { role, text:textValue });
-  if (result?.status === "DELIVERED" && $("reviewDiscussionText").value.trim() === textValue) {
+  if (result?.status === "DELIVERED" && $("reviewDiscussionText").value === textValue) {
     $("reviewDiscussionText").value = "";
     render();
   }
@@ -1314,7 +1601,7 @@ $("addOperatorNote").addEventListener("click", async () => {
   if ($("addOperatorNote").disabled) return;
   const textValue = $("operatorNoteText").value.trim();
   const result = await command("run.note.add", { kind:$("operatorNoteKind").value, text:textValue });
-  if (result?.status === "RECORDED" && $("operatorNoteText").value.trim() === textValue) {
+  if (result?.status === "RECORDED" && result.runId === snapshot?.run?.runId && $("operatorNoteText").value.trim() === textValue) {
     $("operatorNoteText").value = "";
     render();
   }
@@ -1325,7 +1612,7 @@ $("sendWorkerIntervention").addEventListener("click", async () => {
   if ($("sendWorkerIntervention").disabled) return;
   const textValue = $("workerInterventionText").value.trim();
   const kind = $("workerInterventionKind").value;
-  const turnId = snapshot?.workerRuntime?.turnId ?? snapshot?.run?.workerTurnId ?? null;
+  const turnId = snapshot?.run?.workerTurnId;
   const result = await command("code.worker.intervene", { kind, text:textValue, turnId });
   if (result?.status === "DELIVERED" && $("workerInterventionText").value.trim() === textValue) {
     $("workerInterventionText").value = "";
@@ -1343,25 +1630,190 @@ $("archiveRun").addEventListener("click", () => {
   if (!$("archiveRun").disabled) command(snapshot?.run?.archivedAt ? "run.unarchive" : "run.archive");
 });
 $("deleteRun").addEventListener("click", () => {
-  if (!$("deleteRun").disabled && window.confirm("종료된 작업의 실행 기록·감사 근거·임시 작업 사본을 삭제합니다. 적용된 프로젝트 코드는 유지됩니다. 삭제할까요?")) {
-    command("run.delete");
+  const run = snapshot?.run;
+  if ($("deleteRun").disabled || run?.runId !== workflow.runId) return;
+  deleteDecision = {runId:run.runId, version:workflow.runVersion};
+  text("deleteRunTarget", run.objective);
+  text("deleteRunIdentity", run.runId);
+  $("deleteRunDialog").showModal();
+});
+$("cancelDeleteRun").addEventListener("click", () => $("deleteRunDialog").close());
+$("deleteRunDialog").addEventListener("close", () => { deleteDecision = null; });
+$("confirmDeleteRun").addEventListener("click", () => {
+  if (!deleteDecision || $("deleteRun").disabled || deleteDecision.runId !== workflow.runId
+    || deleteDecision.version !== workflow.runVersion) return;
+  deleteDecision = null;
+  $("deleteRunDialog").close();
+  return command("run.delete");
+});
+$("applyCode").addEventListener("click", () => {
+  const run = snapshot?.run;
+  const review = run?.reviews?.at(-1);
+  if ($("applyCode").disabled || !run?.candidate || !review || !run.capture?.artifact?.sha256) return;
+  applyDecision = { runId:run.runId, version:workflow.runVersion, candidateId:run.candidate.candidateId,
+    reviewId:review.reviewId, artifactHash:run.capture.artifact.sha256, baseCommit:run.baseCommit };
+  text("applyDecisionTarget", run.projectRef?.targetRoot ?? run.targetRoot ?? run.objective);
+  text("applyDecisionCandidate", applyDecision.candidateId);
+  $("applyDecisionDialog").showModal();
+});
+$("cancelApplyDecision").addEventListener("click", () => $("applyDecisionDialog").close());
+$("applyDecisionDialog").addEventListener("close", () => { applyDecision = null; });
+$("confirmApplyDecision").addEventListener("click", () => {
+  const decision = applyDecision;
+  if (!decision || $("applyCode").disabled || decision.runId !== workflow.runId || decision.version !== workflow.runVersion
+    || decision.candidateId !== snapshot?.run?.candidate?.candidateId) return;
+  const { candidateId, reviewId, artifactHash, baseCommit } = decision;
+  applyDecision = null;
+  $("applyDecisionDialog").close();
+  return command("code.apply", { candidateId, reviewId, artifactHash, baseCommit });
+});
+$("exportEvidence").addEventListener("click", async () => { const result = await command("evidence.export"); if (!result) return; const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)], { type:"application/json" })); const a = node("a", ""); a.href = url; a.download = `${result.runId ?? "audit"}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
+const recordTabs = [["showConversation", "conversationPanel"], ["showPreparationHistory", "preparationHistoryPanel"], ["showAudit", "auditPanel"], ["showLog", "logPanel"]];
+function roleReviewTarget(run) {
+  const review = run?.reviews?.at(-1);
+  if (!run?.candidate || !review?.reviewId || review.candidateId !== run.candidate.candidateId
+    || !review.auditManifestHash || run.coordination?.auditManifestHash !== review.auditManifestHash
+    || run.coordination?.activeRole || ["REVIEW_RUNNING", "REPORT_REPAIR", "EVIDENCE_SUPPLEMENT", "REWORK"].includes(run.phase)) return null;
+  const identity = {runId:run.runId, candidateId:review.candidateId, reviewId:review.reviewId};
+  return {identity, manifest:review.auditManifestHash, key:JSON.stringify([identity,review.auditManifestHash])};
+}
+
+$("loadRoleReviews").addEventListener("click", async () => {
+  if ($("loadRoleReviews").disabled) return;
+  const target = roleReviewTarget(snapshot?.run);
+  if (!target) return;
+  const load = roleReviewRead = {targetKey:target.key, pending:true};
+  const selection = selected;
+  const stillCurrent = () => roleReviewRead === load && selected === selection && roleReviewTarget(snapshot?.run)?.key === target.key;
+  $("loadRoleReviews").disabled = true;
+  $("roleReviewResults").replaceChildren();
+  text("roleReviewStatus", "개별 판정 조회 중입니다.");
+  try {
+    const result = await request(`/api/review-assessments?${new URLSearchParams(target.identity)}`);
+    if (!stillCurrent()) return;
+    if (result.status !== "AVAILABLE" || result.auditManifestHash !== target.manifest
+      || !Object.entries(target.identity).every(([key,value])=>result[key]===value)) {
+      text("roleReviewStatus", "현재 후보의 검증된 개별 판정을 확인할 수 없습니다.");
+      return;
+    }
+    const reports = new Map(result.roles.map(item => [item.role,item.assessments]));
+    const table = node("table", "", "studio-role-table");
+    const head = node("thead", ""), header = node("tr", ""), body = node("tbody", "");
+    for (const label of ["요구사항", "Judge", "Critic"]) {
+      const cell = node("th", label); cell.scope = "col"; header.append(cell);
+    }
+    head.append(header);
+    for (const requirement of snapshot.run.requirements?.items ?? []) {
+      const row = node("tr", "");
+      const title = node("th", requirement.requirementId); title.scope = "row"; row.append(title);
+      for (const role of ["JUDGE", "CRITIC"]) {
+        const item = reports.get(role)?.find(assessment=>assessment.requirementId===requirement.requirementId);
+        row.append(node("td", {SATISFIED:"충족", UNSATISFIED:"미충족", UNDETERMINED:"판단 보류"}[item?.verdict] ?? "미확인"));
+      }
+      body.append(row);
+    }
+    table.append(head,body);
+    $("roleReviewResults").append(table);
+    text("roleReviewStatus", "현재 후보의 개별 판정입니다. 종합 판정은 위에 표시됩니다.");
+  } catch {
+    if (stillCurrent()) text("roleReviewStatus", "개별 판정을 조회하지 못했습니다.");
+  } finally {
+    if (stillCurrent()) {
+      load.pending = false;
+      $("loadRoleReviews").disabled = !connected;
+    }
   }
 });
-$("applyCode").addEventListener("click", () => { const r = snapshot.run; command("code.apply", { candidateId:r.candidate.candidateId, reviewId:r.reviews.at(-1).reviewId, artifactHash:r.capture.artifact.sha256, baseCommit:r.baseCommit }); });
-$("exportEvidence").addEventListener("click", async () => { const result = await command("evidence.export"); if (!result) return; const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)], { type:"application/json" })); const a = node("a", ""); a.href = url; a.download = `${result.runId ?? "audit"}.json`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); });
-for (const [button, panel] of [["showConversation", "conversationPanel"], ["showAudit", "auditPanel"], ["showLog", "logPanel"]]) {
+for (const [button, panel] of recordTabs) {
   $(button).addEventListener("click", () => {
-    for (const [otherButton, otherPanel] of [["showConversation", "conversationPanel"], ["showAudit", "auditPanel"], ["showLog", "logPanel"]]) {
+    for (const [otherButton, otherPanel] of recordTabs) {
       $(otherPanel).hidden = otherPanel !== panel;
       $(otherButton).setAttribute("aria-pressed", String(otherButton === button));
     }
   });
 }
+function renderStudioSearch() {
+  const query = $("studioSearchQuery").value.trim().toLocaleLowerCase();
+  const results = $("studioSearchResults"), run = snapshot?.run;
+  results.replaceChildren();
+  if (!query) { text("studioSearchStatus", "검색어를 입력하세요."); return; }
+  const matches = filterRunsForHistory(snapshot?.runs ?? [], {query, scope:"ALL"}).map(item => ({
+    label:item.objective ?? item.runId, open:() => openRun(item.runId),
+  }));
+  if (run && !$("applyInspector").hidden) {
+    for (const [kind, entries] of [["requirement", run.requirements?.items ?? []], ["finding", snapshot.findings ?? []]]) {
+      for (const item of entries) {
+        const id = kind === "requirement" ? item.requirementId : item.findingId;
+        const label = `${id} · ${item.statement ?? item.problem ?? ""}`;
+        if (label.toLocaleLowerCase().includes(query)) matches.unshift({
+          label, open:() => { $("showAudit").click(); selectInspector(run, kind, id); },
+        });
+      }
+    }
+  }
+  for (const item of matches.slice(0, 12)) {
+    const button = node("button", item.label);
+    button.type = "button";
+    button.addEventListener("click", () => { $("studioSearchDialog").close(); item.open(); });
+    results.append(button);
+  }
+  text("studioSearchStatus", matches.length ? `${Math.min(matches.length, 12)}건 표시` : "일치하는 기록이 없습니다.");
+}
+function openStudioSearch() {
+  if (!$("dashboardPageError").hidden || $("studioSearchDialog").open) return;
+  $("studioSearchQuery").value = "";
+  renderStudioSearch();
+  $("studioSearchDialog").showModal();
+}
+$("openStudioSearch").addEventListener("click", openStudioSearch);
+$("studioSearchQuery").addEventListener("input", renderStudioSearch);
+document.addEventListener("keydown", event => {
+  if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "k"
+    && !document.querySelector("dialog[open]")) {
+    event.preventDefault();
+    openStudioSearch();
+  }
+});
 $("closeEvidence").addEventListener("click", () => $("evidenceDialog").close());
-$("nextEvidence").addEventListener("click", () => { if (evidencePage?.target === snapshot?.run?.runId) openEvidence(evidencePage.id, evidencePage.next); });
+$("openStudioDiagnostics").addEventListener("click", () => {
+  const details = $("connectionDiagnostics");
+  details.open = true;
+  details.querySelector("summary")?.focus();
+});
+$("evidenceDialog").addEventListener("close", () => {
+  if (evidencePage?.candidateId) return;
+  restoreEvidenceFocus(evidencePage);
+  evidencePage = null;
+});
+$("closeInspectorEvidence").addEventListener("click", () => closeInspectorEvidence());
+$("copyInspectorEvidence").addEventListener("click", async () => {
+  const page = evidencePage;
+  if (!page?.candidateId || $("copyInspectorEvidence").disabled) return;
+  let message = "원문을 복사했습니다.";
+  try { await navigator.clipboard.writeText($("inspectorEvidenceContent").textContent); }
+  catch { message = "복사 권한을 확인하거나 원문에서 직접 복사하세요."; }
+  if (page === evidencePage) text("inspectorCopyStatus", message);
+});
+for (const [button, inspector] of [["nextEvidence", false], ["nextInspectorEvidence", true]]) {
+  $(button).addEventListener("click", () => {
+    if (evidencePage?.next && evidencePage.target === snapshot?.run?.runId && Boolean(evidencePage.candidateId) === inspector) {
+      return openEvidence(evidencePage.id, evidencePage.next, evidencePage.candidateId, evidencePage.source, evidencePage.patchPath);
+    }
+  });
+}
 $("refreshDashboard").addEventListener("click", () => { if ($("dashboardPageError").hidden) void refresh().catch(showDashboardPageError); });
 async function poll() {
-  try { await refresh(); }
+  try {
+    if (!openingPreparation) await refresh({ background:true });
+    if (token && plainWorkerAvailable !== false && !plainWorkerSubmitting) {
+      try {
+        showPlainWorker(await request("/api/plain-worker-loop"));
+        plainWorkerAvailable = true;
+      } catch (error) {
+        if (error.status === 404) plainWorkerAvailable = false;
+      }
+    }
+  }
   catch (error) { connected = false; showDashboardPageError(error); }
   finally { if ($("dashboardPageError").hidden) setTimeout(poll, 2500); }
 }

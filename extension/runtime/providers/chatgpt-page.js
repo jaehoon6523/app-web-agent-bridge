@@ -221,6 +221,27 @@
     return Boolean(firstVisible("stopButton"));
   }
 
+  function assistantTurn(element) {
+    if (!element?.isConnected) return null;
+    const selector = "[data-talvt-turn-state]";
+    const enclosingTurn = element.closest(selector);
+    const nestedTurns = enclosingTurn ? [] : element.querySelectorAll(selector);
+    return enclosingTurn ?? (nestedTurns.length === 1 ? nestedTurns[0] : null);
+  }
+
+  function assistantCompletion(element) {
+    return assistantTurn(element)?.getAttribute("data-talvt-turn-state") === "complete" ? "ASSISTANT_TURN_COMPLETE" : null;
+  }
+
+  function decisionNodes(assistant) {
+    const composer = resolveComposer();
+    const send = composer?.fallbackContainer ? fallbackSend(composer.fallbackContainer) : firstVisible("sendButton");
+    return { turn:assistantTurn(assistant), composer:composer?.element, send:send?.element,
+      stop:firstVisible("stopButton")?.element,
+      bodies:assistant ? selectorRegistry.groups.messageContent.flatMap(selector =>
+        assistant.matches(selector) ? [assistant] : [...assistant.querySelectorAll(selector)]) : [] };
+  }
+
   function composerDiagnostics() {
     return { selectorVersion:selectorRegistry.version, composerSelectors:selectorRegistry.groups.composer.map((selector) => {
       const matches = [...document.querySelectorAll(selector)];
@@ -329,7 +350,7 @@
   }
 
   // Only an accessibility heading outside message content can prove its single sibling branch.
-  function headingRole(node, content) {
+  function headingRole(node, content, userSearchBody = false) {
     const labels = new Map([["내가 한 말:", "user"], ["You said:", "user"],
       ["ChatGPT 답변:", "assistant"], ["ChatGPT said:", "assistant"]]);
     for (let parent = content; parent; parent = parent.parentElement) {
@@ -338,8 +359,12 @@
       if (!headings.length) continue;
       if (headings.length !== 1 || children.length !== 2) return null;
       const heading = headings[0], branch = children.find(child => child !== heading);
-      const label = (heading.textContent ?? "").trim(), role = labels.get(label);
-      const bodySelector = "[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown";
+      let label = (heading.textContent ?? "").trim();
+      if (label === "내가 한 말:나") label = "내가 한 말:";
+      if (label === "ChatGPT 답변:ChatGPT") label = "ChatGPT 답변:";
+      const role = labels.get(label);
+      const bodySelector = "[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown"
+        + (userSearchBody ? ", [data-search-result-target]" : "");
       if (!role || !content.matches?.(bodySelector) || heading.closest(bodySelector) || !branch?.contains(content) || (node !== parent && !branch.contains(node) && !node.contains(parent))
         || parent.querySelectorAll("h4.sr-only").length !== 1) return null;
       // An outer turn wrapper is eligible only when all message evidence belongs to this one inner block.
@@ -365,8 +390,23 @@
     return null;
   }
   function messageEvidence(roleNode) {
-    const content = roleNode.querySelector("[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown") ?? roleNode;
-    return headingRole(roleNode, content);
+    const content = roleNode.querySelector("[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown");
+    if (content) return headingRole(roleNode, content);
+    const body = userSearchMessageBody(roleNode);
+    return body ? headingRole(roleNode, body, true) : headingRole(roleNode, roleNode);
+  }
+
+  function userSearchMessageBody(node) {
+    const key = node.getAttribute("data-chatgpt-search-unit-key");
+    const id = node.getAttribute("data-chatgpt-search-message-ids")?.trim();
+    if (!key?.endsWith(":user") || !/^[\w-]+$/u.test(id ?? "")) return null;
+    const scopes = node.querySelectorAll("[data-content-search-unit-key]");
+    const bubbles = node.querySelectorAll("[data-user-message-bubble='true']");
+    if (scopes.length !== 1 || scopes[0].getAttribute("data-content-search-unit-key") !== key
+      || bubbles.length !== 1 || bubbles[0].getAttribute("data-user-message-has-prompt") !== "true"
+      || !scopes[0].contains(bubbles[0])) return null;
+    const bodies = bubbles[0].querySelectorAll("[data-search-result-target]");
+    return bodies.length === 1 ? bodies[0] : null;
   }
 
   function readMessages() {
@@ -438,11 +478,12 @@
     throw new PageProviderError("MESSAGE_SEND_FAILED", "ChatGPT send control did not become enabled.", evidence());
   }
 
-  async function submitPrompt(text, signal, { assertCanMutate } = {}) {
+  async function submitPrompt(text, signal, { assertCanMutate, observe } = {}) {
     const composer = await waitForVisible("composer", 30_000, signal);
     assertCanMutate?.();
     composer.element.focus();
     setNativeValue(composer.element, text);
+    observe?.("SEND_CONTROL");
     await sleep(250, signal);
     const sendButton = await waitForEnabledSend(signal);
     assertCanMutate?.();
@@ -453,6 +494,7 @@
         || sendButton.element.disabled || sendButton.element.getAttribute("aria-disabled") === "true"))) {
       throw new PageProviderError("UI_CONTRACT_CHANGED", "Composer or send control changed before prompt dispatch.", evidence());
     }
+    observe?.("SEND_ATTEMPTED");
     sendButton.element.click();
   }
 
@@ -480,6 +522,8 @@
     findSendControl,
     submitPrompt,
     detectGeneration,
+    assistantCompletion,
+    decisionNodes,
     cancelGeneration,
     extractAssistantResponse,
     inspectPageState,

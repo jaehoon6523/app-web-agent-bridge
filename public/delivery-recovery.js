@@ -13,6 +13,7 @@ let token = '', observation = null, busy = false;
 async function request(url, options = {}) {
   const response = await fetch(url, { ...options, signal: AbortSignal.timeout(30_000), cache: 'no-store',
     headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}) } });
+  if (response.status === 401) token = '';
   const result = await response.json();
   if (!response.ok) {
     const error = new Error(result.error || '전송 상태를 확인하지 못했습니다.');
@@ -21,9 +22,13 @@ async function request(url, options = {}) {
   }
   return result;
 }
-async function readObservation() {
+async function readObservation(renewSession = true) {
   if (!token) token = (await request('/api/dashboard/session', { method: 'POST', body: '{}' })).token;
-  return request('/api/delivery-review?' + new URLSearchParams(owner));
+  try { return await request('/api/delivery-review?' + new URLSearchParams(owner)); }
+  catch (error) {
+    if (renewSession && error.httpStatus === 401) return readObservation(false);
+    throw error;
+  }
 }
 const terminalRecord = record => record?.active === false && ['DISCARDED', 'RECOVERY_DISCARDED'].includes(record.state)
   && record.responseStored === false && !['ACK_PENDING', 'ACKNOWLEDGED'].includes(record.processingState);
@@ -37,6 +42,10 @@ function clearObservation() {
   $('recordStatus').textContent = '브리지 기록: 확인 불가';
   $('serverState').textContent = '서버 기록: 확인 불가';
   $('extensionState').textContent = '확장 기록: 확인 불가';
+  $('arrivalState').textContent = '요청 도착: 확인 불가';
+  $('completionState').textContent = '응답 생성·중단: 확인 불가';
+  $('persistenceState').textContent = 'Bridge 저장: 확인 불가';
+  $('ackState').textContent = 'ACK: 확인 불가';
   $('chatgptState').textContent = 'ChatGPT 처리 결과: 미확정';
   $('actionState').textContent = '조치 상태: 최종 확인 필요';
   $('details').textContent = '';
@@ -44,7 +53,10 @@ function clearObservation() {
 function renderObservation(value) {
   observation = value;
   const { server, extension: seen } = value;
-  const record = server?.records?.[0], terminal = terminalRecord(record);
+  const record = server?.status === 'MATCHED' ? server.records?.[0] : null;
+  const terminal = terminalRecord(record);
+  const completed = seen?.phase === 'RESPONSE_OBSERVED';
+  const confirmedPage = seen?.pageIdentityConfirmed === true;
   const aligned = server?.status === 'MATCHED' && ((record?.active && seen?.exact)
     || (!record?.active && terminal && seen?.discardConfirmed)
     || (!record?.active && record?.state === 'ACKNOWLEDGED' && seen?.ackConfirmed));
@@ -58,13 +70,33 @@ function renderObservation(value) {
   $('extensionState').textContent = '확장 기록: ' + (seen?.exact ? '해당 전송의 소유권이 남아 있습니다.'
     : seen?.discardConfirmed ? '해당 전송의 소유권 정리 영수증이 확인됐습니다.'
       : seen?.ackConfirmed ? 'ACK 영수증이 확인됐습니다.' : seen?.recordMissing ? '대응 전송 기록이 없습니다.' : '소유권 확인 불가');
+  $('arrivalState').textContent = '요청 도착: ' + (completed || record?.responseStored === true
+    ? '해당 전송의 응답 기록이 확인됐습니다.'
+    : confirmedPage && seen?.activeRequestMatches === true
+      ? '확장이 해당 요청을 처리 중입니다. ChatGPT 제출 여부는 미확정입니다.'
+    : seen?.exact ? '확장 소유권은 확인됐지만 대화 페이지 도착은 확인되지 않았습니다.'
+      : '대화 페이지 도착 여부는 미확정입니다.');
+  $('completionState').textContent = '응답 생성·중단: ' + (completed
+    ? '확장에서 해당 전송의 완료 응답을 관측했습니다.'
+    : confirmedPage && seen?.generating === true ? '대화 탭에서 생성 중입니다. 이 전송의 응답인지는 미확정입니다.'
+      : confirmedPage && seen?.generating === false ? '현재 대화 탭은 생성 중이 아닙니다. 중단 여부는 미확정입니다.'
+        : '생성 완료·중단 여부는 미확정입니다.');
+  $('persistenceState').textContent = 'Bridge 저장: ' + (record?.responseStored === true
+    ? '완료 응답이 저장되어 있습니다.'
+    : record?.responseStored === false ? '이 Bridge 기록에서 완료 응답 저장을 확인하지 못했습니다.'
+      : '저장 여부는 미확정입니다.');
+  $('ackState').textContent = 'ACK: 서버 ' + (record?.processingState === 'ACKNOWLEDGED' || record?.state === 'ACKNOWLEDGED'
+    ? '완료' : record?.processingState === 'ACK_PENDING' ? '저장 후 대기' : '확인 안 됨')
+    + ' · 확장 ' + (seen?.ackConfirmed === true ? '영수증 확인' : '영수증 미확인');
   $('chatgptState').textContent = 'ChatGPT 처리 결과: ' + (record?.responseStored
     ? '응답 저장 근거가 있습니다. 실제 페이지 상태는 별도 확인이 필요합니다.'
     : responseEvidence(record) ? '서버의 ACK 상태와 응답 저장 근거가 일치하지 않습니다. 기록을 보존하고 다시 확인하세요.'
       : seen?.hasCompletedDelivery === true || seen?.phase === 'RESPONSE_OBSERVED'
         ? '확장에 완료 응답이 남아 있습니다. 다른 전송의 응답일 수도 있으므로 기록을 보존하고 귀속을 확인하세요.'
         : seen?.hasCompletedDelivery !== false ? '확장의 완료 응답 보유 여부를 확인할 수 없습니다. 기록을 보존하세요.'
-          : '응답 저장 근거 없음 · 실제 전송·응답 여부 미확정. 원래 페이지의 상태는 별도 확인이 필요합니다.');
+          : terminal && seen?.discardConfirmed
+            ? '완료 응답을 확인하지 못한 상태에서 전송을 닫았습니다. 실제 전송·응답 여부는 미확정이며 원래 페이지 상태도 별도 확인이 필요합니다.'
+            : '완료 응답은 확인되지 않았습니다. 전송은 아직 닫혔다고 확인되지 않았으며 처리 결과는 미확정입니다.');
   $('details').textContent = JSON.stringify(value, null, 2);
   $('discardTitle').textContent = terminal ? '확장에 남은 이 전송의 소유권 기록 정리' : '이 전송의 브리지 소유권 기록 정리';
   $('ownershipText').textContent = terminal
@@ -76,7 +108,7 @@ function renderObservation(value) {
 }
 function capabilities() {
   const seen = observation?.extension;
-  const record = observation?.server?.records?.[0];
+  const record = observation?.server?.status === 'MATCHED' ? observation.server.records?.[0] : null;
   const terminal = terminalRecord(record);
   const canDiscard = observation?.server?.status === 'MATCHED' && !responseEvidence(record)
     && seen?.phase !== 'RESPONSE_OBSERVED' && seen?.hasCompletedDelivery === false
@@ -87,8 +119,13 @@ function capabilities() {
   $('discardPanel').hidden = !canDiscard;
   const unknown = pageUnconfirmed(seen, terminal);
   $('pageUnknownLabel').hidden = !canDiscard || !unknown;
-  $('ack').hidden = !(record?.kind === 'REVIEW' && record?.active && seen?.phase === 'ACK_PENDING' && (seen.exact || seen.ackConfirmed));
-  $('ack').disabled = busy || seen?.extensionBusy || seen?.pageBusy || seen?.generating;
+  const ackPending = observation?.server?.status === 'MATCHED' && record?.kind === 'REVIEW'
+    && record.active && seen?.phase === 'ACK_PENDING' && (seen.exact || seen.ackConfirmed);
+  const canAcknowledge = observation?.canAcknowledge === undefined
+    ? ackPending && !observation.server.otherActive && !seen.otherActive && !seen.extensionBusy && !seen.pageBusy && !seen.generating
+    : observation.canAcknowledge === true;
+  $('ack').hidden = !ackPending;
+  $('ack').disabled = busy || !ackPending || !canAcknowledge;
   $('preparationRecovery').hidden = !(record?.kind === 'PREPARATION' && record?.active);
   const action = !observation ? '확인 불가'
     : seen?.generating || seen?.pageBusy || seen?.extensionBusy || observation.server?.otherActive || seen?.otherActive ? '다른 작업 또는 생성 중 · 정리 불가'
@@ -129,7 +166,7 @@ $('ack').addEventListener('click', async () => {
     const record = latest.server?.records?.[0];
     $('status').textContent = latest.server?.status === 'MATCHED' && record?.active === false
       && record.state === 'ACKNOWLEDGED' && latest.extension?.ackConfirmed
-      ? '저장된 응답 ACK 확인 완료. 실행은 HOLD 상태입니다. ChatGPT 페이지 상태는 별도로 확인하세요.'
+      ? '저장된 응답 ACK 확인 완료. ChatGPT 페이지 상태는 별도로 확인하세요.'
       : 'ACK 요청은 접수됐지만 최종 영수증을 확인하지 못했습니다. 상태를 다시 확인하세요.';
   } catch (error) {
     clearObservation();

@@ -1,16 +1,16 @@
-import { recoverAcknowledgedReviews, canResumeAcknowledgedReview } from "./review-response-recovery.js";
+import { recoverAcknowledgedReviews, canResumeAcknowledgedReview, criticReviewContinuation } from "./review-response-recovery.js";
 import { observeSynchronousStage } from "../diagnostics/synchronous-stage.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { closeSteps } from "../diagnostics/shutdown.js";
-import { CodeChangeStore } from "../persistence/code-change-store.js";
+import { CodeChangeStore, terminalCodeChangeStages as terminal } from "../persistence/code-change-store.js";
 import { GitChangeWorkspace } from "../repository/git-change-workspace.js";
 import { createRegisteredCodeWorker } from "../runtime/workers/registry.js";
 import { canonicalConversationUrl, extractConversationId } from "../runtime/web/binding.js";
 import { validateAuditProject } from "./audit-project.js";
 import { requirementsRef, exactObject, uniqueItems, nonempty } from "../domain/audit-contract.js";
-import { evidenceRecord, excerpt } from "../evidence/candidate-evidence.js";
+import { evidenceRecord, excerpt, patchFileExcerpt } from "../evidence/candidate-evidence.js";
 import { auditCandidate, auditContext, discussReviewRole, performVerification, rebindReviewRole } from "./audit-round.js";
 import { evaluateCodeReview } from "../domain/code-review.js";
 import { canonicalJson } from "../domain/canonical-json.js";
@@ -22,14 +22,50 @@ import { buildCodeWorkerPrompt, workerOutputSchema } from "./code-change-prompts
 import { createWorkerApprovalAuthority } from "./worker-approval-authority.js";
 import { workerProvenance } from "../domain/worker-provenance.js";
 import { createReviewerWebRuntime } from "./reviewer-web-runtime.js";
-import { hasMultiReviewAuthority, hasReviewerIndependenceAuthority, projectWorkerRuntime, retryableAuditReview, retryableWorkerTimeout } from "./code-change-runtime-policy.js";
+import { hasMultiReviewAuthority, hasReviewerIndependenceAuthority, projectWorkerRuntime, retryableAuditReview, retryableUnsentInitialReview, retryableWorkerTimeout } from "./code-change-runtime-policy.js";
 
-const terminal = new Set(["APPLIED", "CANCELLED", "INCONCLUSIVE", "FAILED"]);
 const stopped = new Set([...terminal, "STOPPING", "RECOVERY_REQUIRED", "HOLD", "AWAITING_APPLY"]);
 const REVIEWER_READ_DEGRADATION_CODES = new Set([
   "REVIEWER_PROVIDER_UNAVAILABLE",
   "REVIEWER_PROVIDER_MISMATCH",
 ]);
+
+function disjointDirectories(left, right) {
+  const outside = (from, to) => {
+    const relative = path.relative(from, to);
+    return path.isAbsolute(relative) || relative === ".." || relative.startsWith(".." + path.sep);
+  };
+  return outside(left, right) && outside(right, left);
+}
+
+function independentFailedRun(run, targetRoot) {
+  const turn = run.workerTurns?.at(-1);
+  if (!targetRoot || run.stage !== "RECOVERY_REQUIRED" || run.terminationReason !== "EXECUTION_UNCERTAIN"
+    || !run.workspaceRoot || run.application || run.capture || run.candidate
+    || run.captures?.length || run.candidates?.length || run.conversationBindings?.length
+    || run.reviewTurnId || run.webDeliveryReceipts?.length
+    || turn?.status !== "failed" || !turn.finishedAt || turn.turnId !== run.workerTurnId
+    || !run.events?.some(({type, payload}) => type === "WORKER_RUNTIME_EVENT"
+      && payload?.runtimeType === "TURN_FAILED" && payload.sourceMethod === "turn/completed"
+      && payload.turnId === turn.turnId)) return false;
+  try {
+    const target = fs.realpathSync.native(targetRoot);
+    const previous = fs.realpathSync.native(run.targetRoot);
+    const workspace = fs.realpathSync.native(run.workspaceRoot);
+    // A Git file can point to the same repository through a linked worktree.
+    // Only existing, standalone repositories qualify for concurrent recovery.
+    return disjointDirectories(target, previous) && disjointDirectories(target, workspace)
+      && [target, previous].every(root => {
+        const git = path.join(root, ".git");
+        const stat = fs.lstatSync(git);
+        return stat.isDirectory() && !stat.isSymbolicLink()
+          && path.relative(git, fs.realpathSync.native(git)) === ""
+          && !fs.existsSync(path.join(git, "commondir"));
+      });
+  } catch {
+    return false;
+  }
+}
 
 export class CodeChangeService {
   constructor({ filename, store = null, artifactStore, webSession, reviewerWebSessions = null, reviewerWebProviders = null, codex, workerConfig = null, project = null, createWorker = createRegisteredCodeWorker, onDiagnostic = null }) {
@@ -46,13 +82,41 @@ export class CodeChangeService {
   }
   list() { return this.store.list(); }
   get(id) { return this.store.get(id); }
-  busy() { return this.jobs.size > 0 || this.list().some((r) => !terminal.has(r.stage)); }
+  blocksNewRun(run, targetRoot) {
+    if (this.jobs.has(run.runId) || this.workers.has(run.runId)) return true;
+    if (terminal.has(run.stage)) return false;
+    if (independentFailedRun(run, targetRoot)) return false;
+    // A timed-out audit keeps its delivery and frozen candidate for recovery.
+    return !(run.stage === "RECOVERY_REQUIRED" && run.terminationReason === "TOTAL_TIME_LIMIT"
+      && run.application == null && run.workerTurns?.at(-1)?.status === "completed"
+      && run.candidate?.patchHash && run.candidate.patchHash === run.capture?.artifact?.sha256);
+  }
+  /** @param {{preparationOnly?: boolean, runs?: ReturnType<CodeChangeService["list"]>, targetRoot?: string}} [options] */
+  busy({ preparationOnly = false, runs, targetRoot } = {}) {
+    return this.jobs.size > 0 || this.workers.size > 0 || this.reviewerWebBusy()
+      || (runs ?? this.list()).some((run) => (!preparationOnly
+        || (run.stage !== "RECOVERY_REQUIRED" && run.stage !== "AWAITING_APPLY"))
+        && this.blocksNewRun(run, targetRoot));
+  }
+  pendingReviewFor(conversationUrl) {
+    const targetUrl = canonicalConversationUrl(conversationUrl);
+    return Boolean(targetUrl && this.list().some((run) => (run.conversationBindings ?? []).some((binding) =>
+      binding.activeDeliveryId && canonicalConversationUrl(binding.conversationUrl) === targetUrl)));
+  }
   reviewerWebBusy() {
     return this.reviewerWebAdapters().some((adapter) => Boolean(adapter.activeTurnId));
   }
   reviewerWebForTurn(turnId) {
     if (typeof turnId !== "string" || !turnId) return null;
     return this.reviewerWebAdapters().find((adapter) => adapter.activeTurnId === turnId) ?? null;
+  }
+  canManageFinishedRun(run) {
+    return terminal.has(run.stage) && !this.jobs.has(run.runId) && !this.workers.has(run.runId)
+      && !this.reviewerWebForTurn(run.reviewTurnId);
+  }
+  canRetryReview(run) {
+    return (retryableAuditReview(run) || canResumeAcknowledgedReview(run))
+      && !this.jobs.has(run.runId) && !this.workers.has(run.runId) && !this.reviewerWebBusy();
   }
   update(id, changes) {
     const run = this.get(id);
@@ -219,7 +283,9 @@ export class CodeChangeService {
         } catch (error) { this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: error.message }); continue; }
       }
       if (!terminal.has(run.stage) && run.stage !== "HOLD") {
-        this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: "Server restarted during execution. No automatic resubmission or patch application." });
+        if (run.stage !== "RECOVERY_REQUIRED") {
+          this.update(run.runId, { stage: "RECOVERY_REQUIRED", error: "Server restarted during execution. No automatic resubmission or patch application." });
+        }
         recoverAcknowledgedReviews(this, run.runId);
       }
     }
@@ -234,7 +300,10 @@ export class CodeChangeService {
     return this.start(input, preparation);
   }
   async start(input, preparation = null) {
-    if (this.closed || this.busy()) throw new Error("Another code change is unfinished.");
+    if (this.closed || this.busy({ targetRoot:preparation?.targetRoot })) throw new Error("Another code change is unfinished.");
+    if (this.pendingReviewFor(input.conversationUrl)) {
+      throw Object.assign(new Error("This conversation has an unresolved reviewer delivery."), { code:"REVIEW_DELIVERY_PENDING" });
+    }
     nonempty(input.objective, "objective");
     // Project settings are supplied by the server, never selected by a browser command.
     const project = validateAuditProject(this.project);
@@ -508,10 +577,12 @@ export class CodeChangeService {
     if (classification === "RECOVERY_REQUIRED" && run.stage === "RECOVERY_REQUIRED"
       && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) {
       allowedActions.push("run.abandon");
-      if (canResumeAcknowledgedReview(run)) allowedActions.push("code.review.retry");
     }
-    if (classification === "RECOVERABLE" && retryableAuditReview(run)
-      && !this.jobs.has(run.runId) && !this.workers.has(run.runId)) allowedActions.push("code.review.retry");
+    if ((classification === "RECOVERABLE" || (classification === "RECOVERY_REQUIRED"
+      && (canResumeAcknowledgedReview(run) || retryableUnsentInitialReview(run))))
+      && this.canRetryReview(run)) {
+      allowedActions.push(run.terminationReason === "USER_DECISION_REQUIRED" ? "code.decision.reply" : "code.review.retry");
+    }
     if (classification === "RECOVERABLE" && run.stage === "AWAITING_APPLY" && hasMultiReviewAuthority(run)) allowedActions.push("code.apply");
     return redactForEvidence({ runId: run.runId, classification, observations, allowedActions, readOnly: true, observedAt: new Date().toISOString() });
   }
@@ -537,8 +608,7 @@ export class CodeChangeService {
     const run = this.get(payload.runId);
     if (!run || run.version !== payload.expectedVersion) throw Object.assign(new Error("Run changed; refresh."), { code: "RUN_VERSION_CONFLICT" });
     if (type === "run.archive" || type === "run.unarchive") {
-      if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
-        || this.reviewerWebForTurn(run.reviewTurnId)) {
+      if (!this.canManageFinishedRun(run)) {
         throw Object.assign(new Error("Only settled finished runs can be archived or restored."), { code:"RUN_NOT_TERMINAL" });
       }
       const archiving = type === "run.archive";
@@ -580,8 +650,7 @@ export class CodeChangeService {
       return rebindReviewRole(this, run.runId, { role:payload.role, tabId:payload.selectedTabId });
     }
     if (type === "run.delete") {
-      if (!terminal.has(run.stage) || this.jobs.has(run.runId) || this.workers.has(run.runId)
-        || this.reviewerWebForTurn(run.reviewTurnId)) {
+      if (!this.canManageFinishedRun(run)) {
         throw Object.assign(new Error("Only settled finished runs can be deleted."), { code:"RUN_NOT_TERMINAL" });
       }
       if (run.workspaceRoot && fs.existsSync(run.workspaceRoot)) {
@@ -597,6 +666,17 @@ export class CodeChangeService {
     if (type === "evidence.get") {
       const e = run.evidence?.find((e) => e.evidenceId === payload.evidenceId);
       if (!e) throw new Error("Unknown evidence in this run.");
+      if (payload.patchPath !== undefined) {
+        const candidate = run.candidate;
+        if (!candidate || e.kind !== "PATCH" || e.valid === false || e.candidateId !== candidate.candidateId
+          || !candidate.changedFiles?.includes(payload.patchPath)) throw new Error("Unknown patch file in the current candidate.");
+        const patch = this.artifactStore.read(e.contentRef.sha256).toString("utf8");
+        const start = payload.startLine ?? 1;
+        const end = payload.endLine ?? start + 199;
+        if (!Number.isSafeInteger(end)) throw new Error("Requested range must contain 1..1000 lines.");
+        const location = patchFileExcerpt(patch, payload.patchPath, start, end - start + 1);
+        return { ...e, patchPath:payload.patchPath, patchLocationFound:Boolean(location), ...location };
+      }
       return { ...e, ...excerpt(this.artifactStore.read(e.contentRef.sha256).toString("utf8"), payload.startLine, payload.endLine) };
     }
     if (type === "run.reconcile") return this.reconcile(run);
@@ -700,7 +780,7 @@ export class CodeChangeService {
         discussionId, actor:"LOCAL_AUTHENTICATED_USER", role:payload.role,
         candidateId:run.candidate.candidateId,
         auditManifestHash:run.coordination?.auditManifestHash ?? run.reviews?.at(-1)?.auditManifestHash ?? null,
-        text:payload.text.trim(), response:null, status:"PENDING", createdAt, updatedAt:createdAt,
+        text:payload.text, response:null, status:"PENDING", createdAt, updatedAt:createdAt,
       };
       this.update(run.runId, { reviewDiscussions:[...(run.reviewDiscussions ?? []), discussion] });
       try {
@@ -772,7 +852,8 @@ export class CodeChangeService {
       const needsDecision = run.stage === "HOLD" && run.terminationReason === "USER_DECISION_REQUIRED";
       if ((type === "code.decision.reply") !== needsDecision) throw new Error("This review requires a user answer, or is not waiting for one.");
       const resumeAcknowledged = type === "code.review.retry" && canResumeAcknowledgedReview(run);
-      if ((!retryableAuditReview(run) && !resumeAcknowledged) || this.jobs.has(run.runId) || this.workers.has(run.runId) || this.reviewerWebBusy()) {
+      const pendingCritic = type === "code.review.retry" ? criticReviewContinuation(run) : null;
+      if (!this.canRetryReview(run)) {
         throw new Error("Only a settled review hold or legacy single-review candidate can be re-audited.");
       }
       let decision = null;
@@ -815,12 +896,13 @@ export class CodeChangeService {
       const previousReason = run.terminationReason;
       const reset = this.update(run.runId, {
         stage: "REVIEW_RUNNING", reviewTurnId: resumeAcknowledged ? run.reviewTurnId : null, auditResult: null,
-        ...(run.reviewRecovery ? { reviewRecovery:{ ...run.reviewRecovery, status:resumeAcknowledged ? "RESUMING" : "CLOSED" } } : {}),
+        ...(pendingCritic ? { reviewRecovery:pendingCritic }
+          : run.reviewRecovery ? { reviewRecovery:{ ...run.reviewRecovery, status:resumeAcknowledged ? "RESUMING" : "CLOSED" } } : {}),
         error: null, terminationReason: null, missingInformation: [], stopRequested: false,
         userDecisions:decision ? [...(run.userDecisions ?? []), decision] : run.userDecisions ?? [],
         deadlineAt: new Date(Date.now() + run.policy.totalTimeoutMs).toISOString(),
         recoveryAttempts: [...(run.recoveryAttempts ?? []), {
-          kind: resumeAcknowledged ? "ACKNOWLEDGED_REVIEW_CONTINUATION" : decision ? "USER_DECISION_REVIEW" : run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
+          kind: resumeAcknowledged || pendingCritic ? "ACKNOWLEDGED_REVIEW_CONTINUATION" : decision ? "USER_DECISION_REVIEW" : run.stage === "AWAITING_APPLY" ? "MULTI_REVIEW_AUTHORITY_UPGRADE" : "AUDIT_REPORT_RETRY",
           at: retryAt, previousError, previousReason,
           candidateId: run.candidate.candidateId, patchHash: run.candidate.patchHash,
         }],
@@ -965,7 +1047,8 @@ export class CodeChangeService {
     };
     const reviewerProjections = { JUDGE:reviewerProjection("JUDGE"), CRITIC:reviewerProjection("CRITIC") };
     const reviewerRuntimes = { JUDGE:reviewerProjections.JUDGE.runtime, CRITIC:reviewerProjections.CRITIC.runtime };
-    return publicCodeChange({ run: { ...record, phase: record.stage, currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
+    return publicCodeChange({ run: { ...record, phase: record.stage, blocksNewRun: this.blocksNewRun(record),
+      currentTurn: record.iteration * 2, maxTurns: record.maxIterations * 2,
       activeActor: record.stage === "WORKER_RUNNING"
         ? (record.worker?.provider === "codex" ? "CODEX_AGENT" : "CODE_WORKER")
         : ["REVIEW_RUNNING", "REPORT_REPAIR"].includes(record.stage)
@@ -997,7 +1080,7 @@ export class CodeChangeService {
           && ["JUDGE","CRITIC"].includes(record.coordination?.activeRole)
           && typeof reviewerProjections[record.coordination.activeRole]?.adapter?.rebind === "function"
           ? ["code.review.rebind"] : []),
-        ...(terminal.has(record.stage) && !this.jobs.has(runId) && !this.workers.has(runId)
+        ...(this.canManageFinishedRun(record)
           ? ["run.delete", record.archivedAt ? "run.unarchive" : "run.archive"]
           : []),
         ...(record.stage === "WORKER_RUNNING" && typeof record.workerTurnId === "string" && record.workerTurnId
@@ -1005,7 +1088,7 @@ export class CodeChangeService {
           ? ["code.worker.intervene"] : []),
         ...(!terminal.has(record.stage) && record.stage !== "APPLYING" ? ["run.stop"] : []),
         ...(retryableWorkerTimeout(record) && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.retry"] : []),
-        ...((retryableAuditReview(record) || canResumeAcknowledgedReview(record)) && !this.jobs.has(runId) && !this.workers.has(runId)
+        ...(this.canRetryReview(record)
           ? [record.terminationReason === "USER_DECISION_REQUIRED" ? "code.decision.reply" : "code.review.retry"] : []),
         ...(record.stage === "RECOVERY_REQUIRED" && !this.jobs.has(runId) && !this.workers.has(runId) ? ["run.abandon"] : []),
         ...(record.stage === "AWAITING_APPLY" && !this.jobs.has(runId) && record.schemaVersion === 3 && hasMultiReviewAuthority(record) ? ["code.apply"] : [])] });

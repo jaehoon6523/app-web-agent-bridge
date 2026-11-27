@@ -18,8 +18,8 @@ export function projectDashboardStartActions({
   const canOpenNewRun = stateAvailable === true
     && runListKnown
     && hasUnfinishedRun !== true
-    && preparationActive !== true
-    && !["PREPARE", "WORK"].includes(workflowStage);
+    && preparationActive === false
+    && workflowStage !== "PREPARE";
 
   const canStartPreparation = canOpenNewRun
     && workflowStage === "START"

@@ -214,6 +214,14 @@ export class CodexApprovalBridge extends EventEmitter {
     return snapshot;
   }
 
+  rejectStale({ requestId, threadId, turnId }) {
+    const key = idKey(requestId);
+    const entry = this.#pending.get(key);
+    if (entry?.status !== "PENDING" || entry.threadId !== threadId || entry.turnId !== turnId) return;
+    this.#peer.respondError(requestId, { code:-32602, message:"Approval request does not belong to the active turn." });
+    this.#pending.delete(key);
+  }
+
   /** @param {{requestId?: any, threadId?: string | null}} [input] */
   resolve({ requestId, threadId = null } = {}) {
     const key = idKey(requestId);

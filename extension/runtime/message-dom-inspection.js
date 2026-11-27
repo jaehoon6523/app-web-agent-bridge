@@ -1,7 +1,7 @@
 // Serialized by chrome.scripting; keep this function independent of module state.
 export function inspectMessageDom(request, requestId) {
   // Only an accessibility heading outside message content can prove its single sibling branch.
-  function headingRole(node, content) {
+  function headingRole(node, content, userSearchBody = false) {
     const labels = new Map([["내가 한 말:", "user"], ["You said:", "user"],
       ["ChatGPT 답변:", "assistant"], ["ChatGPT said:", "assistant"]]);
     for (let parent = content; parent; parent = parent.parentElement) {
@@ -10,8 +10,12 @@ export function inspectMessageDom(request, requestId) {
       if (!headings.length) continue;
       if (headings.length !== 1 || children.length !== 2) return null;
       const heading = headings[0], branch = children.find(child => child !== heading);
-      const label = (heading.textContent ?? "").trim(), role = labels.get(label);
-      const bodySelector = "[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown";
+      let label = (heading.textContent ?? "").trim();
+      if (label === "내가 한 말:나") label = "내가 한 말:";
+      if (label === "ChatGPT 답변:ChatGPT") label = "ChatGPT 답변:";
+      const role = labels.get(label);
+      const bodySelector = "[data-markdown-text-tone='user-message'], [data-markdown-text-style='assistant-message'], [data-testid='collapsible-user-message-content'], [data-message-content], .markdown"
+        + (userSearchBody ? ", [data-search-result-target]" : "");
       if (!role || !content.matches?.(bodySelector) || heading.closest(bodySelector) || !branch?.contains(content) || (node !== parent && !branch.contains(node) && !node.contains(parent))
         || parent.querySelectorAll("h4.sr-only").length !== 1) return null;
       // An outer turn wrapper is eligible only when all message evidence belongs to this one inner block.
@@ -35,6 +39,19 @@ export function inspectMessageDom(request, requestId) {
         relation:"DIRECT_SIBLING_MESSAGE_BRANCH", headingCount:1, messageBranchCount:1 } };
     }
     return null;
+  }
+  // This function runs from a serialized script, so keep the provider's body check local.
+  function userSearchMessageBody(node) {
+    const key = node.getAttribute("data-chatgpt-search-unit-key");
+    const id = node.getAttribute("data-chatgpt-search-message-ids")?.trim();
+    if (!key?.endsWith(":user") || !/^[\w-]+$/u.test(id ?? "")) return null;
+    const scopes = node.querySelectorAll("[data-content-search-unit-key]");
+    const bubbles = node.querySelectorAll("[data-user-message-bubble='true']");
+    if (scopes.length !== 1 || scopes[0].getAttribute("data-content-search-unit-key") !== key
+      || bubbles.length !== 1 || bubbles[0].getAttribute("data-user-message-has-prompt") !== "true"
+      || !scopes[0].contains(bubbles[0])) return null;
+    const bodies = bubbles[0].querySelectorAll("[data-search-result-target]");
+    return bodies.length === 1 ? bodies[0] : null;
   }
   let stage = "page_url", cause = "URL_ACCESS_EXCEPTION";
   // Do not turn an injected exception into a successful executeScript result.
@@ -83,7 +100,9 @@ export function inspectMessageDom(request, requestId) {
         cause = "DOM_READ_EXCEPTION";
         if (found) { content = found; contentSelector = candidate; break; }
       }
-      const evidence = headingRole(node, content), role = evidence?.role ?? null;
+      const searchBody = contentSelector === null ? userSearchMessageBody(node) : null;
+      if (searchBody) { content = searchBody; contentSelector = "[data-search-result-target]"; }
+      const evidence = headingRole(node, content, searchBody !== null), role = evidence?.role ?? null;
       if (seenContents.has(content)) {
         const previous = matches.find(match => match.index === seenContents.get(content));
         // Multiple selector aliases may share a body; none may contradict its role evidence.

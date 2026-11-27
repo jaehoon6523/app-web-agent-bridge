@@ -1,5 +1,10 @@
 const $ = id => document.getElementById(id);
 let token, snapshot, busy = false, approvedIdentity = null, auditUnconfirmed = false;
+let refreshSequence = 0;
+function canApprove() {
+  return !busy && Boolean(snapshot?.candidate)
+    && (snapshot.approvalAvailable === true || snapshot.approvalAvailable === undefined) && $('confirm').checked;
+}
 async function session() {
   if (token) return token;
   const response = await fetch('/api/dashboard/session', { method: 'POST' });
@@ -7,18 +12,28 @@ async function session() {
   token = (await response.json()).token;
   return token;
 }
-async function request(method, body) {
+async function request(method, body, renewSession = true) {
   const response = await fetch('/api/extension-pairing', { method,
     headers: { Authorization: 'Bearer ' + await session(), ...(body ? { 'Content-Type': 'application/json' } : {}) },
     ...(body ? { body: JSON.stringify(body) } : {}) });
+  if (response.status === 401) {
+    token = undefined;
+    if (method === 'GET' && renewSession) return request(method, body, false);
+  }
   const result = await response.json();
   if (!response.ok) throw Object.assign(new Error(result.code || 'PAIRING_UNAVAILABLE'), { code: result.code });
   return result;
 }
 async function refresh() {
   if (busy) return;
+  const sequence = ++refreshSequence;
   try {
-    snapshot = await request('GET');
+    const latest = await request('GET');
+    if (sequence !== refreshSequence) return;
+    if (latest.currentIdentity !== snapshot?.currentIdentity || latest.candidate?.identity !== snapshot?.candidate?.identity) {
+      $('confirm').checked = false;
+    }
+    snapshot = latest;
     $('current').textContent = '서버의 현재 연결 대상: ' + snapshot.currentIdentity;
     $('candidate').textContent = '접속한 확장: ' + (snapshot.candidate?.identity ?? '확인된 후보 없음');
     $('state').textContent = snapshot.authenticated
@@ -28,13 +43,17 @@ async function refresh() {
           : '연결 대상으로 저장했습니다. 확장 자동 재연결을 기다리는 중입니다.')
       : snapshot.candidate ? '공유 비밀키를 확인했습니다. 연결할 확장을 확인하세요.'
         : '연결 후보 대기 중입니다. 확장 팝업에서 Reconnect를 누르면 다시 확인합니다.';
-    $('approve').disabled = !snapshot.candidate || !$('confirm').checked;
-  } catch (error) { snapshot = null; $('state').textContent = '상태 확인 실패: ' + error.message; $('approve').disabled = true; }
+    $('approve').disabled = !canApprove();
+  } catch (error) {
+    if (sequence !== refreshSequence) return;
+    snapshot = null; $('state').textContent = '상태 확인 실패: ' + error.message; $('approve').disabled = true;
+  }
 }
-$('confirm').addEventListener('change', () => { $('approve').disabled = busy || !snapshot?.candidate || !$('confirm').checked; });
+$('confirm').addEventListener('change', () => { $('approve').disabled = !canApprove(); });
 $('refresh').addEventListener('click', refresh);
 $('approve').addEventListener('click', async () => {
-  if (busy || !snapshot?.candidate || !$('confirm').checked) return;
+  if (!canApprove()) return;
+  refreshSequence++;
   busy = true; $('approve').disabled = true;
   try {
     const result = await request('POST', { candidateIdentity: snapshot.candidate.identity,
