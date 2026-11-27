@@ -540,6 +540,19 @@ preparationId에 속한다.
 UI는 mutation 직전에 다른 객체를 탐색해 version을 추론하지 않는다. 모든
 reply, approve, stop, reconcile mutation은 해당 version을 expectedVersion으로 보낸다.
 
+새 준비를 만드는 `preparation.start`에는 기존 버전이 없다. 기존 준비를 대상으로 하는
+reply, approve, cancel, discard와 준비 Web API의 inspect, focus, stop, rebind,
+reconcile은 서버에서 정수 `expectedVersion`을 요구한다. 누락·형식 오류는
+`PREPARATION_VERSION_REQUIRED`, 현재 버전과의 차이는 `PREPARATION_VERSION_CONFLICT`다.
+구형 클라이언트는 상태를 다시 조회하고 현재 버전을 보내야 한다. 동일한 요청 ID와
+본문으로 이미 기록된 영수증을 읽을 때는 명령을 다시 실행하지 않는다.
+후보 탭 보기 API는 준비를 변경하지 않으며 준비 ID·전송 ID·기록된 후보 탭을 확인한다.
+
+서버는 활성 준비가 있는 동안 다른 루트에서도 새 준비를 생성하지 않는다.
+이전 버전에서 복수 활성 기록이 남은 경우 `currentId`가 가리키는 활성 기록을
+우선하고, 해당 기록이 닫혀 있으면 저장된 순서의 활성 기록을 복구 대상으로 투영한다.
+조회와 신규 생성 차단은 이 대상을 공유한다. 이전 전송과 복구 증거는 기존 기록에 남는다.
+
 ### 추가 불변조건
 
 ```text

@@ -23,6 +23,8 @@ npm ci
 npm start
 ```
 
+Windows 운영 Chrome 확장과 서버를 함께 반영하려면 `start-live.cmd`를 실행합니다. 기존 설치에서 이 런처로 바꿀 때는 확장을 한 번 다시 로드합니다. 이후 소스 수정을 마치고 `extension/manifest.json`의 버전을 올리면 런처가 서버와 확장에서 진행 중인 작업과 미확정 전송을 확인합니다. 비어 있으면 확장을 다시 로드하고, 인증된 확장의 새 버전을 확인한 뒤 같은 데이터로 서버를 다시 시작합니다. `[bridge.update]`의 `VERIFIED` 또는 `GET /api/health`의 `release`에서 연결 버전을 확인할 수 있습니다.
+
 `.env`는 서버 부팅의 필수 조건이 아닙니다. 특정 연동을 사용할 때만 `.env.example`에서 필요한 값을 설정하세요. 반대로 값을 명시했는데 형식이나 조합이 잘못된 경우에는 시작 시점에 거부합니다.
 
 | 설정 | 필수 범위 | 의미 |
@@ -40,7 +42,7 @@ npm start
 | `CODEX_EXECUTABLE` | 실제 Codex 기능 사용 시 필수 | Codex 실행 파일 경로. 미설정이면 해당 기능만 not-ready |
 | `CODEX_HOME` | 선택 | Codex 인증/home 경로를 runtime에 전달 |
 | `CODE_WORKER_PROVIDER` | 기본값 있음 | `codex` 기본; `deepseek`, `claude`, `qwen`, `gemini` 지원 |
-| `CODE_WORKER_MODEL` | 선택 | 구현 worker 모델 라벨 |
+| `CODE_WORKER_MODEL` | 선택 | 구현 Worker 모델. 비워 두면 공급자의 기본 설정 사용 |
 | `CODE_WORKER_EXECUTABLE` | non-Codex worker 사용 시 필수 | JSONL-compatible provider CLI/shim |
 | `CODE_WORKER_ARGS` | 선택 | worker 실행 인자 JSON 배열 |
 | `WEB_RESPONSE_TIMEOUT_MS` | 기본값 있음 | Web turn timeout. 기본 `300000` ms |
