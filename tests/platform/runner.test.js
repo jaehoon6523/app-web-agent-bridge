@@ -57,6 +57,28 @@ test('a completed profile with a stuck descendant fails boundedly and cleans its
   }
 });
 
+test('Codex shutdown drains stdout written after stdin EOF', {timeout:10000}, async () => {
+  const source = String.raw`const lines = require('node:readline').createInterface({input: process.stdin});
+    lines.on('line', line => {
+      const message = JSON.parse(line);
+      if (message.method === 'initialize') {
+        process.stdout.write(JSON.stringify({id: message.id, result: {userAgent: 'shutdown-fixture'}}) + '\n');
+      }
+    });
+    lines.on('close', () => process.stdout.write(Buffer.alloc(4 * 1024 * 1024, 'x')));`;
+  let child;
+  const manager = await CodexProcessManager.create({executablePath:process.execPath,workspaceRoot:process.cwd(),
+    appServerArgs:['-e',source], spawn:(...args) => { child = spawn(...args); return child; }});
+  try {
+    await manager.start();
+  } finally {
+    await manager.close();
+  }
+  assert.equal(child.exitCode,0);
+  assert.equal(child.stdout.closed,true);
+  assert.equal(child.stderr.closed,true);
+});
+
 test('Codex EOF deadline still rejects when an exited parent leaves inherited stdio open', {timeout:30000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-platform-pipes-'));
   const pidFile = path.join(root,'pid');
@@ -74,7 +96,7 @@ test('Codex EOF deadline still rejects when an exited parent leaves inherited st
     await manager.start();
     await waitForPipeHolder({pidFile,markerFile});
     const started=Date.now();
-    await assert.rejects(manager.close(),/did not exit after stdin EOF/u);
+    await assert.rejects(manager.close(),/exited but stdio remained open after stdin EOF/u);
     assert.ok(Date.now()-started<6500,'a parent exit must not disable the resource closure deadline');
     assert.equal(child.exitCode,0);
     assert.equal(manager.status,'STOPPED');

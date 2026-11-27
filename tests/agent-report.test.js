@@ -90,10 +90,16 @@ test("closing an automatic pending inspection releases its timer and listener", 
 });
 test("delivery diagnostic projection excludes bodies and preserves ownership without mutation", async () => {
   const transport=new EventEmitter(); transport.authenticated=true;
+  const currentDeliveryId = "audit_critic_618fcd37-ec59-4d1b-9151-eb437b6468e2";
+  const runId = "code_718fcd37-ec59-4d1b-9151-eb437b6468e2";
+  const sessionId = "web_" + runId + "_critic";
   transport.send=m=>queueMicrotask(()=>transport.emit("message",{type:"extension.diagnostics.inspected",requestId:m.requestId,
-    payload:{tabs:[],delivery:{currentDeliveryId:"delivery_618fcd37-ec59-4d1b-9151-eb437b6468e2",tabId:7,
+    payload:{tabs:[],delivery:{currentDeliveryId,runId,sessionId,tabId:7,
       bindingStatus:"AMBIGUOUS",responseObserved:true,responseBody:"PRIVATE_BODY",sharedSecret:"PRIVATE_KEY"}}}));
   const result=await collectSelectorDiagnostics(transport);
+  assert.equal(result.delivery.currentDeliveryId,currentDeliveryId);
+  assert.equal(result.delivery.runId,runId);
+  assert.equal(result.delivery.sessionId,sessionId);
   assert.equal(result.delivery.bindingStatus,"AMBIGUOUS");
   assert.equal(result.delivery.responseObserved,true);
   assert.doesNotMatch(JSON.stringify(result),/PRIVATE_BODY|PRIVATE_KEY/u);

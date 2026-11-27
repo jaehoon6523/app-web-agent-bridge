@@ -56,15 +56,26 @@ test('terminal server discard plus unreachable exact extension owner is reconcil
   const before = structuredClone(f.context);
   const result = await f.discard();
   assert.equal(result.discarded,true);
-  assert.equal(result.resultStatus,'UNKNOWN');
+  assert.equal(result.resultStatus,'COMPLETION_RESPONSE_UNCONFIRMED');
   assert.equal((await f.read()).currentDeliveryId,null);
   assert.deepEqual(f.context,before);
   const seen = await f.inspect();
   assert.equal(seen.extension.discardConfirmed,true);
   assert.equal(seen.extension.phase,'DISCARDED');
-  assert.equal(seen.extension.resultStatus,'UNKNOWN');
+  assert.equal(seen.extension.resultStatus,'COMPLETION_RESPONSE_UNCONFIRMED');
   assert.deepEqual(f.events.map(e => e.phase),['STARTED','COMPLETED']);
   f.restart();await f.discard();assert.equal(f.calls(),1);
+});
+test('active preparation discard records intent and completion after confirming both owners', async () => {
+  const f = await fixture();
+  f.context.webSession.activeDeliveryId = f.owner.currentDeliveryId;
+  f.context.deliveries[0].state = 'RECOVERY_REQUIRED';
+  const result = await f.discard({terminalDiscardConfirmed:false});
+  assert.equal(result.resultStatus, 'COMPLETION_RESPONSE_UNCONFIRMED');
+  assert.equal(f.context.webSession.activeDeliveryId, null);
+  assert.equal(f.context.deliveries[0].discardIntent.status, 'CONFIRMED');
+  assert.equal((await f.inspect()).extension.discardConfirmed, true);
+  assert.deepEqual(f.events.map(e=>e.phase), ['STARTED','COMPLETED']);
 });
 
 test('an active reviewer response awaiting ACK cannot enter the discard protocol', async () => {

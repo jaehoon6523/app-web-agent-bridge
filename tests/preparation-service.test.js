@@ -2,13 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import { setTimeout as delay } from "node:timers/promises";
+import { isValidRequirementsProposal } from "../src/orchestration/invalid-preparation-abandonment.js";
 import os from "node:os";
 import path from "node:path";
-import { PreparationService, workflowForRun } from "../src/orchestration/preparation-service.js";
+import { workflowForRun } from "../src/orchestration/preparation-service.js";
 import { normalizeDashboardState } from "../public/dashboard-model.js";
-import { validateWebSessionBinding } from "../src/runtime/web/binding.js";
+import { fixture, settled, tick } from "./helpers/preparation-service-fixture.js";
 
-const tick = () => new Promise(setImmediate);
 function createDirectoryAlias(target, alias) {
   try { fs.symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir"); }
   catch (error) {
@@ -37,77 +38,6 @@ test("Windows EPERM junction fallback resolves an alias in a spaced path", { ski
   assert.equal(symlink.mock.callCount(), 1);
   assert.equal(fs.statSync(alias).isDirectory(), true);
 });
-async function settled(service) {
-  for (let i = 0; i < 50 && service.jobs.size; i++) await tick();
-  assert.equal(service.jobs.size, 0);
-}
-function fixture(t) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "canonical-preparation-"));
-  const runs = new Map(), calls = [], prompts = [];
-  let binding, active = null, count = 0, failAck = false, inspection = {}, afterAck = {}, discarded = null;
-  const web = {
-    async inspect() {
-      return { binding: binding ?? null };
-    },
-    async resume(input) {
-      validateWebSessionBinding(input.binding);
-      binding = input.binding.conversationUrl === null
-        ? { ...input.binding, conversationUrl: "https://chatgpt.com/", conversationId: null, bindingStatus: "ROOT_READY", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 }
-        : { ...input.binding, bindingStatus: "BOUND", tabId: 1, windowId: 2, documentId: "document-1", frameId: 0 };
-      calls.push(binding.sessionId); return binding;
-    },
-    async rebind(input) {
-      validateWebSessionBinding(input.binding);
-      binding = input.binding.conversationUrl === null
-        ? { ...input.binding, conversationUrl:"https://chatgpt.com/", conversationId:null,
-          bindingStatus:"ROOT_READY", tabId:input.tabId, windowId:2, documentId:`document-${input.tabId}`, frameId:0 }
-        : { ...input.binding, bindingStatus:"BOUND", tabId:input.tabId, windowId:2,
-          documentId:`document-${input.tabId}`, frameId:0 };
-      calls.push(`rebind:${input.tabId}`); return binding;
-    },
-    async submitTurn(input) {
-      prompts.push(input.text);
-      if (binding.bindingStatus === "ROOT_READY") binding = { ...binding, conversationUrl: "https://chatgpt.com/c/new-conversation", conversationId: "new-conversation", bindingStatus: "BOUND" };
-      active = input.turnId; count++;
-      const parsed = count === 1 ? { type: "REQUIREMENTS_PROPOSAL", summary: "무엇을 만들까요?", questions: ["원하는 기능?"], items: [] }
-        : { type: "REQUIREMENTS_PROPOSAL", summary: "채팅", questions: [], items: [{ statement: "메시지 전송", acceptanceCriteria: "목록에 한 번 표시" }] };
-      binding = { ...binding, lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count };
-      return { completion: Promise.resolve({ turnId: active, binding, confidence: "CONFIRMED_BY_UI_STATE",
-        trace: { requestId: active, actionId: active, bindingId: `${binding.sessionId}:${binding.runId}`,
-          tabId: binding.tabId, documentId: binding.documentId, frameId: binding.frameId, result: "success" },
-        rawText: "<controller_packet>\n" + JSON.stringify(parsed) + "\n</controller_packet>" }) };
-    },
-    async inspectDelivery() { if (!binding) return { currentDeliveryId: null }; return { currentDeliveryId: active, sessionId: binding.sessionId, runId: binding.runId,
-      conversationId: binding.conversationId, conversationUrl: binding.conversationUrl, observedConversationUrl: binding.conversationUrl,
-      pageReachable: true, generating: false, pageBusy: false, extensionBusy: false,
-      lastObservedUserMessageId: "u" + count, lastObservedAssistantMessageId: "a" + count, ...inspection }; },
-    async acknowledgeDelivery() { if (failAck) throw new Error("lost ACK"); active = null; Object.assign(inspection, afterAck); },
-    async discardDelivery(expected) {
-      discarded = structuredClone(expected);
-      active = null;
-      Object.assign(inspection, { currentDeliveryId: null });
-      return { ...expected, result: "discarded" };
-    },
-  };
-  const options = { filename: path.join(root, "state.sqlite"), web, available: () => true, assertStart: async () => {},
-    findRun: async (id) => runs.get(id),
-    approve: async (context) => {
-      assert.equal(context.agreement.status, "APPROVED");
-      assert.equal(context.webSession.activeDeliveryId, null);
-      const run = { runId: context.reservedRunId, preparationId: context.preparationId, baseCommit: "base", version: 1, phase: "WORKER_RUNNING" };
-      runs.set(run.runId, run); return { ...run, repository: { baseCommit: "base" } };
-    } };
-  let service = new PreparationService(options);
-  t.after(() => { service.close(); fs.rmSync(root, { recursive: true, force: true }); });
-  return { root, runs, calls, prompts, web, get service() { return service; }, ackFailure(value) { failAck = value; },
-    get discarded() { return discarded; },
-    observe(value) { inspection = value; }, afterAck(value) { afterAck = value; },
-    restart() { service.close(); service = new PreparationService(options); },
-    start() { return service.execute("preparation.start", { requestId: "start",
-      objective: "  아무거나\n", targetRoot: root, conversationUrl: "https://chatgpt.com/c/test" }); },
-    command(type, extras = {}) { return service.execute(type, { requestId: type + Math.random(), preparationId: service.current.preparationId, ...extras }); },
-  };
-}
 test("follow-up accepts the raw APPLIED stage from production findRun and keeps a new approval boundary", async (t) => {
   const f = fixture(t);
   f.runs.set("applied-1", { runId:"applied-1", stage:"APPLIED", projectRef:{ targetRoot:f.root },
@@ -194,7 +124,12 @@ test("unresolved delivery can be explicitly discarded with confirmations and rem
   const deliveryId = before.webSession.activeDeliveryId;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: deliveryId, sessionId: before.webSession.sessionId,
     runId: before.preparationId, conversationUrl: before.webSession.conversationUrl, conversationId: before.webSession.conversationId });
-  await f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Original conversation is unavailable." });
+  const confirmation = { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Original conversation is unavailable." };
+  await assert.rejects(f.command("preparation.discard", { ...confirmation, deliveryId:"previous-delivery" }),
+    {code:"DELIVERY_RECOVERY_MISMATCH"});
+  assert.equal(f.discarded, null);
+  assert.equal(f.service.current.webSession.activeDeliveryId, deliveryId);
+  await f.command("preparation.discard", { ...confirmation, deliveryId });
   const after = f.service.current;
   const delivery = after.deliveries.find((item) => item.deliveryId === deliveryId);
   assert.equal(delivery.state, "RECOVERY_DISCARDED");
@@ -213,11 +148,27 @@ test("discard refuses a delivery owned by a different extension preparation", as
   const before = f.service.current;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: "delivery-other", sessionId: "session-other", runId: "run-other" });
   await assert.rejects(
-    f.command("preparation.discard", { unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Check ownership." }),
+    f.command("preparation.discard", { deliveryId:before.webSession.activeDeliveryId, unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true, reason: "Check ownership." }),
     (error) => error.code === "DELIVERY_RECOVERY_MISMATCH",
   );
   assert.equal(f.discarded, null);
   assert.equal(f.service.current.webSession.activeDeliveryId, before.webSession.activeDeliveryId);
+});
+
+test("discard rechecks the preparation version after observing the extension", async (t) => {
+  const f = fixture(t);
+  f.ackFailure(true); await f.start(); await settled(f.service);
+  const context = f.service.current, session = context.webSession;
+  f.web.inspectDelivery = async () => {
+    await f.service.touch(context);
+    return {currentDeliveryId:session.activeDeliveryId,sessionId:session.sessionId,
+      runId:context.preparationId,conversationUrl:session.conversationUrl};
+  };
+  await assert.rejects(f.command("preparation.discard", {deliveryId:session.activeDeliveryId,
+    unresolvedResultConfirmed:true,noAutomaticResendConfirmed:true,reason:"Checked the original conversation"}),
+  {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.equal(f.discarded,null);
+  assert.equal(context.lifecycle,"ACTIVE");
 });
 
 test("a missing extension record cannot be treated as an already confirmed preparation discard", async (t) => {
@@ -225,7 +176,7 @@ test("a missing extension record cannot be treated as an already confirmed prepa
   const context = f.service.current, deliveryId = context.webSession.activeDeliveryId;
   f.web.inspectDelivery = async () => ({ currentDeliveryId: null, sessionId: context.webSession.sessionId,
     runId: context.preparationId, conversationUrl: context.webSession.conversationUrl });
-  await assert.rejects(f.command("preparation.discard", { unresolvedResultConfirmed: true,
+  await assert.rejects(f.command("preparation.discard", { deliveryId, unresolvedResultConfirmed: true,
     noAutomaticResendConfirmed: true, reason: "Checked the original conversation" }), { code: "DELIVERY_RECOVERY_MISMATCH" });
   assert.equal(context.webSession.activeDeliveryId, deliveryId); assert.equal(f.discarded, null);
 });
@@ -293,7 +244,7 @@ test("root bootstrap timeout discard uses the canonical preparation and session 
   delivery.state = "RECOVERY_REQUIRED";
   delete delivery.runId;
   delete delivery.conversationUrl;
-  await f.command("preparation.discard", { unresolvedResultConfirmed: true,
+  await f.command("preparation.discard", { deliveryId:delivery.deliveryId, unresolvedResultConfirmed: true,
     noAutomaticResendConfirmed: true, reason: "No ChatGPT response was observed." });
   assert.equal(f.discarded.currentDeliveryId, delivery.deliveryId);
   assert.equal(f.discarded.sessionId, context.webSession.sessionId);
@@ -309,9 +260,22 @@ test("start returns server identity before dispatch; question-only reply retains
   assert.equal(first.objective, "  아무거나\n");
   assert.equal(first.deliveries[0].state, "RESERVED");
   await settled(f.service);
+  assert.ok(f.prompts[0].includes(first.objective));
+  assert.ok(!f.prompts[0].includes(first.preparationId));
+  assert.doesNotMatch(f.prompts[0], /JSON packet 문자열|이스케이프|기존 준비 문맥/u);
+  assert.doesNotMatch(f.prompts[0], /(?:^|\n)(?:답변시작|답변끝|CONTROLLER_PACKET_BEGIN|CONTROLLER_PACKET_END)(?:\n|$)/u);
+  const example = f.prompts[0].split("\n").at(-1);
+  const proposal = JSON.parse(example);
+  assert.equal(isValidRequirementsProposal(proposal), true);
+  assert.match(proposal.items[0].acceptanceCriteria, /^입력: .+ → 기대 출력: .+/u);
   assert.equal(f.service.current.state, "DISCUSSING");
   assert.equal(f.service.current.agreement.requirements.length, 0);
   assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+  const currentVersion = f.service.current.version;
+  await assert.rejects(f.service.execute("preparation.reply", {
+    requestId:"stale-reply", preparationId:first.preparationId, expectedVersion:currentVersion - 1, content:"old question",
+  }), {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.equal(f.service.current.version, currentVersion);
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);
   assert.equal(new Set(f.calls).size, 1);
   assert.equal(f.service.current.state, "AGREEMENT_READY");
@@ -369,7 +333,7 @@ test("confirmed project conversation persists and is reused only for its exact f
   assert.match(f.prompts.at(-1), /이전 승인·완료 기준·후보·적용 권한은 새 작업으로 승계되지 않는다/);
 });
 
-test("a new root preparation preserves a prior recovery-required delivery without inspecting or discarding it", async (t) => {
+test("a recovery-required preparation blocks a new root and remains visible after restart", async (t) => {
   const f = fixture(t);
   const submitTurn = f.web.submitTurn;
   f.web.submitTurn = async (input) => {
@@ -383,13 +347,35 @@ test("a new root preparation preserves a prior recovery-required delivery withou
   const old = f.service.current;
   assert.equal(old.state, "RECOVERY_REQUIRED");
   const oldDeliveryId = old.webSession.activeDeliveryId;
-  const next = await f.service.execute("preparation.start", {
+  const input = {
     requestId: "start-new", objective: "new", targetRoot: f.root, conversationUrl: "https://chatgpt.com/",
-  });
-  assert.equal(old.lifecycle, "ACTIVE");
-  assert.equal(old.webSession.activeDeliveryId, oldDeliveryId);
-  assert.equal(f.service.current.preparationId, next.preparationId);
+  };
+  await assert.rejects(f.service.execute("preparation.start", input), {code:"PREPARATION_CONFLICT"});
+  f.restart();
+  const restoredVersion = f.service.current.version;
+  assert.ok(restoredVersion >= old.version);
+  await assert.rejects(f.service.execute("preparation.start", {...input,requestId:"after-restart"}), {code:"PREPARATION_CONFLICT"});
+  const snapshot = await f.service.project({runs:[],run:null,commandCapabilities:[]});
+  assert.deepEqual(snapshot.activePreparation,{preparationId:old.preparationId,version:restoredVersion});
+  assert.equal(snapshot.preparation.webSession.activeDeliveryId, oldDeliveryId);
+  assert.ok(!snapshot.commandCapabilities.includes("preparation.start"));
+  assert.equal(Object.keys(f.service.data.contexts).length, 1);
   assert.equal(f.discarded, null);
+});
+
+test("legacy active owners remain visible when currentId points to settled history", async (t) => {
+  const f = fixture(t);
+  await f.start(); await settled(f.service);
+  const owner = f.service.current;
+  f.service.data.contexts.history = {...owner, preparationId:"history", lifecycle:"COMPLETED"};
+  f.service.data.currentId = "history";
+  await f.service.save();
+  f.restart();
+  assert.equal(f.service.busy, true);
+  assert.equal(f.service.current.preparationId, owner.preparationId);
+  await f.command("preparation.cancel", {expectedVersion:owner.version});
+  const next = await f.start({requestId:"next-after-cancel"});
+  assert.notEqual(next.preparationId, owner.preparationId);
 });
 
 test("cross-session active-delivery block is classified as stale extension runtime", async (t) => {
@@ -465,6 +451,157 @@ test("connection must succeed before entering preparation; absent tab never send
   assert.ok(!failed.commandCapabilities.includes("preparation.approve"));
 });
 
+async function settleTabRecheck(service) {
+  for (let i = 0; i < 120 && service.jobs.size; i++) await delay(50);
+  await settled(service);
+}
+
+test("preparation closes an owned tab only after durable ACK and closure, then can reopen the saved conversation", async (t) => {
+  const f = fixture(t), ack = f.web.acknowledgeDelivery, resume = f.web.resume;
+  const closes = [], resumes = [];
+  f.web.acknowledgeDelivery = async () => { await ack(); return { bridgeOwnedPreparationTab:true }; };
+  f.web.closePreparationTab = async (target) => {
+    const persisted = JSON.parse(f.service.db.prepare("SELECT json FROM preparation_state WHERE id=1").get().json);
+    assert.equal(persisted.contexts[target.runId].lifecycle, "ABANDONED");
+    assert.equal(persisted.contexts[target.runId].deliveries[0].state, "ACKNOWLEDGED");
+    closes.push(target);
+    return { status:"CLOSED", tabId:target.tabId };
+  };
+  await f.start();
+  await settled(f.service);
+  const first = f.service.snapshot();
+  assert.deepEqual(closes, []);
+  await f.command("preparation.cancel");
+  assert.equal(closes[0].deliveryId, first.deliveries[0].deliveryId);
+  assert.equal(f.service.current.tabCleanup.status, "CLOSED");
+  f.web.resume = async (request) => { resumes.push(request); return resume(request); };
+  await f.start({ requestId:"reopen", conversationUrl:first.conversationUrl, reuseProjectConversation:true });
+  await settled(f.service);
+  assert.equal(resumes[0].openSavedConversation, true);
+  assert.equal(resumes[0].binding.conversationUrl, first.conversationUrl);
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+});
+
+for (const owned of [true, false]) {
+  test(`queued preparation cancellation follows only the saved ACK (owned tab: ${owned})`, async (t) => {
+    const f = fixture(t), acknowledge = f.web.acknowledgeDelivery, closes = [];
+    f.web.acknowledgeDelivery = async () => { await acknowledge(); return {bridgeOwnedPreparationTab:owned}; };
+    f.web.closePreparationTab = async (target) => {
+      const persisted = JSON.parse(f.service.db.prepare("SELECT json FROM preparation_state WHERE id=1").get().json);
+      const saved = persisted.contexts[target.runId];
+      assert.equal(saved.lifecycle, "ABANDONED");
+      assert.equal(saved.deliveries[0].processingState, "COMPLETE");
+      closes.push(target.deliveryId);
+      return {status:"CLOSED"};
+    };
+    f.ackFailure(true);
+    await f.start();
+    await settled(f.service);
+    const {sessionId, conversationId, conversationUrl, activeDeliveryId:deliveryId} = f.service.current.webSession;
+    const original = f.service.current.deliveries[0].response.rawText;
+    await f.command("preparation.cancel");
+    assert.equal(f.service.current.lifecycle, "ACTIVE");
+    assert.ok(f.service.current.deliveries[0].cancelRequestedAt);
+    assert.equal(f.service.current.webSession.activeDeliveryId, deliveryId);
+    assert.equal(closes.length, 0);
+    f.restart();
+    const input = {sessionId, conversationId, conversationUrl, deliveryId};
+    await assert.rejects(f.command("web.reconcile", {...input, deliveryId:"another-delivery"}), {code:"DELIVERY_RECOVERY_MISMATCH"});
+    f.observe({currentDeliveryId:"another-delivery"});
+    await assert.rejects(f.command("web.reconcile", input), {code:"COMPLETION_EVIDENCE_MISMATCH"});
+    assert.equal(f.service.current.lifecycle, "ACTIVE");
+    assert.equal(closes.length, 0);
+    f.observe({});
+    f.ackFailure(false);
+    await f.command("web.reconcile", input);
+    assert.equal(f.service.current.lifecycle, "ABANDONED");
+    assert.equal(f.service.current.deliveries[0].response.rawText, original);
+    assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+    assert.equal(f.prompts.length, 1);
+    assert.equal(f.runs.size, 0);
+    assert.deepEqual(closes, owned ? [deliveryId] : []);
+  });
+}
+
+test("a root document change during creation and load rechecks the tab and acknowledges the same delivery", async (t) => {
+  const f = fixture(t), resume = f.web.resume;
+  const bindings = [];
+  f.web.resume = async (input) => {
+    bindings.push(input);
+    if (bindings.length <= 2) throw Object.assign(new Error("initial document changed"), {
+      code:"WEB_DOCUMENT_CHANGED", details:{ flow:"ROOT_BOOTSTRAP_V2", stage:bindings.length === 1 ? "CREATE" : "LOAD" },
+    });
+    return resume(input);
+  };
+  const started = await f.start({ conversationUrl:"https://chatgpt.com/" });
+  await settleTabRecheck(f.service);
+  const prepared = f.service.snapshot();
+  assert.deepEqual(bindings.map(item => item.createNewConversation), [true, false, false]);
+  assert.deepEqual(bindings[1].binding, bindings[0].binding);
+  assert.equal(f.prompts.length, 1);
+  assert.equal(prepared.deliveries.length, 1);
+  assert.equal(prepared.deliveries[0].deliveryId, started.deliveries[0].deliveryId);
+  assert.equal(prepared.deliveries[0].tabRecheck.stage, "CREATE");
+  assert.equal(prepared.deliveries[0].tabRecheck.attempts, 2);
+  assert.equal(prepared.deliveries[0].state, "ACKNOWLEDGED");
+  assert.equal(prepared.lifecycle, "ACTIVE");
+  f.restart();
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+});
+
+for (const browserDispatchStarted of [false, true, undefined]) {
+  test(`document changes reported by the prompt retry only with explicit no-dispatch evidence (${browserDispatchStarted})`, async (t) => {
+    const f = fixture(t), resume = f.web.resume, submitTurn = f.web.submitTurn;
+    const bindings = [], deliveries = [];
+    f.web.resume = async (input) => { bindings.push(input); return resume(input); };
+    f.web.submitTurn = async (input) => {
+      deliveries.push(input.turnId);
+      if (deliveries.length === 1) return { completion:Promise.reject(Object.assign(new Error("document changed"), {
+        code:"WEB_DOCUMENT_CHANGED", details:{ browserDispatchStarted },
+      })) };
+      return submitTurn(input);
+    };
+    await f.start({ conversationUrl:"https://chatgpt.com/" });
+    await settleTabRecheck(f.service);
+    const [delivery] = f.service.current.deliveries;
+    if (browserDispatchStarted === false) {
+      assert.deepEqual(deliveries, [delivery.deliveryId, delivery.deliveryId]);
+      assert.equal(bindings[1].binding.conversationUrl, null);
+      assert.equal(bindings[1].binding.documentId, null);
+      assert.equal(bindings[1].createNewConversation, false);
+      assert.equal(delivery.state, "ACKNOWLEDGED");
+      assert.equal(f.prompts.length, 1);
+    } else {
+      assert.equal(bindings.length, 1);
+      assert.equal(deliveries.length, 1);
+      assert.equal(delivery.state, "RECOVERY_REQUIRED");
+      assert.equal(delivery.tabRecheck, undefined);
+    }
+  });
+}
+
+test("exhausted tab rechecks preserve the unsent delivery for an explicit continuation", async (t) => {
+  const f = fixture(t), creation = [], resume = f.web.resume;
+  f.web.resume = async ({ createNewConversation }) => {
+    creation.push(createNewConversation);
+    throw Object.assign(new Error("document changed"), { code:"WEB_DOCUMENT_CHANGED" });
+  };
+  await f.start({ conversationUrl:"https://chatgpt.com/" });
+  await settleTabRecheck(f.service);
+  assert.deepEqual(creation, [true, false, false, false]);
+  assert.equal(f.prompts.length, 0);
+  assert.equal(f.service.current.state, "WEB_BLOCKED");
+  assert.equal(f.service.current.deliveries[0].unsent, true);
+  const { sessionId, conversationId, conversationUrl, activeDeliveryId } = f.service.current.webSession;
+  f.web.resume = async (input) => { creation.push(input.createNewConversation); return resume(input); };
+  await f.command("web.reconcile", { sessionId, conversationId, conversationUrl, deliveryId:activeDeliveryId });
+  await settled(f.service);
+  assert.deepEqual(creation, [true, false, false, false, false]);
+  assert.equal(f.service.current.deliveries[0].deliveryId, activeDeliveryId);
+  assert.equal(f.service.current.deliveries[0].state, "ACKNOWLEDGED");
+  assert.equal(f.prompts.length, 1);
+});
+
 test("composer failure stays visible across restart and requires local cancellation before a new start", async (t) => {
   const f = fixture(t), errors = [];
   t.mock.method(console, "error", (...args) => errors.push(args));
@@ -513,6 +650,10 @@ test("composer failure stays visible across restart and requires local cancellat
   assert.equal(f.service.current.preparationId, before.preparationId);
   f.service.available = () => false;
   assert.ok(f.service.capabilities().includes("preparation.cancel"));
+  await assert.rejects(f.service.execute("preparation.cancel", {
+    requestId:"stale-cancel", preparationId:before.preparationId, expectedVersion:f.service.current.version - 1,
+  }), {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.equal(f.service.current.webSession.activeDeliveryId, deliveryId);
   await f.command("preparation.cancel");
   assert.equal(f.service.current.lifecycle, "ABANDONED");
   assert.equal(f.service.current.webSession.activeDeliveryId, null);
@@ -602,8 +743,12 @@ test("result projection never attaches an unrelated preparation or its commands"
   assert.equal(selected.workflow.stage, "RESULT");
   assert.equal(selected.workflow.preparationId, null);
   assert.equal(selected.preparation, null);
+  assert.deepEqual(selected.activePreparation, {
+    preparationId: f.service.current.preparationId, version: f.service.current.version,
+  });
   assert.deepEqual(selected.commandCapabilities, ["state.get"]);
   await f.command("preparation.cancel");
+  assert.equal((await f.service.project(snapshot, { runId: run.runId })).activePreparation, null);
   const automatic = await f.service.project(snapshot);
   assert.equal(automatic.workflow.preparationId, null);
   assert.equal(automatic.preparation, null);
@@ -675,12 +820,42 @@ test("a new preparation never inspects or recovers another Web session's deliver
     "every inspection must belong to the new preparation session");
   assert.equal(f.service.current.state, "DISCUSSING");
 });
+test("target is checked before approval and failed starts can close with the agreement intact", async (t) => {
+  const f = fixture(t); await f.start(); await settled(f.service);
+  await f.command("preparation.reply", { content:"채팅" }); await settled(f.service);
+  const before = f.service.snapshot();
+  f.service.checkTarget = () => { throw Object.assign(new Error("dirty"), { code:"TARGET_REPOSITORY_DIRTY" }); };
+  await assert.rejects(f.command("preparation.approve"), { code:"TARGET_REPOSITORY_DIRTY" });
+  assert.deepEqual(f.service.snapshot(), before);
+  assert.equal(f.runs.size, 0);
+  f.service.checkTarget = () => {};
+  f.service.approveRun = async () => { throw new Error("start failed"); };
+  await assert.rejects(f.command("preparation.approve"), /start failed/u);
+  f.restart();
+  const failed = f.service.snapshot();
+  assert.equal(failed.state, "FAILED");
+  assert.equal(failed.agreement.status, "APPROVED");
+  f.runs.set(failed.reservedRunId, { runId:failed.reservedRunId });
+  await assert.rejects(f.command("preparation.cancel"), { code:"PREPARATION_RUN_EXISTS" });
+  f.runs.delete(failed.reservedRunId);
+  const closed = await f.command("preparation.cancel");
+  assert.equal(closed.lifecycle, "ABANDONED");
+  assert.deepEqual(closed.agreement, failed.agreement);
+  assert.deepEqual(closed.deliveries, failed.deliveries);
+  assert.ok(f.service.capabilities().includes("preparation.start"));
+});
+
 test("refresh/restart restores same preparation and receipt; approval retry yields one run", async (t) => {
   const f = fixture(t); await f.start(); await settled(f.service);
   await f.command("preparation.reply", { content: "채팅" }); await settled(f.service);
   const before = f.service.snapshot(); f.restart();
   assert.deepEqual(f.service.snapshot(), before);
-  const input = { requestId: "approve", preparationId: before.preparationId };
+  const input = { requestId: "approve", preparationId: before.preparationId, expectedVersion:before.version };
+  await assert.rejects(f.service.execute("preparation.approve", {
+    ...input, requestId:"stale-approve", expectedVersion:before.version - 1,
+  }), {code:"PREPARATION_VERSION_CONFLICT"});
+  assert.deepEqual(f.service.snapshot(), before);
+  assert.equal(f.runs.size, 0);
   const first = await f.service.execute("preparation.approve", input);
   const second = await f.service.execute("preparation.approve", input);
   assert.deepEqual(first, second); assert.equal(f.runs.size, 1);
@@ -764,220 +939,4 @@ test("failed reconcile diagnostics survive receipt persistence and restart", asy
   assert.deepEqual(receipt.error.diagnostics, diagnostics);
   assert.deepEqual({ code:receipt.error.code, message:receipt.error.message },
     { code:"WEB_EXTENSION_ERROR", message:"Web operation failed." });
-});
-
-async function failedRootFixture(t,{plain=false,wrongRun=false,relocated=false}={}) {
-  const f=fixture(t);let submissions=0,acknowledged=false;
-  f.web.submitTurn=async()=>{submissions++;throw Object.assign(new Error('temporary ID changed'),{
-    code:'MANUAL_INTERVENTION_DETECTED',details:{browserDispatchStarted:true,
-      observedUrl:'https://chatgpt.com/c/recovered',observedId:'recovered'}});};
-  await f.service.execute('preparation.start',{requestId:'root',objective:'original request',targetRoot:f.root,conversationUrl:'https://chatgpt.com/'});
-  await settled(f.service);
-  const c=f.service.current,s=c.webSession,d=c.deliveries[0];
-  const binding={...s,sessionId:s.sessionId,runId:wrongRun?'other':c.preparationId,bindingStatus:'BOUND',
-    conversationUrl:'https://chatgpt.com/c/recovered',conversationId:'recovered',documentId:'new-document',
-    tabId:relocated?8:s.tabId,windowId:relocated?4:s.windowId,
-    lastObservedUserMessageId:'u1',lastObservedAssistantMessageId:'a1'};
-  const response={turnId:d.deliveryId,binding,rawText:plain?'방법 안내인가요, 기능 구현인가요?':
-    '<controller_packet>\n'+JSON.stringify({type:'REQUIREMENTS_PROPOSAL',summary:'범위 확인',questions:['방법 안내인가요?'],items:[]})+'\n</controller_packet>',
-    confidence:'CONFIRMED_BY_UI_STATE',evidence:{userMessageId:'u1',assistantMessageId:'a1',
-      conversationUrl:binding.conversationUrl,conversationId:binding.conversationId,documentId:binding.documentId,
-      frameId:binding.frameId,responseAssociation:'DIRECT_DOM_ORDER'},
-    trace:{requestId:d.deliveryId,actionId:d.deliveryId,bindingId:`${s.sessionId}:${c.preparationId}`,
-      tabId:binding.tabId,documentId:'new-document',frameId:0,result:'success'}};
-  const options=[];
-  f.web.inspect=async()=>({binding});
-  f.web.inspectDelivery=async o=>{if(o)options.push(o);return {currentDeliveryId:acknowledged?null:d.deliveryId,
-    sessionId:s.sessionId,runId:c.preparationId,conversationUrl:binding.conversationUrl,conversationId:binding.conversationId,
-    observedConversationUrl:binding.conversationUrl,tabId:binding.tabId,documentId:binding.documentId,
-    observedDocumentId:binding.documentId,frameId:binding.frameId,pageReachable:true,generating:false,pageBusy:false,extensionBusy:false,
-    lastObservedUserMessageId:'u1',lastObservedAssistantMessageId:'a1',completedDelivery:response};};
-  f.web.acknowledgeDelivery=async()=>{acknowledged=true;};
-  return {...f,get service(){return f.service;},identity:{sessionId:s.sessionId,conversationId:null,conversationUrl:'https://chatgpt.com/',deliveryId:d.deliveryId},
-    options,submissions:()=>submissions,acknowledged:()=>acknowledged};
-}
-
-test('explicit recovery imports the original root response and uses normal validation and ACK without resending',async t=>{
-  const f=await failedRootFixture(t);
-  assert.ok(f.service.capabilities().includes('web.reconcile'));
-  await f.command('web.reconcile',f.identity);
-  assert.equal(f.submissions(),1);assert.equal(f.acknowledged(),true);
-  assert.equal(f.service.current.state,'DISCUSSING');
-  assert.equal(f.service.current.deliveries[0].state,'ACKNOWLEDGED');
-  assert.equal(f.service.current.webSession.conversationId,'recovered');
-  assert.equal(f.options[0].recoverSubmitted.currentDeliveryId,f.identity.deliveryId);
-  assert.equal(f.runs.size,0);
-});
-
-test('recovered plain response is preserved but cannot bypass the existing proposal format contract',async t=>{
-  const f=await failedRootFixture(t,{plain:true});
-  await assert.rejects(f.command('web.reconcile',f.identity),{code:'INVALID_AGREEMENT'});
-  assert.equal(f.submissions(),1);assert.equal(f.acknowledged(),false);
-  assert.equal(f.service.current.deliveries[0].response.rawText,'방법 안내인가요, 기능 구현인가요?');
-  assert.equal(f.service.current.deliveries[0].validation.status,'CONFIRMED');
-  assert.equal(f.service.current.deliveries[0].validation.format,'INVALID');
-  f.restart();assert.equal(f.service.current.deliveries[0].response.rawText,'방법 안내인가요, 기능 구현인가요?');
-});
-
-test('recovery rejects another run before changing the durable root binding',async t=>{
-  const f=await failedRootFixture(t,{wrongRun:true});
-  await assert.rejects(f.command('web.reconcile',f.identity),{code:'DELIVERY_RECOVERY_MISMATCH'});
-  assert.equal(f.service.current.webSession.conversationId,null);
-  assert.equal(f.service.current.deliveries[0].response,null);
-  assert.equal(f.submissions(),1);assert.equal(f.acknowledged(),false);
-});
-test("preparation commands no longer require a version and request IDs remain idempotent", async (t) => {
-  const f = fixture(t); await f.start(); await settled(f.service);
-  await assert.rejects(f.service.execute("preparation.start", { requestId: "start", objective: "different" }), /different command/);
-});
-
-for (const [label, observation] of Object.entries({
-  run: { runId: "other" }, conversation: { conversationId: "other" },
-  navigated: { observedConversationUrl: "https://chatgpt.com/c/other" },
-  generating: { generating: true }, worker: { extensionBusy: true },
-  response: { lastObservedAssistantMessageId: "other" },
-})) {
-  test(`ACK cannot settle delivery after ${label} evidence changes`, async (t) => {
-    const f = fixture(t); f.afterAck(observation); await f.start(); await settled(f.service);
-    assert.equal(f.service.current.state, "RECOVERY_REQUIRED");
-    assert.equal(f.service.current.deliveries[0].state, "RESPONSE_COMPLETED");
-    assert.ok(f.service.current.webSession.activeDeliveryId);
-    assert.equal(f.service.current.discussion.length, 1);
-  });
-}
-
-test("inspection never offers stop without an active delivery", async (t) => {
-  const f = fixture(t); await f.start(); await settled(f.service);
-  const session = f.service.current.webSession;
-  f.observe({ generating: true, activeRequestId: null });
-  await f.command("web.inspect", { sessionId: session.sessionId, conversationId: session.conversationId,
-    conversationUrl: session.conversationUrl, deliveryId: null });
-  assert.equal(f.service.current.diagnostics.canStop, false);
-  assert.equal(f.service.capabilities().includes("web.stop"), false);
-});
-
-for (const mismatch of [{ conversationId: "other" }, { deliveryId: "other" }]) {
-  test(`stop rejects mismatched ${Object.keys(mismatch)[0]} without dispatch`, async (t) => {
-    const f = fixture(t); f.ackFailure(true); await f.start(); await settled(f.service);
-    const session = f.service.current.webSession;
-    f.observe({ generating: true, activeRequestId: session.activeDeliveryId });
-    const identity = { sessionId: session.sessionId, conversationId: session.conversationId,
-      conversationUrl: session.conversationUrl, deliveryId: session.activeDeliveryId };
-    await f.command("web.inspect", identity);
-    assert.equal(f.service.capabilities().includes("web.stop"), true);
-    await assert.rejects(f.command("web.stop", { ...identity, ...mismatch }), { code: "DELIVERY_RECOVERY_MISMATCH" });
-    assert.equal(f.service.current.webSession.activeDeliveryId, session.activeDeliveryId);
-    assert.equal(f.calls.length, 1);
-  });
-}
-
-function failRecoveryWrite(service,{rollbackFails=false}={}) {
-  const real=service.db; let failed=false;
-  service.db=new Proxy(real,{
-    get(target,key) {
-      if(key==='prepare') return sql=>{
-        const statement=target.prepare(sql);
-        if(!sql.startsWith('INSERT INTO preparation_state')) return statement;
-        return {run:json=>{
-          const data=JSON.parse(json),context=data.contexts[data.currentId];
-          if(!failed && context?.deliveries.some(item=>item.response)) {
-            failed=true; throw new Error('injected recovery write failure');
-          }
-          return statement.run(json);
-        }};
-      };
-      if(key==='exec') return sql=>{
-        const result=target.exec(sql);
-        if(rollbackFails && failed && sql==='ROLLBACK') throw new Error('injected rollback failure');
-        return result;
-      };
-      const value=Reflect.get(target,key,target);
-      return typeof value==='function'?value.bind(target):value;
-    },
-  });
-  return {real,restore(){service.db=real;}};
-}
-
-test('failed recovery write preserves memory and receipt context, then rereads the same delivery',async t=>{
-  const f=await failedRootFixture(t,{plain:true,relocated:true});
-  const before=structuredClone(f.service.current),injected=failRecoveryWrite(f.service);
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'write-failed'}),/injected recovery write failure/);
-  assert.deepEqual(f.service.current,before);
-  const disk=JSON.parse(injected.real.prepare('SELECT json FROM preparation_state WHERE id=1').get().json);
-  assert.deepEqual(disk.contexts[before.preparationId],before);
-  assert.equal(disk.receipts['write-failed'].status,'FAILED');
-  injected.restore();
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'read-again'}),{code:'INVALID_AGREEMENT'});
-  assert.equal(f.submissions(),1); assert.equal(f.acknowledged(),false);
-  assert.equal(f.service.current.webSession.tabId,8);
-  assert.equal(f.service.current.deliveries[0].deliveryId,f.identity.deliveryId);
-  const response=structuredClone(f.service.current.deliveries[0].response);
-  assert.ok(response.rawText);
-  f.restart();
-  assert.equal(f.service.current.webSession.tabId,8);
-  assert.deepEqual(f.service.current.deliveries[0].response,response);
-});
-
-test('lost extension response is reread with a new request ID without resubmission',async t=>{
-  const f=await failedRootFixture(t,{plain:true,relocated:true});
-  const inspect=f.web.inspectDelivery,before=structuredClone(f.service.current);
-  let captured;
-  f.web.inspectDelivery=async options=>{
-    captured=await inspect(options);
-    throw Object.assign(new Error('lost response'),{code:'WEB_RESPONSE_TIMEOUT'});
-  };
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'lost'}),{code:'WEB_RESPONSE_TIMEOUT'});
-  assert.deepEqual(f.service.current,before);
-  f.web.inspectDelivery=async()=>structuredClone(captured);
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'reread'}),{code:'INVALID_AGREEMENT'});
-  assert.equal(f.submissions(),1);
-  assert.equal(f.service.current.deliveries[0].response.turnId,f.identity.deliveryId);
-  assert.equal(f.service.current.webSession.tabId,8);
-});
-
-test('unknown recovery transaction outcome blocks writes without a false failed receipt',async t=>{
-  const f=await failedRootFixture(t,{plain:true,relocated:true});
-  const before=structuredClone(f.service.current),injected=failRecoveryWrite(f.service,{rollbackFails:true});
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'uncertain'}),{code:'RECOVERY_PERSISTENCE_UNCERTAIN'});
-  assert.deepEqual(f.service.current,before); assert.equal(f.service.closed,true);
-  const disk=JSON.parse(injected.real.prepare('SELECT json FROM preparation_state WHERE id=1').get().json);
-  assert.equal(disk.receipts.uncertain.status,'PROCESSING');
-  assert.deepEqual(disk.contexts[before.preparationId],before);
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'blocked'}),/Server is closing/);
-  injected.restore();
-});
-
-test('context changes during inspection are not overwritten by recovery',async t=>{
-  const f=await failedRootFixture(t,{plain:true,relocated:true}),inspect=f.web.inspectDelivery;
-  f.web.inspectDelivery=async options=>{
-    const result=await inspect(options);
-    f.service.current.version++; f.service.current.objective='changed while inspecting';
-    return result;
-  };
-  await assert.rejects(f.command('web.reconcile',f.identity),{code:'DELIVERY_RECOVERY_MISMATCH'});
-  assert.equal(f.service.current.objective,'changed while inspecting');
-  assert.equal(f.service.current.webSession.conversationId,null);
-  assert.equal(f.service.current.deliveries[0].response,null);
-});
-
-test('committed recovery survives a final receipt write failure without replaying the request',async t=>{
-  const f=await failedRootFixture(t,{relocated:true});
-  const saveReceipt=f.service.saveReceipt.bind(f.service);
-  f.service.saveReceipt=async(requestId,receipt)=>{
-    if(requestId==='receipt-write-failed' && receipt.status==='COMPLETED') {
-      throw new Error('injected final receipt failure');
-    }
-    return saveReceipt(requestId,receipt);
-  };
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'receipt-write-failed'}),/injected final receipt failure/);
-  assert.equal(f.acknowledged(),true);assert.equal(f.submissions(),1);
-  const response=structuredClone(f.service.current.deliveries[0].response);
-  assert.ok(response.rawText);
-  assert.equal(f.service.current.webSession.tabId,8);
-  f.restart();
-  assert.equal(f.service.current.webSession.tabId,8);
-  assert.deepEqual(f.service.current.deliveries[0].response,response);
-  assert.equal(f.service.data.receipts['receipt-write-failed'].status,'PROCESSING');
-  await assert.rejects(f.command('web.reconcile',{...f.identity,requestId:'receipt-write-failed'}),{code:'UNKNOWN_RESULT'});
-  assert.equal(f.submissions(),1);
 });

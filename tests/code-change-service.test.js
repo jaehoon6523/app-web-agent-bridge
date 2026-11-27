@@ -1,8 +1,81 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { setupAudit, assertionsFor } from "./helpers/audit-fixtures.js";
+import { dashboard as dashboardUi } from "./helpers/dashboard-ui.mjs";
+import { workflowForRun } from "../src/orchestration/preparation-service.js";
+import { CodeChangeService } from "../src/orchestration/code-change-service.js";
+import { readSettledRoleAssessments } from "../src/orchestration/review-response-recovery.js";
+
+test("a timed-out audit preserves its candidate without holding the next start", () => {
+  const oldConversation = "https://chatgpt.com/c/old";
+  const run = {
+    runId:"old", stage:"RECOVERY_REQUIRED", terminationReason:"TOTAL_TIME_LIMIT",
+    workerTurns:[{ status:"completed" }], candidate:{ patchHash:"patch" },
+    capture:{ artifact:{ sha256:"patch" } }, application:null,
+    conversationBindings:[{ activeDeliveryId:"old-review", conversationUrl:oldConversation }],
+  };
+  const service = Object.assign(Object.create(CodeChangeService.prototype), {
+    jobs:new Map(), workers:new Map(), list:() => [run],
+    reviewerWebAdapters:() => [],
+  });
+  assert.equal(service.busy(), false);
+  assert.equal(service.pendingReviewFor("https://chatgpt.com/c/new"), false);
+  assert.equal(service.pendingReviewFor(oldConversation), true);
+  run.stage = "CANCELLED";
+  assert.equal(service.pendingReviewFor(oldConversation), true);
+  run.stage = "RECOVERY_REQUIRED";
+  assert.equal(run.conversationBindings[0].activeDeliveryId, "old-review");
+  service.jobs.set(run.runId, {});
+  assert.equal(service.busy(), true);
+  service.jobs.clear();
+  service.reviewerWebAdapters = () => [{ activeTurnId:"old-review" }];
+  assert.equal(service.busy(), true);
+  service.reviewerWebAdapters = () => [];
+  assert.equal(service.blocksNewRun({ ...run, candidate:null }), true);
+  assert.equal(service.blocksNewRun({ ...run, application:{ status:"UNCERTAIN" } }), true);
+  assert.equal(service.blocksNewRun({ ...run, workerTurns:[{ status:"failed" }] }), true);
+});
+
+test("an applied-pending candidate permits preparation but still blocks approval", () => {
+  const run = { runId:"pending", stage:"AWAITING_APPLY", candidate:{patchHash:"patch"} };
+  const service = Object.assign(Object.create(CodeChangeService.prototype), {
+    jobs:new Map(), workers:new Map(), list:() => [run], reviewerWebAdapters:() => [],
+  });
+  assert.equal(service.busy({ preparationOnly:true }), false);
+  assert.equal(service.busy(), true);
+  service.jobs.set(run.runId, {});
+  assert.equal(service.busy({ preparationOnly:true }), true);
+});
+
+test("a confirmed failed worker only releases approval for an independent repository", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-independent-"));
+  t.after(() => fs.rmSync(root, { recursive:true, force:true }));
+  const prior = path.join(root, "prior"), next = path.join(root, "next");
+  const workspace = path.join(root, "workspace"), linked = path.join(root, "linked");
+  for (const repo of [prior, next, workspace, linked]) fs.mkdirSync(repo);
+  for (const repo of [prior, next, workspace]) fs.mkdirSync(path.join(repo, ".git"));
+  fs.writeFileSync(path.join(linked, ".git"), "gitdir: ../prior/.git/worktrees/linked\n");
+  const event = { type:"WORKER_RUNTIME_EVENT", payload:{ runtimeType:"TURN_FAILED", sourceMethod:"turn/completed", turnId:"failed" } };
+  const run = {
+    runId:"prior", stage:"RECOVERY_REQUIRED", terminationReason:"EXECUTION_UNCERTAIN",
+    targetRoot:prior, workspaceRoot:workspace, workerTurnId:"failed", events:[event],
+    workerTurns:[{ turnId:"failed", status:"failed", finishedAt:"2026-11-23T00:00:00Z" }],
+  };
+  const service = Object.assign(Object.create(CodeChangeService.prototype), {
+    jobs:new Map(), workers:new Map(), list:() => [run], reviewerWebAdapters:() => [],
+  });
+  assert.equal(service.busy(), true);
+  for (const targetRoot of [prior, workspace, linked]) assert.equal(service.busy({ targetRoot }), true);
+  assert.equal(service.busy({ targetRoot:next }), false);
+  assert.equal(service.blocksNewRun({ ...run, events:[] }, next), true);
+  assert.equal(service.blocksNewRun({ ...run, conversationBindings:[{activeDeliveryId:"pending"}] }, next), true);
+  assert.equal(service.blocksNewRun({ ...run, application:{status:"UNCERTAIN"} }, next), true);
+  service.workers.set(run.runId, {});
+  assert.equal(service.busy({ targetRoot:next }), true);
+});
 
 test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately apply exactly the reviewed candidate",async(t)=>{
   const f=setupAudit(t,{reviewVerdicts:["UNSATISFIED","SATISFIED"]}),run=await f.run();
@@ -27,12 +100,45 @@ test("VAL-01/13/16: implement, find, fix, re-audit, persist, and separately appl
   assert.equal(run.findings[0].status,"RESOLVED");assert.equal(f.briefs[1].unresolvedFindings[0].findingId,run.findings[0].findingId);
   assert.ok(run.evidence.some((e)=>e.candidateId===run.candidate.candidateId
     && e.kind==="CODE_SNAPSHOT"&&e.result?.path==="file.txt"));
+  const state = await f.dashboard.snapshot(run.runId);
+  const ui = await dashboardUi({ ...state, workflow:workflowForRun(state.run) });
+  ui.elements.get("showAudit").listeners.click();
+  assert.equal(ui.elements.get("auditPanel").hidden, false);
+  assert.equal(ui.elements.get("candidateHistoryEmpty").hidden, true);
+  const [latest, previous] = ui.elements.get("candidateHistoryList").children;
+  assert.equal(latest.children[0].textContent, "2회차 후보 · 현재 후보 · 감사 통과");
+  assert.equal(latest.children[1].textContent, run.candidate.candidateId);
+  assert.equal(latest.children[2].textContent, "변경 파일 1개");
+  assert.equal(previous.children[0].textContent, "1회차 후보 · 수정 필요");
+  assert.equal(previous.children[1].textContent, run.candidates[0].candidateId);
   assert.equal(fs.readFileSync(path.join(f.target,"file.txt"),"utf8"),"base\n");
   await f.reopen(); const current=f.service.get(run.runId);const payload=f.applyPayload(current);
   await assert.rejects(f.dashboard.execute({type:"code.apply",payload:{...payload,candidateId:"wrong"}}),/candidate/);
   const applied=await f.dashboard.execute({type:"code.apply",payload});assert.equal(applied.stage,"APPLIED");
   assert.equal(fs.readFileSync(path.join(f.target,"file.txt"),"utf8"),"revision 2\n");
   await assert.rejects(f.dashboard.execute({type:"code.apply",payload}),/changed/);
+});
+
+test("real audit workflow commits PASS and both response ACKs before sending tab closures",async(t)=>{
+  const f = setupAudit(t,{reviewVerdicts:["SATISFIED"]});
+  const web = f.options.webSession, acknowledge = web.acknowledgeDelivery;
+  const closures = [];
+  web.acknowledgeDelivery = async function(input) {
+    return { ...await acknowledge.call(this,input), bridgeOwnedTab:true };
+  };
+  web.closePreparationTab = async target => {
+    const run = f.service.get(target.runId);
+    assert.equal(run.stage,"AWAITING_APPLY");
+    assert.ok(run.webDeliveryReceipts.every(receipt => receipt.state === "ACKNOWLEDGED"));
+    assert.ok(run.webDeliveryReceipts.find(receipt => receipt.deliveryId === target.deliveryId)?.responseRef.sha256);
+    closures.push(target.sessionId);
+    return {status:"CLOSED",tabId:target.tabId};
+  };
+  const run = await f.run();
+  assert.equal(run.stage,"AWAITING_APPLY");
+  assert.deepEqual(closures,run.conversationBindings.map(binding => binding.sessionId));
+  assert.equal(run.reviewerTabCleanup.JUDGE.status,"CLOSED");
+  assert.equal(run.reviewerTabCleanup.CRITIC.status,"CLOSED");
 });
 
 test("apply authority rejects a PASS whose recorded reviewer independence contract is weakened",async(t)=>{
@@ -55,12 +161,90 @@ test("VAL-14/21: restart reconciles APPLYING and never redispatches active work"
   await f.reopen();assert.equal(f.service.get(run.runId).stage,"APPLIED");assert.equal(f.starts(),2);
   f.service.update(run.runId,{stage:"WORKER_RUNNING"});await f.reopen();assert.equal(f.service.get(run.runId).stage,"RECOVERY_REQUIRED");assert.equal(f.starts(),2);
 });
-test("VAL-07: additional code and evidence retrieval stays on the same candidate",async(t)=>{
-  const f=setupAudit(t,{review(data,n){const c=data.context;if(n===1)return{type:"EVIDENCE_REQUEST",runId:c.runId,requestId:c.requestId,candidateId:c.candidateId,requirementsRef:c.requirementsRef,requests:[{requestItemId:"code",kind:"CODE",path:"file.txt",purpose:"Check surrounding code"}]};return assertionsFor(c);}});
+test("VAL-07: requested code ranges remain available to later reviews on the same candidate",async(t)=>{
+  const f=setupAudit(t,{review(data,n){const c=data.context;if(n===1)return{type:"EVIDENCE_REQUEST",runId:c.runId,requestId:c.requestId,candidateId:c.candidateId,requirementsRef:c.requirementsRef,requests:[{requestItemId:"code",kind:"CODE",path:"file.txt",startLine:1,endLine:2,purpose:"Check surrounding code"}]};return assertionsFor(c);}});
   const run=await f.run();assert.equal(run.stage,"AWAITING_APPLY",run.error);assert.equal(f.starts(),1);
   assert.equal(run.candidates.length,1);
   assert.ok(f.prompts[1].evidence.some((e)=>e.kind==="CODE_SNAPSHOT"),"manifest restart must expose the supplemented evidence");
+  assert.equal(f.reviewPrompts[1].evidenceSupplements[0].results[0].content,"revision 1\n");
+  assert.equal(f.reviewPrompts[1].evidenceSupplements[0].results[0].startLine,1);
   assert.ok(run.evidence.some((e)=>e.kind==="CODE_SNAPSHOT"));
+});
+
+test("Critic receives Controller-collected evidence on the frozen candidate before an independent report", async t => {
+  let original;
+  const f = setupAudit(t, { review(data) {
+    const context = data.context;
+    if (data.role !== "CRITIC" || original) return assertionsFor(context);
+    original = {requestId:context.requestId, candidateId:context.candidateId, hash:data.candidateDiffHash,
+      manifestHash:context.auditManifestHash};
+    return {type:"EVIDENCE_REQUEST", runId:context.runId, requestId:context.requestId, candidateId:context.candidateId,
+      requirementsRef:context.requirementsRef, requests:[{requestItemId:"critic-code", kind:"CODE", path:"file.txt",
+        startLine:1, endLine:2, purpose:"Verify the changed file"}]};
+  }});
+  const run = await f.run();
+  assert.equal(run.stage, "AWAITING_APPLY", run.error);
+  assert.equal(f.starts(), 1);
+  assert.equal(run.candidates.length, 1);
+  assert.equal(run.candidate.candidateId, original.candidateId);
+  assert.equal(run.candidate.patchHash, original.hash);
+  const result = run.supplementResults.find(item => item.requestId === original.requestId);
+  assert.equal(result.role, "CRITIC");
+  assert.equal(result.candidateId, original.candidateId);
+  assert.equal(result.auditManifestHash, original.manifestHash);
+  assert.equal(result.results[0].requestItemId, "critic-code");
+  const continuation = f.reviewPrompts.find(item => item.role === "CRITIC"
+    && item.evidenceSupplements.some(supplement => supplement.requestId === original.requestId));
+  assert.notEqual(continuation.context.auditManifestHash, original.manifestHash);
+  assert.equal(continuation.candidateDiffHash, original.hash);
+  const projected = f.service.snapshot(run.runId, {}).run;
+  const report = projected.requests.find(item => item.requestId === continuation.context.requestId);
+  assert.equal(report.status, "PROCESSED");
+  assert.equal(report.role, "CRITIC");
+  assert.equal(report.report, undefined);
+  f.service.artifactStore.verify(report.reportRef.sha256);
+});
+
+test("settled role reads preserve state and refuse unverified reports", async t => {
+  const f = setupAudit(t, {review(data) {
+    return assertionsFor(data.context, data.role === "CRITIC" ? "UNDETERMINED" : "SATISFIED");
+  }});
+  const run = await f.run();
+  const review = run.reviews.at(-1);
+  assert.equal(run.stage,"HOLD",run.error);
+  const historyCount = f.service.store.history(run.runId).length;
+  const before = f.service.snapshot(run.runId,{});
+  const result = readSettledRoleAssessments(f.service,run,review);
+  assert.equal(result.status,"AVAILABLE");
+  assert.deepEqual(result.roles.map(item=>[item.role,item.assessments[0].verdict]),
+    [["JUDGE","SATISFIED"],["CRITIC","UNDETERMINED"]]);
+  assert.deepEqual(readSettledRoleAssessments(f.service,run,review),result);
+  assert.deepEqual(f.service.get(run.runId),run);
+  assert.equal(f.service.store.history(run.runId).length,historyCount);
+  assert.deepEqual(f.service.snapshot(run.runId,{}).commandCapabilities,before.commandCapabilities);
+  assert.equal(readSettledRoleAssessments(f.service,{...run,candidate:{...run.candidate,candidateId:"other"}},review).status,"UNAVAILABLE");
+  const report = run.requests.find(item=>item.role==="CRITIC" && item.phase==="ROUND1" && item.status==="PROCESSED");
+  fs.writeFileSync(path.join(f.service.artifactStore.rootDirectory,report.reportRef.sha256.slice(7)),"damaged report");
+  assert.equal(readSettledRoleAssessments(f.service,run,review).status,"UNAVAILABLE");
+  assert.equal(f.service.store.history(run.runId).length,historyCount);
+});
+
+test("an evidence-only HOLD with acknowledged reviews can retry without changing its candidate",async(t)=>{
+  const f=setupAudit(t,{review(data,n){return assertionsFor(data.context,n<=4?"UNDETERMINED":"SATISFIED");}});
+  const held=await f.run();
+  assert.equal(held.stage,"HOLD");assert.equal(held.terminationReason,null);
+  assert.equal(held.reviews.at(-1).decision,"HOLD");
+  assert.ok(f.service.snapshot(held.runId,{}).commandCapabilities.includes("code.review.retry"));
+  const {candidateId,patchHash}=held.candidate;
+  const accepted=await f.dashboard.executeDurable({type:"code.review.retry",requestId:"retry-undetermined-review",
+    payload:{runId:held.runId,expectedVersion:held.version}});
+  assert.equal(accepted.candidateId,candidateId);
+  await f.service.jobs.get(held.runId);
+  const reviewed=f.service.get(held.runId);
+  assert.equal(reviewed.stage,"AWAITING_APPLY",reviewed.error);
+  assert.equal(reviewed.candidate.candidateId,candidateId);
+  assert.equal(reviewed.candidate.patchHash,patchHash);
+  assert.equal(f.starts(),1);
 });
 test("VAL-04: malformed report is repaired without starting another worker",async(t)=>{
   const f=setupAudit(t,{review(data,n){return n===1?{...assertionsFor(data.context),assessments:[]}:assertionsFor(data.context);}});
@@ -102,20 +286,52 @@ test("active code Worker accepts bounded natural-language intervention and rejec
       })};
     },
   })});
+  // This fixture holds the turn open at a test-controlled boundary. Worker timeout has its own real-clock test.
+  t.mock.method(f.service, "waitForWorkerCompletion", (_runId, _worker, handle) => handle.completion);
   const started=await f.start();
   for(let i=0;i<100&&!f.service.get(started.runId)?.workerTurnId;i++) await new Promise((resolve)=>setTimeout(resolve,1));
   let current=f.service.get(started.runId);
   assert.equal(current.stage,"WORKER_RUNNING");
   assert.equal(current.workerTurnId,"worker-turn-live");
-  assert.ok(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.worker.intervene"));
+  current = f.service.update(current.runId, {events:[...current.events, {
+    eventId:"late-worker-telemetry", type:"WORKER_RUNTIME_EVENT", createdAt:new Date().toISOString(),
+    payload:{runtimeType:"TURN_COMPLETED",turnId:"previous-worker-turn"},
+  }]});
 
   await assert.rejects(f.dashboard.executeDurable({type:"code.worker.intervene",requestId:"scope-change",
     payload:{runId:current.runId,expectedVersion:current.version,turnId:current.workerTurnId,kind:"REQUIREMENTS_CHANGE",text:"Add another feature"}}),
   /new preparation/);
   current=f.service.get(started.runId);
-  const accepted=await f.dashboard.executeDurable({type:"code.worker.intervene",requestId:"guidance",
-    payload:{runId:current.runId,expectedVersion:current.version,turnId:current.workerTurnId,kind:"GUIDANCE",text:"Reuse the existing helper if it already fits."}});
-  assert.equal(accepted.status,"DELIVERED");
+  const read = async () => {
+    const state = await f.dashboard.snapshot(current.runId);
+    return {...state, workflow:workflowForRun(state.run)};
+  };
+  const projected = await read();
+  assert.ok(projected.commandCapabilities.includes("code.worker.intervene"));
+  assert.equal(projected.workerRuntime.turnId, "previous-worker-turn");
+  const ui = await dashboardUi(projected, async (_url, options) => {
+    const request = JSON.parse(options.body);
+    try { return {payload:await f.dashboard.executeDurable(request)}; }
+    finally { Object.assign(projected, await read()); }
+  });
+  let requestNumber = 0;
+  ui.context.crypto.randomUUID = () => `worker-intervention-${++requestNumber}`;
+  ui.elements.get("workerInterventionText").value = "Reuse the existing helper if it already fits.";
+  ui.elements.get("workerInterventionText").listeners.input();
+  const send = ui.elements.get("sendWorkerIntervention");
+  assert.equal(send.disabled, false);
+  const newest = f.service.update(current.runId, {events:[...current.events, {
+    eventId:"worker-event-before-click", type:"WORKER_RUNTIME_EVENT", createdAt:new Date().toISOString(),
+    payload:{runtimeType:"TURN_COMPLETED",turnId:"previous-worker-turn"},
+  }]});
+  await send.listeners.click();
+  assert.equal(steers.length, 0, "the stale click must not be sent to the Worker");
+  assert.equal(ui.run("workflow.runVersion"), newest.version, "refresh after the conflict must load the new version");
+  assert.equal(ui.elements.get("workerInterventionText").value, "Reuse the existing helper if it already fits.");
+  assert.equal(ui.calls.filter(call => call.url === "/api/commands").length, 1, "no automatic resend");
+  await send.listeners.click();
+  assert.equal(ui.run("workflow.runVersion"), f.service.get(current.runId).version);
+  assert.equal(ui.run("snapshot.run.userInterventions[0]?.status"), "DELIVERED");
   assert.equal(steers.length,1);
   assert.equal(steers[0].turnId,"worker-turn-live");
   assert.match(steers[0].text,/does not modify approved requirements or acceptance criteria/u);
@@ -145,6 +361,14 @@ test("REPORT_REPAIR_LIMIT resumes the same candidate after restart and continues
 
   await f.reopen();
   const current=f.service.get(held.runId);
+  f.options.webSession.activeTurnId = "other-review-turn";
+  try {
+    assert.equal(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.review.retry"), false);
+    const diagnosis = await f.service.command("run.reconcile", {runId:current.runId,expectedVersion:current.version});
+    assert.equal(diagnosis.allowedActions.includes("code.review.retry"), false);
+  } finally {
+    f.options.webSession.activeTurnId = null;
+  }
   assert.ok(f.service.snapshot(current.runId,{}).commandCapabilities.includes("code.review.retry"));
 
   const accepted=await f.dashboard.executeDurable({
@@ -188,6 +412,7 @@ test("settled reviewer discussion stays advisory and is carried into an explicit
   assert.equal(discussed.reviewDiscussions.at(-1).status,"DELIVERED");
   assert.match(discussed.reviewDiscussions.at(-1).response,/without changing audit state/u);
   assert.equal(f.discussionPrompts.length,1);
+  assert.equal(f.discussionPrompts[0].userText,"Explain the blocking concern in plain language.");
 
   const accepted=await f.dashboard.executeDurable({type:"code.review.retry",requestId:"review-after-chat",
     payload:{runId:discussed.runId,expectedVersion:discussed.version}});
@@ -267,6 +492,21 @@ test("finished run archive preserves evidence and version history and can be res
   const historyBefore=f.service.store.history(run.runId).length;
   assert.ok(f.service.snapshot(run.runId,{}).commandCapabilities.includes("run.archive"));
 
+  const assertActiveReviewBlocksHistory = async (record, operation) => {
+    assert.ok(record.reviewTurnId);
+    f.options.webSession.activeTurnId = record.reviewTurnId;
+    try {
+      const payload = {runId:record.runId,expectedVersion:record.version};
+      await assert.rejects(f.service.command(operation,payload), {code:"RUN_NOT_TERMINAL"});
+      await assert.rejects(f.service.command("run.delete",payload), {code:"RUN_NOT_TERMINAL"});
+      const capabilities = f.service.snapshot(record.runId,{}).commandCapabilities;
+      assert.equal(capabilities.includes(operation), false);
+      assert.equal(capabilities.includes("run.delete"), false);
+      assert.equal(f.service.get(record.runId).version, record.version);
+    } finally { f.options.webSession.activeTurnId = null; }
+  };
+  await assertActiveReviewBlocksHistory(run, "run.archive");
+
   const archived=await f.dashboard.executeDurable({type:"run.archive",requestId:"archive-run",
     payload:{runId:run.runId,expectedVersion:run.version}});
   assert.equal(archived.stage,"APPLIED");
@@ -276,6 +516,7 @@ test("finished run archive preserves evidence and version history and can be res
   let caps=f.service.snapshot(run.runId,{}).commandCapabilities;
   assert.ok(caps.includes("run.unarchive"));
   assert.ok(!caps.includes("run.archive"));
+  await assertActiveReviewBlocksHistory(archived, "run.unarchive");
 
   const restored=await f.dashboard.executeDurable({type:"run.unarchive",requestId:"unarchive-run",
     payload:{runId:archived.runId,expectedVersion:archived.version}});

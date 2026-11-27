@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
+import { FakeSocket } from "./helpers/web-runtime-socket.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -50,42 +50,6 @@ function boundSession(overrides = {}) {
     bindingStatus: "BOUND",
     ...overrides,
   });
-}
-
-class FakeSocket extends EventEmitter {
-  constructor() {
-    super();
-    this.readyState = 1;
-    this.sent = [];
-    this.closed = null;
-    this.failOnType = null;
-  }
-
-  send(raw) {
-    const message = JSON.parse(String(raw));
-    if (message.type === this.failOnType) throw new Error(`send failed for ${message.type}`);
-    this.sent.push(message);
-  }
-
-  close(code, reason) {
-    this.closed = { code, reason };
-    this.readyState = 3;
-    this.emit("close", code, reason);
-  }
-
-  receive(message) {
-    // Simulate the extension's success envelope; explicit trace values are never replaced.
-    if (message.type === "web.prompt.result" && message.payload?.trace === undefined) {
-      const session = message.payload.session;
-      message = { ...message, payload: { ...message.payload,
-        trace: { requestId: message.requestId, actionId: message.requestId, result: "success",
-          tabId: session?.tabId, bindingId: `${session?.sessionId}:${session?.runId}`,
-          documentId: session?.documentId, frameId: session?.frameId },
-        evidence: { documentId: session?.documentId, frameId: session?.frameId, ...message.payload.evidence },
-      } };
-    }
-    this.emit("message", JSON.stringify(message));
-  }
 }
 
 function authenticate(transport, socket) {
@@ -347,6 +311,40 @@ test("expired extension heartbeat disconnects without confirming or replaying an
   socket.emit("close");
   assert.equal(transport.snapshot.responsive, true);
   transport.close();
+});
+
+test("stale replacement rejects a pending prompt before the old socket finishes closing", async () => {
+  let time = 0;
+  const transport = new WebExtensionTransport({
+    sharedSecret: SECRET, expectedExtensionIdentity: IDENTITY,
+  }, { now: () => time });
+  const oldSocket = new FakeSocket();
+  oldSocket.close = () => { oldSocket.readyState = 2; };
+  transport.attach(oldSocket);
+  authenticate(transport, oldSocket);
+  const adapter = await readyAdapter(transport, oldSocket);
+  const disconnected = [];
+  transport.onEvent(event => { if (event.type === "SESSION_DISCONNECTED") disconnected.push(event); });
+  const turn = await adapter.submitTurn({
+    turnId: "turn-stale", controllerMessageId: "msg-stale", runId: "run-1",
+    text: "Pending prompt", timeoutMs: 500,
+  });
+  const rejected = assert.rejects(turn.completion, { code:"WEB_TURN_AMBIGUOUS" });
+  const replacement = new FakeSocket();
+  time = 65_001;
+  transport.attach(replacement);
+  try {
+    assert.equal(disconnected.length, 1);
+    authenticate(transport, replacement);
+    oldSocket.emit("close");
+    assert.equal(disconnected.length, 1);
+    assert.equal(transport.authenticated, true);
+    await rejected;
+    assert.equal(replacement.sent.some(message => message.type === "web.prompt"), false);
+  } finally {
+    await rejected.catch(() => {});
+    await adapter.close();
+  }
 });
 
 test("exact conversation binding never falls back to active or latest tabs", () => {

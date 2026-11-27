@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { seedHistory } from "../helpers/code-history-fixture.js";
 import { resources } from "../../scripts/e2e/helpers/resources.mjs";
 
-async function workerFixture(t, {cleanup = false, checkpoint = null, cancelReason} = {}) {
+async function workerFixture(t, {cleanup = false, closeFault = true, checkpoint = null, cancelReason} = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-worker-cleanup-"));
   const owner = resources(t);
   owner.add("workspace", () => fs.rmSync(root, {recursive:true, force:true}), 30);
@@ -28,7 +28,7 @@ async function workerFixture(t, {cleanup = false, checkpoint = null, cancelReaso
       export class DatabaseSync extends Native {
         constructor(...args) { super(...args); this.exec("CREATE TRIGGER reject_migration BEFORE UPDATE ON code_change_history BEGIN SELECT RAISE(ABORT,'sensitive primary payload'); END"); }
         exec(sql) { const result=super.exec(sql); if(sql==='ROLLBACK') throw Object.assign(new Error('sensitive rollback payload'),{code:'ROLLBACK_REPORT_FAILED'}); return result; }
-        close() { super.close(); throw Object.assign(new Error('sensitive close payload'),{code:'CLOSE_REPORT_FAILED'}); }
+        close() { super.close(); ${closeFault ? "throw Object.assign(new Error('sensitive close payload'),{code:'CLOSE_REPORT_FAILED'});" : ""} }
       }`);
   } else if (checkpoint) {
     fs.writeFileSync(path.join(root, "persistence", "sqlite-database.js"), `
@@ -53,15 +53,15 @@ async function workerFixture(t, {cleanup = false, checkpoint = null, cancelReaso
       Atomics.wait(cancellation,0,0,1000);
       parentPort.postMessage({ok:true,verified:[]}); parentPort.close();`);
   }
-  const {CodeChangeHistoryJob} = await import(pathToFileURL(path.join(root, "persistence", "code-change-history-job.js")));
+  const {CodeChangeHistoryJob, historyWorkerClosureEvidence} = await import(pathToFileURL(path.join(root, "persistence", "code-change-history-job.js")));
   const job = new CodeChangeHistoryJob(filename, {migrate:cleanup || Boolean(checkpoint)});
   owner.add("worker", async () => {job.cancel(); await job.closed.catch(() => {});}, 20);
   if (!cleanup && !checkpoint) job.cancel(cancelReason);
-  return {job, filename};
+  return {job, filename, historyWorkerClosureEvidence};
 }
 
 test("Worker keeps primary migration and both cleanup failures without exporting sensitive text", async t => {
-  const {job, filename} = await workerFixture(t, {cleanup:true});
+  const {job, filename, historyWorkerClosureEvidence} = await workerFixture(t, {cleanup:true});
   let error;
   try {await job.result;} catch (failure) {error=failure;}
   assert.ok(error instanceof AggregateError);
@@ -73,10 +73,23 @@ test("Worker keeps primary migration and both cleanup failures without exporting
   for (const failure of [error, ...error.errors]) assert.ok(!failure.message.includes("sensitive"));
   await assert.rejects(job.closed, {code:"CODE_CHANGE_HISTORY_CLEANUP_FAILED"});
   assert.equal(job.exited, true);
+  await assert.rejects(job.closed, error => historyWorkerClosureEvidence(error) === undefined);
   const {DatabaseSync} = await import("node:sqlite");
   const durable = new DatabaseSync(filename);
   try {assert.equal(durable.prepare("SELECT count(*) AS n FROM code_change_history WHERE entry_hash IS NOT NULL").get().n, 0);}
   finally {durable.close();}
+});
+
+test("Worker confirms its SQLite handle closed despite rollback reporting failure", async t => {
+  const {job, historyWorkerClosureEvidence} = await workerFixture(t, {cleanup:true, closeFault:false});
+  await assert.rejects(job.result, {code:"CODE_CHANGE_HISTORY_CLEANUP_FAILED"});
+  await assert.rejects(job.closed, error => {
+    assert.equal(error.code, "CODE_CHANGE_HISTORY_CLEANUP_FAILED");
+    const evidence = historyWorkerClosureEvidence(error);
+    assert.equal(evidence?.exitCode, 0);
+    assert.ok(evidence.threadId > 0);
+    return true;
+  });
 });
 
 for (const reason of [null, false, 0, ""]) {

@@ -460,6 +460,27 @@ test("approval bridge requires exact request/thread/turn correlation and never a
 });
 
 
+test("stale approval on the same thread is rejected before reaching the active turn", async (t) => {
+  const manager = await createManager();
+  t.after(() => manager.close());
+  const { session } = createSession(manager);
+  t.after(() => session.close());
+  const events = [];
+  session.onEvent(event => events.push(event));
+  await session.start();
+  const old = await session.submitTurn({ text:"previous turn", outputSchema:OUTPUT_SCHEMA });
+  await old.completion;
+  const active = await session.submitTurn({ text:"__approval__", outputSchema:OUTPUT_SCHEMA });
+  const current = await waitFor(() => session.pendingApprovals.find(request => request.turnId === active.turnId));
+  const result = await(manager.request("test/stale-approval", {threadId:session.threadId, turnId:old.turnId}, 1500));
+  assert.match(result.reverseError?.message ?? "", /active turn/u);
+  assert.equal(result.reverseResult, null);
+  assert.deepEqual(session.pendingApprovals.map(request => request.turnId), [active.turnId]);
+  assert.deepEqual(events.filter(event => event.type === "APPROVAL_REQUESTED").map(event => event.turnId), [active.turnId]);
+  session.respondToApproval({requestId:current.requestId, turnId:active.turnId, decision:"decline"});
+  assert.equal((await active.completion).structuredOutput.approvalDecision, "decline");
+});
+
 test("public Codex agent-session adapter exposes approval responses", async (t) => {
   const manager = await createManager();
   t.after(() => manager.close());

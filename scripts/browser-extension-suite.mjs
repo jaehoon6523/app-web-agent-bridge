@@ -5,6 +5,101 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { setupAudit, assertionsFor } from '../tests/helpers/audit-fixtures.js';
 import { createFixtureCodexWorker } from '../tests/helpers/codex-worker-fixture.js';
+import { inspectMessageDom } from '../extension/runtime/message-dom-inspection.js';
+
+// Observed DOM structure with synthetic text and IDs. The sibling span and buttons are UI chrome.
+const keyedUserBubbleHtml = `<!doctype html><main></main>
+    <textarea id="prompt-textarea"></textarea><button data-testid="send-button">Send</button>
+    <script>
+    document.querySelector('button').onclick = () => {
+      const composer = document.querySelector('textarea');
+      history.pushState({}, '', '/c/created');
+      document.querySelector('main').innerHTML = \`
+        <div><h4 class="sr-only">You said:</h4>
+          <div data-chatgpt-search-unit-key="turn:0:user" data-chatgpt-search-message-ids="u1">
+            <div data-content-search-unit-key="turn:0:user"><div>
+              <div data-user-message-bubble="true" data-user-message-has-prompt="true"><div><div>
+                <div data-search-result-target><div><div dir="auto" style="white-space:pre-wrap"></div></div></div>
+                <span>UI status</span>
+              </div><button data-markdown-copy="exclude">Show more</button></div></div>
+              <div><button>Copy</button></div>
+            </div></div>
+          </div>
+        </div>
+        <div data-talvt-turn-state="complete"><h4 class="sr-only">ChatGPT said:</h4>
+          <div data-chatgpt-search-unit-key="turn:1:assistant" data-chatgpt-search-message-ids="a1 a1">
+            <div data-markdown-text-style="assistant-message">Fixture reply</div>
+          </div>
+        </div>\`;
+      const body = document.querySelector('[dir="auto"]');
+      body.textContent = window.keyedBubbleCase === 'wrong-marker'
+        ? composer.value.replace('[run_id:r1]', '[run_id:other-run]')
+        : composer.value;
+      if (window.keyedBubbleCase === 'duplicate') {
+        const first = document.querySelector('main').firstElementChild;
+        const duplicate = first.cloneNode(true);
+        const unit = duplicate.querySelector('[data-chatgpt-search-unit-key]');
+        unit.setAttribute('data-chatgpt-search-message-ids', 'u2');
+        unit.setAttribute('data-chatgpt-search-unit-key', 'turn:2:user');
+        unit.firstElementChild.setAttribute('data-content-search-unit-key', 'turn:2:user');
+        first.after(duplicate);
+      }
+      sessionStorage.setItem('submitted', composer.value);
+      sessionStorage.setItem('clicks', String(Number(sessionStorage.getItem('clicks') || 0) + 1));
+      composer.value = '';
+    };
+    </script>`;
+test('browser fixture: keyed user bubble binds the delivered prompt and its assistant', { timeout:25_000 }, async t => {
+  const f = await extensionBrowser(t, { providerHtml:keyedUserBubbleHtml });
+  await f.prepare();
+  const result = await f.submit();
+  const messages = await f.page.evaluate(() => WebBridgePageProviders.provider('CHATGPT_WEB').readMessages()
+    .map(({ id, role, text }) => ({ id, role, text })));
+  const submitted = await f.page.evaluate(() => sessionStorage.getItem('submitted'));
+  assert.deepEqual(messages, [
+    { id:'u1', role:'user', text:submitted },
+    { id:'a1', role:'assistant', text:'Fixture reply' },
+  ]);
+  assert.equal(result.evidence.userMessageId, 'u1');
+  assert.equal(result.evidence.assistantMessageId, 'a1');
+  assert.equal(result.rawText, 'Fixture reply');
+  assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
+
+  const inspection = await f.page.evaluate(({ source, request }) => (0, eval)('(' + source + ')')(request), {
+    source:inspectMessageDom.toString(),
+    request:{ conversationUrl:'https://chatgpt.com/c/created', controllerMessageId:'d1', runId:'r1' },
+  });
+  assert.equal(inspection.result, 'FOUND');
+  assert.equal(inspection.matches[0].exactMarkers, true);
+  assert.equal(inspection.matches[0].node.attributes['data-chatgpt-search-message-ids'].value, 'u1');
+
+  const page = await f.sendContent({ type:'agent.ping' });
+  const recovery = { recoverSubmitted:true, controllerMessageId:'d1', runId:'r1',
+    expectedConversationUrl:page.url, expectedConversationId:page.conversationId,
+    expectedDocumentId:page.documentId, expectedFrameId:0, userMessageId:'u1', assistantMessageId:'a1' };
+  const rejected = await f.sendContent({ type:'agent.recheck', payload:{ ...recovery, assistantMessageId:'other' } });
+  assert.equal(rejected.code, 'AMBIGUOUS_COMPLETION');
+  const recovered = await f.sendContent({ type:'agent.recheck', payload:recovery });
+  assert.equal(recovered.ok, true);
+  assert.equal(recovered.text, 'Fixture reply');
+  assert.equal(recovered.evidence.userMessageId, 'u1');
+  assert.equal(recovered.evidence.assistantMessageId, 'a1');
+  assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
+});
+
+for (const [variant, code] of [
+  ['wrong-marker', 'MANUAL_INTERVENTION_DETECTED'],
+  ['duplicate', 'AMBIGUOUS_PROMPT_BINDING'],
+]) {
+  test(`browser fixture: keyed user bubble rejects ${variant}`, { timeout:25_000 }, async t => {
+    const f = await extensionBrowser(t, { providerHtml:keyedUserBubbleHtml });
+    await f.page.evaluate(value => { window.keyedBubbleCase = value; }, variant);
+    await f.prepare();
+    await assert.rejects(f.submit(), { code });
+    assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
+    assert.equal(f.readStorage().completedDelivery, null);
+  });
+}
 
 test('identity rejection stays visible through an open socket until matching authentication is accepted', {timeout:25000}, async t=>{
   const f=await extensionBrowser(t,{autoConnect:false});
@@ -112,6 +207,21 @@ test('browser fixture: one extension transport switches from ChatGPT to Claude w
   );
   assert.equal(f.contentResults.filter(entry => entry.request.type === 'agent.prompt').length, 2);
   assert.deepEqual(f.errors, []);
+});
+
+test('browser fixture: first advisory message reaches a fresh web chat as plain text', { timeout: 25_000 }, async t => {
+  const f = await extensionBrowser(t, { variant:'roles' });
+  await f.prepare();
+  const text = '당신은 독립 기술 자문입니다. 첫 목표는 Studio 평가입니다.';
+  const turn = await f.adapter.submitTurn({ runId:'r1', turnId:'plain-first', controllerMessageId:'plain-first',
+    text, plainText:true, timeoutMs:8_000, stableMs:1_000,
+    parseResponse:raw => ({ body:raw, packetText:raw, packet:{ type:'FIXTURE_REPLY' } }),
+  });
+  const result = await turn.completion;
+  assert.equal(result.binding.conversationId, 'created');
+  assert.equal(result.rawText, 'Observed fixture reply');
+  assert.equal(await f.page.locator('[data-message-author-role="user"] [data-message-content]').innerText(), text);
+  assert.equal(await f.page.evaluate(() => sessionStorage.getItem('clicks')), '1');
 });
 
 test('browser fixture: temporary WEB ID settles to the durable conversation without manual intervention', { timeout: 25_000 }, async t => {

@@ -103,7 +103,7 @@ try {
   await page.addInitScript(()=>{
     window.messages=[]; window.createdWindows=[];
     window.popupState={connected:true,bindingStatus:'NEEDS_REBIND',extensionVersion:'0.2.19'};
-    const tab={tabId:7,url:'https://chatgpt.com/',reachable:true,ready:true,composerPresent:true,busy:false,generating:false,runtimeVersion:'0.2.19'};
+    window.popupTab={tabId:7,url:'https://chatgpt.com/',startUrlConfirmed:true,reachable:true,ready:true,composerPresent:true,busy:false,generating:false,runtimeVersion:'0.2.19'};
     window.chrome={windows:{create:async options=>{
       if(window.rejectWindowOpen)throw new Error('injected window creation failure');
       window.createdWindows.push(options);return {id:42};
@@ -111,7 +111,7 @@ try {
       window.messages.push(message);
       if(message.type==='bridge.getState') return {ok:true,state:window.popupState};
       if(message.type==='bridge.exportDiagnostics') return {ok:true,report:{server:{status:'AVAILABLE'},diagnosticId:'test-report',rawText:'raw fixture',message:'Cookie: session=VISIBLE_BROWSER'}};
-      if(message.type==='bridge.inspectTabs') return {ok:true,result:[tab]};
+      if(message.type==='bridge.inspectTabs') return {ok:true,result:[window.popupTab]};
       return {ok:true};
     }}};
   });
@@ -130,6 +130,12 @@ try {
   assert.match(await page.locator('#popupWindowStatus').textContent(),/다시 시도/u);
   assert.equal(await page.locator('#openResizableWindow').isEnabled(),true);
   await page.evaluate(()=>{window.rejectWindowOpen=false;});
+  await page.getByText('탭 진단 및 로그',{exact:true}).click();
+  await page.evaluate(()=>{window.popupTab.startUrlConfirmed=false;});
+  await page.getByRole('button',{name:'열린 탭 다시 확인'}).click();
+  assert.equal(await page.locator('#choosePreparationTab').isDisabled(),true);
+  assert.match(await page.locator('#tabNextReason').textContent(),/ChatGPT 시작 화면.*주소를 다시 확인/u);
+  await page.evaluate(()=>{window.popupTab.startUrlConfirmed=true;});
   await page.getByRole('button',{name:'열린 탭 다시 확인'}).click();
   assert.equal(await page.locator('#choosePreparationTab').isEnabled(),true);
   assert.equal(await page.locator('#tabDiagnosticDetail,#recoveryRaw').count(),0);
@@ -189,6 +195,7 @@ try {
   assert.equal(await page.locator('#openResizableWindow').isVisible(),false);
   assert.equal(await page.locator('#deliveryRecovery').isVisible(),true);
   await page.locator('.settings > summary').click();
+  await page.getByText('탭 진단 및 로그',{exact:true}).click();
   for (const width of [360,520,900,1200]) {
     for (const height of [480,900]) {
       await page.setViewportSize({width,height});

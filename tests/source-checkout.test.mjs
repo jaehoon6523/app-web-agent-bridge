@@ -52,9 +52,13 @@ test('dependency junctions, directory symlinks and result folders cannot enter o
   write('test-results/profile/Preferences','browser state'); write('browser-profile/Preferences','browser state');
   write('.history-http-closure-example/program/src/copied.js','generated program copy');
   write('.runtime-cleanup-store-example/controller.sqlite','generated database');
+  write('evidence/mapping-audit-20261118/db/controller.sqlite','captured production database');
+  write('.worktrees/old-checkout/src/copied.js','unrelated checkout');
   const target = path.join(base,'snapshot'), snapshot = createSourceCheckout(source,target);
   assert.ok(snapshot.manifest.files.every(item => !/node_modules|sentinel|test-results|browser-profile|\.agent-controller|linked-dependency|\.history-|\.runtime-cleanup-/u.test(item.path)));
   assert.equal(fs.existsSync(path.join(target,'node_modules')),false);
+  assert.equal(fs.existsSync(path.join(target,'evidence/mapping-audit-20261118/db')),false);
+  assert.equal(fs.existsSync(path.join(target,'.worktrees')),false);
   linkDependencies(source,target); assert.equal(fs.lstatSync(path.join(target,'node_modules')).isSymbolicLink(),true);
   assertSourceManifest(target,snapshot.manifest);
 });

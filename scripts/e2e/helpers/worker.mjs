@@ -14,7 +14,7 @@ export function assertWorkerWorkspace(peer, expectedWorktree, targetRoot) {
   assert.notEqual(observed, fs.realpathSync.native(targetRoot));
 }
 
-export async function workerHarness(t, f, { reviewReply = () => new Promise(() => {}), beforeCandidate = null } = {}) {
+export async function startWorker(t, f, reviewReply = () => new Promise(() => {})) {
   // Approval performs all production workspace setup/capture. Only initialize the disposable input Git target.
   const git = (...args) => execFileSync('git', ['-C', f.server.workspace, ...args], { encoding:'utf8' }).trim();
   git('init','--quiet'); git('config','user.name','E2E'); git('config','user.email','e2e@example.invalid');
@@ -28,6 +28,11 @@ export async function workerHarness(t, f, { reviewReply = () => new Promise(() =
   await f.page.locator('#saveProject').click();
   const approvalResponse = await approve;
   assert.equal(approvalResponse.status(), 200, JSON.stringify(await approvalResponse.json()));
+  return {git, before, prepared};
+}
+
+export async function workerHarness(t, f, { reviewReply, beforeCandidate = null } = {}) {
+  const {git, before, prepared} = await startWorker(t, f, reviewReply);
   await beforeCandidate?.(prepared);
   const body = await waitForState(f.page, body => Boolean(body.run?.candidate)), run = body.run;
   assert.ok(run.candidate.candidateId);

@@ -169,6 +169,23 @@ test("whole chain agrees with literal canonical bytes and independently calculat
   assert.deepEqual(rows.map(row=>row.record_hash),vectors.map(sha));
 });
 
+test("history keeps canonical hashes when stored JSON has a different representation", async t => {
+  const {open, record} = fixture(t, {versions:1});
+  const store = open({verification:"background"});
+  const {record_json:json, record_hash:hash} = store.database.prepare("SELECT record_json,record_hash FROM main.code_change_runs").get();
+  const reformatted = " " + json;
+  store.database.prepare("UPDATE main.code_change_history SET record_json=?").run(reformatted);
+  store.database.prepare("UPDATE main.code_change_runs SET record_json=?").run(reformatted);
+  await store.prepareForRead();
+  assert.equal(store.get(record.runId).runId, record.runId);
+  const rawHash = "sha256:" + createHash("sha256").update(reformatted).digest("hex");
+  const rawEntry = `{"kind":"CODE_CHANGE_HISTORY","previousHash":null,"recordHash":"${rawHash}","runId":${JSON.stringify(record.runId)},"version":1}`;
+  const entryHash = "sha256:" + createHash("sha256").update(rawEntry).digest("hex");
+  store.database.prepare("UPDATE main.code_change_history SET record_hash=?,entry_hash=? WHERE record_hash=?").run(rawHash,entryHash,hash);
+  store.database.prepare("UPDATE main.code_change_runs SET record_hash=? WHERE record_hash=?").run(rawHash,hash);
+  await assert.rejects(store.prepareForRead(), /integrity check failed/u);
+});
+
 test("close during migration writer contention waits for pending prepare and never starts another job", {timeout:10000}, async t => {
   const {filename, open} = fixture(t, {legacy:true});
   const writer = new DatabaseSync(filename);

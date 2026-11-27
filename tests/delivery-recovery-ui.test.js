@@ -24,11 +24,17 @@ function dom() {
   return { get, document: { getElementById: get, querySelector: name => get(name.slice(1)), createElement: () => node() } };
 }
 async function controller(initial, after, outcome = { discarded: true }) {
-  const ui = dom(); let current = initial, posted = null, readCount = 0;
+  const ui = dom(); let current = initial, posted = null, readCount = 0, sessionCount = 0;
   const fetch = async (url, opts = {}) => {
-    if (url === '/api/dashboard/session') return { ok: true, json: async () => ({ token: 'session' }) };
+    if (url === '/api/dashboard/session') {
+      const token = 'session-' + ++sessionCount;
+      return { ok: true, json: async () => ({ token }) };
+    }
     if (url.startsWith('/api/delivery-review?')) {
       readCount++;
+      if (outcome.restarted && readCount > 1 && opts.headers.Authorization === 'Bearer session-1') {
+        return { ok:false, status:401, json:async () => ({error:'Expired session'}) };
+      }
       if (current?.inspectionError) return { ok: false, json: async () => ({ error: current.inspectionError }) };
       return { ok: true, json: async () => current };
     }
@@ -60,12 +66,51 @@ const before = { server: { status: 'MATCHED', records: [record], otherActive: fa
   terminalDiscardProtocol: 1, hasCompletedDelivery: false, phase: 'UNRESOLVED' } };
 const verified = { server: before.server, extension: { ...before.extension, exact: false, discardConfirmed: true } };
 
+test('delivery review renews an expired session during inspection', async () => {
+  const ui = await controller(before, verified, { restarted:true });
+  await ui.get('inspect').fire('click');
+  await tick();
+  assert.equal(ui.readCount(), 3);
+  assert.match(ui.get('status').textContent, /상태 확인 완료/);
+  assert.equal(ui.posted(), null);
+});
+
+test('pairing refresh renews an expired dashboard session', async () => {
+  const ui = dom(), calls = [];
+  let generation = 1;
+  const script = await fs.readFile(path.join(root, 'public/extension-pairing.js'), 'utf8');
+  vm.runInNewContext(script, { document:ui.document, setInterval() {},
+    fetch:async (url, options) => {
+      calls.push([options.method, url]);
+      if (url === '/api/dashboard/session') return {ok:true, json:async () => ({token:'session-' + generation})};
+      const valid = options.headers.Authorization === 'Bearer session-' + generation;
+      return {ok:valid, status:valid ? 200 : 401, json:async () => ({
+        currentIdentity:'owner-' + generation, candidate:{identity:'candidate'}, approvalAvailable:generation > 1,
+      })};
+    },
+  });
+  await tick();
+  ui.get('confirm').checked = true;
+  await ui.get('confirm').fire('change');
+  assert.equal(ui.get('approve').disabled, true);
+  generation++;
+  calls.length = 0;
+  await ui.get('refresh').fire('click');
+  assert.deepEqual(calls, [['GET', '/api/extension-pairing'], ['POST', '/api/dashboard/session'], ['GET', '/api/extension-pairing']]);
+  assert.match(ui.get('current').textContent, /owner-2/);
+  assert.equal(ui.get('confirm').checked, false);
+  ui.get('confirm').checked = true;
+  await ui.get('confirm').fire('change');
+  assert.equal(ui.get('approve').disabled, false);
+});
+
 test('controller: default summary, detailed raw data, explicit uncertain-page consent and verified receipt', async () => {
   const ui = await controller(before, verified);
   assert.match(ui.get('recordStatus').textContent, /기록 불일치/);
   assert.match(ui.get('serverState').textContent, /이미 폐기/);
   assert.match(ui.get('extensionState').textContent, /소유권이 남아/);
   assert.match(ui.get('chatgptState').textContent, /미확정/);
+  assert.doesNotMatch(ui.get('chatgptState').textContent, /전송을 닫았습니다/);
   assert.match(ui.get('details').textContent, /terminalDiscardProtocol/);
   ui.get('ownership').checked = true;
   ui.get('reason').value = 'Operator reviewed';
@@ -81,6 +126,7 @@ test('controller: default summary, detailed raw data, explicit uncertain-page co
   assert.equal(ui.posted().unresolvedResultConfirmed, true);
   assert.match(ui.get('status').textContent, /정리 완료/);
   assert.match(ui.get('status').textContent, /ChatGPT 처리 결과는 미확정/);
+  assert.match(ui.get('chatgptState').textContent, /전송을 닫았습니다/);
 });
 
 test('controller: a successful mutation response without persisted receipt is not success', async () => {
@@ -314,6 +360,19 @@ test('controller ACK: only verified acknowledgement receipt is completion', asyn
   assert.doesNotMatch(staleUi.get('status').textContent,/ACK 확인 완료/);
 });
 
+test('controller ACK is blocked when another delivery owns an active session', async () => {
+  const pending = {server:{status:'MATCHED', records:[{kind:'REVIEW', active:true, state:'ACK_PENDING',
+    processingState:'ACK_PENDING', responseStored:true}], otherActive:false},
+    extension:{...before.extension, exact:true, phase:'ACK_PENDING', pageBusy:false, generating:false}};
+  for (const owner of ['server', 'extension']) {
+    const blocked = {...pending, [owner]:{...pending[owner], otherActive:true}};
+    const ui = await controller(blocked, blocked);
+    assert.equal(ui.get('ack').disabled, true);
+    await ui.get('ack').fire('click');
+    assert.equal(ui.readCount(), 1);
+  }
+});
+
 test('controller: stored response without ACK metadata never offers discard', async () => {
   const response = {server:{status:'MATCHED',records:[{kind:'PREPARATION',active:true,
     state:'RESPONSE_RECEIVED',responseStored:true,processingState:null}],otherActive:false},
@@ -322,6 +381,34 @@ test('controller: stored response without ACK metadata never offers discard', as
   assert.equal(ui.get('discardPanel').hidden,true);
   assert.equal(ui.get('discard').disabled,true);
   assert.match(ui.get('chatgptState').textContent,/응답 저장 근거/);
+});
+test('controller separates server closure and ACK state from extension receipts', async () => {
+  const active = { server:{status:'MATCHED',otherActive:false,records:[{kind:'REVIEW',active:true,
+    state:'UNRESOLVED',processingState:null,responseStored:false}]},
+    extension:{...before.extension,exact:true,hasCompletedDelivery:false,pageReachable:true,pageBusy:false,generating:false} };
+  const ui = await controller(active,active);
+  assert.doesNotMatch(ui.get('chatgptState').textContent,/전송을 닫았습니다/);
+  const serverOnly = await controller(before,before);
+  assert.doesNotMatch(serverOnly.get('chatgptState').textContent,/전송을 닫았습니다/);
+  const both = await controller(verified,verified);
+  assert.match(both.get('chatgptState').textContent,/전송을 닫았습니다/);
+  const unrelated = {...verified,server:{...verified.server,status:'MISMATCH',records:[{
+    ...record, responseStored:true, state:'ACKNOWLEDGED', processingState:'ACKNOWLEDGED',
+  }]}};
+  const mismatch = await controller(unrelated,unrelated);
+  assert.match(mismatch.get('persistenceState').textContent,/저장 여부는 미확정/);
+  assert.match(mismatch.get('ackState').textContent,/서버 확인 안 됨/);
+  const acknowledgedOnlyByServer = { server:{status:'MATCHED',otherActive:false,records:[{kind:'REVIEW',active:false,
+    state:'ACKNOWLEDGED',processingState:'ACKNOWLEDGED',responseStored:true}]},
+    extension:{...before.extension,exact:false,ackConfirmed:false,hasCompletedDelivery:false} };
+  const ack = await controller(acknowledgedOnlyByServer,acknowledgedOnlyByServer);
+  assert.match(ack.get('ackState').textContent,/서버 완료 · 확장 영수증 미확인/);
+  const withReceipt = {...acknowledgedOnlyByServer,extension:{...acknowledgedOnlyByServer.extension,ackConfirmed:true}};
+  const acknowledged = await controller(withReceipt,withReceipt);
+  assert.match(acknowledged.get('ackState').textContent,/서버 완료 · 확장 영수증 확인/);
+  const processing = {...active,extension:{...active.extension,pageIdentityConfirmed:true,activeRequestMatches:true}};
+  const pending = await controller(processing,processing);
+  assert.match(pending.get('arrivalState').textContent,/ChatGPT 제출 여부는 미확정/);
 });
 test('controller: a completed response belonging to another delivery cannot enable discard', async () => {
   const observed = {server:{status:'MATCHED',records:[{kind:'PREPARATION',active:true,
@@ -332,6 +419,7 @@ test('controller: a completed response belonging to another delivery cannot enab
   assert.equal(ui.get('discardPanel').hidden,true);
   assert.equal(ui.get('discard').disabled,true);
   assert.match(ui.get('actionState').textContent,/응답 상태 확인/);
+  assert.doesNotMatch(ui.get('completionState').textContent,/해당 전송의 완료 응답/);
   assert.match(ui.get('chatgptState').textContent,/다른 전송의 응답/);
 });
 

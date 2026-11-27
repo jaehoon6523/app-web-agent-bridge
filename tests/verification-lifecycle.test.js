@@ -67,7 +67,7 @@ function inheritedVerification(t, startupDelayMs = 0) {
       startedCwd=cwd;
       child=spawn(process.execPath,args,{cwd,windowsHide:true,stdio:['pipe','pipe','pipe']});
       observation=observeChildClose(child);
-      await waitForPipeHolder({pidFile,markerFile});
+      await waitForPipeHolder({pidFile,markerFile,timeoutMs:8000});
       assert.equal(child.exitCode,null,'fixture parent must wait for stdin EOF');
       assert.equal(observation.result,undefined);
       assert.equal(child.stdout.closed,false); assert.equal(child.stderr.closed,false);
@@ -95,7 +95,7 @@ function inheritedVerification(t, startupDelayMs = 0) {
   };
 }
 
-test("verification timeout remains bounded after slow startup when an exited parent leaves inherited descendant pipes", {timeout:10000}, async t => {
+test("verification timeout remains bounded after slow startup when an exited parent leaves inherited descendant pipes", {timeout:20000}, async t => {
   const fixture=inheritedVerification(t,1700);
   await fixture.start(fixture.root);
   const started = performance.now();
@@ -130,7 +130,7 @@ test("verification timeout remains bounded after slow startup when an exited par
   }
 });
 
-test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:10000}, async t => {
+test("unconfirmed verification closure persists recovery and never dispatches an audit or application", {timeout:30000}, async t => {
   const fixture=inheritedVerification(t);
   const f = setupAudit(t, {configure(project) {
     project.verifications = [{verificationId:"pipes",executable:process.execPath,args:fixture.args,

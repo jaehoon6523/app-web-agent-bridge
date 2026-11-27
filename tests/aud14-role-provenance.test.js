@@ -14,6 +14,49 @@ const text=`[controller_message_id:${request.controllerMessageId}]\n[run_id:${re
 function observe(...messages) {const doc=new Element().append(...messages.map(m=>m.parent));return JSON.parse(JSON.stringify(vm.runInNewContext(`(${inspectMessageDom.toString()})(request)`,{request,location:{href:request.conversationUrl},document:doc})));}
 async function project(observed) {const t=new EventEmitter();t.authenticated=true;t.send=m=>t.emit("message",{type:"extension.message-dom.inspected",requestId:m.requestId,payload:{...observed,tabId:7,frameId:0}});return collectMessageDomInspection(t,request);}
 function provider(messages) {const doc=new Element().append(...messages.map(m=>m.parent));const groups=Object.fromEntries(["composer","sendButton","stopButton","message","messageContainer","messageContent"].map(k=>[k,k==="message"?["[data-message-author-role]"]:["[data-message-content]"]]));const c={URL,document:doc,ChatGptBridgeSelectors:{version:"test",groups,resolveSendButtonState(){}},ChatGptBridgeResponseText:{elementText:n=>n.textContent}};c.globalThis=c;for(const file of ["extension/selectors/message-selectors.js","extension/runtime/page-provider-registry.js","extension/runtime/providers/chatgpt-page.js"])vm.runInNewContext(fs.readFileSync(path.join(root,file),"utf8"),c);return c.WebBridgePageProviders.provider("CHATGPT_WEB");}
+
+function searchBubble(body = text) {
+  const key = "turn:0:user";
+  const content = new Element("DIV", {"data-search-result-target":""}, body);
+  const bubble = new Element("DIV", {"data-user-message-bubble":"true", "data-user-message-has-prompt":"true"})
+    .append(content, new Element("SPAN", {}, "UI status"));
+  const scope = new Element("DIV", {"data-content-search-unit-key":key})
+    .append(bubble, new Element("BUTTON", {}, "Copy"));
+  const node = new Element("DIV", {"data-chatgpt-search-unit-key":key, "data-chatgpt-search-message-ids":"u1"}).append(scope);
+  const title = new Element("H4", {class:"sr-only"}, "You said:");
+  return { node, scope, bubble, title, parent:new Element().append(title, node) };
+}
+
+test("keyed user bubble projects only the uniquely bound body", async () => {
+  const m = searchBubble();
+  const [message] = provider([m]).readMessages();
+  assert.deepEqual({ id:message.id, role:message.role, text:message.text }, { id:"u1", role:"user", text });
+  const observed = await project(observe(m));
+  assert.equal(observed.result, "FOUND");
+  assert.equal(observed.matches[0].content.selector, "[data-search-result-target]");
+});
+
+test("keyed user bubble rejects mismatched keys, competing bodies and conflicting roles", () => {
+  for (const change of [
+    m => { m.scope.attrs["data-content-search-unit-key"] = "different:0:user"; },
+    m => { m.node.attrs["data-chatgpt-search-message-ids"] = "u1 u2"; },
+    m => { m.bubble.append(new Element("DIV", {"data-search-result-target":""}, text)); },
+    m => { m.scope.append(new Element("DIV", {"data-search-result-target":""}, text)); },
+    m => { m.title.text = "ChatGPT said:"; },
+  ]) {
+    const m = searchBubble();
+    change(m);
+    assert.equal(observe(m).result, "NOT_CONFIRMED");
+    assert.throws(() => provider([m]).readMessages(), { code:"UI_CONTRACT_CHANGED" });
+  }
+  const unmarked = searchBubble("Manually typed prompt");
+  unmarked.scope.append(new Element("BUTTON", {}, text));
+  assert.equal(provider([unmarked]).readMessages()[0].role, "user");
+  assert.equal(provider([unmarked]).readMessages()[0].text, "Manually typed prompt");
+  assert.equal(observe(unmarked).result, "NOT_CONFIRMED");
+  assert.throws(() => provider([searchBubble(), searchBubble()]).readMessages(), { code:"AMBIGUOUS_PROMPT_BINDING" });
+});
+
 test("R-01 unknown search suffix alone cannot establish FOUND or Provider binding",async()=>{const m=fixtureMessage("user",text,{heading:false,search:true,explicit:false});assert.equal(observe(m).result,"NOT_CONFIRMED");assert.throws(()=>provider([m]).readMessages(),{code:"UI_CONTRACT_CHANGED"});});
 test("R-02 explicit role attribute without independent heading is unconfirmed",()=>{assert.equal(observe(fixtureMessage("user",text,{heading:false})).result,"NOT_CONFIRMED");});
 test("R-03 another message heading cannot prove marked message",()=>{const a=fixtureMessage("user","unrelated"), b=fixtureMessage("user",text,{heading:false});assert.equal(observe(a,b).result,"NOT_CONFIRMED");});
@@ -51,6 +94,26 @@ test("R-03 server rejects heading proof moved to another message index",async()=
 test("Korean accessible heading preserves verified normal FOUND",async()=>{
   const m=fixtureMessage("user",text);m.title.text="내가 한 말:";
   assert.equal((await project(observe(m))).result,"FOUND");
+});
+test("Korean headings with appended speaker names prove the original message roles",async()=>{
+  const u=fixtureMessage("user",text,{search:true,explicit:false});
+  const a=fixtureMessage("assistant","answer",{search:true,explicit:false,id:"a1"});
+  u.title.text="내가 한 말:";
+  u.title.append(new Element("SPAN",{},"나"));
+  a.title.text="ChatGPT 답변:";
+  a.title.append(new Element("SPAN",{},"ChatGPT"));
+  a.parent.attrs=a.node.attrs;
+  a.node.attrs={};
+  a.parent.children=[a.title,a.content];
+  a.content.parentElement=a.parent;
+  assert.deepEqual(Array.from(provider([u,a]).readMessages(),m=>[m.id,m.role]),[["m1","user"],["a1","assistant"]]);
+  const o=observe(u,a);
+  assert.equal(o.result,"FOUND");
+  assert.equal(o.scope.unknownCount,0);
+  assert.equal((await project(o)).result,"FOUND");
+  u.title.append(new Element("SPAN",{},"추가"));
+  assert.equal(observe(u,a).result,"NOT_CONFIRMED");
+  assert.throws(()=>provider([u,a]).readMessages(),{code:"UI_CONTRACT_CHANGED"});
 });
 test("Provider cannot extract text outside its proven content branch",()=>{
   const m=fixtureMessage("user",text);const outer=new Element("ARTICLE",{"data-testid":"conversation-turn-1"},"unrelated prefix").append(m.parent);

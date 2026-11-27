@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-node src/server.js
+node scripts/start-live.mjs

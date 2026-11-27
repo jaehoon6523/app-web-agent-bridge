@@ -17,11 +17,19 @@ export const reporter = new URL('./test-completion-reporter.mjs', import.meta.ur
 // separate wall-clock budget for an entire file and its completion receipt.
 const DEFAULT_FILE_TIMEOUT_MS = 180000;
 const fileTimeouts = new Map([
+  // Each recovery boundary reopens the Controller and checks durable Git/SQLite state.
+  ['tests/audit-ack-recovery.test.js', 12 * 60 * 1000],
+  // Two full checkouts run real Git repair and the registered verification gate.
+  ['tests/selector-repair-cli.test.js', 8 * 60 * 1000],
+  // The default seed runs twelve sequential Git/worktree and SQLite pipelines.
+  ['tests/audit-fuzz.test.js', 6 * 60 * 1000],
+  // Twelve real Git/apply fixtures completed with receipts in 230s on Windows.
+  ['tests/generated/apply/B-APPLY-INPUT.gen.test.js', 6 * 60 * 1000],
   ['tests/runtime-cleanup/contract.test.js', 12 * 60 * 1000],
-  // One bounded setup plus eight 15-second cases and source cleanup.
-  ['tests/verification-command.test.js', 4 * 60 * 1000],
+  // One checkout plus nine controlled subprocess scenarios and source cleanup.
+  ['tests/verification-command.test.js', 6 * 60 * 1000],
   // Two full invocations and an early-failure invocation, including setup.
-  ['tests/source-checkout.test.mjs', 12 * 60 * 1000],
+  ['tests/source-checkout.test.mjs', 16 * 60 * 1000],
 ]);
 export function fileTimeoutMs(filename) {
   return fileTimeouts.get(path.relative(root,filename).split(path.sep).join('/')) ?? DEFAULT_FILE_TIMEOUT_MS;
@@ -185,7 +193,8 @@ export async function runFiles(files, {directory = path.join(root,'.agent-contro
   try {
     result.source = verificationSource(root); save();
     const diagnosticsEnabled = process.env.BRIDGE_PRIVATE_RECOVERY_DIAGNOSTICS === '1';
-    const isPrivateRecovery = file => path.relative(root,file).split(path.sep).join('/') === 'tests/audit-ack-private-recovery.test.js';
+    const isPrivateRecovery = file => /^tests\/audit-ack-private-recovery(?:-wire)?\.test\.js$/u.test(
+      path.relative(root,file).split(path.sep).join('/'));
     let privateRecoveryDiagnostics = null;
     if (diagnosticsEnabled && files.some(isPrivateRecovery)) {
       try {

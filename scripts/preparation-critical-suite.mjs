@@ -35,7 +35,7 @@ async function settle(service, timeoutMs = 15_000) {
   assert.equal(service.jobs.size, 0, "PreparationService did not settle before the critical-path deadline.");
 }
 
-async function runFullPath(t, { rawText, objective, providerHtml = null, expectedUi = [] }) {
+async function runFullPath(t, { rawText, objective, providerHtml = null, expectedUi = [], legacy = false }) {
   const observed = new Set();
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-critical-preparation-"));
   const database = path.join(root, "preparation.sqlite");
@@ -49,6 +49,14 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
     findRun: async () => null,
   };
   let service = new PreparationService(options);
+  if (legacy) {
+    const generate = service.generate.bind(service);
+    t.mock.method(service, "generate", async (context, deliveryId, preparedBinding) => {
+      delete context.deliveries.find(delivery => delivery.deliveryId === deliveryId).responseFormat;
+      await service.save();
+      return generate(context, deliveryId, preparedBinding);
+    });
+  }
   let serviceClosed = false;
   t.after(() => {
     if (!serviceClosed) service.close();
@@ -61,16 +69,15 @@ async function runFullPath(t, { rawText, objective, providerHtml = null, expecte
     targetRoot: root,
     conversationUrl: "https://chatgpt.com/",
   });
+  const assistant = browser.page.locator("[data-message-author-role='assistant']").first();
+  await assistant.waitFor();
+  await assistant.evaluate(element => element.setAttribute("data-talvt-turn-state", "complete"));
   await settle(service);
 
   const dispatchedPrompt = browser.commands.find((message) => message.type === "agent.prompt")?.payload?.text;
-  assert.match(dispatchedPrompt, /JSON\.parse/u);
-  assert.match(dispatchedPrompt, /Windows 경로는 C:\/path/u);
-  assert.match(dispatchedPrompt, /역슬래시.*\\\\/u);
-  assert.match(dispatchedPrompt, /Markdown escape나 코드 fence/u);
   assert.ok(dispatchedPrompt.includes(objective));
-  assert.ok(dispatchedPrompt.includes(`프로젝트 루트=${root}`));
-  assert.match(dispatchedPrompt, /기존 준비 문맥:\n\{"preparationId"/u);
+  assert.ok(dispatchedPrompt.includes(root.split(path.sep).join("/")));
+  assert.match(dispatchedPrompt, legacy ? /답변시작/u : /JSON 객체 하나/u);
 
   const domText = await browser.page.locator("[data-message-author-role='assistant'] [data-message-content]").innerText();
   assert.equal(domText, rawText);
@@ -174,7 +181,7 @@ test("incident 20260915 crosses every production preparation boundary without ch
   const expectedUi = readIncident("expected-ui.txt").trim().split(/\r?\n/u);
 
   assert.equal(sha256(rawText), expected.rawSha256);
-  const result = await runFullPath(t, { rawText, objective: "시계 앱", providerHtml, expectedUi });
+  const result = await runFullPath(t, { rawText, objective: "시계 앱", providerHtml, expectedUi, legacy:true });
   assert.equal(result.delivery.response.packet.type, expected.packetType);
   assert.equal(result.context.agreement.status, expected.agreementStatus);
   assert.equal(result.context.state, expected.contextState);
@@ -205,7 +212,7 @@ for (const variant of process.env.CRITICAL_GOLDEN_ONLY === "1" ? [] : metamorphi
         .replaceAll(variant.sourcePath, variant.targetPath),
       items,
     };
-    const rawText = `<controller_packet>\n${JSON.stringify(packet)}\n</controller_packet>`;
+    const rawText = JSON.stringify(packet, null, 2);
     const result = await runFullPath(t, {
       rawText,
       objective: variant.app,
@@ -221,6 +228,7 @@ if (process.env.CRITICAL_GOLDEN_ONLY !== "1") test("Windows backslashes are repa
   const invalidRaw = baseRaw.replaceAll("C:/Users/User/Desktop/pj", "C:\\Users\\User\\Desktop\\pj");
   const result = await runFullPath(t, {
     rawText: invalidRaw,
+    legacy:true,
     objective: "시계 앱",
     expectedUi: ["시계 앱", "요구사항 합의 완료"],
   });

@@ -112,5 +112,5 @@ test("content orchestration no longer embeds ChatGPT DOM or URL rules", () => {
     "document.querySelector(",
   ]) assert.equal(contentSource.includes(token), false, token);
   assert.match(contentSource, /WebBridgePageProviders/u);
-  assert.match(contentSource, /submitPrompt\(text, signal, \{ assertCanMutate \}\)/u);
+  assert.match(contentSource, /provider\.submitPrompt\(text, signal, \{ assertCanMutate, observe \}\)/u);
 });

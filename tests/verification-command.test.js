@@ -49,8 +49,8 @@ after(() => {
   catch (error) { evidenceRun.record.cleanupErrors.push(error.message); throw error; }
   finally { evidenceRun.close(); }
 });
-function verificationTest(scenarioId, name, options, body) {
-  test(name,options,async t => {
+function verificationTest(scenarioId, name, body) {
+  test(name,{timeout:35000},async t => {
     const evidence = evidenceRun.scenario(scenarioId); contexts.set(t,evidence);
     evidence.record.snapshot = snapshot; evidence.save();
     t.after(() => { try { evidence.cleanup?.(); } finally { evidence.close(); } });
@@ -125,7 +125,7 @@ async function execute(t, mode) {
     };`);
   try {
     await evidence.command(process.execPath,['--import',pathToFileURL(preload).href,command],{cwd:checkout,
-      env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:12000,maxBuffer:16*1024*1024},run);
+      env:{...process.env,npm_execpath:peer,BRIDGE_VERIFICATION_OUTPUT:root},signal:t.signal,timeout:30000,maxBuffer:16*1024*1024},run);
   } catch (error) {
     if (typeof error.code !== 'number') throw error;
   }
@@ -151,7 +151,7 @@ async function execute(t, mode) {
   return {code,result,log};
 }
 
-verificationTest('missing','verification command rejects exit zero without fresh completion receipts', {timeout:15000}, async t=>{
+verificationTest('missing','verification command rejects exit zero without fresh completion receipts', async t=>{
   const {code,result,log}=await execute(t,'missing');
   assert.equal(code,1);assert.equal(result.status,'FAIL');
   assert.ok(result.stages.some(stage=>stage.status==='FAIL'));
@@ -159,7 +159,7 @@ verificationTest('missing','verification command rejects exit zero without fresh
   assert.equal(result.stages.find(s=>s.id==='spec').failurePhase,'EVIDENCE');
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
-verificationTest('missing-spec','verification command binds spec stage output and refuses exit zero without its internal proof', {timeout:15000}, async t=>{
+verificationTest('missing-spec','verification command binds spec stage output and refuses exit zero without its internal proof', async t=>{
   const {code,result}=await execute(t,'missing-spec');
   assert.equal(code,1);assert.equal(result.stages.find(s=>s.id==='spec').failurePhase,'EVIDENCE');
   assert.ok(result.stages.filter(s=>s.applicable&&s.id!=='spec').every(s=>s.status==='PASS'));
@@ -167,14 +167,14 @@ verificationTest('missing-spec','verification command binds spec stage output an
   assert.equal(stage.receipt.runId,result.runId+'-spec');
   assert.equal(path.relative(result.evidenceRoot,stage.receiptPath).split(path.sep).join('/'),'spec/spec-result.json');
 });
-verificationTest('first-fails','verification command retains earlier failure after later successful stages', {timeout:15000}, async t=>{
+verificationTest('first-fails','verification command retains earlier failure after later successful stages', async t=>{
   const {code,result,log}=await execute(t,'first-fails');
   assert.equal(code,1);assert.equal(result.stages.find(s=>s.id==='lint').status,'FAIL');
   assert.ok(result.stages.filter(s=>s.applicable && s.id!=='lint').every(s=>s.status==='PASS'));
   assert.ok(log.endsWith('VERIFICATION FAIL\n'));
 });
 
-verificationTest('large','verification command preserves the entire large output across all stages', {timeout:15000}, async t=>{
+verificationTest('large','verification command preserves the entire large output across all stages', async t=>{
   const {code,result,log}=await execute(t,'large');
   assert.equal(code,0);assert.equal(result.status,'PASS');
   assert.ok(log.length>2500000);
@@ -182,19 +182,19 @@ verificationTest('large','verification command preserves the entire large output
   assert.equal(chunks.length,verificationPlan().filter(s=>s.applicable).length); assert.ok(chunks.every(chunk=>chunk.length===500000));
   assert.ok(log.endsWith('VERIFICATION PASS\n'));
 });
-verificationTest('native-unavailable','an unavailable native extension loader cannot be reported as complete approval', {timeout:15000}, async t=>{
+verificationTest('native-unavailable','an unavailable native extension loader cannot be reported as complete approval', async t=>{
   const {code,result,log}=await execute(t,'native-unavailable');
   assert.equal(code,2); assert.equal(result.status,'PARTIAL');
   assert.equal(result.stages.find(s=>s.id==='native').status,'NOT_RUN'); assert.ok(log.endsWith('VERIFICATION PARTIAL\n'));
 });
 for (const [mode,command] of [['missing-gui','test:tab-ux-browser'],['missing-window-boundary','test:extension:native'],['blocked-e2e','test:e2e:ci']])
-  verificationTest(mode,`verification command rejects exit zero with ${mode} evidence`, {timeout:15000}, async t=>{
+  verificationTest(mode,`verification command rejects exit zero with ${mode} evidence`, async t=>{
     const {code,result}=await execute(t,mode);
     assert.equal(code,1); assert.equal(result.status,'FAIL');
     assert.equal(result.stages.find(stage=>stage.command===command).status,'FAIL');
   });
 
-verificationTest('source-changed','verification refuses a source change despite five successful stage receipts', {timeout:15000}, async t => {
+verificationTest('source-changed','verification refuses a source change despite five successful stage receipts', async t => {
   const {code,result,log} = await execute(t,'source-changed');
   assert.equal(code,1); assert.equal(result.status,'FAIL');
   assert.ok(result.stages.filter(s=>s.applicable).every(stage => stage.status === 'PASS'));

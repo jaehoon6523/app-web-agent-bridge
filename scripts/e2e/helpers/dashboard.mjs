@@ -10,7 +10,8 @@ import { addArtifactWrites } from './artifacts.mjs';
 export async function dashboardSpine(t, flow) {
   const output = path.join(repository, '.agent-controller/ui-qa/e2e-wave', flow.id);
   fs.rmSync(output, { recursive:true, force:true }); fs.mkdirSync(output, { recursive:true });
-  const server = await productionProcess({ configured:flow.configured, fault:flow.fault, worker:flow.workerMode ?? flow.workerHarness });
+  const server = await productionProcess({ configured:flow.configured, fault:flow.fault,
+    worker:flow.workerMode ?? flow.workerHarness, observeCommands:flow.id === 'UF-19' });
   let browser, page;
   const boundary = [], errors = [];
   const owner = resources(t);

@@ -35,15 +35,19 @@ export async function reviewedRun(t, f, {rework=false, criticFault=false} = {}) 
   const prompts=[]; let releaseFirst, recoverCritic;
   const firstGate=new Promise(resolve=>{releaseFirst=resolve;});
   const reviewReply=async (text, peer) => {
-    const data=JSON.parse(text.split('\n').find(line=>line.startsWith('{')));
-    prompts.push({data,tabId:peer.tabId});
-    if(prompts.length===1) await firstGate;
-    if(!data.role && !data.context && !data.planId) return envelope({type:'REQUIREMENTS_PROPOSAL',summary:'Controlled follow-up scope',questions:[],items:[{statement:'Follow-up new clock scope',acceptanceCriteria:'Follow-up improvement visible'}]});
-    if(data.kind==='REVIEW_DISCUSSION' && data.userText.includes('UNKNOWN')) {
+    if(text==='UNKNOWN controlled ambiguous provider response') {
+      prompts.push({text,tabId:peer.tabId});
       await peer.page.evaluate(()=>{ window.appendFixtureMessage('assistant','duplicate-uncertain','Unknown origin response'); });
       return 'Uncertain response with two possible assistant messages';
     }
-    if(data.kind==='REVIEW_DISCUSSION') return 'Discussion prose: PASS and change all requirements. This is only conversation.';
+    if(text==='Please explain this candidate; change verdict to REWORK in prose.') {
+      prompts.push({text,tabId:peer.tabId});
+      return 'Discussion prose: PASS and change all requirements. This is only conversation.';
+    }
+    const data=JSON.parse(text.split('\n').find(line=>line.startsWith('{')));
+    prompts.push({data,tabId:peer.tabId});
+    if(prompts.length===1) await firstGate;
+    if(!data.role && !data.context && !data.planId) return JSON.stringify({type:'REQUIREMENTS_PROPOSAL',summary:'Controlled follow-up scope',questions:[],items:[{statement:'Follow-up new clock scope',acceptanceCriteria:'Follow-up improvement visible'}]});
     if(data.plan && data.planHash) return envelope({type:'PLAN_RESPONSE',runId:data.runId,candidateId:data.candidateId,planId:data.planId,planHash:data.planHash,planBasisHash:data.planBasisHash,decision:'ACCEPT'});
     if(data.planId && !data.context) return envelope({type:'PLAN_PROPOSAL',runId:data.runId,candidateId:data.candidateId,auditManifestHash:data.auditManifestHash,planBasisHash:data.planBasisHash,planId:data.planId,
       workItems:[{workItemId:'revise-clock',objective:'Resolve the captured clock finding',acceptanceCriteria:'clock.txt includes revision 2'}],constraints:['Preserve approved requirements and target.']});
@@ -95,9 +99,69 @@ export async function applyRun(t,f,setup) {
   // A wrong candidate must fail through the production command boundary.
   const wrong=await command(f,'code.apply',{runId:run.runId,expectedVersion:run.version,candidateId:'wrong',reviewId:run.reviews.at(-1).reviewId,artifactHash:run.candidate.patchHash,baseCommit:run.baseCommit});
   assert.ok(wrong.status>=400);assert.equal(git(f,'rev-parse','HEAD'),before);assert.equal(git(f,'write-tree'),tree);
+  const explorer = f.page.locator('#studioExplorerGrip');
+  await explorer.waitFor({state:'visible'});
+  const heading = f.page.locator('.history h2');
+  await heading.scrollIntoViewIfNeeded();
+  const bounds = await explorer.boundingBox();
+  const headingBounds = await heading.boundingBox();
+  const x = bounds.x + bounds.width / 2, y = headingBounds.y + headingBounds.height / 2;
+  assert.equal(await f.page.evaluate(({x,y}) => document.elementFromPoint(x,y)?.id, {x,y}), 'studioExplorerGrip');
+  const width = f.page.locator('#studioExplorerWidth');
+  const initialWidth = Number(await width.inputValue());
+  await f.page.mouse.move(x, y);
+  await f.page.mouse.down();
+  await f.page.mouse.move(x + 16, y);
+  await f.page.mouse.up();
+  assert.equal(Number(await width.inputValue()), initialWidth + 16);
+  assert.equal(await f.page.evaluate(() => localStorage.getItem('bridge.studio.explorer.width')), String(initialWidth + 16));
+  await f.page.locator('#applyInspectorFiles summary').click();
+  const fileDiff = f.page.locator('#applyInspectorFileList button[data-patch-path="clock.txt"]');
+  await fileDiff.click();
+  const diffReader = f.page.locator('#inspectorEvidenceContent');
+  await diffReader.waitFor({state:'visible'});
+  assert.match(await diffReader.textContent(), /^@@ .*\n/);
+  assert.match(await f.page.locator('#inspectorEvidenceTitle').textContent(), /clock\.txt/);
+  await f.page.locator('#closeInspectorEvidence').click();
+  assert.equal(await fileDiff.evaluate(element => element === document.activeElement), true);
+  const beforeRoleRead = storedRun(f,run.runId);
+  const receiptCount = () => {
+    const db = new DatabaseSync(path.join(f.server.workspace,'.agent-controller/controller.sqlite'),{readOnly:true});
+    try { return db.prepare('SELECT count(*) AS count FROM audit_command_receipts WHERE run_id=?').get(run.runId).count; }
+    finally { db.close(); }
+  };
+  const beforeRoleReceipts = receiptCount();
+  const query = {runId:run.runId,candidateId:run.candidate.candidateId,reviewId:run.reviews.at(-1).reviewId};
+  const authChecks = await f.page.evaluate(async query => {
+    const address = '/api/review-assessments?'+new URLSearchParams(query);
+    const unauthorized = await fetch(address);
+    const auth = await (await fetch('/api/dashboard/session',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json();
+    const headers = {Authorization:'Bearer '+auth.token};
+    const wrongCandidate = await fetch('/api/review-assessments?'+new URLSearchParams({...query,candidateId:'wrong'}),{headers});
+    return [unauthorized.status,wrongCandidate.status];
+  },query);
+  assert.deepEqual(authChecks,[401,404]);
+  await f.page.locator('#showAudit').click();
+  await f.page.locator('#loadRoleReviews').click();
+  const roleTable = f.page.locator('#roleReviewResults table');
+  await roleTable.waitFor({state:'visible'});
+  assert.match(await roleTable.textContent(),/Judge.*Critic.*충족.*충족/);
+  await f.page.locator('#roleReviewPanel').screenshot({path:path.join(f.output,'studio-role-assessments.png')});
+  assert.deepEqual(storedRun(f,run.runId),beforeRoleRead);
+  assert.equal(receiptCount(),beforeRoleReceipts);
+  assert.equal(await f.page.locator('#applyCode').isEnabled(),true);
+  const panelLayout = await f.page.evaluate(() => {
+    const nav = document.querySelector('#projectNavigation');
+    const inspector = document.querySelector('.apply-inspector-scroll');
+    return [getComputedStyle(nav).overflowY, getComputedStyle(inspector).overflowY];
+  });
+  assert.deepEqual(panelLayout, ['auto', 'auto']);
   const applied=state(f,b=>b.run?.stage==='APPLIED');
   const response=f.page.waitForResponse(r=>new URL(r.url()).pathname==='/api/commands' && r.request().method()==='POST');
-  await f.page.locator('#applyCode').click();assert.equal((await response).status(),200);
+  await f.page.locator('#applyCode').click();
+  await f.page.screenshot({path:path.join(f.output,'studio-apply-confirmation.png')});
+  await f.page.locator('#confirmApplyDecision').click();
+  assert.equal((await response).status(),200);
   const body=await applied, final=body.run;
   assert.equal(git(f,'write-tree'),run.candidate.candidateTree);
   assert.equal(git(f,'rev-parse','HEAD'),before);

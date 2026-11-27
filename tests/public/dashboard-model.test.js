@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { dashboard } from "../helpers/dashboard-ui.mjs";
 import { workflowForRun } from "../../src/orchestration/preparation-service.js";
 import { RunPhase } from "../../src/domain/vocabulary.js";
 import { fileURLToPath } from "node:url";
@@ -156,6 +157,19 @@ test("dashboard accepts separate Judge and Critic bindings for the same web acto
   ] }), /Duplicate session/);
 });
 
+test("dashboard normalizes legacy Judge runtime without filling missing current roles", () => {
+  const judge = {provider:"CHATGPT_WEB", availability:"AVAILABLE"};
+  const critic = {provider:"CLAUDE_WEB", availability:"UNAVAILABLE"};
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:judge}).reviewerRuntimes, {JUDGE:judge,CRITIC:null});
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:judge,reviewerRuntimes:{CRITIC:critic}}).reviewerRuntimes,
+    {JUDGE:null,CRITIC:critic});
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:judge,reviewerRuntimes:null}).reviewerRuntimes,
+    {JUDGE:null,CRITIC:null});
+  assert.deepEqual(normalizeDashboardState({reviewerRuntime:{provider:"CHATGPT_WEB"}}).reviewerRuntimes,
+    {JUDGE:{provider:"CHATGPT_WEB"},CRITIC:null});
+  assert.throws(() => normalizeDashboardState({reviewerRuntimes:{JUDGE:[]}}), /reviewerRuntimes.JUDGE/);
+});
+
 test("human input, controller relay, and agent output remain visually distinguishable", () => {
   assert.equal(classifyMessageOrigin({ source: "HUMAN" }).label, "HUMAN INPUT");
   assert.equal(classifyMessageOrigin({ source: "CONTROLLER_RELAY" }).label, "CONTROLLER RELAY");
@@ -206,9 +220,23 @@ test("dashboard starts mutation controls disabled until a canonical state arrive
 test("ambiguous delivery is never wired to the direct retry command", async () => {
   const source = await readFile(path.join(publicDir, "app.js"), "utf8");
   assert.match(source, /자동 재전송하지 않습니다/u);
-  assert.match(source, /command\("run\.retry"/u);
   assert.doesNotMatch(source, /command\("delivery\.retry"/u);
   assert.doesNotMatch(source, /\["FAILED",\s*"AMBIGUOUS"\].*delivery\.retry/su);
+  const run = {runId:"retry-worker", version:7, phase:"RECOVERY_REQUIRED", objective:"Retry failed worker"};
+  const state = {run, runs:[run], workflow:workflowForRun(run), preparation:null,
+    commandCapabilities:["run.retry"], preflight:{checks:{extensionAuthenticated:true}}};
+  const ui = await dashboard(state);
+  assert.equal(ui.elements.get("retryRun").disabled, false);
+  await ui.elements.get("retryRun").listeners.click();
+  const command = ui.calls.find(call => call.url === "/api/commands");
+  assert.equal(command.body.type, "run.retry");
+  assert.equal(command.body.payload.runId, run.runId);
+  assert.equal(command.body.payload.expectedVersion, run.version);
+  state.commandCapabilities = [];
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("retryRun").disabled, true);
+  await ui.elements.get("retryRun").listeners.click();
+  assert.equal(ui.calls.filter(call => call.url === "/api/commands").length, 1);
 });
 
 test("contract: dashboard state preserves canonical workflow identity and versions", () => {

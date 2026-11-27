@@ -93,6 +93,7 @@ try {
     assert.equal(counts.samples[0].acceptedByVisibility, false);
     assert.equal(snapshot.pageState.readyState, 'complete');
   }
+  await popup.getByText('탭 진단 및 로그',{exact:true}).click();
   await popup.locator('#inspectTabs').click();
   await popup.locator('#diagnosticTab').selectOption(String(tab.id));
   await popup.locator('#includeRawDiagnostic').check();

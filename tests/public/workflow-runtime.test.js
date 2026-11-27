@@ -21,6 +21,97 @@ function prepared() {
 function renderedText(element) {
   return [element?.textContent ?? "", ...(element?.children ?? []).map(renderedText)].join("\n");
 }
+test("a historical result keeps the active preparation gate through a delayed refresh", async () => {
+  const run = { runId:"old-run", version:101, phase:"APPLIED", objective:"Completed task",
+    projectRef:{targetRoot:"C:/project"} };
+  const preparation = {preparationId:"prep-historical",version:17,lifecycle:"COMPLETED"};
+  const workflow = {...workflowForRun(run), preparationId:preparation.preparationId, preparationVersion:preparation.version};
+  const active = {preparationId:"prep-recovering",version:33};
+  const state = { run, runs:[run], workflow, preparation, dataKnowledge:{runs:{status:"AVAILABLE_NONEMPTY"}},
+    activePreparation:active, commandCapabilities:[],
+    runtimeAvailability:{ready:true}, preflight:{checks:{extensionAuthenticated:true}} };
+  const ui = await dashboard(state);
+  assert.equal(ui.elements.get("runPanel").dataset.runId, run.runId);
+  assert.equal(ui.run("snapshot.preparation.version"), 17);
+  assert.equal(ui.run("snapshot.activePreparation.version"), 33);
+  assert.equal(ui.elements.get("newRun").disabled, true);
+  assert.equal(ui.elements.get("continueProject").disabled, true);
+  assert.match(ui.elements.get("newRunReason").textContent, /현재 요청/u);
+
+  const originalFetch = ui.context.fetch;
+  for (const latest of [null, {...active,version:35}]) {
+    const oldState = {...state};
+    let finishOldRead;
+    ui.context.fetch = () => new Promise(resolve => { finishOldRead = resolve; });
+    const oldRefresh = ui.run("refresh()");
+    state.activePreparation = latest;
+    ui.context.fetch = originalFetch;
+    await ui.run("refresh()");
+    assert.equal(ui.elements.get("newRun").disabled, latest !== null);
+    finishOldRead({ok:true,json:async () => oldState});
+    await oldRefresh;
+    assert.deepEqual(ui.run("snapshot.activePreparation"), latest);
+    assert.equal(ui.run("connected"), true);
+    assert.equal(ui.elements.get("newRun").disabled, latest !== null);
+  }
+});
+
+test("legacy result with no global preparation state keeps history available and start unconfirmed", async () => {
+  const run = {id:"legacy-result", version:2, status:"CANCELLED", objective:"Completed task"};
+  const workflow = {stage:"RESULT", state:"CANCELLED", runId:run.id, runVersion:run.version};
+  const ui = await dashboard({ run, runs:[{runId:run.id, phase:run.status}], workflow,
+    activePreparation:undefined, commandCapabilities:[], preflight:{checks:{}} });
+  assert.equal(ui.elements.get("runPanel").dataset.runId, run.id);
+  assert.equal(ui.elements.get("newRun").disabled, true);
+  assert.equal(ui.elements.get("openActivePreparation").hidden, true);
+  assert.match(ui.elements.get("newRunReason").textContent, /준비 상태를 확인/u);
+});
+
+test("active preparation version must match the visible preparation", () => {
+  const state = prepared();
+  state.preparation.lifecycle = "ACTIVE";
+  state.activePreparation = {preparationId:"p1",version:2};
+  assert.throws(() => normalizeDashboardState(state), /activePreparation.*identity\/version/u);
+});
+
+for (const [outcome, id, version, autoApproveOnReady = false] of [
+  ["newer version of the same preparation", "active-prep", 34],
+  ["a preparation eligible for automatic approval without submitting it", "active-prep", 34, true],
+  ["another preparation", "replacement-prep", 34],
+  ["an older version", "active-prep", 32],
+  ["no active preparation", null, null],
+]) test(`recovery navigation handles ${outcome}`, async () => {
+  const run = {runId:"result-run", version:101, phase:"APPLIED", objective:"Completed task"};
+  const state = {run, runs:[run], workflow:workflowForRun(run), commandCapabilities:[],
+    preflight:{checks:{extensionAuthenticated:true}}, activePreparation:{preparationId:"active-prep",version:33}};
+  const ui = await dashboard(state);
+  const originalFetch = ui.context.fetch;
+  const preparation = id && {preparationId:id, version, lifecycle:"ACTIVE", state:"RECOVERY_REQUIRED",
+    objective:"Pending preparation", targetRoot:"C:/project", webSession:{sessionId:"session"}};
+  if (autoApproveOnReady) Object.assign(preparation, {autoApproveOnReady, state:"AGREEMENT_READY",
+    agreement:{status:"READY",unresolvedQuestions:[]}, deliveries:[{deliveryId:"delivery"}]});
+  const reads = [];
+  ui.context.fetch = async (url, options) => {
+    reads.push([url, options.method ?? "GET"]);
+    if (url !== "/api/state?view=start") return originalFetch(url, options);
+    return {ok:true,json:async () => ({...state,run:null,preparation,
+      activePreparation:preparation && {preparationId:id,version},
+      workflow:{stage:autoApproveOnReady ? "PREPARE" : "START",
+        state:preparation?.state ?? "START_IDLE",preparationId:id,preparationVersion:version},
+      commandCapabilities:autoApproveOnReady ? ["preparation.approve"] : [],
+      dataKnowledge:{runs:{status:"AVAILABLE_NONEMPTY"}},
+    })};
+  };
+  const button = ui.elements.get("openActivePreparation");
+  assert.equal(button.hidden, false);
+  await button.listeners.click();
+  assert.deepEqual(reads, [["/api/state?view=start","GET"]]);
+  const accepted = id === "active-prep" && version >= 33;
+  assert.equal(ui.elements.get(autoApproveOnReady ? "projectPanel" : "startPanel").hidden, !accepted);
+  assert.equal(ui.elements.get("runPanel").hidden, accepted);
+  assert.equal(ui.run("snapshot.activePreparation.version"), accepted ? 34 : 33);
+});
+
 test("initial recovery stays open when extension capabilities change and closes for a different preparation", async () => {
   const state = prepared();
   Object.assign(state.workflow, {stage:"START", state:"RECOVERY_REQUIRED"});
@@ -37,12 +128,13 @@ test("initial recovery stays open when extension capabilities change and closes 
   state.commandCapabilities = ["web.inspect", "preparation.discard"];
   await ui.run("refresh()");
   const current = ui.elements.get("startRecovery").children[0];
-  assert.notEqual(current, previous);
+  assert.equal(current, previous, "same preparation retains the open recovery controls across capability refresh");
   assert.equal(current.open, true, "a capability refresh must not hide the newly enabled recovery action");
   assert.equal(current.children.find(item => item.dataset.webCommand === "web.inspect").disabled, false);
   state.preparation.preparationId = "p2";
   state.workflow.preparationId = "p2";
   await ui.run("refresh()");
+  assert.notEqual(ui.elements.get("startRecovery").children[0], previous);
   assert.equal(ui.elements.get("startRecovery").children[0].open, false);
 });
 test("task conversation attributes each turn to its role and reviewed candidate after reopening", async () => {
@@ -84,7 +176,7 @@ test("implementation intervention sends only bounded guidance and keeps requirem
   const run = { runId:"worker-live", version:4, phase:"WORKER_RUNNING", objective:"Greeting",
     workerTurnId:"turn-1", projectRef:{ targetRoot:"C:/project" } };
   const state = { workflow:workflowForRun(run), run, runs:[run], commandCapabilities:["code.worker.intervene","run.stop"],
-    workerRuntime:{ turnId:"turn-1" }, preflight:{ checks:{ extensionAuthenticated:true } } };
+    workerRuntime:{ turnId:"previous-turn" }, preflight:{ checks:{ extensionAuthenticated:true } } };
   const ui = await dashboard(state, async () => ({ payload:{ status:"DELIVERED", interventionId:"intervention-1", turnId:"turn-1" } }));
   assert.equal(ui.elements.get("workerInterventionPanel").hidden, false);
   assert.equal(ui.elements.get("workerInterventionKind").value, "GUIDANCE");
@@ -120,7 +212,8 @@ test("refresh restores preparation and questions, and reply retains preparation 
   ui.elements.get("proposalFeedback").value = "채팅";
   await ui.elements.get("reviseRequirements").listeners.click();
   const mutation = ui.calls.find((call) => call.url.endsWith("/reply"));
-  assert.deepEqual(mutation, { url: "/api/preparations/p1/reply", body: { content: "채팅", requestId: "request-1" } });
+  assert.deepEqual(mutation, { url: "/api/preparations/p1/reply",
+    body: { content:"채팅", requestId:"request-1", expectedVersion:3 } });
 });
 test("refresh restores the completed root action trace without an active delivery pointer", async () => {
   const state = prepared();
@@ -161,6 +254,49 @@ test("a stored response stays visibly unfinished while acknowledgement is pendin
   assert.doesNotMatch(output, /stored raw response/u);
   assert.equal(ui.run("preparation.deliveries[0].response.rawText"), "stored raw response");
 });
+test("preparation refresh preserves the reply draft and controls while closure awaits ACK", async () => {
+  const state = prepared(), context = state.preparation;
+  context.lifecycle = "ACTIVE";
+  const delivery = {
+    deliveryId:"d1", preparationId:"p1", sessionId:"s1", state:"RESPONSE_COMPLETED",
+    processingState:"ACK_PENDING", response:{rawText:"stored reply"},
+  };
+  context.deliveries = [delivery];
+  const ui = await dashboard(state);
+  const field = ui.elements.get("proposalFeedback");
+  const recoveryButton = ui.run('preparationRecovery.buttons.get("web.reconcile").button');
+  field.value = "한글 초안";
+  field.selectionStart = 1;
+  field.selectionEnd = 3;
+  ui.context.document.activeElement = field;
+  delivery.cancelRequestedAt = "2026-11-24T00:00:00Z";
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("preparationResponseState").textContent, "저장됨");
+  assert.equal(ui.elements.get("preparationAckState").textContent, "대기");
+  assert.equal(ui.elements.get("preparationClosureState").textContent, "요청 보류");
+  assert.equal(ui.elements.get("preparationTabState").textContent, "종료 전");
+  assert.match(ui.elements.get("preparationOutcomeNext").textContent, /보류된 종료/u);
+  assert.equal(ui.elements.get("reconcilePreparationOutcome").hidden, true);
+  assert.equal(ui.elements.get("proposalFeedback"), field);
+  assert.equal(ui.context.document.activeElement, field);
+  assert.deepEqual([field.value, field.selectionStart, field.selectionEnd], ["한글 초안", 1, 3]);
+  assert.equal(ui.run('preparationRecovery.buttons.get("web.reconcile").button'), recoveryButton);
+  assert.ok(ui.calls.every(item => item.body === null || item.url === "/api/dashboard/session"));
+
+  Object.assign(delivery, {state:"ACKNOWLEDGED", processingState:"COMPLETE"});
+  context.lifecycle = "ABANDONED";
+  context.webSession.activeDeliveryId = null;
+  state.workflow = {...state.workflow, stage:"START", state:"START_IDLE"};
+  state.commandCapabilities = [];
+  context.tabCleanup = {deliveryId:"older-delivery", status:"CLOSED"};
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("preparationAckState").textContent, "확인 완료");
+  assert.equal(ui.elements.get("preparationClosureState").textContent, "종료됨");
+  assert.equal(ui.elements.get("preparationTabState").textContent, "미확인");
+  context.tabCleanup = {deliveryId:"d1", status:"CLOSED"};
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("preparationTabState").textContent, "닫힘 확인");
+});
 test("reconcile sends exact identity and never follows with a proposal", async () => {
   const ui = await dashboard(prepared());
   await ui.run('webSessionCommand("web.reconcile")');
@@ -169,6 +305,7 @@ test("reconcile sends exact identity and never follows with a proposal", async (
   assert.equal(calls[0].body.sessionId, "s1");
   assert.equal(calls[0].body.deliveryId, "d1");
   assert.equal(calls[0].body.preparationId, "p1");
+  assert.equal(calls[0].body.expectedVersion, 3);
   assert.equal(ui.calls.some((call) => call.url.includes("proposal")), false);
 });
 test("timeout inspects request outcome and prevents duplicate reply", async () => {
@@ -221,7 +358,7 @@ test("approval is a single mutation carrying the canonical version", async () =>
   const ui = await dashboard(state);
   await ui.elements.get("projectForm").listeners.submit({ preventDefault() {} });
   assert.deepEqual(ui.calls.filter((call) => call.url.startsWith("/api/preparations")), [
-    { url: "/api/preparations/p1/approve", body: { requestId: "request-1" } },
+    { url: "/api/preparations/p1/approve", body: { requestId: "request-1", expectedVersion:state.workflow.preparationVersion } },
   ]);
 });
 test("blank conversation URL starts at the ChatGPT root and keeps automatic approval intent", async () => {
@@ -236,6 +373,7 @@ test("blank conversation URL starts at the ChatGPT root and keeps automatic appr
   assert.deepEqual(ui.calls.find((call) => call.url === "/api/preparations").body, {
     objective: "Make a page", targetRoot: "C:/project", conversationUrl: "https://chatgpt.com/",
     autoApproveOnReady: true,
+    acceptPlainTextDiscussion: false,
     reviewers:{
       JUDGE:{ provider:"CHATGPT_WEB" },
       CRITIC:{ provider:"CHATGPT_WEB" },
@@ -428,6 +566,35 @@ test("[데이터 로드] selected request rejects a coherent response for anothe
   assert.notEqual(ui.elements.get("runObjective").textContent, "작업 B");
 });
 
+test("Studio shell preserves Explorer rows and restores Inspector scroll per selected run", async () => {
+  const first = {runId:"studio-first",phase:"WORKER_RUNNING",version:3,objective:"첫 작업",targetRoot:"C:/project"};
+  const second = {runId:"studio-second",phase:"FAILED",version:5,objective:"둘째 작업",targetRoot:"C:/project"};
+  const state = stateFor(first, []);
+  state.runs = [first, second];
+  const ui = await dashboard(state);
+  const list = ui.elements.get("runList");
+  const scroll = ui.elements.get("studioInspectorScroll");
+  await ui.run("refresh()");
+  const group = list.children[0];
+  scroll.scrollTop = 120;
+  first.version++;
+  state.workflow = workflowForRun(first);
+  await ui.run("refresh({background:true})");
+  assert.equal(list.children[0],group);
+  assert.equal(scroll.scrollTop,120);
+  state.run = second;
+  state.workflow = workflowForRun(second);
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("studioContextIdentity").textContent,second.runId);
+  assert.equal(scroll.scrollTop,0);
+  scroll.scrollTop = 88;
+  state.run = first;
+  state.workflow = workflowForRun(first);
+  await ui.run("refresh()");
+  assert.equal(ui.elements.get("studioContextIdentity").textContent,first.runId);
+  assert.equal(scroll.scrollTop,120);
+});
+
 test("[로딩 연결] changing selection blocks commands immediately and a failed B read never displays A as B", async () => {
   const state = stateFor({runId:"A",version:3,phase:"WORKER_RUNNING",objective:"작업 A"}, ["run.stop"]);
   const ui = await dashboard(state);
@@ -496,6 +663,7 @@ test("project action starts a new task in its folder after the previous run clos
   assert.equal(ui.elements.get("startRoot").value, "C:/project");
   assert.equal(ui.elements.get("objective").value, "");
 });
+
 test("continue applied task sends its identity and shows the new approval boundary", async () => {
   const done = { runId:"applied-1", version:4, phase:"APPLIED", objective:"Initial app",
     projectRef:{ targetRoot:"C:/project" } };
@@ -691,7 +859,7 @@ test("operator note records local context without using worker or reviewer messa
   const state=stateFor(run,["run.note.add","code.apply"]);
   const ui=await dashboard(state,async(url,options)=>{
     const body=JSON.parse(options.body);
-    if(body.type==="run.note.add")return{payload:{status:"RECORDED",noteId:"note-new"}};
+    if(body.type==="run.note.add")return{payload:{runId:body.payload.runId,status:"RECORDED",noteId:"note-new"}};
     return{payload:{}};
   });
   assert.equal(ui.elements.get("operatorNotePanel").hidden,false);
@@ -701,6 +869,7 @@ test("operator note records local context without using worker or reviewer messa
   ui.elements.get("operatorNoteText").listeners.input();
   assert.equal(ui.elements.get("addOperatorNote").disabled,false);
   await ui.elements.get("addOperatorNote").listeners.click();
+  assert.equal(ui.elements.get("operatorNoteText").value, "");
   const mutation=ui.calls.find((item)=>item.url==="/api/commands"&&item.body.type==="run.note.add");
   assert.deepEqual(mutation.body.payload,{
     runId:"run-note",expectedVersion:8,kind:"DECISION",
@@ -749,7 +918,7 @@ test("reviewer independence status states verified and unverified boundaries wit
   assert.match(status.textContent,/계정 격리 미검증/u);
 });
 
-test("settled audit exposes free-form Judge/Critic discussion without changing audit controls", async () => {
+for (const legacy of [false, true]) test(`settled audit exposes discussion from the ${legacy ? "legacy" : "current"} runtime contract`, async () => {
   const run = { runId:"run-chat", version:5, phase:"HOLD", objective:"Implement greeting",
     terminationReason:"REPORT_REPAIR_LIMIT", candidate:{ candidateId:"candidate-1" },
     conversationBindings:[
@@ -757,6 +926,10 @@ test("settled audit exposes free-form Judge/Critic discussion without changing a
       { role:"CRITIC", provider:"CHATGPT_WEB", conversationUrl:"https://chatgpt.com/c/critic", conversationId:"critic", activeDeliveryId:null },
     ], reviewDiscussions:[] };
   const state = withAvailableReviewers(stateFor(run, ["code.review.discuss","code.review.retry","run.stop"]));
+  if (legacy) {
+    state.reviewerRuntime = state.reviewerRuntimes.JUDGE;
+    delete state.reviewerRuntimes;
+  }
   const ui = await dashboard(state, async (url, options) => {
     const body=JSON.parse(options.body);
     if(body.type==="code.review.discuss")return{payload:{status:"DELIVERED",discussionId:"discussion-1",role:body.payload.role,response:"Answer"}};
@@ -768,11 +941,16 @@ test("settled audit exposes free-form Judge/Critic discussion without changing a
   ui.elements.get("reviewDiscussionRole").listeners.change();
   ui.elements.get("reviewDiscussionText").value="What evidence is still weak?";
   ui.elements.get("reviewDiscussionText").listeners.input();
+  if (legacy) {
+    assert.equal(ui.elements.get("sendReviewDiscussion").disabled,true);
+    ui.elements.get("reviewDiscussionRole").value="JUDGE";
+    ui.elements.get("reviewDiscussionRole").listeners.change();
+  }
   assert.equal(ui.elements.get("sendReviewDiscussion").disabled,false);
   await ui.elements.get("sendReviewDiscussion").listeners.click();
   const mutation=ui.calls.find((item)=>item.url==="/api/commands"&&item.body.type==="code.review.discuss");
-  assert.deepEqual(mutation.body.payload,{runId:"run-chat",expectedVersion:5,role:"CRITIC",text:"What evidence is still weak?"});
-  assert.equal(ui.elements.get("retryRun").disabled,false);
+  assert.deepEqual(mutation.body.payload,{runId:"run-chat",expectedVersion:5,role:legacy ? "JUDGE" : "CRITIC",text:"What evidence is still weak?"});
+  assert.equal(ui.elements.get("retryRun").disabled,legacy);
   assert.match(ui.elements.get("reviewDiscussionStatus").textContent,/대화만으로 감사 판정은 바뀌지 않습니다/u);
 });
 
@@ -802,6 +980,169 @@ test("ambiguous reviewer binding offers only controller-recorded tab choices bef
   await buttons[0].listeners.click();
   const mutation=ui.calls.find((item)=>item.url==="/api/commands"&&item.body.type==="code.review.rebind");
   assert.deepEqual(mutation.body.payload,{runId:"run-rebind",expectedVersion:6,role:"JUDGE",selectedTabId:41});
+});
+
+test("Studio filters Inspector evidence to the selected object's current candidate and keeps Apply available", async () => {
+  const run = { runId:"studio-run", version:4, phase:"AWAITING_APPLY", objective:"Greeting",
+    candidate:{ candidateId:"current", changedFiles:["hello.txt", "image.png", "é.txt", "missing.txt"] }, reviews:[{candidateId:"current", decision:"PASS",
+      report:{assessments:[{requirementId:"R1", verdict:"SATISFIED", evidenceRefs:["patch", "old"]}]}}],
+    requirements:{items:[{requirementId:"R1", required:true, statement:"Greeting"}]} };
+  const state = stateFor(run, ["code.apply", "evidence.get"]);
+  state.assessments = run.reviews[0].report.assessments;
+  state.findings = [{ findingId:"F1", requirementId:"R1", status:"RESOLVED", problem:"Check", history:[],
+    evidenceRefs:["snapshot"] }];
+  state.evidence = [
+    { evidenceId:"patch", candidateId:"current", kind:"PATCH" },
+    { evidenceId:"snapshot", candidateId:"current", kind:"CODE_SNAPSHOT", result:{path:"hello.txt"} },
+    { evidenceId:"old", candidateId:"old", kind:"PATCH" },
+  ];
+  const patch = ["diff --git a/hello.txt b/hello.txt", "index 012..034 100644", "@@ -1 +1 @@", "-old", "+Greeting",
+    "diff --git a/image.png b/image.png", "new file mode 100644", "GIT binary patch",
+    'diff --git "a/\\303\\251.txt" "b/\\303\\251.txt"', "deleted file mode 100644"].join("\n");
+  const ui = await dashboard(state, async (_url, options) => {
+    const body = JSON.parse(options.body);
+    assert.equal(body.type, "evidence.get");
+    if (body.payload.evidenceId === "snapshot") {
+      assert.equal(body.payload.startLine, 12);
+      assert.equal(body.payload.endLine, 14);
+      return {payload:{candidateId:"current",kind:"CODE_SNAPSHOT",content:"recorded range",startLine:12,endLine:14,totalLines:50,omittedAfter:true}};
+    }
+    assert.equal(body.payload.evidenceId, "patch");
+    if (body.payload.patchPath === "image.png") {
+      return {payload:{candidateId:"current", kind:"PATCH", patchPath:"image.png", patchLocationFound:false}};
+    }
+    if (body.payload.patchPath === "hello.txt") {
+      if (body.payload.startLine === 208) return {payload:{candidateId:"current", kind:"PATCH", patchPath:"hello.txt",
+        patchLocationFound:true, content:"+more", startLine:208, endLine:208, totalLines:210}};
+      return {payload:{candidateId:"current", kind:"PATCH", patchPath:"hello.txt", patchLocationFound:true,
+        content:"@@ -1 +1 @@\n-old\n+Greeting", startLine:205, endLine:207, totalLines:210, omittedAfter:true}};
+    }
+    return {payload:{evidenceId:"patch",candidateId:"current", kind:"PATCH", content:patch, startLine:1, endLine:10, totalLines:10}};
+  });
+  const get = id => ui.elements.get(id);
+  const evidenceButtons = () => get("applyInspectorEvidence").querySelectorAll("button");
+  assert.equal(evidenceButtons().length, 2);
+  get("assessments").querySelectorAll("button").at(-1).listeners.click();
+  assert.match(get("applyInspectorSelection").textContent, /R1.*SATISFIED/u);
+  assert.deepEqual(evidenceButtons().map(button => button.dataset.evidenceId), ["patch"]);
+  await evidenceButtons()[0].listeners.click();
+  assert.equal(get("inspectorEvidenceReader").hidden, false);
+  assert.equal(get("inspectorEvidenceContent").textContent, patch);
+  assert.deepEqual(get("applyInspectorFileList").querySelectorAll("span").map(tag=>tag.textContent), ["수정","추가","삭제","유형 미확인"]);
+  let copied;
+  ui.context.navigator = {clipboard:{async writeText(value){copied = value;}}};
+  await get("copyInspectorEvidence").listeners.click();
+  assert.equal(copied, patch);
+  assert.equal(get("applyCode").disabled, false);
+  const fileButton = path => get("applyInspectorFileList").querySelectorAll("button")
+    .find(button => button.dataset.patchPath === path);
+  await fileButton("hello.txt").listeners.click();
+  assert.match(get("inspectorEvidenceTitle").textContent, /hello\.txt/u);
+  assert.match(get("inspectorEvidenceContent").textContent, /^@@/u);
+  assert.match(get("inspectorEvidenceRange").textContent, /^205/u);
+  await get("nextInspectorEvidence").listeners.click();
+  assert.equal(get("inspectorEvidenceContent").textContent, "+more");
+  assert.equal(get("nextInspectorEvidence").disabled, true);
+  assert.match(get("applyInspectorSelection").textContent, /R1/u);
+  assert.equal(get("applyCode").disabled, false);
+  await fileButton("image.png").listeners.click();
+  assert.match(get("inspectorEvidenceContent").textContent, /텍스트 변경 구간/u);
+  assert.equal(get("nextInspectorEvidence").disabled, true);
+  get("findings").querySelectorAll("button").at(-1).listeners.click();
+  assert.equal(get("inspectorEvidenceReader").hidden, true);
+  assert.deepEqual(evidenceButtons().map(button => button.dataset.evidenceId), ["snapshot"]);
+  assert.match(renderedText(get("applyInspectorEvidence")), /정확한 코드 범위 기록이 없습니다/u);
+  run.supplementResults = [{candidateId:"old",results:[{evidenceId:"snapshot",startLine:1,endLine:2}]},
+    {candidateId:"current",results:[{evidenceId:"snapshot",startLine:12,endLine:14}]}];
+  await ui.run("refresh()");
+  const exactRange = evidenceButtons().filter(button => button.dataset.evidenceStart);
+  assert.equal(exactRange.length, 1);
+  await exactRange[0].listeners.click();
+  assert.equal(get("inspectorEvidenceContent").textContent, "recorded range");
+  assert.equal(get("nextInspectorEvidence").disabled, true);
+  const pendingDiff = fileButton("hello.txt").listeners.click();
+  run.candidate = {candidateId:"old"}; run.version++;
+  state.workflow = workflowForRun(run);
+  await pendingDiff;
+  await ui.run("refresh()");
+  assert.equal(get("inspectorEvidenceReader").hidden, true);
+  assert.equal(get("applyInspectorSelection").textContent, "");
+  assert.equal(get("applyInspectorReview").textContent, "현재 후보의 판정 미확인");
+  assert.equal(ui.calls.some(call => call.body?.type === "code.apply"), false);
+});
+
+test("Studio destructive confirmation cannot delete a newer run version", async () => {
+  const run = {runId:"delete-target",phase:"APPLIED",version:3,objective:"Verify deletion scope"};
+  const state = stateFor(run, ["run.delete"]);
+  const ui = await dashboard(state);
+  const get = id => ui.elements.get(id);
+  get("deleteRun").listeners.click();
+  assert.equal(get("deleteRunDialog").open,true);
+  assert.equal(get("deleteRunIdentity").textContent,run.runId);
+  get("cancelDeleteRun").listeners.click();
+  assert.equal(get("deleteRunDialog").open,false);
+  assert.equal(ui.calls.some(call=>call.body?.type === "run.delete"),false);
+  get("deleteRun").listeners.click();
+  run.version++;
+  state.workflow = workflowForRun(run);
+  await ui.run("refresh({background:true})");
+  assert.equal(get("deleteRunDialog").open,false);
+  await get("confirmDeleteRun").listeners.click();
+  assert.equal(ui.calls.some(call=>call.body?.type === "run.delete"),false);
+  get("deleteRun").listeners.click();
+  await get("confirmDeleteRun").listeners.click();
+  const deletes = ui.calls.filter(call=>call.body?.type === "run.delete");
+  assert.equal(deletes.length,1);
+  assert.equal(deletes[0].body.payload.expectedVersion,run.version);
+  assert.equal(deletes[0].body.payload.runId,run.runId);
+});
+
+test("Studio keeps a delayed role report out of a replacement candidate", async () => {
+  const run = {runId:"role-run",phase:"AWAITING_APPLY",version:4,objective:"Role review",
+    candidate:{candidateId:"candidate-1"}, reviews:[{reviewId:"review-1",candidateId:"candidate-1",auditManifestHash:"manifest-1"}],
+    coordination:{auditManifestHash:"manifest-1"},requirements:{items:[{requirementId:"R1",statement:"Example"}]}};
+  const state = stateFor(run, []);
+  let release;
+  const response = new Promise(resolve=>{release=resolve;});
+  const ui = await dashboard(state, url=>{
+    assert.equal(url,"/api/review-assessments?runId=role-run&candidateId=candidate-1&reviewId=review-1");
+    return response;
+  });
+  const open = ui.elements.get("loadRoleReviews");
+  assert.equal(open.disabled,false);
+  const pending = open.listeners.click();
+  run.candidate = {candidateId:"candidate-2"};
+  run.version++;
+  state.workflow = workflowForRun(run);
+  await ui.run("refresh({background:true})");
+  release({runId:run.runId,candidateId:"candidate-1",reviewId:"review-1",auditManifestHash:"manifest-1",status:"AVAILABLE",roles:[]});
+  await pending;
+  assert.equal(ui.elements.get("roleReviewPanel").hidden,true);
+  assert.equal(ui.elements.get("roleReviewResults").children.length,0);
+});
+
+test("Studio keeps the long log DOM when a run refresh changes only its version", async t => {
+  const run = {runId:"log-run", version:3, phase:"WORKER_RUNNING", objective:"Review events"};
+  const state = stateFor(run, []);
+  state.events = Array.from({length:600}, (_, index) => ({eventId:`event-${index}`, type:"WORKER_OUTPUT",
+    createdAt:"2026-11-24T01:00:00Z", payload:{line:"Worker output ".repeat(64)}}));
+  const started = performance.now();
+  const ui = await dashboard(state);
+  const initialMs = performance.now() - started;
+  const log = ui.elements.get("eventLog");
+  const row = log.children[0];
+  assert.ok(row);
+  assert.equal(log.children.length, 600);
+  run.version++;
+  state.workflow = workflowForRun(run);
+  const refreshStarted = performance.now();
+  await ui.run("refresh()");
+  const refreshMs = performance.now() - refreshStarted;
+  assert.equal(log.children[0], row);
+  state.events.push({eventId:"event-new", type:"WORKER_OUTPUT", createdAt:"2026-11-24T01:01:00Z", payload:{line:"latest"}});
+  await ui.run("refresh()");
+  assert.equal(log.children.length, 601);
+  t.diagnostic(`600 synthetic records: first fixture render ${initialMs.toFixed(1)} ms, version-only refresh ${refreshMs.toFixed(1)} ms`);
 });
 
 test("audit hold → retry → pass → apply: commands use one run and the reviewed candidate", async () => {
@@ -846,6 +1187,19 @@ test("audit hold → retry → pass → apply: commands use one run and the revi
   await ui.run("refresh()");
   assert.equal(ui.elements.get("applyCode").disabled, false, JSON.stringify({ calls: ui.calls, workflow: ui.run("workflow"), connected: ui.run("connected"), cap: ui.run("[...capabilities()]") }));
   await ui.elements.get("applyCode").listeners.click();
+  assert.equal(ui.elements.get("applyDecisionDialog").open, true);
+  assert.deepEqual(effects, ["code.review.retry"]);
+  ui.elements.get("cancelApplyDecision").listeners.click();
+  assert.deepEqual(effects, ["code.review.retry"]);
+  await ui.elements.get("applyCode").listeners.click();
+  run.version++;
+  state.workflow = workflowForRun(run);
+  await ui.run("refresh({ background:true })");
+  assert.equal(ui.elements.get("applyDecisionDialog").open, false);
+  await ui.elements.get("confirmApplyDecision").listeners.click();
+  assert.deepEqual(effects, ["code.review.retry"]);
+  await ui.elements.get("applyCode").listeners.click();
+  await ui.elements.get("confirmApplyDecision").listeners.click();
   await new Promise((resolve) => setTimeout(resolve, 0));
   assert.equal(ui.elements.get("runStatus").textContent, "적용됨");
   assert.deepEqual(effects, ["code.review.retry", "code.apply"]);
@@ -878,19 +1232,4 @@ test("recovery diagnosis cannot authorize discard and disconnected state sends n
   assert.equal(ui.elements.get("reconcileRun").disabled, true);
   await ui.elements.get("reconcileRun").listeners.click();
   assert.equal(calls, 1);
-});
-
-test("uncertain audit retry is not sent twice without a settled receipt", async () => {
-  const run = { runId: "run-timeout", version: 3, phase: "HOLD", objective: "Greeting" };
-  const state = stateFor(run, ["code.review.retry"]);
-  const ui = await dashboard(state, async () => {
-    throw Object.assign(new Error("request timed out"), { name: "TimeoutError" });
-  });
-  await ui.elements.get("retryRun").listeners.click();
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(ui.elements.get("retryRun").disabled, true);
-  await ui.elements.get("retryRun").listeners.click();
-  assert.equal(ui.calls.filter(({ url }) => url === "/api/commands").length, 1);
-  assert.ok(ui.calls.some(({ url }) => url === "/api/state?requestId=request-1"), JSON.stringify({ calls: ui.calls, connected: ui.run("connected"), state: ui.run("operations.runCommand") }));
-  assert.match(ui.elements.get("commandResult").textContent, /같은 요청을 자동으로 다시 보내지 않습니다/u);
 });

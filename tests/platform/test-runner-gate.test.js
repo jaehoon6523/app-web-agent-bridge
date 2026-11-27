@@ -104,5 +104,9 @@ test('slow lock failures do not start further deletion attempts after expiry', a
 test('cleanup contract has a separate file budget from ordinary tests', () => {
   const repoRoot = fileURLToPath(new URL('../../', import.meta.url));
   assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/runtime-cleanup/contract.test.js')),720000);
+  assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/generated/apply/B-APPLY-INPUT.gen.test.js')),360000);
+  assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/audit-fuzz.test.js')),360000);
+  assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/audit-ack-recovery.test.js')),720000);
+  assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/selector-repair-cli.test.js')),480000);
   assert.equal(fileTimeoutMs(path.join(repoRoot,'tests/test-completion-gate.test.js')),180000);
 });

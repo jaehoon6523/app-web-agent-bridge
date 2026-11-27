@@ -47,9 +47,17 @@ test("a failing diagnostic sink cannot change authentication or HTTP results",as
 });
 
 
-test("successful preparation initialization keeps native SQLite calls fail-fast",t=>{
+test("preparation initialization keeps SQLite calls fail-fast and skips unchanged writes",t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),"bridge-preparation-lock-policy-"));
-  const service=new PreparationService({filename:path.join(root,"preparation.sqlite"),web:null,available:()=>false,assertStart:async()=>{},approve:async()=>{},findRun:async()=>null});
+  const options={filename:path.join(root,"preparation.sqlite"),web:null,available:()=>false,assertStart:async()=>{},approve:async()=>{},findRun:async()=>null};
+  let service=new PreparationService(options);
   t.after(()=>{service.close();fs.rmSync(root,{recursive:true,force:true})});
   assert.equal(service.db.prepare("PRAGMA busy_timeout").get().timeout,0);
+  const query="SELECT json FROM preparation_state WHERE id=1";
+  assert.equal(service.db.prepare(query).get(),undefined);
+  const saved=JSON.stringify(service.data,null,2);
+  service.db.prepare("INSERT INTO preparation_state VALUES (1, ?)").run(saved);
+  service.close();
+  service=new PreparationService(options);
+  assert.equal(service.db.prepare(query).get().json,saved);
 });

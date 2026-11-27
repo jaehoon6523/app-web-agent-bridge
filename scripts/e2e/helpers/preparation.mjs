@@ -11,7 +11,7 @@ export const preparationPackets = [
   { type:'REQUIREMENTS_PROPOSAL', summary:'H-PREP initial scope', questions:['Should the display include seconds?'], items:[{ statement:'Display a clock', acceptanceCriteria:'A clock is visible on the page' }] },
   { type:'REQUIREMENTS_PROPOSAL', summary:'H-PREP agreed scope with seconds', questions:[], items:[{ statement:'Display a clock including seconds', acceptanceCriteria:'Hours, minutes and seconds are visible' }] },
 ];
-const raw = packet => `<controller_packet>\n${JSON.stringify(packet)}\n</controller_packet>`;
+const raw = packet => JSON.stringify(packet);
 
 async function observedPreparation(f, predicate) {
   const body = await waitForState(f.page, body => body.preparation && predicate(body.preparation), {timeout:20000});
@@ -103,7 +103,7 @@ export async function preparationHarness(t, f, { revise = false, afterPreparatio
       responseCount++;
       assert.ok(responseCount <= preparationPackets.length, 'Unexpected provider submission');
       assert.ok(text.includes(preparationObjective));
-      assert.ok(text.includes(f.server.workspace));
+      assert.ok(text.includes(fs.realpathSync(f.server.workspace).split(path.sep).join('/')));
       if (responseCount === 2) { receivedSecond(); await secondReleased; }
       return raw(preparationPackets[responseCount - 1]);
     },

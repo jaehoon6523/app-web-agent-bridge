@@ -3,13 +3,15 @@ import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
+import { createHash } from 'node:crypto';
 import { createExtensionStateStore } from '../extension/runtime/storage.js';
 import { createDeliveryReview, deliveryOwner, createServerDeliveryInspector } from '../extension/runtime/delivery-review.js';
 import { discardExactDelivery } from '../extension/runtime/delivery-discard.js';
 import { createActiveTurnGate } from '../extension/runtime/turn-guard.js';
 import { handleDeliveryAcknowledgement } from '../extension/runtime/delivery-ack.js';
 import { classifyDeliveryOwnership, inspectDeliveryOwnership, installDeliveryOwnershipInspection } from '../src/orchestration/delivery-ownership.js';
-import { createDeliveryRecoveryActions } from '../src/orchestration/delivery-recovery-actions.js';
+import { assertQueuedPreparationAck, createDeliveryRecoveryActions } from '../src/orchestration/delivery-recovery-actions.js';
+import { createDeliveryRecoveryAudit } from '../src/diagnostics/delivery-recovery-audit.js';
 import { persistWebDeliveryReceipt } from '../src/orchestration/web-delivery-receipts.js';
 import { ArtifactStore } from '../src/evidence/artifact-store.js';
 import { setupAudit } from './helpers/audit-fixtures.js';
@@ -26,6 +28,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
   const store = createExtensionStateStore({ get: async () => structuredClone(saved), set: async value => { saved = structuredClone(value); } });
   const turnGate = createActiveTurnGate(), opened = [];
   const tabs = { sendMessage: async () => ({ ok: true, busy: false, generating: false, documentId: 'doc', ...page }),
+    query: async () => [{ id:7, url:'https://chatgpt.com/c/test' }],
     get: async () => ({ id: 7, url: 'https://chatgpt.com/c/test' }), update: async (...value) => opened.push(value),
     create: async value => opened.push(value) };
   let inspected = 0;
@@ -38,7 +41,7 @@ async function harness({ serverStatus = 'MISSING', serverRecords = [], page = {}
 }
 
 test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as success', () => {
-  const ids = ['openPairing','recoveryOutcome','ownershipConfirmed','status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
+  const ids = ['connectionSummary','openPairing','recoveryOutcome','ownershipConfirmed','status','detail','controllerUrl','sharedSecret','save','reconnect','legacyRecovery','clearLegacy',
     'deliveryRecovery','recoveryDetail','inspectDelivery','openDelivery','openController','discardOrphan','discardReason',
     'unresolvedConfirmed','noResendConfirmed','orphanOwnershipCleanupConfirmed','pageUnconfirmed'];
   const nodes = Object.fromEntries(ids.map(id => [id, { value: '', textContent: '', checked: false }]));
@@ -49,7 +52,7 @@ test('popup never presents AMBIGUOUS plus unresolved delivery plus ready root as
     startTab: { tabId: 8, ready: true }, bindingError: 'CONTENT_SCRIPT_INJECTION_FAILED: Original cause',
     bindingRecovery: { message: 'Inspect this delivery' }, deliveryPhase: 'UNRESOLVED' };
   vm.runInContext('render({ok:true,state})', context);
-  assert.equal(nodes.status.className, 'badge bad'); assert.equal(nodes.status.textContent, '전송 확인 필요');
+  assert.equal(nodes.detail.className, 'detail-error'); assert.equal(nodes.status.textContent, '전송 확인 필요');
   assert.match(vm.runInContext("connectionDiagnosticText", context), /Original cause/u); assert.match(vm.runInContext("connectionDiagnosticText", context), /Inspect this delivery/u);
   assert.doesNotMatch(nodes.detail.textContent, /Original cause|identity:/u);
   assert.match(vm.runInContext("connectionDiagnosticText", context), /tab 8/u); assert.equal(nodes.deliveryRecovery.hidden, false);
@@ -287,19 +290,19 @@ test('receipt persistence rejects different bytes under the same delivery identi
   assert.throws(() => persistWebDeliveryReceipt(service, 'r', 'JUDGE', 'd', { ...response, body: 'Different' }), { code: 'DELIVERY_RECEIPT_MISMATCH' });
 });
 
-function recoveryHarness({responseStored = true} = {}) {
+function recoveryHarness({responseStored = true, audit} = {}) {
   const owner = { currentDeliveryId: 'd', sessionId: 's', runId: 'r', conversationUrl: 'https://chatgpt.com/c/test' };
   let run = { runId: 'r', conversationBindings: [{ role: 'JUDGE', sessionId: 's', conversationUrl: owner.conversationUrl, activeDeliveryId: 'd' }],
     webDeliveryReceipts: responseStored ? [{ deliveryId: 'd', sessionId: 's', conversationUrl: owner.conversationUrl, state: 'ACK_PENDING',
       responseRef: { sha256: 'response' }, packetRef: { sha256: 'packet' } }] : [] };
   let observed = { ...owner, hasCompletedDelivery: false, pageReachable: true, pageBusy: false, generating: false, extensionBusy: false };
-  let dropDiscardReply = false, dropAckReply = false, validEvidence = true, discardCalls = 0, ackCalls = 0;
+  let dropDiscardReply = false, discardReceipt = true, dropAckReply = false, validEvidence = true, discardCalls = 0, ackCalls = 0;
   const codeChanges = { jobs: new Map(), workers: new Map(), reviewerWebBusy: () => false,
     get: () => run, update: (_id, patch) => { run = { ...run, ...patch }; }, artifactStore: { verify: () => validEvidence } };
   const web = { inspect: async () => ({ binding: { ...owner } }), inspectDelivery: async () => structuredClone(observed),
     discardDelivery: async input => {
       assert.equal(run.webDeliveryDiscardIntent.currentDeliveryId, input.currentDeliveryId); discardCalls++;
-      observed = { ...observed, currentDeliveryId: null, lastDeliveryDiscard: { ...owner, deliveryId: 'd' } };
+      if (discardReceipt) observed = { ...observed, currentDeliveryId: null, lastDeliveryDiscard: { ...owner, deliveryId: 'd' } };
       if (dropDiscardReply) { dropDiscardReply = false; throw Object.assign(new Error('Lost reply'), { code: 'EXTENSION_DISCONNECTED' }); }
       return { ...input, result: 'discarded' };
     }, acknowledgeDelivery: async () => {
@@ -308,13 +311,73 @@ function recoveryHarness({responseStored = true} = {}) {
       if (dropAckReply) { dropAckReply = false; throw Object.assign(new Error('Lost reply'), { code: 'EXTENSION_DISCONNECTED' }); }
       return { ...owner, currentDeliveryId: null };
     } };
+  const auditEvents = [];
   const actions = createDeliveryRecoveryActions({ web, getSources: async () => ({ contexts: [], runs: [run] }),
-    getServices: async () => ({ codeChanges }) });
+    getServices: async () => ({ codeChanges }), audit:async event => { auditEvents.push(event); await audit?.(event); } });
   return { actions, codeChanges, owner, run: () => run, observe: patch => { observed = { ...observed, ...patch }; },
     discard: () => actions.discard({ ...owner, reason: 'Reviewed original conversation', unresolvedResultConfirmed: true, noAutomaticResendConfirmed: true }),
-    dropDiscard: () => { dropDiscardReply = true; }, dropAck: () => { dropAckReply = true; }, invalidEvidence: () => { validEvidence = false; },
-    calls: () => ({ discardCalls, ackCalls }) };
+    dropDiscard: () => { dropDiscardReply = true; }, setDiscardReceipt: value => { discardReceipt = value; },
+    dropAck: () => { dropAckReply = true; }, invalidEvidence: () => { validEvidence = false; },
+    calls: () => ({ discardCalls, ackCalls }), auditEvents };
 }
+
+test('ACK recovery settles a saved advisory response without replacing it or revoking candidate approval', async () => {
+  const f = recoveryHarness();
+  const candidate = {candidateId:'reviewed-candidate'};
+  f.codeChanges.update('r', {stage:'AWAITING_APPLY', candidate,
+    reviewDiscussions:[{discussionId:'d', status:'UNCONFIRMED', response:'Original advisory response.'}]});
+  await f.actions.acknowledge(f.owner);
+  assert.equal(f.run().stage, 'AWAITING_APPLY');
+  assert.deepEqual(f.run().candidate, candidate);
+  assert.equal(f.run().reviewDiscussions[0].response, 'Original advisory response.');
+  assert.equal(f.run().reviewDiscussions[0].status, 'DELIVERED');
+  assert.equal(f.run().webDeliveryReceipts[0].state, 'ACKNOWLEDGED');
+  assert.equal(f.calls().ackCalls, 1);
+});
+
+test('automatic ACK requires matching completed advisory bytes and exact ownership', async () => {
+  const f = recoveryHarness();
+  const rawText = 'Original advisory response.';
+  const receipt = f.run().webDeliveryReceipts[0];
+  f.codeChanges.update('r', {stage:'AWAITING_APPLY',
+    reviewDiscussions:[{discussionId:'d', status:'UNCONFIRMED', response:rawText}],
+    webDeliveryReceipts:[{...receipt, privateResponseRef:{sha256:'private'}}]});
+  f.codeChanges.artifactStore.readPrivateResponse = () => ({
+    version:1, runId:'r', sessionId:'s', role:'JUDGE', deliveryId:'d',
+    rawText, packet:{type:'REVIEW_DISCUSSION_TEXT'},
+  });
+  const completed = {turnId:'d', binding:f.owner, rawText:'Different response.'};
+  f.observe({documentId:'doc', observedDocumentId:'doc', observedConversationUrl:f.owner.conversationUrl,
+    completedDelivery:completed});
+  await assert.rejects(f.actions.acknowledge(f.owner,{automatic:true}), {code:'DELIVERY_RECOVERY_MISMATCH'});
+  assert.equal(f.calls().ackCalls, 0);
+  assert.equal(f.run().webDeliveryReceipts[0].state, 'ACK_PENDING');
+  f.observe({currentDeliveryId:'other', completedDelivery:{...completed,rawText}});
+  await assert.rejects(f.actions.acknowledge(f.owner,{automatic:true}), {code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.equal(f.calls().ackCalls, 0);
+  f.observe({currentDeliveryId:'d', completedDelivery:{...completed,rawText}});
+  await f.actions.acknowledge(f.owner,{automatic:true});
+  assert.equal(f.calls().ackCalls, 1);
+  assert.equal(f.run().reviewDiscussions[0].response, rawText);
+  assert.equal(f.run().webDeliveryReceipts[0].state, 'ACKNOWLEDGED');
+});
+
+test('automatic preparation ACK requires a saved response and proof of the same idle extension delivery', () => {
+  const raw = 'saved response';
+  const server = {status:'MATCHED', otherActive:false,
+    records:[{kind:'PREPARATION', active:true, processingState:'ACK_PENDING', responseStored:true}]};
+  const extension = {exact:true, pageIdentityConfirmed:true, extensionBusy:false, pageBusy:false, generating:false,
+    responseFingerprint:{sha256:createHash('sha256').update(raw).digest('hex')}};
+  assert.doesNotThrow(() => assertQueuedPreparationAck({server, extension}, raw));
+  assert.throws(() => assertQueuedPreparationAck({server, extension}, ''), {code:'DELIVERY_RESPONSE_REQUIRED'});
+  assert.throws(() => assertQueuedPreparationAck({server, extension}, 'changed'), {code:'DELIVERY_RECOVERY_MISMATCH'});
+  assert.throws(() => assertQueuedPreparationAck({server, extension:{...extension, exact:false}}, raw),
+    {code:'DELIVERY_RECOVERY_MISMATCH'});
+  assert.throws(() => assertQueuedPreparationAck({server, extension:{...extension, pageBusy:true}}, raw),
+    {code:'WEB_SESSION_BUSY'});
+  assert.doesNotThrow(() => assertQueuedPreparationAck({server, extension:{...extension, exact:false,
+    responseFingerprint:null, ackConfirmed:true}}, raw));
+});
 
 test('server discard retains its owner after a lost reply and finalizes only the exact extension receipt', async () => {
   const f = recoveryHarness({responseStored:false}); f.dropDiscard();
@@ -327,10 +390,44 @@ test('server discard retains its owner after a lost reply and finalizes only the
   assert.equal(f.run().conversationBindings[0].activeDeliveryId, null); assert.equal(f.run().stage, 'HOLD');
   assert.equal(f.run().webDeliveryReceipts.length,0);
   assert.equal(f.run().webDeliveryDiscardIntent.confirmed,true);
+  assert.equal(f.run().webDeliveryDiscardIntent.resultStatus,'COMPLETION_RESPONSE_UNCONFIRMED');
+  assert.deepEqual(f.auditEvents.map(event=>event.phase),['STARTED','FAILED','STARTED','COMPLETED']);
   const terminal = (await f.actions.inspect(f.owner)).server.records[0];
   assert.equal(terminal.state,'RECOVERY_DISCARDED');
   assert.equal(terminal.responseStored,false);
   assert.equal(f.calls().discardCalls, 2);
+});
+test('active review discard writes completion to the audit only after the exact extension receipt', async t => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-active-review-discard-'));
+  t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
+  const f = recoveryHarness({responseStored:false, audit:createDeliveryRecoveryAudit({directory})});
+  const candidate = {candidateId:'retained-candidate'};
+  f.codeChanges.update(f.owner.runId, {candidate});
+  f.setDiscardReceipt(false);
+  await assert.rejects(f.discard(), {code:'DISCARD_UNCONFIRMED'});
+  assert.equal(f.run().conversationBindings[0].activeDeliveryId, f.owner.currentDeliveryId);
+  assert.equal(f.run().webDeliveryDiscardIntent.status, 'VERIFY_REQUIRED');
+  f.setDiscardReceipt(true);
+  const result = await f.discard();
+  assert.equal(result.resultStatus, 'COMPLETION_RESPONSE_UNCONFIRMED');
+  assert.equal(f.run().conversationBindings[0].activeDeliveryId, null);
+  assert.deepEqual(f.run().candidate, candidate);
+  assert.deepEqual(f.run().webDeliveryReceipts, []);
+  const records = fs.readFileSync(path.join(directory,'events.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(records.map(x=>[x.phase,x.resultStatus,x.disposalStatus]), [
+    ['STARTED','UNKNOWN','UNVERIFIED'], ['FAILED','UNKNOWN','UNVERIFIED'],
+    ['STARTED','UNKNOWN','UNVERIFIED'], ['COMPLETED','COMPLETION_RESPONSE_UNCONFIRMED','BOTH_DISCARDED'],
+  ]);
+});
+test('releasing a leftover reviewer delivery preserves the cancelled run and candidate', async () => {
+  const f = recoveryHarness({responseStored:false});
+  const candidate = { candidateId:'saved-candidate' };
+  f.codeChanges.update(f.owner.runId, { stage:'CANCELLED', terminationReason:'RECOVERY_ABANDONED', candidate });
+  await f.discard();
+  assert.equal(f.run().stage, 'CANCELLED');
+  assert.equal(f.run().terminationReason, 'RECOVERY_ABANDONED');
+  assert.deepEqual(f.run().candidate, candidate);
+  assert.equal(f.run().conversationBindings[0].activeDeliveryId, null);
 });
 test('an unrelated extension response blocks REVIEW discard before a durable intent', async () => {
   const f = recoveryHarness({responseStored:false});
@@ -383,6 +480,12 @@ test('ACK recovery checks durable evidence and retains server ownership until th
   await assert.rejects(invalid.actions.acknowledge(invalid.owner), { code: 'DELIVERY_RESPONSE_REQUIRED' });
   assert.equal(invalid.calls().ackCalls, 0);
   const f = recoveryHarness(); f.dropAck();
+  f.codeChanges.jobs.set(f.owner.runId, true);
+  assert.equal((await f.actions.inspect(f.owner)).canAcknowledge, false);
+  await assert.rejects(f.actions.acknowledge(f.owner), {code:'WEB_SESSION_BUSY'});
+  assert.equal(f.calls().ackCalls, 0);
+  f.codeChanges.jobs.delete(f.owner.runId);
+  assert.equal((await f.actions.inspect(f.owner)).canAcknowledge, true);
   await assert.rejects(f.actions.acknowledge(f.owner), { code: 'EXTENSION_DISCONNECTED' });
   assert.equal(f.run().conversationBindings[0].activeDeliveryId, 'd'); assert.equal(f.run().webDeliveryReceipts[0].state, 'ACK_PENDING');
   await f.actions.acknowledge(f.owner); await f.actions.acknowledge(f.owner);

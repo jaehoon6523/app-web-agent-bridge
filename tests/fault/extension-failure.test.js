@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createBridgeServer } from "../../src/server.js";
+import { removeOwnedFixture } from "../../scripts/e2e/helpers/owned-fixture.mjs";
 
 async function freePort() {
   const probe = net.createServer();
@@ -63,7 +64,7 @@ test("fault: disconnected extension does not become HTTP, dashboard-auth, or run
   await bridge.listen();
   t.after(async () => {
     await bridge.close();
-    fs.rmSync(root, { recursive:true, force:true });
+    await removeOwnedFixture(root);
   });
 
   const sessionResponse = await fetch(`${baseUrl}/api/dashboard/session`, {
@@ -89,6 +90,9 @@ test("fault: disconnected extension does not become HTTP, dashboard-auth, or run
   assert.equal(state.preflight.checks.webAdapterAvailable, true);
   assert.equal(state.commandCapabilities.includes("preparation.start"), false);
 
-  assert.equal((await fetch(`${baseUrl}/api/preflight`)).status, 200);
-  assert.equal((await fetch(`${baseUrl}/api/project`, { headers })).status, 200);
+  for (const [route, options] of [["/api/preflight", undefined], ["/api/project", { headers }]]) {
+    const response = await fetch(baseUrl + route, options);
+    await response.arrayBuffer();
+    assert.equal(response.status, 200);
+  }
 });

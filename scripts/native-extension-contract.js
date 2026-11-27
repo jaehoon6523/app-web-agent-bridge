@@ -21,7 +21,7 @@ export async function sendNativePrompt({tabId,binding,text}) {
       timeoutMs:60_000,stableMs:1000,
     },
   });
-  if (!reply?.ok) throw new Error(`${reply?.code ?? 'NATIVE_PROMPT_REJECTED'}: ${reply?.error ?? reply?.message ?? 'Content script rejected the native prompt.'}`);
+  if (!reply?.ok) throw new Error(`${reply?.code ?? 'NATIVE_PROMPT_REJECTED'}${reply?.evidence?.stage ? ` [${reply.evidence.stage}]` : ''}: ${reply?.error ?? reply?.message ?? 'Content script rejected the native prompt.'}`);
   return reply;
 }
 
@@ -30,10 +30,11 @@ export const nativeFixtureHtml = `<!doctype html>
     <textarea id="prompt-textarea"></textarea><button data-testid="send-button">Send</button>
     <script>document.querySelector('button').onclick = () => {
       const article = document.createElement('article'); article.setAttribute('data-message-author-role', 'user'); article.id = 'u1';
+      const heading = document.createElement('h4'); heading.className = 'sr-only'; heading.textContent = 'You said:';
       const body = document.createElement('div'); body.setAttribute('data-message-content', '');
       // Controlled markers must retain line boundaries in the rendered message.
       body.style.whiteSpace = 'pre-wrap';
       body.textContent = document.querySelector('textarea').value;
-      article.append(body); document.querySelector('main').append(article); document.querySelector('textarea').value = '';
+      article.append(heading, body); document.querySelector('main').append(article); document.querySelector('textarea').value = '';
       window.fixtureClicks = (window.fixtureClicks || 0) + 1;
     };</script>`;

@@ -71,3 +71,13 @@ test("DOM-safe closing marker must still be the final standalone unquoted line",
     { code: "CONTROLLER_PACKET_MISSING" },
   );
 });
+
+test("Korean sentinels use the same final standalone envelope rules", () => {
+  const json = JSON.stringify(packet);
+  assert.deepEqual(parseFinalControllerPacketJsonEnvelope(`답변시작\r\n${json}\r\n답변끝`).parsed, packet);
+  assert.throws(() => parseFinalControllerPacketJsonEnvelope("답변시작"), { code: "CONTROLLER_PACKET_MISSING" });
+  assert.throws(() => parseFinalControllerPacketJsonEnvelope(`답변시작\n${json}\nCONTROLLER_PACKET_END`),
+    { code: "CONTROLLER_PACKET_AMBIGUOUS" });
+  assert.throws(() => parseFinalControllerPacketJsonEnvelope(`답변시작\n${json}\n> 답변끝`),
+    { code: "CONTROLLER_PACKET_AMBIGUOUS" });
+});

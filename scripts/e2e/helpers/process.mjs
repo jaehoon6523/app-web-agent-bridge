@@ -11,7 +11,7 @@ import { removeOwnedFixture } from './owned-fixture.mjs';
 
 export const repository = fileURLToPath(new URL('../../../', import.meta.url));
 export const extensionCredentials = Object.freeze({ sharedSecret:'e2e-only-extension-secret-0123456789', extensionIdentity:'e2e-extension' });
-export async function productionProcess({ configured = false, fault = null, worker = false } = {}) {
+export async function productionProcess({ configured = false, fault = null, worker = false, observeCommands = false } = {}) {
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-e2e-'));
   const probe = net.createServer();
   let child, shutdown, stdout = '', stderr = '', spawnError;
@@ -51,7 +51,8 @@ export async function productionProcess({ configured = false, fault = null, work
     let observation, stopping, forced = false, sendError = null;
     const launch = () => {
       spawnError = null; forced = false; sendError = null; stopping = null;
-      child = ownedSpawn([path.join(repository, 'src/server.js')], { cwd:workspace, env, ipc:true });
+      const entry = observeCommands ? 'scripts/e2e/fixtures/command-observer-server.mjs' : 'src/server.js';
+      child = ownedSpawn([path.join(repository, entry)], { cwd:workspace, env, ipc:true });
       child.stdout.on('data', chunk => { stdout += chunk; });
       child.stderr.on('data', chunk => { stderr += chunk; });
       child.on('error', error => { spawnError = error; });

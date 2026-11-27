@@ -12,6 +12,40 @@ const SESSION = '/api/dashboard/session', STATE = '/api/state';
 const options = { timeout:40000 };
 const json = (route, status, body) => route.fulfill({ status, contentType:'application/json', body:JSON.stringify(body) });
 
+test('background state reads keep confirmed controls until a change or failure', options, async t => {
+  const held = deferred(), release = deferred();
+  let state, reads = 0;
+  const f = await firstLoadBrowser(t, {intercept:async ({route,pathname}) => {
+    if (pathname !== STATE) return false;
+    const read = ++reads;
+    state ??= loadedRunState(await (await route.fetch()).json(), 'A');
+    if (read === 2) { held.resolve(); await release.promise; }
+    if (read === 4) { await json(route, 503, {code:'TEST_STATE_UNAVAILABLE'}); return true; }
+    await json(route, 200, read === 3 ? {...state, commandCapabilities:[]} : state);
+    return true;
+  }});
+  await f.open();
+  await f.ready();
+  const stop = f.page.locator('#stopRun');
+  const confirmed = f.page.locator('#dashboardLastConfirmed');
+  const firstConfirmation = await confirmed.textContent();
+  await held.promise;
+  const unchanged = f.page.waitForResponse(response => new URL(response.url()).pathname === STATE);
+  try {
+    assert.equal(await stop.isEnabled(), true);
+    await f.ready();
+  } finally { release.resolve(); }
+  await unchanged;
+  assert.equal(await stop.isEnabled(), true);
+  assert.equal(await confirmed.textContent(), firstConfirmation);
+  await f.page.waitForFunction(() => document.getElementById('stopRun').disabled);
+  await f.ready();
+  await expectCode(f.page, 'TEST_STATE_UNAVAILABLE');
+  assert.equal(await stop.isDisabled(), true);
+  await f.ready();
+  assert.equal(await stop.isEnabled(), true);
+});
+
 function loadedRunState(base, id, phase = 'WORKER_RUNNING', aliases = false) {
   const run = {runId:id, phase, version:3, objective:`작업 ${id}`, requirements:{items:[]}, extensionField:{retained:true}};
   const state = {...base,run:{...run},preparation:null,

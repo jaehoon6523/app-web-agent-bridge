@@ -706,9 +706,9 @@
     "id": "UF-10",
     "title": "Pass and explicit apply",
     "given": "schema v3 독립 검토 PASS; AWAITING_APPLY; target base 동일",
-    "when": "Apply 전 target를 확인한 뒤 적용 버튼을 클릭한다",
-    "then": "PASS는 아직 미적용; 클릭 후 APPLIED; 승인 candidate만 실제 target에 반영",
-    "callPath": "#applyCode click → command(code.apply) → POST /api/commands → DashboardController.executeDurable → execute → CodeChangeService.command → assertApprovalCandidate → GitChangeWorkspace.apply → store → snapshot → render",
+    "when": "Apply 확인 화면에서 target와 후보를 확인한 뒤 명시적으로 적용한다",
+    "then": "PASS는 아직 미적용; 대상 확인 후 APPLIED; 승인 candidate만 실제 target에 반영",
+    "callPath": "#applyCode click → #confirmApplyDecision click → command(code.apply) → POST /api/commands → DashboardController.executeDurable → execute → CodeChangeService.command → assertApprovalCandidate → GitChangeWorkspace.apply → store → snapshot → render",
     "sources": [
       "public/app.js",
       "src/server.js",

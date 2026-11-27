@@ -7,11 +7,12 @@ let workspace, current, brief, terminal=false, steers=[];
 const send=m=>process.stdout.write(JSON.stringify(m)+'\n');
 const save=()=>fs.writeFileSync(output,JSON.stringify({pid:process.pid,sessionId:threadId,turnId:current,workspaceRoot:workspace,requirementIds:brief.requirements.items.map(r=>r.requirementId),steers}));
 const rl = readline.createInterface({input:process.stdin});
-let closing = false, completionTimer;
+let closing = false, completionTimer, failureTimer;
 function shutdown() {
  if (closing) return;
  closing = true;
  clearTimeout(completionTimer);
+ clearInterval(failureTimer);
  rl.close();
  process.stdin.pause();
  process.exitCode = 0;
@@ -23,11 +24,43 @@ process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 rl.on('line',line=>{
  const {id,method,params={}}=JSON.parse(line);
+ if(id==='controlled-stale-approval' && !method) {
+  fs.writeFileSync(path.join(path.dirname(output),'.agent-controller','worker-stale-approval-result'),line);
+  return;
+ }
+ if(id==='controlled-approval' && !method) return;
  if(method==='initialize')return send({id,result:{userAgent:'controlled-active-worker'}});
  if(method==='initialized')return;
  if(method==='thread/start'){workspace=params.cwd;return send({id,result:{thread:{id:threadId,sessionId:threadId}}});}
  if(method==='turn/start'){
   current='controlled-turn-'+process.pid;const text=params.input.filter(x=>x.type==='text').map(x=>x.text).join('\n');brief=JSON.parse(text.slice(text.indexOf('\n')+1));save();
+  const fault = path.join(path.dirname(output), '.agent-controller', 'worker-fail-turn');
+  const signal = path.join(path.dirname(fault), 'worker-test-signal');
+  failureTimer = setInterval(() => {
+   if (fs.existsSync(signal)) {
+    const event = JSON.parse(fs.readFileSync(signal, 'utf8'));
+    fs.unlinkSync(signal);
+    if (event.kind === 'approval') send({id:'controlled-approval',method:'item/commandExecution/requestApproval',
+     params:{threadId,turnId:current,itemId:'controlled-approval-item',availableDecisions:['decline']}});
+    if (event.kind === 'late-failure') {
+     send({method:'turn/completed',params:{threadId,turn:{id:event.turnId,status:'failed',items:[],
+      error:{message:'External turn timed out; execution state requires recovery.'}}}});
+     send({method:'item/started',params:{threadId,turnId:current,item:{id:'after-late-event',type:'fileChange',changes:[]}}});
+    }
+    if (event.kind === 'stale-approval') {
+     const approval = {turnId:event.turnId,itemId:'stale-approval-item',availableDecisions:['accept','decline']};
+     send({id:'controlled-foreign-approval',method:'item/commandExecution/requestApproval',
+      params:{...approval,threadId:event.threadId}});
+     send({id:'controlled-stale-approval',method:'item/commandExecution/requestApproval',
+      params:{...approval,threadId}});
+    }
+   }
+   if (!fs.existsSync(fault) || fs.readFileSync(fault, 'utf8') !== current) return;
+   clearInterval(failureTimer);
+   terminal = true;
+   send({method:'turn/completed',params:{threadId,turn:{id:current,status:'failed',items:[],
+    error:{message:'External turn timed out; execution state requires recovery.'}}}});
+  }, 100);
   return send({id,result:{turn:{id:current,status:'inProgress',items:[]}}});
  }
  if(method==='turn/steer'){

@@ -26,4 +26,14 @@ test("assistant extraction selects the full response over a short matching child
   container.querySelectorAll = () => [short];
   assert.equal(context.ChatGptBridgeResponseText.elementText(container, [".markdown"], context.selectorTelemetry), full);
   assert.equal(context.selectorTelemetry.get("messageContent"), "messageContainer:packet");
+  const localized = full.replace("CONTROLLER_PACKET_BEGIN", "답변시작").replace("CONTROLLER_PACKET_END", "답변끝");
+  container.innerText = localized;
+  context.selectorTelemetry.clear();
+  assert.equal(context.ChatGptBridgeResponseText.elementText(container, [".markdown"], context.selectorTelemetry), localized);
+  assert.equal(context.selectorTelemetry.get("messageContent"), "messageContainer:packet");
+  const json = JSON.stringify({ type: "REQUIREMENTS_PROPOSAL", summary: "첫 줄 변경" }, null, 2);
+  container.innerText = json;
+  context.selectorTelemetry.clear();
+  assert.equal(context.ChatGptBridgeResponseText.elementText(container, [".markdown"], context.selectorTelemetry), json);
+  assert.equal(context.selectorTelemetry.get("messageContent"), "messageContainer:packet");
 });

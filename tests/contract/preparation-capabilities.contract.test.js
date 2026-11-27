@@ -112,7 +112,7 @@ test("contract: preparation cancel advertises only executable local or Web recov
   });
   assert.ok(service.capabilities().includes("preparation.cancel"));
   available = false;
-  assert.ok(!service.capabilities().includes("preparation.cancel"));
+  assert.ok(service.capabilities().includes("preparation.cancel"), "queuing closure only requires the saved validated response");
   service.data.contexts["prep-cancel-capability"].webSession.activeDeliveryId = null;
   service.data.contexts["prep-cancel-capability"].diagnostics = null;
   assert.ok(service.capabilities().includes("preparation.cancel"),

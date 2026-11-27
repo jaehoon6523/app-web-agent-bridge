@@ -27,8 +27,13 @@ test("settled pre-candidate Worker timeout can be manually retried without chang
   const beforeTimeout = recovery.policy.turnTimeoutMs;
   await f.reopen();
   const restarted = f.service.get(completed.runId);
-  assert.equal(restarted.error, "Server restarted during execution. No automatic resubmission or patch application.");
+  const startsBeforeRetry = f.starts();
+  assert.equal(restarted.error, timeoutError);
   assert.ok(f.service.snapshot(completed.runId, {}).commandCapabilities.includes("run.retry"));
+  await assert.rejects(f.service.command("run.retry", {
+    runId: completed.runId, expectedVersion: restarted.version - 1,
+  }), {code:"RUN_VERSION_CONFLICT"});
+  assert.equal(f.starts(), startsBeforeRetry);
   if (restarted.workspaceRoot) {
     const fs = await import("node:fs");
     fs.rmSync(restarted.workspaceRoot, { recursive: true, force: true });
@@ -37,6 +42,9 @@ test("settled pre-candidate Worker timeout can be manually retried without chang
   assert.equal(result.status, "RETRY_ACCEPTED");
   await f.service.jobs.get(completed.runId);
   const retried = f.service.get(completed.runId);
+  assert.equal(f.starts(), startsBeforeRetry + 1);
+  assert.deepEqual(retried.requirementsRef, restarted.requirementsRef);
+  assert.notEqual(retried.workerTurnId, "timeout-turn");
   assert.equal(retried.policy.turnTimeoutMs, beforeTimeout);
   assert.equal(retried.recoveryAttempts.at(-1).previousTurnId, "timeout-turn");
 });

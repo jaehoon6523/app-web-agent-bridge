@@ -3,6 +3,25 @@ import assert from 'node:assert/strict';
 import { closedBootstrapRootTabs, recoverBootstrapAfterNavigation, recoverSubmittedRoot, inspectSubmittedRoot } from '../extension/runtime/bootstrap-recovery.js';
 import { readDeliveryPage } from '../extension/runtime/delivery-page.js';
 import { createExtensionStateStore } from '../extension/runtime/storage.js';
+import { submittedRootRecovery } from '../src/orchestration/submitted-root-recovery.js';
+
+test("a disconnected root can recover only the completed response from its original tab", () => {
+  const webSession = { sessionId:"web_prep_test", activeDeliveryId:"delivery-test", tabId:7, windowId:1,
+    conversationUrl:"https://chatgpt.com/", conversationId:null, frameId:0, documentId:"root-doc" };
+  const binding = { sessionId:webSession.sessionId, runId:"prep_test", tabId:7, windowId:1,
+    conversationUrl:"https://chatgpt.com/c/test", conversationId:"test", bindingStatus:"BOUND" };
+  const context = { preparationId:"prep_test", state:"RECOVERY_REQUIRED", error:{code:"WEB_TURN_AMBIGUOUS"}, webSession,
+    deliveries:[{ deliveryId:webSession.activeDeliveryId, state:"RECOVERY_REQUIRED", unsent:false, response:null }],
+    diagnostics:{ currentDeliveryId:webSession.activeDeliveryId, sessionId:webSession.sessionId, runId:"prep_test", tabId:7,
+      completedDelivery:{ turnId:webSession.activeDeliveryId, confidence:"CONFIRMED_BY_UI_STATE",
+        evidence:{responseAssociation:"DIRECT_DOM_ORDER"}, binding } } };
+  const recovery = submittedRootRecovery(context);
+  assert.equal(recovery.currentDeliveryId, webSession.activeDeliveryId);
+  assert.equal(recovery.conversationId, "test");
+  assert.equal(recovery.allowTabRelocation, false);
+  binding.tabId = 9;
+  assert.equal(submittedRootRecovery(context), null);
+});
 import * as documentBinding from "../extension/runtime/document-binding.js";
 import vm from "node:vm";
 import { readFileSync } from "node:fs";
@@ -78,6 +97,137 @@ test('explicit root recovery validates the original response and commits it with
   assert.equal(f.sent.filter(m=>m.type==='agent.recheck').length,1,'lost recovery reply can be read without repeating observation');
 });
 
+test('pinned root recovery verifies both bindings when the original tab was closed', async () => {
+  const f = submittedFixture();
+  Object.assign(f.expected, { windowId:3, documentId:'old', frameId:0, userMessageId:'u1',
+    assistantMessageId:'a1', allowTabRelocation:true, replacement:{tabId:8, windowId:4, documentId:'new', frameId:0} });
+  const replacement = {id:8, windowId:4, url:f.page.url};
+  f.tabs.get = async id => {
+    if (id === 8) return replacement;
+    throw new Error('No tab with id: 7.');
+  };
+  f.tabs.query = async () => [replacement];
+  const after = await recoverSubmittedRoot(f);
+  assert.equal(after.currentDeliveryId, 'd1');
+  assert.equal(after.documentId, 'new');
+  assert.equal(after.completedDelivery.evidence.recoveryRebinding.from.documentId, 'old');
+  assert.equal(after.completedDelivery.evidence.recoveryRebinding.to.documentId, 'new');
+  assert.ok(f.sent.every(m => ['agent.ping', 'agent.recheck'].includes(m.type)));
+  assert.deepEqual(await recoverSubmittedRoot(f), after);
+});
+
+test('closed-tab handoff preserves delivery ownership after Chrome clears the stored document', async () => {
+  for (const scenario of ['exact', 'original still open', 'duplicate', 'late duplicate', 'other conversation', 'wrong marker', 'wrong message', 'owner changed']) {
+    const f = submittedFixture();
+    const original = {tabId:7, windowId:3, documentId:'old', frameId:0};
+    const replacement = {tabId:8, windowId:4, documentId:'new', frameId:0};
+    Object.assign(f.expected, original, {userMessageId:'u1', assistantMessageId:'a1', allowTabRelocation:true, replacement});
+    await f.store.update({tabId:null, windowId:null, documentId:null, frameId:null, bindingStatus:'NEEDS_REBIND'});
+    const before = await f.store.read();
+    const candidate = {id:8, windowId:4, url:scenario === 'other conversation' ? 'https://chatgpt.com/c/other' : f.page.url};
+    f.tabs.get = async id => {
+      if (id === candidate.id) return candidate;
+      if (scenario === 'original still open') return {id:7, windowId:3, url:f.page.url};
+      throw new Error('No tab with id: 7.');
+    };
+    f.tabs.query = async () => scenario === 'duplicate' || (scenario === 'late duplicate' && f.sent.some(m => m.type === 'agent.recheck'))
+      ? [candidate, {...candidate, id:9}] : [candidate];
+    const send = f.tabs.sendMessage;
+    f.tabs.sendMessage = async (id, message, options) => {
+      assert.equal(id, replacement.tabId);
+      assert.equal(options?.frameId, 0);
+      if (message.type === 'agent.recheck' && scenario === 'owner changed') await f.store.update({currentDeliveryId:'other'});
+      return send(id, message);
+    };
+    if (scenario === 'wrong marker') Object.assign(f.result, {ok:false, code:'AMBIGUOUS_PROMPT_BINDING'});
+    if (scenario === 'wrong message') f.result.evidence.assistantMessageId = 'other';
+    if (scenario === 'exact') {
+      const after = await recoverSubmittedRoot(f);
+      assert.deepEqual(after.completedDelivery.evidence.recoveryRebinding, {from:original, to:replacement});
+      assert.equal(after.windowId, replacement.windowId);
+      assert.equal(after.currentDeliveryId, before.currentDeliveryId);
+      const observation = f.sent.find(m => m.type === 'agent.recheck');
+      assert.equal(observation.payload.controllerMessageId, before.currentDeliveryId);
+      assert.equal(observation.payload.runId, before.lastBoundRunId);
+      assert.equal(observation.payload.userMessageId, 'u1');
+      assert.equal(observation.payload.assistantMessageId, 'a1');
+      assert.deepEqual(await recoverSubmittedRoot(f), after);
+      assert.equal(f.sent.filter(m => m.type === 'agent.recheck').length, 1);
+    } else {
+      await assert.rejects(recoverSubmittedRoot(f));
+      assert.deepEqual(await f.store.read(), scenario === 'owner changed' ? {...before, currentDeliveryId:'other'} : before);
+      if (['original still open', 'duplicate', 'other conversation'].includes(scenario)) assert.deepEqual(f.sent, []);
+    }
+    assert.ok(f.sent.every(m => ['agent.ping', 'agent.recheck'].includes(m.type)));
+  }
+});
+
+test('pinned root recovery accepts only the exact original document and message pair', async () => {
+  for (const scenario of ['exact', 'document', 'window', 'tab', 'conversation', 'assistant', 'generating', 'receipt']) {
+    const f = submittedFixture();
+    Object.assign(f.expected, {windowId:3, documentId:'old', frameId:0, userMessageId:'u1', assistantMessageId:'a1'});
+    await f.store.update({lastAcknowledgedDelivery:{deliveryId:'previous-delivery'}});
+    f.page.documentId = f.result.evidence.documentId = scenario === 'document' ? 'new' : 'old';
+    if (scenario === 'window') f.expected.windowId = 4;
+    if (scenario === 'tab') f.expected.tabId = 8;
+    if (scenario === 'conversation') f.page.conversationId = 'other';
+    if (scenario === 'assistant') f.result.evidence.assistantMessageId = 'other';
+    if (scenario === 'generating') f.page.generating = true;
+    if (scenario === 'receipt') await f.store.update({lastAcknowledgedDelivery:{deliveryId:'d1'}});
+    const before = await f.store.read();
+    if (scenario === 'exact') {
+      const after = await recoverSubmittedRoot(f);
+      assert.equal(after.completedDelivery.rawText, f.result.text);
+      assert.equal(after.currentDeliveryId, 'd1');
+      assert.equal(f.sent.find(m => m.type === 'agent.recheck').payload.assistantMessageId, 'a1');
+    } else {
+      await assert.rejects(recoverSubmittedRoot(f));
+      assert.deepEqual(await f.store.read(), before);
+    }
+    assert.ok(f.sent.every(m => ['agent.ping', 'agent.recheck'].includes(m.type)));
+  }
+});
+
+test('same-tab token handoff distinguishes the original, requested and observed tokens', async t => {
+  const logs = [];
+  t.mock.method(console, 'info', (_prefix, message) => logs.push(JSON.parse(message)));
+  const f = submittedFixture();
+  const saved = await f.store.read();
+  const context = {
+    preparationId:'prep_r1', state:'RECOVERY_REQUIRED',
+    error:{code:'UI_CONTRACT_CHANGED', details:{browserDispatchStarted:true}},
+    webSession:{...saved, sessionId:'s1', activeDeliveryId:'d1'},
+    deliveries:[{deliveryId:'d1', state:'RECOVERY_REQUIRED', unsent:false}],
+  };
+  const target = {
+    conversationUrl:f.page.url, conversationId:'created', userMessageId:'u1', assistantMessageId:'a1',
+    replacement:{tabId:7, windowId:3, documentId:'new', frameId:0},
+  };
+  const expected = submittedRootRecovery(context, target);
+  const {replacement, ...originalOnly} = expected;
+  await assert.rejects(recoverSubmittedRoot({
+    ...f, expected:{...originalOnly, allowTabRelocation:false},
+  }), {code:'DELIVERY_RECOVERY_UNCONFIRMED'});
+  assert.deepEqual(await f.store.read(), saved);
+  assert.equal(f.sent.some(message => message.type === 'agent.recheck'), false);
+  assert.deepEqual(logs[0].documentTokens, {stored:'old', expected:'old', observed:'new'});
+  f.page.documentId = 'another-document';
+  await assert.rejects(recoverSubmittedRoot({...f, expected}), {code:'DELIVERY_RECOVERY_UNCONFIRMED'});
+  assert.deepEqual(logs[1].documentTokens, {stored:'old', expected:'new', observed:'another-document'});
+  assert.deepEqual(await f.store.read(), saved);
+  assert.equal(f.sent.some(message => message.type === 'agent.recheck'), false);
+  f.page.documentId = 'new';
+  const after = await recoverSubmittedRoot({...f, expected});
+  assert.deepEqual(logs.find(entry => entry.stage === 'CHECK_PAGE' && !entry.failedChecks.length).documentTokens,
+    {stored:'old', expected:'new', observed:'new'});
+  assert.deepEqual(after.completedDelivery.evidence.recoveryRebinding, {
+    from:{tabId:7, windowId:3, documentId:'old', frameId:0}, to:replacement,
+  });
+  assert.deepEqual(await recoverSubmittedRoot({...f, expected}), after);
+  assert.equal(f.sent.filter(message => message.type === 'agent.recheck').length, 1);
+  assert.ok(f.sent.every(message => ['agent.ping', 'agent.recheck'].includes(message.type)));
+});
+
 for(const boundary of ['owner','tab','generating','missing marker','wrong document','ambiguous response','heuristic response','owner changed','document changed']) {
   test(`root response recovery preserves the record on ${boundary}`,async()=>{
     const f=submittedFixture();
@@ -110,18 +260,21 @@ for(const boundary of ['owner','tab','generating','missing marker','wrong docume
 test('submitted-response recheck requires unique markers and direct message order',async()=>{
   const content=readFileSync(new URL('../extension/content.js',import.meta.url),'utf8');
   const branch=content.slice(content.indexOf('  if (message?.type === "agent.recheck")'),content.indexOf('  if (message?.type === "agent.cancel")'));
-  for(const scenario of ['valid','duplicate','manual user','multiple replies','changed reply']) {
+  for(const scenario of ['valid','duplicate','manual user','multiple replies','changed reply','wrong marker','wrong user id']) {
     const messages=[{id:'u1',role:'user',index:0,matched:true},{id:'a1',role:'assistant',index:1}];
     if(scenario==='duplicate') messages.push({id:'u2',role:'user',index:2,matched:true});
     if(scenario==='manual user') messages.push({id:'u2',role:'user',index:2});
     if(scenario==='multiple replies') messages.push({id:'a2',role:'assistant',index:2});
+    if(scenario==='wrong marker') messages[0].matched=false;
+    if(scenario==='wrong user id') messages[0].id='other';
     let waits=0;
     const context=vm.createContext({currentJob:null,AbortController,ContentContractError:class extends Error{constructor(code,message){super(message);this.code=code;}},
       assertExpectedDocument(){},assertExpectedConversation(){},messageSnapshot:()=>messages,isExpectedUser:m=>m.matched===true,
       waitForAssistantResponse:async args=>{waits++;assert.equal(args.timeoutMs,15000);assert.equal(args.stableMs,3500);
         return {text:'reply',evidence:{assistantMessageId:scenario==='changed reply'?'a2':'a1'}};}});
     vm.runInContext('function receive(message,sendResponse){'+branch+'}',context);
-    const result=await new Promise(resolve=>context.receive({type:'agent.recheck',payload:{recoverSubmitted:true,controllerMessageId:'d1'}},resolve));
+    const result=await new Promise(resolve=>context.receive({type:'agent.recheck',payload:{
+      recoverSubmitted:true,controllerMessageId:'d1',userMessageId:'u1',assistantMessageId:'a1'}},resolve));
     assert.equal(result.ok,scenario==='valid',scenario);
     assert.equal(context.currentJob,null);
     if(['duplicate','manual user','multiple replies'].includes(scenario)) assert.equal(waits,0);
@@ -195,11 +348,16 @@ test(`bootstrap recovery waits for temporary ${temporaryId} to settle`, async ()
 });
 }
 
-test("root prepare returns without navigation; first delivery sends once and persists created conversation", async () => {
-  const state = { tabId: 99, bindingStatus: "AMBIGUOUS", currentDeliveryId: null };
+test("root prepare sends once on a separate tab and preserves an earlier delivery", async () => {
+  let saved = { tabId:99, windowId:2, documentId:"old-document", frameId:0,
+    bindingStatus:"AMBIGUOUS", conversationUrl:"https://chatgpt.com/", conversationId:null,
+    lastBoundSessionId:"old-session", lastBoundRunId:"old-run", currentDeliveryId:"old-delivery" };
+  const store = createExtensionStateStore({ get:async () => structuredClone(saved), set:async value => {
+    saved = structuredClone(value);
+  } });
   const tab = { id: 1, windowId: 2, url: "https://chatgpt.com/" };
   const sent = [], prompts = [];
-  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, ...providerTarget, createControlledPrompt,
+  const context = vm.createContext({ ...documentBinding, ...conversation, ...guards, ...currentTarget, ...providerTarget, createControlledPrompt, conversationTabCandidates,
     console, Number, Date, setTimeout, clearTimeout, lastError: null,
     bridgeLog() {},
     CHATGPT_URL_PATTERNS: ["https://chatgpt.com/*"],
@@ -208,19 +366,7 @@ test("root prepare returns without navigation; first delivery sends once and per
       url: tab.url, conversationId: conversation.conversationIdFromUrl(tab.url), documentId: "document-1", frameId: 0 }), focusTab: async () => {},
     send: m => sent.push(m), errorPayload: e => ({ code: e.code, message: e.message }),
     ExtensionOperationError: class extends Error { constructor(code, message, details) { super(message); this.code = code; this.details = details; } },
-    store: { read: async () => ({ ...state }), update: async p => Object.assign(state, p),
-      bindSession: async patch => {
-        if (state.lastBoundSessionId !== patch.lastBoundSessionId) {
-          state.currentDeliveryId = null;
-          state.completedDelivery = null;
-          state.lastObservedUserMessageId = null;
-          state.lastObservedAssistantMessageId = null;
-        }
-        Object.assign(state, patch);
-        return { ...state };
-      },
-      reserveDelivery: async id => { state.currentDeliveryId = id; return { ...state }; },
-      clearDelivery: async () => { state.currentDeliveryId = null; } },
+    store,
     chrome: { tabs: { query: async () => [tab], get: async () => ({ ...tab }), sendMessage: async (_id, m) => {
       if (m.type === "agent.ping") return { ok: true, ready: true, url: tab.url, conversationId: conversation.conversationIdFromUrl(tab.url), documentId: "document-1", frameId: 0 };
       prompts.push(m);
@@ -237,9 +383,12 @@ test("root prepare returns without navigation; first delivery sends once and per
   await context.handlePrompt({ requestId: "d1", payload: { runId: "r1", controllerMessageId: "d1", text: "request" } });
   assert.equal(prompts.length, 1);
   assert.equal(sent[0]?.type, "web.prompt.result", JSON.stringify(sent));
+  const state = await store.read();
   assert.equal(state.conversationId, "created");
   assert.equal(state.completedDelivery.turnId, "d1");
   assert.equal(state.currentDeliveryId, "d1");
+  assert.equal(state.deliveryScopes["old-session"].currentDeliveryId, "old-delivery");
+  assert.equal(state.deliveryScopes["old-session"].tabId, 99);
   assert.deepEqual({ ...state.completedDelivery.trace }, {
     requestId: "d1", actionId: "d1", result: "success", tabId: 1,
     bindingId: "s1:r1", documentId: "document-1", frameId: 0,
@@ -361,12 +510,12 @@ function submittedDispatchFixture(f,{sendMode='open',detailsFail=false}={}) {
   const attempts=[],wire=[],gate=guards.createActiveTurnGate();
   const context=vm.createContext({authenticated:true,PROTOCOL_VERSION:2,inspectSubmittedRoot,readDeliveryPage,
     chrome:{tabs:f.tabs},store:f.store,turnGate:gate,errorPayload:error=>({code:error.code??'WEB_EXTENSION_ERROR'}),
-    agentDiagnostics:{accept:()=>false,recordMessage(){}},serverDeliveryInspector:{accept:()=>false},WebSocket:{OPEN:1},
+    decisionEvidence:{accept:()=>false},agentDiagnostics:{accept:()=>false,recordMessage(){}},serverDeliveryInspector:{accept:()=>false},WebSocket:{OPEN:1},
     socket:{readyState:sendMode==='closed'?3:1,send:raw=>{
       if(sendMode==='throw') throw new Error('socket send failed');
       wire.push(JSON.parse(raw));
     }},attempts});
-  const sendSource=source.slice(source.indexOf('function send(message,'),source.indexOf('const serverDeliveryInspector ='));
+  const sendSource=source.slice(source.indexOf('function send(message,'),source.indexOf('const decisionEvidence ='));
   const detailsSource=source.slice(source.indexOf('async function deliveryDetails('),source.indexOf('async function handleDeliveryStop('));
   const dispatchSource=source.slice(source.indexOf('async function handleControllerMessage('),source.indexOf('async function handlePrepare('));
   assert.ok(sendSource && detailsSource && dispatchSource);
@@ -423,3 +572,4 @@ for(const sendMode of ['closed','throw']) {
     assert.equal(f.sent.filter(m=>m.type==='agent.recheck').length,1);
   });
 }
+import { conversationTabCandidates } from "../extension/runtime/conversation-bootstrap.js";

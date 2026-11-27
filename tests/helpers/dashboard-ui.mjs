@@ -6,9 +6,10 @@ import { externalEventRecords, filterRunsForHistory, groupRunsByProject, normali
 import * as dashboardRunListKnowledge from "../../public/dashboard-run-list-knowledge.js";
 import * as dashboardStartActions from "../../public/dashboard-start-actions.js";
 import { renderProjectOverview } from "../../public/project-overview-view.js";
-import { createRunActionLayout } from "../../public/run-action-layout.js";
+import { createRunActionLayout, ensureOperatorNoteControls } from "../../public/run-action-layout.js";
 import * as runContextView from "../../public/run-context-view.js";
 import { redactDiagnosticLog } from "../../public/diagnostic-export.js";
+import * as invalidAbandonment from "../../public/invalid-preparation-abandonment.js";
 
 function inlineModule(source) {
   const lines = [];
@@ -29,10 +30,13 @@ function inlineModule(source) {
 }
 
 function withRunKnowledge(state) {
-  if (!Array.isArray(state?.runs) || state.dataKnowledge != null) return state;
+  if (!Array.isArray(state?.runs)) return state;
+  const preparation = state.preparation;
   return {
     ...state,
-    dataKnowledge: { runs: { status: state.runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
+    ...(!Object.hasOwn(state, "activePreparation") && { activePreparation:preparation?.lifecycle === "ACTIVE"
+      ? { preparationId:preparation.preparationId, version:preparation.version } : null }),
+    dataKnowledge: state.dataKnowledge ?? { runs: { status: state.runs.length ? "AVAILABLE_NONEMPTY" : "AVAILABLE_EMPTY" } },
   };
 }
 
@@ -49,7 +53,7 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     constructor(tagName = "") {
       this.tagName = String(tagName).toUpperCase();
       this.children = []; this.listeners = {}; this.dataset = {}; this.value = "";
-      this.checked = false; this.hidden = false; this.textContent = ""; this.attributes = {};
+      this.checked = false; this.hidden = false; this.open = false; this.textContent = ""; this.attributes = {};
       this.classList = {
         add: (...names) => { for (const name of names) this.className = `${this.className ?? ""} ${name}`.trim(); },
         remove: (...names) => { this.className = String(this.className ?? "").split(/\s+/u).filter((name) => !names.includes(name)).join(" "); },
@@ -98,7 +102,9 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
       if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(child => child !== this);
       this.parentElement = null;
     }
-    focus() {}
+    focus() { context.document.activeElement = this; }
+    showModal() { this.open = true; }
+    close() { this.open = false; this.listeners.close?.(); }
     replaceChildren(...children) { this.children = []; this.append(...children); }
     setAttribute(key, value) { this.attributes[key] = value; }
     removeAttribute(key) { delete this.attributes[key]; }
@@ -115,8 +121,9 @@ export async function dashboard(state, mutate = async () => ({}), storage = new 
     ...dashboardConnectionState,
     ...dashboardRunListKnowledge,
     ...dashboardStartActions,
+    ...invalidAbandonment,
     ...runContextView, redactDiagnosticLog,
-    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, Date, Map, Set, JSON, URL, URLSearchParams, Blob,
+    externalEventRecords, filterRunsForHistory, groupRunsByProject, normalizeDashboardState, renderProjectOverview, createRunActionLayout, ensureOperatorNoteControls, Date, Map, Set, JSON, URL, URLSearchParams, Blob, TextEncoder,
     sessionStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value)) },
     crypto: { randomUUID: () => "request-1" },
     AbortSignal: { timeout: () => undefined }, setTimeout: () => {},

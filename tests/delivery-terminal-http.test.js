@@ -41,6 +41,6 @@ test('production HTTP reads terminal preparation from SQLite and records verifie
   assert.doesNotMatch(audit,/PRIVATE_REASON_NOT_LOGGED/u);
   assert.deepEqual(audit.trim().split('\n').map(s=>JSON.parse(s).phase),['FAILED','STARTED','COMPLETED','STARTED','COMPLETED']);
   const diagnostic=JSON.parse(fs.readFileSync(path.join(root,'diagnostics','runtime-latest.json'),'utf8'));
-  assert.equal(diagnostic.deliveryRecovery.phase,'COMPLETED');assert.equal(diagnostic.deliveryRecovery.resultStatus,'UNKNOWN');
+  assert.equal(diagnostic.deliveryRecovery.phase,'COMPLETED');assert.equal(diagnostic.deliveryRecovery.resultStatus,'COMPLETION_RESPONSE_UNCONFIRMED');
   assert.equal(diagnostic.deliveryReview.discardConfirmed,true);
 });

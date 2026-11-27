@@ -16,8 +16,8 @@ test('candidate view validates current preparation and delivery and never touche
   await assert.rejects(PreparationService.prototype.focusCandidateTab.call(service,{preparationId:'prep',deliveryId:'delivery',tabId:7}),{code:'TAB_CHANGED'});
 });
 test('focus protocol opens the exact tab and window, rejects navigation, and has no storage interface', async () => {
-  const calls=[], replies=[]; let url='https://chatgpt.com/';
-  const chrome={tabs:{get:async()=>({id:7,windowId:9,url}),update:async(...a)=>calls.push(a)},windows:{update:async(...a)=>calls.push(a)}};
+  const calls=[], replies=[]; let url='https://chatgpt.com/', active=false;
+  const chrome={tabs:{get:async()=>({id:7,windowId:9,url,active}),update:async(...a)=>{calls.push(a); active=a[1].active;}},windows:{update:async(...a)=>{calls.push(a); return { focused:a[1].focused };}}};
   const message={requestId:'request',payload:{tabId:7,url}};
   await replyToTabFocus(chrome,m=>replies.push(m),message);
   assert.deepEqual(calls,[[7,{active:true}],[9,{focused:true}]]);

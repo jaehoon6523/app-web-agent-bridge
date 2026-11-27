@@ -8,6 +8,7 @@ export async function closureFlow(t,f,id) {
   if(id==='UF-23') return intervention(t,f);
   if(id==='UF-15') return lock(t,f);
   if(id==='UF-17') return auth(f);
+  if(id==='UF-19') await f.page.locator('#newRun').click();
   const setup=await reviewedRun(t,f,{rework:['UF-09','UF-10'].includes(id)});
   if(id==='UF-10') { await applyRun(t,f,setup); await changedTarget(t); }
   if(id==='UF-18') await discussion(f,setup);

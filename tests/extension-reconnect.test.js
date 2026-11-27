@@ -48,3 +48,23 @@ test("identity pairing retries are bounded and do not retry unrelated authentica
   reconnect.schedulePairing();assert.equal(timers.size,0);assert.equal(attempts,10);
   reconnect.accepted();reconnect.schedulePairing();assert.equal(timers.size,1);
 });
+
+test("pending retries arm a worker wakeup that is cleared on conflict or authentication", () => {
+  let wakePending = false;
+  const reconnect = createReconnectController({
+    connect: async () => {}, connected: () => false, onError: () => {},
+    setTimer: () => 1, clearTimer: () => {},
+    wake: { schedule: () => { wakePending = true; }, cancel: () => { wakePending = false; } },
+  });
+  reconnect.schedule(1006);
+  assert.equal(wakePending, true);
+  reconnect.schedule(4409);
+  assert.equal(wakePending, false);
+  reconnect.schedule(1006);
+  assert.equal(wakePending, false);
+  reconnect.requested();
+  reconnect.schedulePairing();
+  assert.equal(wakePending, true);
+  reconnect.accepted();
+  assert.equal(wakePending, false);
+});

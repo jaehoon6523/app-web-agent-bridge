@@ -29,7 +29,7 @@ function runtimeConfig(directory, {
     baseUrl: "http://127.0.0.1:0",
     workspace: process.cwd(),
     logDir: process.cwd(),
-    persistence: { databasePath: path.join(directory, "controller.sqlite") },
+    persistence: { databasePath: path.join(directory, "controller.sqlite"), artifactDirectory: path.join(directory, "artifacts") },
     demoMode,
     auditProjectFile,
     dashboard: { token: dashboardToken },
@@ -202,6 +202,16 @@ test("server rejects token URLs and authenticates the exact extension identity b
     liveOrchestrationReady: false,
   });
   assert.equal(Object.hasOwn(health, "orchestrationReady"), false);
+  assert.equal(health.preparation.dependenciesReady, false);
+
+  await bridge.getLiveRuntime();
+  assert.equal(bridge.releaseStatus().runtimeReady, false);
+  await bridge.prepareManagedRelease();
+  const warmed = await (await fetch(`${baseHttp}/api/health`)).json();
+  assert.equal(warmed.release.runtimeReady, true);
+  assert.deepEqual(warmed.preparation, {dependenciesReady:true, tabStatus:"BINDS_ON_START"});
+  assert.equal(warmed.liveSessionBindingReady, false);
+  assert.equal(warmed.discussionCodexStatus, "ON_DEMAND");
 
   const closed = once(socket, "close");
   socket.close();
@@ -293,7 +303,7 @@ test("server boots without optional live credentials and local browser session r
   assert.equal(legacyStart.status, 410);
 });
 
-test("legacy authenticated start cannot bypass preparation approval", async (t) => {
+test("legacy authenticated start cannot bypass approval and failed command receipts stay failed", async (t) => {
   const calls = [];
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-server-audit-"));
   const auditProjectFile = path.join(directory, "project.json");
@@ -306,7 +316,7 @@ test("legacy authenticated start cannot bypass preparation approval", async (t) 
       auditProjectFile,
     }),
     createLiveRuntime: async () => ({
-      codeChanges: { store: receipts, get: () => null, busy: () => false,
+      codeChanges: { store: receipts, get: () => null, busy: () => false, list: () => [],
         async start(input) { calls.push({ type: "code.start", input }); return { runId: "run_live_test", status: "ACCEPTED" }; } },
       store: {
         listRuns: () => [],
@@ -377,5 +387,15 @@ test("legacy authenticated start cannot bypass preparation approval", async (t) 
   assert.equal(response.status, 410);
   assert.equal((await response.json()).code, "PREPARATION_API_REQUIRED");
   assert.equal(calls.length, 0);
+  const headers = {authorization:`Bearer ${DASHBOARD_TOKEN}`, origin:"http://127.0.0.1:0", "content-type":"application/json"};
+  const requestId = "stale-stop";
+  const rejected = await fetch(`${baseHttp}/api/commands`, {method:"POST", headers, body:JSON.stringify({
+    requestId, type:"run.stop", payload:{runId:"old-run",expectedVersion:1},
+  })});
+  assert.equal(rejected.status, 409);
+  assert.equal((await rejected.json()).payload.code, "RUN_VERSION_CONFLICT");
+  const observed = await fetch(`${baseHttp}/api/state?requestId=${requestId}`, {headers});
+  assert.equal(observed.status, 200);
+  assert.deepEqual((await observed.json()).requestResult, {requestId,status:"FAILED"});
   socket.close();
 });

@@ -15,6 +15,8 @@ function fixture(t) {
 test("preparing a plain project makes its initial snapshot, excludes local secrets, and is repeatable", (t) => {
   const { root, git } = fixture(t);
   fs.writeFileSync(path.join(root, "app.js"), "console.log('hello');\n");
+  assert.equal(GitChangeWorkspace.checkTarget(root).baseCommit, null);
+  assert.equal(fs.existsSync(path.join(root, ".git")), false);
   fs.writeFileSync(path.join(root, ".env"), "SECRET=local\n");
   fs.writeFileSync(path.join(root, ".env.example"), "SECRET=\n");
   fs.mkdirSync(path.join(root, "node_modules"));
@@ -43,6 +45,7 @@ test("existing dirty repositories and nested project selections preserve user fi
   fs.writeFileSync(path.join(child, "source.js"), "source");
   const { baseCommit } = GitChangeWorkspace.prepareTarget(root);
   fs.writeFileSync(path.join(root, "app.js"), "user changes");
+  assert.throws(() => GitChangeWorkspace.checkTarget(root), { code:"TARGET_REPOSITORY_DIRTY" });
   assert.throws(() => GitChangeWorkspace.prepareTarget(root), /변경/);
   assert.equal(git("rev-parse", "HEAD").trim(), baseCommit);
   assert.equal(fs.readFileSync(path.join(root, "app.js"), "utf8"), "user changes");

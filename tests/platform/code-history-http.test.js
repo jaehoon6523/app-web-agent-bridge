@@ -122,9 +122,11 @@ test("cold and invalidated real history verification keep independent HTTP respo
     assert.equal(state.runs[0].runId, server.record.runId);
     assert.equal(state.run.version, expected.version);
     assert.equal(state.run.stage, expected.stage);
-    assert.equal(server.events.slice(checkpoint).some(event => event.type === "watchdog.unresponsive"
-      && event.lastStage !== "process.starting"), false,
-    "History verification must not stall the server after startup.");
+    const historyStarted = server.events.findIndex((event, index) => index >= checkpoint
+      && event.type === "persistence.code-store.history-background.started");
+    assert.ok(historyStarted >= checkpoint);
+    assert.equal(server.events.slice(historyStarted).some(event => event.type === "watchdog.unresponsive"), false,
+      "History verification must not stall the server while the history worker runs.");
     Object.assign(phaseTiming,{stage:'completed',elapsedMs:performance.now()-phaseStarted,verificationMs:completed.elapsedMs});
     phases.push({phase,probes,verificationMs:completed.elapsedMs,firstAvailability:first.runtimeAvailability});
   }
